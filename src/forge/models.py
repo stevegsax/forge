@@ -161,3 +161,59 @@ class TransitionInput(BaseModel):
     validation_results: list[ValidationResult]
     attempt: int
     max_attempts: int = 2
+
+
+# ---------------------------------------------------------------------------
+# Workflow input model
+# ---------------------------------------------------------------------------
+
+
+class ForgeTaskInput(BaseModel):
+    """Input to ForgeTaskWorkflow."""
+
+    task: TaskDefinition
+    repo_root: str
+    max_attempts: int = 2
+
+
+# ---------------------------------------------------------------------------
+# Git activity I/O models
+# ---------------------------------------------------------------------------
+
+
+class CreateWorktreeInput(BaseModel):
+    """Input to create_worktree_activity."""
+
+    repo_root: str
+    task_id: str
+    base_branch: str = "main"
+
+
+class CreateWorktreeOutput(BaseModel):
+    """Output from create_worktree_activity."""
+
+    worktree_path: str
+    branch_name: str
+
+
+class RemoveWorktreeInput(BaseModel):
+    """Input to remove_worktree_activity."""
+
+    repo_root: str
+    task_id: str
+    force: bool = True
+
+
+class CommitChangesInput(BaseModel):
+    """Input to commit_changes_activity."""
+
+    repo_root: str
+    task_id: str
+    status: str
+    file_paths: list[str] | None = None
+
+
+class CommitChangesOutput(BaseModel):
+    """Output from commit_changes_activity."""
+
+    commit_sha: str
