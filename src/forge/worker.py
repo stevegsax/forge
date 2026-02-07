@@ -28,9 +28,10 @@ from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
 
-async def run_worker() -> None:
+async def run_worker(address: str | None = None) -> None:
     """Connect to Temporal and run the Forge worker."""
-    address = os.environ.get("FORGE_TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS)
+    if address is None:
+        address = os.environ.get("FORGE_TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS)
 
     client = await Client.connect(
         address,
