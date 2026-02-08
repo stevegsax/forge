@@ -6,7 +6,6 @@ and runs the worker until interrupted.
 
 from __future__ import annotations
 
-import asyncio
 import os
 
 from temporalio.client import Client
@@ -63,12 +62,3 @@ async def run_worker(address: str | None = None) -> None:
     )
 
     await worker.run()
-
-
-def main() -> None:
-    """CLI entry point for the Forge worker."""
-    asyncio.run(run_worker())
-
-
-if __name__ == "__main__":
-    main()

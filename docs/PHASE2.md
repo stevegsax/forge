@@ -90,7 +90,7 @@ AssembleStepContextInput:
     step: PlanStep
     step_index: int
     total_steps: int
-    completed_steps: list[StepResult]
+    completed_steps: list[StepResult] = []
     repo_root: str
     worktree_path: str
 
@@ -110,7 +110,7 @@ Modified models:
 
 New activities:
 
-- `assemble_planner_context(AssembleContextInput) → PlannerInput` — reads context files from repo root, builds planner prompts
+- `assemble_planner_context(AssembleContextInput) → PlannerInput` — reuses the Phase 1 `AssembleContextInput` model (task, repo_root, worktree_path); reads context files from repo root, builds planner prompts
 - `call_planner(PlannerInput) → PlanCallResult` — calls LLM with structured `Plan` output
 - `assemble_step_context(AssembleStepContextInput) → AssembledContext` — reads context files from **worktree** (not repo root), builds step-specific prompts
 - `reset_worktree_activity(ResetWorktreeInput) → None` — `git reset --hard HEAD` + `git clean -fd`
