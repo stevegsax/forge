@@ -222,14 +222,14 @@ The orchestrator needs a finite set of outcome signals to act on:
 
 ## Development Phases
 
-### Phase 0: Project Skeleton and Design Document (current)
+### Phase 0: Project Skeleton and Design Document (complete)
 
 - This design document.
 - Project structure, dependencies, and configuration.
 - Temporal running locally.
 - Basic tracing infrastructure.
 
-### Phase 1: The Minimal Loop
+### Phase 1: The Minimal Loop (complete)
 
 Single workflow executing one LLM call with hardcoded context. One model (Anthropic), one task domain (Python code generation as the initial use case). No fan-out, no planning step, no model routing.
 

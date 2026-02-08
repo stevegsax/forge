@@ -141,7 +141,7 @@ Core:
 - `pydantic-ai` — LLM client.
 - `opentelemetry-api`, `opentelemetry-sdk` — Tracing.
 - `opentelemetry-exporter-otlp` — Trace export (or jaeger exporter for local dev).
-- `click` or `typer` — CLI.
+- `click` — CLI.
 
 Development:
 
