@@ -28,7 +28,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from forge.models import ValidationResult
+    from forge.models import StepResult, ValidationResult
 
 # ---------------------------------------------------------------------------
 # Exit codes
@@ -53,12 +53,28 @@ def format_validation_results(results: list[ValidationResult]) -> str:
     return "\n".join(lines)
 
 
+def format_step_result(step: StepResult) -> str:
+    """Format a single StepResult as a compact line."""
+    tag = "PASS" if step.status == TransitionSignal.SUCCESS else "FAIL"
+    sha_short = step.commit_sha[:8] if step.commit_sha else "none"
+    return f"  [{tag}] {step.step_id}: {step.status.value} (commit: {sha_short})"
+
+
 def format_task_result(result: TaskResult) -> str:
     """Format a TaskResult for human-readable terminal output."""
     lines: list[str] = [
         f"Task: {result.task_id}",
         f"Status: {result.status.value}",
     ]
+
+    if result.plan:
+        lines.append(f"Plan: {len(result.plan.steps)} steps")
+
+    if result.step_results:
+        lines.append("")
+        lines.append("Steps:")
+        for sr in result.step_results:
+            lines.append(format_step_result(sr))
 
     if result.validation_results:
         lines.append("")
@@ -134,6 +150,9 @@ async def _submit_and_wait(
     repo_root: str,
     temporal_address: str,
     max_attempts: int,
+    *,
+    plan: bool = False,
+    max_step_attempts: int = 2,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
@@ -145,7 +164,13 @@ async def _submit_and_wait(
 
     result = await client.execute_workflow(
         ForgeTaskWorkflow.run,
-        ForgeTaskInput(task=task_def, repo_root=repo_root, max_attempts=max_attempts),
+        ForgeTaskInput(
+            task=task_def,
+            repo_root=repo_root,
+            max_attempts=max_attempts,
+            plan=plan,
+            max_step_attempts=max_step_attempts,
+        ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
     )
@@ -157,6 +182,9 @@ async def _submit_no_wait(
     repo_root: str,
     temporal_address: str,
     max_attempts: int,
+    *,
+    plan: bool = False,
+    max_step_attempts: int = 2,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
@@ -168,7 +196,13 @@ async def _submit_no_wait(
 
     handle = await client.start_workflow(
         ForgeTaskWorkflow.run,
-        ForgeTaskInput(task=task_def, repo_root=repo_root, max_attempts=max_attempts),
+        ForgeTaskInput(
+            task=task_def,
+            repo_root=repo_root,
+            max_attempts=max_attempts,
+            plan=plan,
+            max_step_attempts=max_step_attempts,
+        ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
     )
@@ -207,6 +241,14 @@ def main() -> None:
     help="Branch to create worktree from.",
 )
 @click.option("--max-attempts", default=2, show_default=True, type=int, help="Retry limit.")
+@click.option("--plan", "use_plan", is_flag=True, help="Enable planning mode.")
+@click.option(
+    "--max-step-attempts",
+    default=2,
+    show_default=True,
+    type=int,
+    help="Retry limit per step in planning mode.",
+)
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
@@ -228,6 +270,8 @@ def run(
     test_command: str | None,
     base_branch: str,
     max_attempts: int,
+    use_plan: bool,
+    max_step_attempts: int,
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -250,8 +294,10 @@ def run(
             raise click.UsageError("--task-id is required for inline task definition.")
         if not description:
             raise click.UsageError("--description is required for inline task definition.")
-        if not target_file:
-            raise click.UsageError("--target-file is required for inline task definition.")
+        if not target_file and not use_plan:
+            raise click.UsageError(
+                "--target-file is required for inline task definition (unless --plan is set)."
+            )
 
         task_def = build_task_definition(
             task_id=task_id,
@@ -276,12 +322,26 @@ def run(
     try:
         if no_wait:
             workflow_id = asyncio.run(
-                _submit_no_wait(task_def, repo_root, temporal_address, max_attempts)
+                _submit_no_wait(
+                    task_def,
+                    repo_root,
+                    temporal_address,
+                    max_attempts,
+                    plan=use_plan,
+                    max_step_attempts=max_step_attempts,
+                )
             )
             click.echo(workflow_id)
         else:
             result = asyncio.run(
-                _submit_and_wait(task_def, repo_root, temporal_address, max_attempts)
+                _submit_and_wait(
+                    task_def,
+                    repo_root,
+                    temporal_address,
+                    max_attempts,
+                    plan=use_plan,
+                    max_step_attempts=max_step_attempts,
+                )
             )
             if output_json:
                 click.echo(result.model_dump_json(indent=2))

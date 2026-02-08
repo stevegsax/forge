@@ -35,7 +35,10 @@ class TaskDefinition(BaseModel):
 
     task_id: str
     description: str = Field(description="What the task should produce.")
-    target_files: list[str] = Field(description="Files to create or modify.")
+    target_files: list[str] = Field(
+        default_factory=list,
+        description="Files to create or modify. Optional when planning.",
+    )
     context_files: list[str] = Field(
         default_factory=list,
         description="Files to include as context for the LLM.",
@@ -59,6 +62,42 @@ class ValidationResult(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Planning models
+# ---------------------------------------------------------------------------
+
+
+class PlanStep(BaseModel):
+    """A single step within a plan."""
+
+    step_id: str = Field(description="Unique step identifier within the plan.")
+    description: str = Field(description="What this step should accomplish.")
+    target_files: list[str] = Field(description="Files to create or modify in this step.")
+    context_files: list[str] = Field(
+        default_factory=list,
+        description="Files to include as context for this step.",
+    )
+
+
+class Plan(BaseModel):
+    """A decomposed plan for a task."""
+
+    task_id: str
+    steps: list[PlanStep] = Field(min_length=1)
+    explanation: str = Field(description="Brief explanation of the decomposition strategy.")
+
+
+class StepResult(BaseModel):
+    """The outcome of executing a single plan step."""
+
+    step_id: str
+    status: TransitionSignal
+    output_files: dict[str, str] = Field(default_factory=dict)
+    validation_results: list[ValidationResult] = Field(default_factory=list)
+    commit_sha: str | None = None
+    error: str | None = None
+
+
 class TaskResult(BaseModel):
     """The outcome of a workflow execution."""
 
@@ -75,6 +114,8 @@ class TaskResult(BaseModel):
     )
     worktree_path: str | None = None
     worktree_branch: str | None = None
+    step_results: list[StepResult] = Field(default_factory=list)
+    plan: Plan | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +216,11 @@ class ForgeTaskInput(BaseModel):
     task: TaskDefinition
     repo_root: str
     max_attempts: int = 2
+    plan: bool = Field(default=False, description="Enable planning mode.")
+    max_step_attempts: int = Field(
+        default=2,
+        description="Max retry attempts per step in planning mode.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +258,56 @@ class CommitChangesInput(BaseModel):
     task_id: str
     status: str
     file_paths: list[str] | None = None
+    message: str | None = Field(
+        default=None,
+        description="Override the auto-generated commit message.",
+    )
 
 
 class CommitChangesOutput(BaseModel):
     """Output from commit_changes_activity."""
 
     commit_sha: str
+
+
+class ResetWorktreeInput(BaseModel):
+    """Input to reset_worktree_activity."""
+
+    repo_root: str
+    task_id: str
+
+
+# ---------------------------------------------------------------------------
+# Planning activity I/O models
+# ---------------------------------------------------------------------------
+
+
+class PlannerInput(BaseModel):
+    """Input to the call_planner activity."""
+
+    task_id: str
+    system_prompt: str
+    user_prompt: str
+
+
+class PlanCallResult(BaseModel):
+    """Output of call_planner."""
+
+    task_id: str
+    plan: Plan
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+
+
+class AssembleStepContextInput(BaseModel):
+    """Input to assemble_step_context activity."""
+
+    task: TaskDefinition
+    step: PlanStep
+    step_index: int
+    total_steps: int
+    completed_steps: list[StepResult] = Field(default_factory=list)
+    repo_root: str
+    worktree_path: str

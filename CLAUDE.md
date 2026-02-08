@@ -4,13 +4,14 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phase 1 is implemented. The minimal loop is operational: CLI submits a task, Temporal workflow executes the LLM call, writes output to a git worktree, runs auto-fix and validation, retries on failure, and commits the result for human review.
+Phase 2 is implemented. The system supports planning and multi-step execution: a planning LLM call decomposes a task into ordered steps, then each step is executed sequentially with a commit after each. Step-level retry resets uncommitted changes without losing prior committed work. Phase 1 single-step mode remains the default and is fully backward compatible.
 
 ## Key Documents
 
 - `docs/DESIGN.md` — Full architecture and design document.
 - `docs/DECISIONS.md` — Key design decisions and rationale.
 - `docs/PHASE1.md` — Detailed specification for Phase 1 (the minimal loop).
+- `docs/PHASE2.md` — Detailed specification for Phase 2 (planning and multi-step).
 
 ## Development Conventions
 
@@ -50,8 +51,11 @@ Temporal provides the workflow engine. The LLM call and transition evaluation ar
 - Worktrees are disposable: on failure, document the problem, create a fresh worktree, start over.
 - Task ordering from the plan is the primary conflict avoidance mechanism.
 
-## Current Phase: Phase 1 — The Minimal Loop (Complete)
+## Current Phase: Phase 2 — Planning and Multi-Step (Complete)
 
-Phase 1 is implemented. The system executes a single workflow step end-to-end: assemble context, call the LLM (Anthropic via pydantic-ai), write output to a git worktree, auto-fix with ruff, validate, and commit. On validation failure, the workflow retries from a clean worktree up to a configurable limit.
+Phase 2 is implemented. The system supports two modes:
 
-See `docs/PHASE1.md` for the detailed specification.
+- **Single-step** (`plan=False`, default): Phase 1 behavior. Assemble context, call LLM, write, validate, commit. Retries from a clean worktree.
+- **Planned** (`plan=True`): A planner LLM decomposes the task into ordered steps. Each step executes the universal workflow step and commits on success. Step-level retry resets uncommitted changes without losing prior commits.
+
+See `docs/PHASE1.md` and `docs/PHASE2.md` for specifications.

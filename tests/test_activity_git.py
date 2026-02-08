@@ -10,12 +10,14 @@ from forge.activities.git_activities import (
     commit_changes_activity,
     create_worktree_activity,
     remove_worktree_activity,
+    reset_worktree_activity,
 )
 from forge.git import worktree_exists, worktree_path
 from forge.models import (
     CommitChangesInput,
     CreateWorktreeInput,
     RemoveWorktreeInput,
+    ResetWorktreeInput,
 )
 
 if TYPE_CHECKING:
@@ -96,3 +98,46 @@ class TestCommitChangesActivity:
         )
         assert len(result.commit_sha) == 40
         assert all(c in "0123456789abcdef" for c in result.commit_sha)
+
+    @pytest.mark.asyncio
+    async def test_custom_message(self, git_repo: Path) -> None:
+        await create_worktree_activity(
+            CreateWorktreeInput(repo_root=str(git_repo), task_id="msg-task")
+        )
+        wt = worktree_path(git_repo, "msg-task")
+        (wt / "output.py").write_text("print('hello')\n")
+
+        await commit_changes_activity(
+            CommitChangesInput(
+                repo_root=str(git_repo),
+                task_id="msg-task",
+                status="success",
+                message="step 1: create greeting",
+            )
+        )
+
+        from forge.git import _run_git
+
+        log = _run_git("log", "-1", "--format=%s", cwd=wt)
+        assert log.stdout == "step 1: create greeting"
+
+
+# ---------------------------------------------------------------------------
+# reset_worktree_activity
+# ---------------------------------------------------------------------------
+
+
+class TestResetWorktreeActivity:
+    @pytest.mark.asyncio
+    async def test_resets_uncommitted_changes(self, git_repo: Path) -> None:
+        await create_worktree_activity(
+            CreateWorktreeInput(repo_root=str(git_repo), task_id="reset-task")
+        )
+        wt = worktree_path(git_repo, "reset-task")
+        (wt / "dirty.txt").write_text("dirty\n")
+
+        await reset_worktree_activity(
+            ResetWorktreeInput(repo_root=str(git_repo), task_id="reset-task")
+        )
+
+        assert not (wt / "dirty.txt").exists()

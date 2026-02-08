@@ -15,11 +15,15 @@ from temporalio.worker import Worker
 
 from forge.activities import (
     assemble_context,
+    assemble_planner_context,
+    assemble_step_context,
     call_llm,
+    call_planner,
     commit_changes_activity,
     create_worktree_activity,
     evaluate_transition,
     remove_worktree_activity,
+    reset_worktree_activity,
     validate_output,
     write_output,
 )
@@ -44,11 +48,15 @@ async def run_worker(address: str | None = None) -> None:
         workflows=[ForgeTaskWorkflow],
         activities=[
             assemble_context,
+            assemble_planner_context,
+            assemble_step_context,
             call_llm,
+            call_planner,
             commit_changes_activity,
             create_worktree_activity,
             evaluate_transition,
             remove_worktree_activity,
+            reset_worktree_activity,
             validate_output,
             write_output,
         ],

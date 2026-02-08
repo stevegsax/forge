@@ -237,7 +237,7 @@ Proves out: the universal workflow step, activity boundaries, git worktree lifec
 
 Deliverable: Describe a small task, Forge executes it in a worktree, validates the output, and presents the result for human review.
 
-### Phase 2: Planning and Multi-Step
+### Phase 2: Planning and Multi-Step (complete)
 
 Add a planning step that decomposes a task into ordered sub-steps. Task-level agent executes steps sequentially, committing after each. Still single-model, no fan-out.
 

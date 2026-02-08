@@ -13,12 +13,16 @@ from forge.cli import (
     EXIT_FAILURE,
     EXIT_INFRASTRUCTURE_ERROR,
     build_task_definition,
+    format_step_result,
     format_task_result,
     format_validation_results,
     load_task_definition,
     main,
 )
 from forge.models import (
+    Plan,
+    PlanStep,
+    StepResult,
     TaskResult,
     TransitionSignal,
     ValidationResult,
@@ -570,3 +574,117 @@ class TestMainGroup:
         result = cli_runner.invoke(main, ["worker", "--help"])
         assert result.exit_code == 0
         assert "--temporal-address" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 CLI tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatStepResult:
+    def test_success(self) -> None:
+        sr = StepResult(step_id="s1", status=TransitionSignal.SUCCESS, commit_sha="a" * 40)
+        output = format_step_result(sr)
+        assert "[PASS]" in output
+        assert "s1" in output
+        assert "aaaaaaaa" in output
+
+    def test_failure(self) -> None:
+        sr = StepResult(step_id="s2", status=TransitionSignal.FAILURE_TERMINAL)
+        output = format_step_result(sr)
+        assert "[FAIL]" in output
+        assert "none" in output
+
+
+class TestFormatTaskResultWithPlan:
+    def test_includes_plan_info(self) -> None:
+        plan = Plan(
+            task_id="t",
+            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"])],
+            explanation="test",
+        )
+        result = TaskResult(
+            task_id="t",
+            status=TransitionSignal.SUCCESS,
+            plan=plan,
+            step_results=[
+                StepResult(step_id="s1", status=TransitionSignal.SUCCESS, commit_sha="a" * 40),
+            ],
+        )
+        output = format_task_result(result)
+        assert "Plan: 1 steps" in output
+        assert "Steps:" in output
+        assert "[PASS] s1" in output
+
+
+class TestPlanFlag:
+    def test_plan_flag_in_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "--plan" in result.output
+        assert "--max-step-attempts" in result.output
+
+    def test_plan_allows_no_target_file(self, cli_runner: CliRunner) -> None:
+        """With --plan, --target-file is not required."""
+        # This will fail at the submit stage, but the validation should pass
+        with (
+            patch("forge.cli.discover_repo_root") as mock_discover,
+            patch("forge.cli._submit_and_wait", new_callable=AsyncMock) as mock_submit,
+        ):
+            mock_discover.return_value = "/repo"
+            mock_submit.return_value = TaskResult(
+                task_id="plan-task", status=TransitionSignal.SUCCESS
+            )
+            result = cli_runner.invoke(
+                main,
+                [
+                    "run",
+                    "--task-id",
+                    "plan-task",
+                    "--description",
+                    "Build an API.",
+                    "--plan",
+                ],
+            )
+            assert result.exit_code == 0
+
+    def test_no_plan_requires_target_file(self, cli_runner: CliRunner) -> None:
+        """Without --plan, --target-file is still required."""
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--target-file is required" in result.output
+
+    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli.discover_repo_root")
+    def test_plan_flag_passed_to_submit(
+        self,
+        mock_discover: object,
+        mock_submit: AsyncMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--plan",
+                "--max-step-attempts",
+                "3",
+            ],
+        )
+        call_kwargs = mock_submit.call_args
+        assert call_kwargs[1]["plan"] is True
+        assert call_kwargs[1]["max_step_attempts"] == 3

@@ -36,6 +36,10 @@ class WorktreeRemoveError(ForgeGitError):
     """Failed to remove a git worktree."""
 
 
+class WorktreeResetError(ForgeGitError):
+    """Failed to reset a git worktree."""
+
+
 class CommitError(ForgeGitError):
     """Failed to commit changes."""
 
@@ -239,6 +243,7 @@ def commit_changes(
     task_id: str,
     status: str,
     file_paths: list[str] | None = None,
+    message: str | None = None,
 ) -> str:
     """Stage and commit changes in a task's worktree.
 
@@ -247,6 +252,7 @@ def commit_changes(
         task_id: Unique task identifier.
         status: Status string included in the commit message.
         file_paths: Specific files to stage. If ``None``, stages all changes.
+        message: Override the auto-generated commit message.
 
     Returns:
         The commit SHA.
@@ -273,7 +279,7 @@ def commit_changes(
         raise CommitError(msg)
 
     # Commit
-    msg_text = commit_message(task_id, status)
+    msg_text = message if message is not None else commit_message(task_id, status)
     result = _run_git("commit", "-m", msg_text, cwd=wt_path)
     if not result.ok:
         msg = f"Failed to commit for task {task_id!r}: {result.stderr}"
@@ -286,6 +292,36 @@ def commit_changes(
         raise CommitError(msg)
 
     return sha_result.stdout
+
+
+def reset_worktree(repo_root: Path, task_id: str) -> None:
+    """Reset a task's worktree to HEAD, discarding all uncommitted changes.
+
+    Runs ``git reset --hard HEAD`` followed by ``git clean -fd`` in the
+    worktree directory. Used for step-level retry in planned execution.
+
+    Args:
+        repo_root: Path to the repository root.
+        task_id: Unique task identifier.
+
+    Raises:
+        WorktreeResetError: If the reset or clean operation fails.
+    """
+    wt_path = worktree_path(repo_root, task_id)
+
+    if not wt_path.is_dir():
+        msg = f"Worktree directory does not exist for task {task_id!r}: {wt_path}"
+        raise WorktreeResetError(msg)
+
+    result = _run_git("reset", "--hard", "HEAD", cwd=wt_path)
+    if not result.ok:
+        msg = f"Failed to reset worktree for task {task_id!r}: {result.stderr}"
+        raise WorktreeResetError(msg)
+
+    result = _run_git("clean", "-fd", cwd=wt_path)
+    if not result.ok:
+        msg = f"Failed to clean worktree for task {task_id!r}: {result.stderr}"
+        raise WorktreeResetError(msg)
 
 
 def worktree_exists(repo_root: Path, task_id: str) -> bool:

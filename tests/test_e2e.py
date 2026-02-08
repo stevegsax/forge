@@ -17,19 +17,26 @@ from temporalio.worker import Worker
 
 from forge.activities import (
     assemble_context,
+    assemble_step_context,
     commit_changes_activity,
     create_worktree_activity,
     evaluate_transition,
     remove_worktree_activity,
+    reset_worktree_activity,
     validate_output,
     write_output,
 )
 from forge.models import (
+    AssembleContextInput,
     AssembledContext,
     FileOutput,
     ForgeTaskInput,
     LLMCallResult,
     LLMResponse,
+    Plan,
+    PlanCallResult,
+    PlannerInput,
+    PlanStep,
     TaskDefinition,
     TaskResult,
     TransitionSignal,
@@ -365,3 +372,313 @@ class TestEndToEndAutoFix:
     async def test_validation_all_passed(self, result: TaskResult) -> None:
         assert len(result.validation_results) > 0
         assert all(v.passed for v in result.validation_results)
+
+
+# ===========================================================================
+# Phase 2: Planned end-to-end tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Valid Python code for multi-step plans
+# ---------------------------------------------------------------------------
+
+_STEP1_PYTHON = 'class Model:\n    """A simple data model."""\n\n    name: str\n    value: int\n'
+
+_STEP2_PYTHON = (
+    "from models import Model\n\n\n"
+    "def create_model(name: str, value: int) -> Model:\n"
+    '    """Create a Model instance."""\n'
+    "    return Model(name=name, value=value)\n"
+)
+
+_STEP2_INVALID_PYTHON = "def create_model(name):\n  x=1\n  return name\n  y = 2\n"
+
+
+# ---------------------------------------------------------------------------
+# Mock planner + step LLM activities for planned e2e
+# ---------------------------------------------------------------------------
+
+_E2E_PLAN_LLM_CALL_COUNT = 0
+_E2E_PLAN_LLM_RESPONSES: list[LLMResponse] = []
+
+
+def _reset_e2e_plan_state(responses: list[LLMResponse] | None = None) -> None:
+    global _E2E_PLAN_LLM_CALL_COUNT
+    _E2E_PLAN_LLM_CALL_COUNT = 0
+    _E2E_PLAN_LLM_RESPONSES.clear()
+    if responses:
+        _E2E_PLAN_LLM_RESPONSES.extend(responses)
+
+
+@activity.defn(name="assemble_planner_context")
+async def mock_e2e_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
+    return PlannerInput(
+        task_id=input.task.task_id,
+        system_prompt="planner prompt",
+        user_prompt="plan it",
+    )
+
+
+@activity.defn(name="call_planner")
+async def mock_e2e_call_planner(input: PlannerInput) -> PlanCallResult:
+    plan = Plan(
+        task_id=input.task_id,
+        steps=[
+            PlanStep(step_id="step-1", description="Create model.", target_files=["models.py"]),
+            PlanStep(
+                step_id="step-2",
+                description="Create API.",
+                target_files=["api.py"],
+                context_files=["models.py"],
+            ),
+        ],
+        explanation="Two-step plan.",
+    )
+    return PlanCallResult(
+        task_id=input.task_id,
+        plan=plan,
+        model_name="mock-planner",
+        input_tokens=300,
+        output_tokens=150,
+        latency_ms=500.0,
+    )
+
+
+@activity.defn(name="call_llm")
+async def mock_e2e_plan_call_llm(context: AssembledContext) -> LLMCallResult:
+    global _E2E_PLAN_LLM_CALL_COUNT
+    _E2E_PLAN_LLM_CALL_COUNT += 1
+
+    response = _E2E_PLAN_LLM_RESPONSES.pop(0)
+
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=response,
+        model_name="mock-model",
+        input_tokens=100,
+        output_tokens=50,
+        latency_ms=200.0,
+    )
+
+
+_PLANNED_REAL_ACTIVITIES = [
+    create_worktree_activity,
+    remove_worktree_activity,
+    reset_worktree_activity,
+    commit_changes_activity,
+    assemble_step_context,
+    write_output,
+    validate_output,
+    evaluate_transition,
+    mock_e2e_assemble_planner_context,
+    mock_e2e_call_planner,
+]
+
+_PLANNED_ACTIVITIES_VALID = [*_PLANNED_REAL_ACTIVITIES, mock_e2e_plan_call_llm]
+
+
+async def _run_planned_e2e(
+    env: WorkflowEnvironment,
+    git_repo: Path,
+    *,
+    activities: list | None = None,
+    task: TaskDefinition | None = None,
+    max_step_attempts: int = 2,
+) -> TaskResult:
+    """Run the planned workflow with real git/validation and mock LLM+planner."""
+    if task is None:
+        task = TaskDefinition(
+            task_id="e2e-planned",
+            description="Build a model and API.",
+        )
+    if activities is None:
+        activities = _PLANNED_ACTIVITIES_VALID
+
+    forge_input = ForgeTaskInput(
+        task=task,
+        repo_root=str(git_repo),
+        plan=True,
+        max_step_attempts=max_step_attempts,
+    )
+
+    async with Worker(
+        env.client,
+        task_queue=FORGE_TASK_QUEUE,
+        workflows=[ForgeTaskWorkflow],
+        activities=activities,
+    ):
+        return await env.client.execute_workflow(
+            ForgeTaskWorkflow.run,
+            forge_input,
+            id=f"e2e-{task.task_id}",
+            task_queue=FORGE_TASK_QUEUE,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests — planned happy path
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndPlanned:
+    """Two-step plan, both steps produce valid code."""
+
+    @pytest.fixture
+    async def result(self, env: WorkflowEnvironment, git_repo: Path) -> TaskResult:
+        _reset_e2e_plan_state(
+            responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="models.py", content=_STEP1_PYTHON)],
+                    explanation="Created model.",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="api.py", content=_STEP2_PYTHON)],
+                    explanation="Created API.",
+                ),
+            ]
+        )
+        return await _run_planned_e2e(env, git_repo)
+
+    @pytest.mark.asyncio
+    async def test_returns_success(self, result: TaskResult) -> None:
+        assert result.status == TransitionSignal.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_two_step_results(self, result: TaskResult) -> None:
+        assert len(result.step_results) == 2
+        assert result.step_results[0].step_id == "step-1"
+        assert result.step_results[1].step_id == "step-2"
+
+    @pytest.mark.asyncio
+    async def test_plan_attached(self, result: TaskResult) -> None:
+        assert result.plan is not None
+        assert len(result.plan.steps) == 2
+
+    @pytest.mark.asyncio
+    async def test_two_commits_in_history(self, result: TaskResult) -> None:
+        assert result.worktree_path is not None
+        log = subprocess.run(
+            ["git", "log", "--oneline"],
+            cwd=result.worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # Two step commits + initial commit from git_repo fixture
+        lines = [line for line in log.stdout.strip().split("\n") if line]
+        assert len(lines) >= 3  # initial + step-1 + step-2
+
+    @pytest.mark.asyncio
+    async def test_both_output_files_on_disk(self, result: TaskResult) -> None:
+        assert result.worktree_path is not None
+        wt = Path(result.worktree_path)
+        assert (wt / "models.py").is_file()
+        assert (wt / "api.py").is_file()
+
+    @pytest.mark.asyncio
+    async def test_step_commit_shas(self, result: TaskResult) -> None:
+        for sr in result.step_results:
+            assert sr.commit_sha is not None
+            assert len(sr.commit_sha) == 40
+
+
+# ---------------------------------------------------------------------------
+# Tests — planned step failure
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndPlannedStepFailure:
+    """Step 1 succeeds, step 2 produces invalid code → terminal failure."""
+
+    @pytest.fixture
+    async def result(self, env: WorkflowEnvironment, git_repo: Path) -> TaskResult:
+        _reset_e2e_plan_state(
+            responses=[
+                # Step 1 valid
+                LLMResponse(
+                    files=[FileOutput(file_path="models.py", content=_STEP1_PYTHON)],
+                    explanation="Created model.",
+                ),
+                # Step 2 invalid
+                LLMResponse(
+                    files=[FileOutput(file_path="api.py", content=_STEP2_INVALID_PYTHON)],
+                    explanation="Created broken API.",
+                ),
+            ]
+        )
+        return await _run_planned_e2e(env, git_repo, max_step_attempts=1)
+
+    @pytest.mark.asyncio
+    async def test_returns_failure(self, result: TaskResult) -> None:
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_step1_succeeded(self, result: TaskResult) -> None:
+        assert result.step_results[0].status == TransitionSignal.SUCCESS
+        assert result.step_results[0].commit_sha is not None
+
+    @pytest.mark.asyncio
+    async def test_step2_failed(self, result: TaskResult) -> None:
+        assert result.step_results[1].status == TransitionSignal.FAILURE_TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_step1_commit_preserved(self, result: TaskResult) -> None:
+        """Step 1's commit should still exist in the worktree history."""
+        assert result.worktree_path is not None
+        log = subprocess.run(
+            ["git", "log", "--oneline"],
+            cwd=result.worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "step-1" in log.stdout
+
+
+# ---------------------------------------------------------------------------
+# Tests — planned step retry
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndPlannedStepRetry:
+    """Step 1 succeeds, step 2 fails then succeeds on retry."""
+
+    @pytest.fixture
+    async def result(self, env: WorkflowEnvironment, git_repo: Path) -> TaskResult:
+        _reset_e2e_plan_state(
+            responses=[
+                # Step 1 valid
+                LLMResponse(
+                    files=[FileOutput(file_path="models.py", content=_STEP1_PYTHON)],
+                    explanation="Created model.",
+                ),
+                # Step 2, attempt 1: invalid
+                LLMResponse(
+                    files=[FileOutput(file_path="api.py", content=_STEP2_INVALID_PYTHON)],
+                    explanation="Created broken API.",
+                ),
+                # Step 2, attempt 2: valid
+                LLMResponse(
+                    files=[FileOutput(file_path="api.py", content=_STEP2_PYTHON)],
+                    explanation="Created API (fixed).",
+                ),
+            ]
+        )
+        return await _run_planned_e2e(env, git_repo, max_step_attempts=2)
+
+    @pytest.mark.asyncio
+    async def test_returns_success(self, result: TaskResult) -> None:
+        assert result.status == TransitionSignal.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_two_step_results(self, result: TaskResult) -> None:
+        assert len(result.step_results) == 2
+        assert result.step_results[0].status == TransitionSignal.SUCCESS
+        assert result.step_results[1].status == TransitionSignal.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_both_files_on_disk(self, result: TaskResult) -> None:
+        assert result.worktree_path is not None
+        wt = Path(result.worktree_path)
+        assert (wt / "models.py").is_file()
+        assert (wt / "api.py").is_file()

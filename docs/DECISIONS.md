@@ -133,3 +133,21 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Tool configurations live in `tool-config/` in the repository root. Ruff invocations reference `--config tool-config/ruff.toml` rather than relying on config file discovery.
 
 **Rationale:** Git worktrees share the repository's file tree, so `tool-config/` is available in every worktree automatically. Explicit `--config` avoids ambiguity from ruff's config file discovery, which can pick up different files depending on the working directory. A dedicated directory keeps tool configs separate from project metadata (`pyproject.toml`) and makes it obvious where to look.
+
+## D23: Step-Level Retry Over Task-Level Retry for Planned Execution
+
+**Decision:** In multi-step planned execution, retry at the step level using `git reset --hard HEAD && git clean -fd` rather than destroying and recreating the worktree. If a step exhausts retries, the task fails terminal. Task-level retry (re-plan from scratch) is deferred to Phase 3.
+
+**Rationale:** Phase 1 retries destroy and recreate the entire worktree. In multi-step execution, prior steps are already committed — destroying the worktree would lose that progress. Step-level reset preserves committed work while giving the current step a clean slate. This is a natural consequence of the incremental commit strategy: each committed step is a checkpoint.
+
+## D24: Planning as a Separate Activity
+
+**Decision:** Planning (task decomposition) is a separate Temporal activity from the step-level LLM call, with its own prompt construction, output schema (`Plan` vs `LLMResponse`), and agent configuration.
+
+**Rationale:** Planning and execution have different concerns. The planner needs to see the full task description and produce a structured plan (ordered steps with dependencies and file targets). Step execution needs to see the current step's context, completed step history, and produce file outputs. Sharing the `call_llm` activity for both would conflate two distinct prompting strategies. Separate activities also allow different timeout and retry configurations.
+
+## D25: Single Worktree for the Entire Plan
+
+**Decision:** A single git worktree is created before planning and persists across all steps. Steps commit incrementally to this worktree.
+
+**Rationale:** Steps in a plan are sequential and build on each other. Step 2 may read files that step 1 created. A shared worktree with incremental commits makes prior step outputs available as regular files via `context_files`. This also produces a linear commit history in the worktree branch, making human review straightforward — each commit corresponds to one plan step.

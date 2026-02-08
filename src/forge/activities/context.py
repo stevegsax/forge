@@ -3,8 +3,9 @@
 Builds the system and user prompts from a task definition and context files.
 
 Design follows Function Core / Imperative Shell:
-- Pure functions: build_system_prompt, build_user_prompt
-- Imperative shell: _read_context_files, assemble_context
+- Pure functions: build_system_prompt, build_user_prompt,
+  build_step_system_prompt, build_step_user_prompt
+- Imperative shell: _read_context_files, assemble_context, assemble_step_context
 """
 
 from __future__ import annotations
@@ -14,7 +15,14 @@ from pathlib import Path
 
 from temporalio import activity
 
-from forge.models import AssembleContextInput, AssembledContext, TaskDefinition
+from forge.models import (
+    AssembleContextInput,
+    AssembledContext,
+    AssembleStepContextInput,
+    PlanStep,
+    StepResult,
+    TaskDefinition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +100,98 @@ async def assemble_context(input: AssembleContextInput) -> AssembledContext:
 
     system_prompt = build_system_prompt(input.task, context_contents)
     user_prompt = build_user_prompt()
+
+    return AssembledContext(
+        task_id=input.task.task_id,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step-level context (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def build_step_system_prompt(
+    task: TaskDefinition,
+    step: PlanStep,
+    step_index: int,
+    total_steps: int,
+    completed_steps: list[StepResult],
+    context_file_contents: dict[str, str],
+) -> str:
+    """Build the system prompt for a single step execution.
+
+    Includes the overall task summary, plan progress, current step details,
+    and context files read from the worktree.
+    """
+    parts: list[str] = []
+
+    parts.append("You are a code generation assistant.")
+    parts.append("")
+    parts.append("## Overall Task")
+    parts.append(task.description)
+    parts.append("")
+    parts.append(f"## Plan Progress ({step_index + 1}/{total_steps})")
+
+    if completed_steps:
+        parts.append("")
+        parts.append("Completed steps:")
+        for cs in completed_steps:
+            parts.append(f"- {cs.step_id}: {cs.status.value}")
+    else:
+        parts.append("No steps completed yet.")
+
+    parts.append("")
+    parts.append("## Current Step")
+    parts.append(f"**Step ID:** {step.step_id}")
+    parts.append(f"**Description:** {step.description}")
+    parts.append("")
+    parts.append("### Target Files")
+    for f in step.target_files:
+        parts.append(f"- {f}")
+
+    if context_file_contents:
+        parts.append("")
+        parts.append("### Context Files")
+        for file_path, content in context_file_contents.items():
+            parts.append("")
+            parts.append(f"#### {file_path}")
+            parts.append("```")
+            parts.append(content)
+            parts.append("```")
+
+    return "\n".join(parts)
+
+
+def build_step_user_prompt(step: PlanStep) -> str:
+    """Build the user prompt for a single step execution."""
+    return (
+        f"Execute step '{step.step_id}': {step.description}\n\n"
+        "Produce all target files with complete content."
+    )
+
+
+@activity.defn
+async def assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
+    """Read context files from the worktree and assemble step-level prompts.
+
+    Context files are read from the **worktree** (not repo root) so that
+    later steps can see files created by earlier steps.
+    """
+    worktree = Path(input.worktree_path)
+    context_contents = _read_context_files(worktree, input.step.context_files)
+
+    system_prompt = build_step_system_prompt(
+        task=input.task,
+        step=input.step,
+        step_index=input.step_index,
+        total_steps=input.total_steps,
+        completed_steps=input.completed_steps,
+        context_file_contents=context_contents,
+    )
+    user_prompt = build_step_user_prompt(input.step)
 
     return AssembledContext(
         task_id=input.task.task_id,

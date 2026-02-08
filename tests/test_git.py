@@ -11,6 +11,7 @@ from forge.git import (
     RepoDiscoveryError,
     WorktreeCreateError,
     WorktreeRemoveError,
+    WorktreeResetError,
     _validate_task_id,
     branch_name,
     commit_changes,
@@ -18,6 +19,7 @@ from forge.git import (
     create_worktree,
     discover_repo_root,
     remove_worktree,
+    reset_worktree,
     worktree_exists,
     worktree_path,
 )
@@ -211,6 +213,53 @@ class TestCommitChanges:
         create_worktree(git_repo, "empty-task")
         with pytest.raises(CommitError, match="Nothing to commit"):
             commit_changes(git_repo, "empty-task", "success")
+
+    def test_custom_message_override(self, git_repo: Path) -> None:
+        wt = create_worktree(git_repo, "custom-msg")
+        (wt / "file.txt").write_text("content\n")
+
+        commit_changes(git_repo, "custom-msg", "success", message="step 1: create module")
+
+        from forge.git import _run_git
+
+        result = _run_git("log", "-1", "--format=%s", cwd=wt)
+        assert result.stdout == "step 1: create module"
+
+
+# ---------------------------------------------------------------------------
+# worktree_exists
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# reset_worktree
+# ---------------------------------------------------------------------------
+
+
+class TestResetWorktree:
+    def test_discards_uncommitted_changes(self, git_repo: Path) -> None:
+        wt = create_worktree(git_repo, "reset-task")
+        (wt / "dirty.txt").write_text("dirty\n")
+
+        reset_worktree(git_repo, "reset-task")
+
+        assert not (wt / "dirty.txt").exists()
+
+    def test_preserves_committed_changes(self, git_repo: Path) -> None:
+        wt = create_worktree(git_repo, "reset-keep")
+        (wt / "committed.txt").write_text("keep\n")
+        commit_changes(git_repo, "reset-keep", "step1")
+
+        # Add dirty changes then reset
+        (wt / "dirty.txt").write_text("dirty\n")
+        reset_worktree(git_repo, "reset-keep")
+
+        assert (wt / "committed.txt").exists()
+        assert not (wt / "dirty.txt").exists()
+
+    def test_raises_on_nonexistent_worktree(self, git_repo: Path) -> None:
+        with pytest.raises(WorktreeResetError):
+            reset_worktree(git_repo, "ghost")
 
 
 # ---------------------------------------------------------------------------

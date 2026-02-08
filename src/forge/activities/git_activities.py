@@ -10,13 +10,14 @@ from pathlib import Path
 
 from temporalio import activity
 
-from forge.git import branch_name, commit_changes, create_worktree, remove_worktree
+from forge.git import branch_name, commit_changes, create_worktree, remove_worktree, reset_worktree
 from forge.models import (
     CommitChangesInput,
     CommitChangesOutput,
     CreateWorktreeInput,
     CreateWorktreeOutput,
     RemoveWorktreeInput,
+    ResetWorktreeInput,
 )
 
 
@@ -52,5 +53,15 @@ async def commit_changes_activity(input: CommitChangesInput) -> CommitChangesOut
         task_id=input.task_id,
         status=input.status,
         file_paths=input.file_paths,
+        message=input.message,
     )
     return CommitChangesOutput(commit_sha=sha)
+
+
+@activity.defn
+async def reset_worktree_activity(input: ResetWorktreeInput) -> None:
+    """Reset a worktree to HEAD, discarding uncommitted changes."""
+    reset_worktree(
+        repo_root=Path(input.repo_root),
+        task_id=input.task_id,
+    )
