@@ -175,3 +175,57 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Sub-tasks execute the universal workflow step but cannot themselves fan out into further sub-tasks. Fan-out depth is limited to one level.
 
 **Rationale:** Recursive fan-out introduces tree-shaped execution that is harder to reason about, debug, and bound. Phase 3 proves out the fan-out/gather primitive at a single level. Recursive fan-out can be added in a future phase by allowing `ForgeSubTaskWorkflow` to detect sub-tasks in its step, but the additional complexity is not justified until single-level fan-out is proven.
+
+## D30: Python `ast` Over tree-sitter for Phase 4
+
+**Decision:** Use Python's stdlib `ast` module for code analysis in Phase 4. Defer tree-sitter to a future multi-language phase.
+
+**Rationale:** Phase 4 targets Python only, and Forge analyzes valid committed code (not in-progress edits). For this use case, `ast` is simpler (zero dependencies), provides full access to Python type annotations, and has a cleaner API for extracting structured information. tree-sitter's advantages — error-tolerant parsing, incremental re-parsing, multi-language support — are not needed yet. When non-Python language support is added, tree-sitter becomes the natural choice, and the `code_intel` package's interface can accommodate both backends behind the same API.
+
+## D31: grimp Over Custom Import Resolution
+
+**Decision:** Use `grimp` for import graph analysis rather than building import resolution from scratch.
+
+**Rationale:** Import resolution in Python is surprisingly complex: relative imports, namespace packages, `src/` layouts, `__init__.py` re-exports, editable installs. `grimp` handles all of these correctly with Rust-backed performance and provides a rich query API (`find_upstream_modules`, `find_downstream_modules`, `find_shortest_chain`, `get_import_details` with line numbers). Building this from scratch would be a significant effort with many edge cases. `grimp` is actively maintained (used as the engine for `import-linter`).
+
+## D32: PageRank for Importance Ranking
+
+**Decision:** Rank files by importance using PageRank on the import graph, following Aider's approach.
+
+**Rationale:** Not all files in the import graph are equally important for context. A utility module imported by 30 files is more important than a leaf module imported by one. PageRank naturally surfaces "hub" files (heavily imported utilities, base classes, shared types) that provide the most context value per token. Personalized PageRank with seed weights on target files biases the ranking toward files relevant to the current task. This approach is validated by Aider's production usage and by a 2025 benchmark showing AST-derived deterministic graphs achieving 15/15 correctness vs. 6/15 for vector-only RAG — at 70x lower cost than LLM-extracted graphs.
+
+## D33: Character-Based Token Estimation
+
+**Decision:** Estimate tokens at 4 characters per token rather than using a tokenizer library.
+
+**Rationale:** The purpose of token budgeting is overflow prevention, not exact accounting. A 4:1 character-to-token ratio is conservative for English and code. It avoids adding a dependency on `tiktoken` (OpenAI-specific) or model-specific tokenizers. If estimation accuracy becomes a problem, a tokenizer can be substituted behind the same interface.
+
+## D34: Automatic Discovery Augments, Does Not Replace
+
+**Decision:** Automatic context discovery supplements manual `context_files`. If both are specified, manual files are included at priority 6 (packed if budget allows).
+
+**Rationale:** There are context files that import graph analysis cannot discover: configuration files, documentation, test fixtures, data samples, non-Python files. Manual specification remains the escape hatch for these. The planner already produces `context_files` lists — these continue to work. Automatic discovery fills the gap when the caller or planner doesn't know what to include.
+
+## D35: Signature Extraction as Graceful Degradation
+
+**Decision:** When a file is too large to include in full within the token budget, fall back to including its extracted signatures instead of omitting it entirely.
+
+**Rationale:** A file's interface (function signatures, class definitions, type annotations) is almost always more useful than nothing. This implements the "graceful truncation" principle from D14: lower-priority items are reduced before being dropped. A 500-line module's 20-line signature summary fits easily and gives the LLM enough to produce correct imports and type-compatible code. Validated by repominify's finding of 78-82% token reduction while preserving the information LLMs need to produce correct output.
+
+## D36: Repo Map as Standard Context
+
+**Decision:** Include a compressed repo map (file paths + top-ranked signatures) in every context assembly, sized to a configurable token budget (default: 2048 tokens).
+
+**Rationale:** The repo map gives the LLM structural orientation — which modules exist, what their public interfaces are, and how they relate. This is especially valuable for the planner, which must decompose tasks across a codebase it hasn't seen. Aider, Continue.dev, Kiro, and Augment Code all include some form of repo map. The fixed token budget (with binary search sizing) ensures the map never dominates the context window. Following Aider's approach: PageRank-ranked symbols are included in descending order until the repo map budget is filled.
+
+## D37: Import Depth Limit
+
+**Decision:** Trace imports to a configurable depth (default: 2). Direct imports get full content; deeper imports get signatures only.
+
+**Rationale:** Import graphs in real projects can be deep and wide. Unbounded traversal would pull in the entire project. Depth 2 captures the immediate dependency neighborhood — the files that target files import, and the files those import. Beyond that, signatures provide sufficient interface information. The depth limit is configurable for tasks that need broader or narrower context.
+
+## D38: Defer LSP to a Future Phase
+
+**Decision:** Do not integrate LSP in Phase 4. Defer to a future phase.
+
+**Rationale:** Research confirms the hybrid ast + LSP pattern is the consensus for production tools (Claude Code, Kiro, OpenCode all use it). However, LSP requires managing language server lifecycles across multiple git worktrees, which adds significant operational complexity. The `ast` module + `grimp` combination provides sufficient analysis for Phase 4's goals (import discovery, symbol extraction, importance ranking). LSP becomes valuable when Forge needs precise cross-file reference tracking ("find all callers of this function"), type inference beyond annotations, or diagnostic feedback loops — natural additions once Phase 4's foundation is proven.
