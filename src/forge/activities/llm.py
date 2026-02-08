@@ -28,7 +28,7 @@ DEFAULT_MAX_TOKENS = 4096
 # ---------------------------------------------------------------------------
 
 
-def execute_llm_call(
+async def execute_llm_call(
     context: AssembledContext,
     agent: Agent[None, LLMResponse],
 ) -> LLMCallResult:
@@ -38,7 +38,7 @@ def execute_llm_call(
     """
     start = time.monotonic()
 
-    result = agent.run_sync(
+    result = await agent.run(
         context.user_prompt,
         instructions=context.system_prompt,
     )
@@ -75,4 +75,4 @@ def create_agent(model_name: str = DEFAULT_MODEL) -> Agent[None, LLMResponse]:
 async def call_llm(context: AssembledContext) -> LLMCallResult:
     """Activity wrapper — creates an agent and delegates to execute_llm_call."""
     agent = create_agent()
-    return execute_llm_call(context, agent)
+    return await execute_llm_call(context, agent)

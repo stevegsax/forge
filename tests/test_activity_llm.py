@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from forge.activities.llm import create_agent, execute_llm_call
 from forge.models import AssembledContext, FileOutput, LLMResponse
@@ -45,39 +47,43 @@ class TestExecuteLlmCall:
         mock_result.usage.return_value = mock_usage
 
         mock_agent = MagicMock()
-        mock_agent.run_sync.return_value = mock_result
+        mock_agent.run = AsyncMock(return_value=mock_result)
         mock_agent.model = "test-model"
         return mock_agent
 
-    def test_returns_llm_call_result(self) -> None:
+    @pytest.mark.asyncio
+    async def test_returns_llm_call_result(self) -> None:
         context = self._make_context()
         agent = self._make_mock_agent()
 
-        result = execute_llm_call(context, agent)
+        result = await execute_llm_call(context, agent)
 
         assert result.task_id == "llm-task"
         assert result.model_name == "test-model"
         assert len(result.response.files) == 1
         assert result.response.files[0].file_path == "out.py"
 
-    def test_extracts_usage(self) -> None:
+    @pytest.mark.asyncio
+    async def test_extracts_usage(self) -> None:
         context = self._make_context()
         agent = self._make_mock_agent()
 
-        result = execute_llm_call(context, agent)
+        result = await execute_llm_call(context, agent)
 
         assert result.input_tokens == 100
         assert result.output_tokens == 200
 
-    def test_latency_is_positive(self) -> None:
+    @pytest.mark.asyncio
+    async def test_latency_is_positive(self) -> None:
         context = self._make_context()
         agent = self._make_mock_agent()
 
-        result = execute_llm_call(context, agent)
+        result = await execute_llm_call(context, agent)
 
         assert result.latency_ms > 0
 
-    def test_propagates_task_id(self) -> None:
+    @pytest.mark.asyncio
+    async def test_propagates_task_id(self) -> None:
         context = self._make_context()
         context = AssembledContext(
             task_id="custom-id",
@@ -86,25 +92,27 @@ class TestExecuteLlmCall:
         )
         agent = self._make_mock_agent()
 
-        result = execute_llm_call(context, agent)
+        result = await execute_llm_call(context, agent)
 
         assert result.task_id == "custom-id"
 
-    def test_passes_prompts_to_agent(self) -> None:
+    @pytest.mark.asyncio
+    async def test_passes_prompts_to_agent(self) -> None:
         context = self._make_context()
         agent = self._make_mock_agent()
 
-        execute_llm_call(context, agent)
+        await execute_llm_call(context, agent)
 
-        agent.run_sync.assert_called_once_with(
+        agent.run.assert_called_once_with(
             "Generate the code.",
             instructions="You are a code generator.",
         )
 
-    def test_explanation_preserved(self) -> None:
+    @pytest.mark.asyncio
+    async def test_explanation_preserved(self) -> None:
         context = self._make_context()
         agent = self._make_mock_agent()
 
-        result = execute_llm_call(context, agent)
+        result = await execute_llm_call(context, agent)
 
         assert result.response.explanation == "Created output file."
