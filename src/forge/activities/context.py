@@ -19,8 +19,10 @@ from forge.models import (
     AssembleContextInput,
     AssembledContext,
     AssembleStepContextInput,
+    AssembleSubTaskContextInput,
     PlanStep,
     StepResult,
+    SubTask,
     TaskDefinition,
 )
 
@@ -195,6 +197,86 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
 
     return AssembledContext(
         task_id=input.task.task_id,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sub-task context (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def build_sub_task_system_prompt(
+    parent_task_id: str,
+    parent_description: str,
+    sub_task: SubTask,
+    context_file_contents: dict[str, str],
+) -> str:
+    """Build the system prompt for a sub-task execution.
+
+    Includes parent task context, sub-task description, target files,
+    and context files read from the parent worktree.
+    """
+    parts: list[str] = []
+
+    parts.append("You are a code generation assistant.")
+    parts.append("")
+    parts.append("## Parent Task")
+    parts.append(f"**Task ID:** {parent_task_id}")
+    parts.append(f"**Description:** {parent_description}")
+    parts.append("")
+    parts.append("## Sub-Task")
+    parts.append(f"**Sub-Task ID:** {sub_task.sub_task_id}")
+    parts.append(f"**Description:** {sub_task.description}")
+    parts.append("")
+    parts.append("### Target Files")
+    for f in sub_task.target_files:
+        parts.append(f"- {f}")
+
+    if context_file_contents:
+        parts.append("")
+        parts.append("### Context Files")
+        for file_path, content in context_file_contents.items():
+            parts.append("")
+            parts.append(f"#### {file_path}")
+            parts.append("```")
+            parts.append(content)
+            parts.append("```")
+
+    return "\n".join(parts)
+
+
+def build_sub_task_user_prompt(sub_task: SubTask) -> str:
+    """Build the user prompt for a sub-task execution."""
+    return (
+        f"Execute sub-task '{sub_task.sub_task_id}': {sub_task.description}\n\n"
+        "Produce all target files with complete content."
+    )
+
+
+@activity.defn
+async def assemble_sub_task_context(
+    input: AssembleSubTaskContextInput,
+) -> AssembledContext:
+    """Read context files from the parent worktree and assemble sub-task prompts.
+
+    Context files are read from the **parent worktree** because the sub-task
+    worktree starts empty (branched from parent branch).
+    """
+    parent_worktree = Path(input.worktree_path)
+    context_contents = _read_context_files(parent_worktree, input.sub_task.context_files)
+
+    system_prompt = build_sub_task_system_prompt(
+        parent_task_id=input.parent_task_id,
+        parent_description=input.parent_description,
+        sub_task=input.sub_task,
+        context_file_contents=context_contents,
+    )
+    user_prompt = build_sub_task_user_prompt(input.sub_task)
+
+    return AssembledContext(
+        task_id=input.parent_task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )

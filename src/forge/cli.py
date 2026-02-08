@@ -28,7 +28,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from forge.models import StepResult, ValidationResult
+    from forge.models import StepResult, SubTaskResult, ValidationResult
 
 # ---------------------------------------------------------------------------
 # Exit codes
@@ -53,11 +53,20 @@ def format_validation_results(results: list[ValidationResult]) -> str:
     return "\n".join(lines)
 
 
+def format_sub_task_result(sub_task: SubTaskResult) -> str:
+    """Format a single SubTaskResult as a compact line."""
+    tag = "PASS" if sub_task.status == TransitionSignal.SUCCESS else "FAIL"
+    return f"    [{tag}] {sub_task.sub_task_id}: {sub_task.status.value}"
+
+
 def format_step_result(step: StepResult) -> str:
-    """Format a single StepResult as a compact line."""
+    """Format a single StepResult as a compact line, with sub-task details if present."""
     tag = "PASS" if step.status == TransitionSignal.SUCCESS else "FAIL"
     sha_short = step.commit_sha[:8] if step.commit_sha else "none"
-    return f"  [{tag}] {step.step_id}: {step.status.value} (commit: {sha_short})"
+    lines = [f"  [{tag}] {step.step_id}: {step.status.value} (commit: {sha_short})"]
+    for st_result in step.sub_task_results:
+        lines.append(format_sub_task_result(st_result))
+    return "\n".join(lines)
 
 
 def format_task_result(result: TaskResult) -> str:
@@ -153,6 +162,7 @@ async def _submit_and_wait(
     *,
     plan: bool = False,
     max_step_attempts: int = 2,
+    max_sub_task_attempts: int = 2,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
@@ -170,6 +180,7 @@ async def _submit_and_wait(
             max_attempts=max_attempts,
             plan=plan,
             max_step_attempts=max_step_attempts,
+            max_sub_task_attempts=max_sub_task_attempts,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -185,6 +196,7 @@ async def _submit_no_wait(
     *,
     plan: bool = False,
     max_step_attempts: int = 2,
+    max_sub_task_attempts: int = 2,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
@@ -202,6 +214,7 @@ async def _submit_no_wait(
             max_attempts=max_attempts,
             plan=plan,
             max_step_attempts=max_step_attempts,
+            max_sub_task_attempts=max_sub_task_attempts,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -250,6 +263,13 @@ def main() -> None:
     help="Retry limit per step in planning mode.",
 )
 @click.option(
+    "--max-sub-task-attempts",
+    default=2,
+    show_default=True,
+    type=int,
+    help="Retry limit per sub-task in fan-out steps.",
+)
+@click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
     default=DEFAULT_TEMPORAL_ADDRESS,
@@ -272,6 +292,7 @@ def run(
     max_attempts: int,
     use_plan: bool,
     max_step_attempts: int,
+    max_sub_task_attempts: int,
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -329,6 +350,7 @@ def run(
                     max_attempts,
                     plan=use_plan,
                     max_step_attempts=max_step_attempts,
+                    max_sub_task_attempts=max_sub_task_attempts,
                 )
             )
             click.echo(workflow_id)
@@ -341,6 +363,7 @@ def run(
                     max_attempts,
                     plan=use_plan,
                     max_step_attempts=max_step_attempts,
+                    max_sub_task_attempts=max_sub_task_attempts,
                 )
             )
             if output_json:

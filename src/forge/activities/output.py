@@ -13,7 +13,7 @@ from pathlib import Path
 
 from temporalio import activity
 
-from forge.models import FileOutput, WriteOutputInput, WriteResult
+from forge.models import FileOutput, WriteFilesInput, WriteOutputInput, WriteResult
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -82,5 +82,30 @@ async def write_output(input: WriteOutputInput) -> WriteResult:
 
     return WriteResult(
         task_id=input.llm_result.task_id,
+        files_written=files_written,
+    )
+
+
+def _validate_file_paths(worktree_path: str, files: dict[str, str]) -> list[tuple[Path, str]]:
+    """Validate and resolve a dict of relative paths to absolute paths within the worktree.
+
+    Reuses the same path traversal protection as resolve_file_paths.
+    """
+    file_outputs = [FileOutput(file_path=fp, content=c) for fp, c in files.items()]
+    return resolve_file_paths(worktree_path, file_outputs)
+
+
+@activity.defn
+async def write_files(input: WriteFilesInput) -> WriteResult:
+    """Write a dict of files to a worktree with path traversal protection."""
+    resolved = _validate_file_paths(input.worktree_path, input.files)
+
+    files_written: list[str] = []
+    for path, content in resolved:
+        _write_file(path, content)
+        files_written.append(str(path))
+
+    return WriteResult(
+        task_id=input.task_id,
         files_written=files_written,
     )

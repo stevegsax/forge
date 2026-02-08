@@ -85,6 +85,27 @@ def build_planner_system_prompt(
     parts.append(
         "- context_files: Files from the repo (or created by prior steps) to include as context"
     )
+    parts.append("")
+    parts.append("## Fan-Out Sub-Tasks")
+    parts.append(
+        "Steps can optionally include `sub_tasks` for independent parallel work. "
+        "When `sub_tasks` is set, the step's own `target_files` is ignored — "
+        "each sub-task specifies its own target files."
+    )
+    parts.append("")
+    parts.append("Rules for sub-tasks:")
+    parts.append("- Sub-tasks run simultaneously and cannot see each other's outputs")
+    parts.append("- Two sub-tasks must not write to the same file")
+    parts.append(
+        "- Use fan-out only when work items are genuinely independent "
+        "and can be validated separately"
+    )
+    parts.append("")
+    parts.append("Each sub-task specifies:")
+    parts.append("- sub_task_id: A short identifier (e.g. 'analyze-schema', 'write-tests')")
+    parts.append("- description: What the sub-task should produce")
+    parts.append("- target_files: Files to create or modify")
+    parts.append("- context_files: Files from the parent worktree to include as context")
 
     return "\n".join(parts)
 

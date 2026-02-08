@@ -14,6 +14,7 @@ from forge.cli import (
     EXIT_INFRASTRUCTURE_ERROR,
     build_task_definition,
     format_step_result,
+    format_sub_task_result,
     format_task_result,
     format_validation_results,
     load_task_definition,
@@ -23,6 +24,7 @@ from forge.models import (
     Plan,
     PlanStep,
     StepResult,
+    SubTaskResult,
     TaskResult,
     TransitionSignal,
     ValidationResult,
@@ -688,3 +690,74 @@ class TestPlanFlag:
         call_kwargs = mock_submit.call_args
         assert call_kwargs[1]["plan"] is True
         assert call_kwargs[1]["max_step_attempts"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 CLI tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatSubTaskResult:
+    def test_success(self) -> None:
+        sr = SubTaskResult(sub_task_id="st1", status=TransitionSignal.SUCCESS)
+        output = format_sub_task_result(sr)
+        assert "[PASS]" in output
+        assert "st1" in output
+
+    def test_failure(self) -> None:
+        sr = SubTaskResult(sub_task_id="st2", status=TransitionSignal.FAILURE_TERMINAL)
+        output = format_sub_task_result(sr)
+        assert "[FAIL]" in output
+        assert "st2" in output
+
+
+class TestFormatStepResultWithSubTasks:
+    def test_includes_sub_task_results(self) -> None:
+        st_results = [
+            SubTaskResult(sub_task_id="st1", status=TransitionSignal.SUCCESS),
+            SubTaskResult(sub_task_id="st2", status=TransitionSignal.FAILURE_TERMINAL),
+        ]
+        sr = StepResult(
+            step_id="fan-step",
+            status=TransitionSignal.SUCCESS,
+            commit_sha="a" * 40,
+            sub_task_results=st_results,
+        )
+        output = format_step_result(sr)
+        assert "fan-step" in output
+        assert "st1" in output
+        assert "st2" in output
+        assert "[PASS]" in output
+        assert "[FAIL]" in output
+
+
+class TestMaxSubTaskAttemptsFlag:
+    def test_flag_in_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "--max-sub-task-attempts" in result.output
+
+    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli.discover_repo_root")
+    def test_flag_passed_to_submit(
+        self,
+        mock_discover: object,
+        mock_submit: AsyncMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--plan",
+                "--max-sub-task-attempts",
+                "3",
+            ],
+        )
+        call_kwargs = mock_submit.call_args
+        assert call_kwargs[1]["max_sub_task_attempts"] == 3

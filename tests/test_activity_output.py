@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from forge.activities.output import OutputWriteError, resolve_file_paths, write_output
+from forge.activities.output import OutputWriteError, resolve_file_paths, write_files, write_output
 from forge.models import (
     FileOutput,
     LLMCallResult,
     LLMResponse,
+    WriteFilesInput,
     WriteOutputInput,
 )
 
@@ -119,3 +120,43 @@ class TestWriteOutput:
         await write_output(input_data)
 
         assert (tmp_path / "existing.py").read_text() == "new content"
+
+
+# ---------------------------------------------------------------------------
+# write_files (activity)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteFiles:
+    @pytest.mark.asyncio
+    async def test_writes_dict_to_worktree(self, tmp_path: Path) -> None:
+        input_data = WriteFilesInput(
+            task_id="wf-task",
+            worktree_path=str(tmp_path),
+            files={"hello.py": "print('hello')", "sub/world.py": "print('world')"},
+        )
+        result = await write_files(input_data)
+        assert result.task_id == "wf-task"
+        assert len(result.files_written) == 2
+        assert (tmp_path / "hello.py").read_text() == "print('hello')"
+        assert (tmp_path / "sub" / "world.py").read_text() == "print('world')"
+
+    @pytest.mark.asyncio
+    async def test_rejects_path_traversal(self, tmp_path: Path) -> None:
+        input_data = WriteFilesInput(
+            task_id="wf-task",
+            worktree_path=str(tmp_path),
+            files={"../escape.py": "bad"},
+        )
+        with pytest.raises(OutputWriteError, match="Path traversal rejected"):
+            await write_files(input_data)
+
+    @pytest.mark.asyncio
+    async def test_empty_files(self, tmp_path: Path) -> None:
+        input_data = WriteFilesInput(
+            task_id="wf-task",
+            worktree_path=str(tmp_path),
+            files={},
+        )
+        result = await write_files(input_data)
+        assert result.files_written == []

@@ -67,6 +67,18 @@ class ValidationResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SubTask(BaseModel):
+    """A single sub-task within a fan-out step."""
+
+    sub_task_id: str = Field(description="Unique identifier within the parent step.")
+    description: str = Field(description="What this sub-task should produce.")
+    target_files: list[str] = Field(description="Files to create or modify.")
+    context_files: list[str] = Field(
+        default_factory=list,
+        description="Files to include as context (read from parent worktree).",
+    )
+
+
 class PlanStep(BaseModel):
     """A single step within a plan."""
 
@@ -76,6 +88,10 @@ class PlanStep(BaseModel):
     context_files: list[str] = Field(
         default_factory=list,
         description="Files to include as context for this step.",
+    )
+    sub_tasks: list[SubTask] | None = Field(
+        default=None,
+        description="Optional sub-tasks for fan-out parallel execution.",
     )
 
 
@@ -87,6 +103,17 @@ class Plan(BaseModel):
     explanation: str = Field(description="Brief explanation of the decomposition strategy.")
 
 
+class SubTaskResult(BaseModel):
+    """The outcome of a single sub-task execution."""
+
+    sub_task_id: str
+    status: TransitionSignal
+    output_files: dict[str, str] = Field(default_factory=dict)
+    validation_results: list[ValidationResult] = Field(default_factory=list)
+    digest: str = Field(default="", description="From LLMResponse.explanation (D18).")
+    error: str | None = None
+
+
 class StepResult(BaseModel):
     """The outcome of executing a single plan step."""
 
@@ -96,6 +123,7 @@ class StepResult(BaseModel):
     validation_results: list[ValidationResult] = Field(default_factory=list)
     commit_sha: str | None = None
     error: str | None = None
+    sub_task_results: list[SubTaskResult] = Field(default_factory=list)
 
 
 class TaskResult(BaseModel):
@@ -221,6 +249,10 @@ class ForgeTaskInput(BaseModel):
         default=2,
         description="Max retry attempts per step in planning mode.",
     )
+    max_sub_task_attempts: int = Field(
+        default=2,
+        description="Max retry attempts per sub-task in fan-out steps.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +307,40 @@ class ResetWorktreeInput(BaseModel):
 
     repo_root: str
     task_id: str
+
+
+# ---------------------------------------------------------------------------
+# Fan-out activity I/O models
+# ---------------------------------------------------------------------------
+
+
+class SubTaskInput(BaseModel):
+    """Input to ForgeSubTaskWorkflow."""
+
+    parent_task_id: str
+    parent_description: str = Field(description="Parent task description for context assembly.")
+    sub_task: SubTask
+    repo_root: str
+    parent_branch: str = Field(description="e.g. 'forge/my-task'")
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    max_attempts: int = 2
+
+
+class WriteFilesInput(BaseModel):
+    """Input to write_files activity."""
+
+    task_id: str
+    worktree_path: str
+    files: dict[str, str] = Field(description="Mapping of relative path to content.")
+
+
+class AssembleSubTaskContextInput(BaseModel):
+    """Input to assemble_sub_task_context activity."""
+
+    parent_task_id: str
+    parent_description: str
+    sub_task: SubTask
+    worktree_path: str = Field(description="Parent worktree (for reading context files).")
 
 
 # ---------------------------------------------------------------------------

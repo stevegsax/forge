@@ -6,6 +6,7 @@ import pytest
 
 from forge.models import (
     AssembleStepContextInput,
+    AssembleSubTaskContextInput,
     CommitChangesInput,
     ForgeTaskInput,
     Plan,
@@ -14,9 +15,13 @@ from forge.models import (
     PlanStep,
     ResetWorktreeInput,
     StepResult,
+    SubTask,
+    SubTaskInput,
+    SubTaskResult,
     TaskDefinition,
     TaskResult,
     TransitionSignal,
+    WriteFilesInput,
 )
 
 # ---------------------------------------------------------------------------
@@ -175,3 +180,144 @@ class TestAssembleStepContextInput:
             worktree_path="/wt",
         )
         assert inp.completed_steps == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Fan-out models
+# ---------------------------------------------------------------------------
+
+
+class TestSubTask:
+    def test_defaults(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Analyze.", target_files=["a.py"])
+        assert st.context_files == []
+
+    def test_round_trip(self) -> None:
+        st = SubTask(
+            sub_task_id="st1",
+            description="Analyze schema.",
+            target_files=["schema.py"],
+            context_files=["models.py"],
+        )
+        rebuilt = SubTask.model_validate_json(st.model_dump_json())
+        assert rebuilt == st
+
+
+class TestPlanStepWithSubTasks:
+    def test_sub_tasks_default_none(self) -> None:
+        step = PlanStep(step_id="s1", description="d", target_files=["a.py"])
+        assert step.sub_tasks is None
+
+    def test_sub_tasks_populated(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        step = PlanStep(step_id="s1", description="d", target_files=[], sub_tasks=[st])
+        assert step.sub_tasks is not None
+        assert len(step.sub_tasks) == 1
+
+    def test_round_trip(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        step = PlanStep(step_id="s1", description="d", target_files=[], sub_tasks=[st])
+        rebuilt = PlanStep.model_validate_json(step.model_dump_json())
+        assert rebuilt == step
+
+    def test_backward_compat_without_sub_tasks(self) -> None:
+        """Existing plans without sub_tasks still deserialize correctly."""
+        step = PlanStep(step_id="s1", description="d", target_files=["a.py"])
+        rebuilt = PlanStep.model_validate_json(step.model_dump_json())
+        assert rebuilt.sub_tasks is None
+
+
+class TestSubTaskResult:
+    def test_defaults(self) -> None:
+        sr = SubTaskResult(sub_task_id="st1", status=TransitionSignal.SUCCESS)
+        assert sr.output_files == {}
+        assert sr.validation_results == []
+        assert sr.digest == ""
+        assert sr.error is None
+
+    def test_round_trip(self) -> None:
+        sr = SubTaskResult(
+            sub_task_id="st1",
+            status=TransitionSignal.SUCCESS,
+            output_files={"a.py": "code"},
+            digest="Created schema module.",
+        )
+        rebuilt = SubTaskResult.model_validate_json(sr.model_dump_json())
+        assert rebuilt == sr
+
+
+class TestStepResultWithSubTaskResults:
+    def test_sub_task_results_default_empty(self) -> None:
+        sr = StepResult(step_id="s1", status=TransitionSignal.SUCCESS)
+        assert sr.sub_task_results == []
+
+    def test_sub_task_results_populated(self) -> None:
+        st_result = SubTaskResult(sub_task_id="st1", status=TransitionSignal.SUCCESS)
+        sr = StepResult(
+            step_id="s1",
+            status=TransitionSignal.SUCCESS,
+            sub_task_results=[st_result],
+        )
+        assert len(sr.sub_task_results) == 1
+
+
+class TestSubTaskInput:
+    def test_creation_and_defaults(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        inp = SubTaskInput(
+            parent_task_id="t1",
+            parent_description="Build an API.",
+            sub_task=st,
+            repo_root="/repo",
+            parent_branch="forge/t1",
+        )
+        assert inp.max_attempts == 2
+        assert inp.parent_description == "Build an API."
+
+    def test_round_trip(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        inp = SubTaskInput(
+            parent_task_id="t1",
+            parent_description="Build an API.",
+            sub_task=st,
+            repo_root="/repo",
+            parent_branch="forge/t1",
+            max_attempts=3,
+        )
+        rebuilt = SubTaskInput.model_validate_json(inp.model_dump_json())
+        assert rebuilt == inp
+
+
+class TestWriteFilesInput:
+    def test_creation(self) -> None:
+        inp = WriteFilesInput(
+            task_id="t1",
+            worktree_path="/wt",
+            files={"a.py": "code", "b.py": "more code"},
+        )
+        assert inp.files == {"a.py": "code", "b.py": "more code"}
+
+
+class TestAssembleSubTaskContextInput:
+    def test_creation(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        inp = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="Build an API.",
+            sub_task=st,
+            worktree_path="/wt",
+        )
+        assert inp.parent_task_id == "t1"
+        assert inp.worktree_path == "/wt"
+
+
+class TestForgeTaskInputMaxSubTaskAttempts:
+    def test_default(self) -> None:
+        td = TaskDefinition(task_id="t", description="d")
+        inp = ForgeTaskInput(task=td, repo_root="/repo")
+        assert inp.max_sub_task_attempts == 2
+
+    def test_override(self) -> None:
+        td = TaskDefinition(task_id="t", description="d")
+        inp = ForgeTaskInput(task=td, repo_root="/repo", max_sub_task_attempts=3)
+        assert inp.max_sub_task_attempts == 3

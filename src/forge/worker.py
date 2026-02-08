@@ -16,6 +16,7 @@ from forge.activities import (
     assemble_context,
     assemble_planner_context,
     assemble_step_context,
+    assemble_sub_task_context,
     call_llm,
     call_planner,
     commit_changes_activity,
@@ -24,9 +25,10 @@ from forge.activities import (
     remove_worktree_activity,
     reset_worktree_activity,
     validate_output,
+    write_files,
     write_output,
 )
-from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
+from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
@@ -44,11 +46,12 @@ async def run_worker(address: str | None = None) -> None:
     worker = Worker(
         client,
         task_queue=FORGE_TASK_QUEUE,
-        workflows=[ForgeTaskWorkflow],
+        workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
         activities=[
             assemble_context,
             assemble_planner_context,
             assemble_step_context,
+            assemble_sub_task_context,
             call_llm,
             call_planner,
             commit_changes_activity,
@@ -57,6 +60,7 @@ async def run_worker(address: str | None = None) -> None:
             remove_worktree_activity,
             reset_worktree_activity,
             validate_output,
+            write_files,
             write_output,
         ],
     )

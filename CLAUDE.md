@@ -4,7 +4,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phase 2 is implemented. The system supports planning and multi-step execution: a planning LLM call decomposes a task into ordered steps, then each step is executed sequentially with a commit after each. Step-level retry resets uncommitted changes without losing prior committed work. Phase 1 single-step mode remains the default and is fully backward compatible.
+Phase 3 is implemented. The system supports fan-out/gather: plan steps can declare independent sub-tasks that execute in parallel via Temporal child workflows. Each sub-task runs in its own git worktree, and results are gathered, checked for file conflicts, merged into the parent worktree, validated, and committed. Phase 2 planning and multi-step execution remains fully backward compatible. Phase 1 single-step mode remains the default.
 
 ## Key Documents
 
@@ -12,6 +12,7 @@ Phase 2 is implemented. The system supports planning and multi-step execution: a
 - `docs/DECISIONS.md` — Key design decisions and rationale.
 - `docs/PHASE1.md` — Detailed specification for Phase 1 (the minimal loop).
 - `docs/PHASE2.md` — Detailed specification for Phase 2 (planning and multi-step).
+- `docs/PHASE3.md` — Detailed specification for Phase 3 (fan-out / gather).
 
 ## Development Conventions
 
@@ -51,11 +52,12 @@ Temporal provides the workflow engine. The LLM call and transition evaluation ar
 - Worktrees are disposable: on failure, document the problem, create a fresh worktree, start over.
 - Task ordering from the plan is the primary conflict avoidance mechanism.
 
-## Current Phase: Phase 2 — Planning and Multi-Step (Complete)
+## Current Phase: Phase 3 — Fan-Out / Gather (Complete)
 
-Phase 2 is implemented. The system supports two modes:
+Phase 3 is implemented. The system supports three modes:
 
 - **Single-step** (`plan=False`, default): Phase 1 behavior. Assemble context, call LLM, write, validate, commit. Retries from a clean worktree.
 - **Planned** (`plan=True`): A planner LLM decomposes the task into ordered steps. Each step executes the universal workflow step and commits on success. Step-level retry resets uncommitted changes without losing prior commits.
+- **Fan-out** (planned steps with `sub_tasks`): Steps with sub-tasks fan out to parallel child workflows. Each sub-task runs in its own worktree, results are gathered and merged, then validated and committed by the parent.
 
-See `docs/PHASE1.md` and `docs/PHASE2.md` for specifications.
+See `docs/PHASE1.md`, `docs/PHASE2.md`, and `docs/PHASE3.md` for specifications.

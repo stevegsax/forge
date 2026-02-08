@@ -151,3 +151,27 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** A single git worktree is created before planning and persists across all steps. Steps commit incrementally to this worktree.
 
 **Rationale:** Steps in a plan are sequential and build on each other. Step 2 may read files that step 1 created. A shared worktree with incremental commits makes prior step outputs available as regular files via `context_files`. This also produces a linear commit history in the worktree branch, making human review straightforward — each commit corresponds to one plan step.
+
+## D26: Compound Task IDs for Sub-Task Isolation
+
+**Decision:** Sub-tasks use compound IDs in the form `{parent_task_id}.sub.{sub_task_id}`. These IDs are used for worktree paths and branch names via the existing git functions.
+
+**Rationale:** Dots are already valid in the task ID regex (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), so all existing git functions (`worktree_path`, `branch_name`, `create_worktree`, `remove_worktree`) work unchanged. The compound ID makes the parent-child relationship visible in git branch names (e.g., `forge/my-task.sub.analyze-schema`) and worktree paths, aiding debugging and cleanup.
+
+## D27: File Conflict as Terminal Error
+
+**Decision:** When two sub-tasks produce files at the same path, the fan-out step fails with a terminal error rather than attempting resolution.
+
+**Rationale:** File conflicts between sub-tasks indicate a planning error — the planner should have assigned non-overlapping file targets. Automatic resolution (last-writer-wins, merge, or LLM-based) adds complexity and risks silent data loss. Failing terminal surfaces the planning error for human review. LLM-based conflict resolution is deferred to a future phase.
+
+## D28: Sub-Task Context Reads From Parent Worktree
+
+**Decision:** Sub-task context files are read from the parent worktree, not the sub-task's own worktree.
+
+**Rationale:** Sub-task worktrees start as copies of the parent branch state. Context files referenced by sub-tasks are files from prior steps that are already committed to the parent worktree. Reading from the parent is explicit about the data source and avoids confusion about which worktree's state is being used.
+
+## D29: No Recursive Fan-Out in Phase 3
+
+**Decision:** Sub-tasks execute the universal workflow step but cannot themselves fan out into further sub-tasks. Fan-out depth is limited to one level.
+
+**Rationale:** Recursive fan-out introduces tree-shaped execution that is harder to reason about, debug, and bound. Phase 3 proves out the fan-out/gather primitive at a single level. Recursive fan-out can be added in a future phase by allowing `ForgeSubTaskWorkflow` to detect sub-tasks in its step, but the additional complexity is not justified until single-level fan-out is proven.

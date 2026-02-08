@@ -215,20 +215,21 @@ forge/
 │   ├── DESIGN.md
 │   ├── DECISIONS.md
 │   ├── PHASE1.md
-│   └── PHASE2.md
+│   ├── PHASE2.md
+│   └── PHASE3.md
 └── src/
     └── forge/
         ├── __init__.py
         ├── cli.py              # CLI entry point (forge run, forge worker)
         ├── models.py           # Pydantic models for all phases
-        ├── workflows.py        # Temporal workflow (Phase 1 + Phase 2 paths)
+        ├── workflows.py        # Temporal workflows (Phase 1 / Phase 2 / Phase 3 fan-out)
         ├── activities/
         │   ├── __init__.py     # Re-exports all activity functions
-        │   ├── context.py      # assemble_context, assemble_planner_context, assemble_step_context
+        │   ├── context.py      # assemble_context, assemble_planner_context, assemble_step_context, assemble_sub_task_context
         │   ├── git_activities.py  # Git worktree Temporal activities
         │   ├── llm.py          # call_llm activity
         │   ├── planner.py      # call_planner activity (Phase 2)
-        │   ├── output.py       # write_output activity
+        │   ├── output.py       # write_output, write_files activities
         │   ├── validate.py     # validate_output activity
         │   └── transition.py   # evaluate_transition activity
         ├── git.py              # Worktree management (pure functions + subprocess shell)

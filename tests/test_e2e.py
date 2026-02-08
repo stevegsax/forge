@@ -18,12 +18,14 @@ from temporalio.worker import Worker
 from forge.activities import (
     assemble_context,
     assemble_step_context,
+    assemble_sub_task_context,
     commit_changes_activity,
     create_worktree_activity,
     evaluate_transition,
     remove_worktree_activity,
     reset_worktree_activity,
     validate_output,
+    write_files,
     write_output,
 )
 from forge.models import (
@@ -37,11 +39,12 @@ from forge.models import (
     PlanCallResult,
     PlannerInput,
     PlanStep,
+    SubTask,
     TaskDefinition,
     TaskResult,
     TransitionSignal,
 )
-from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
+from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment
@@ -682,3 +685,247 @@ class TestEndToEndPlannedStepRetry:
         wt = Path(result.worktree_path)
         assert (wt / "models.py").is_file()
         assert (wt / "api.py").is_file()
+
+
+# ===========================================================================
+# Phase 3: Fan-out end-to-end tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Valid Python code for fan-out sub-tasks
+# ---------------------------------------------------------------------------
+
+_SUBTASK1_PYTHON = 'class Schema:\n    """A simple schema."""\n\n    name: str\n    value: int\n'
+
+_SUBTASK2_PYTHON = (
+    "def build_routes() -> list[str]:\n"
+    '    """Return a list of route paths."""\n'
+    '    return ["/api/v1/items", "/api/v1/users"]\n'
+)
+
+_SUBTASK2_INVALID_PYTHON = "def build_routes(x):\n  y=1\n  return x\n  z = 2\n"
+
+
+# ---------------------------------------------------------------------------
+# Mock planner + LLM for fan-out e2e
+# ---------------------------------------------------------------------------
+
+_E2E_FANOUT_LLM_RESPONSES: list[LLMResponse] = []
+
+
+def _reset_e2e_fanout_state(responses: list[LLMResponse] | None = None) -> None:
+    _E2E_FANOUT_LLM_RESPONSES.clear()
+    if responses:
+        _E2E_FANOUT_LLM_RESPONSES.extend(responses)
+
+
+@activity.defn(name="assemble_planner_context")
+async def mock_e2e_fanout_assemble_planner_context(
+    input: AssembleContextInput,
+) -> PlannerInput:
+    return PlannerInput(
+        task_id=input.task.task_id,
+        system_prompt="planner prompt",
+        user_prompt="plan it",
+    )
+
+
+@activity.defn(name="call_planner")
+async def mock_e2e_fanout_call_planner(input: PlannerInput) -> PlanCallResult:
+    plan = Plan(
+        task_id=input.task_id,
+        steps=[
+            PlanStep(
+                step_id="fan-step",
+                description="Create schema and routes in parallel.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(
+                        sub_task_id="st1",
+                        description="Create schema.",
+                        target_files=["schema.py"],
+                    ),
+                    SubTask(
+                        sub_task_id="st2",
+                        description="Create routes.",
+                        target_files=["routes.py"],
+                    ),
+                ],
+            ),
+        ],
+        explanation="Fan-out plan.",
+    )
+    return PlanCallResult(
+        task_id=input.task_id,
+        plan=plan,
+        model_name="mock-planner",
+        input_tokens=300,
+        output_tokens=150,
+        latency_ms=500.0,
+    )
+
+
+@activity.defn(name="call_llm")
+async def mock_e2e_fanout_call_llm(context: AssembledContext) -> LLMCallResult:
+    response = _E2E_FANOUT_LLM_RESPONSES.pop(0)
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=response,
+        model_name="mock-model",
+        input_tokens=100,
+        output_tokens=50,
+        latency_ms=200.0,
+    )
+
+
+_FANOUT_REAL_ACTIVITIES = [
+    create_worktree_activity,
+    remove_worktree_activity,
+    reset_worktree_activity,
+    commit_changes_activity,
+    assemble_sub_task_context,
+    write_output,
+    write_files,
+    validate_output,
+    evaluate_transition,
+    mock_e2e_fanout_assemble_planner_context,
+    mock_e2e_fanout_call_planner,
+    mock_e2e_fanout_call_llm,
+]
+
+
+async def _run_fanout_e2e(
+    env: WorkflowEnvironment,
+    git_repo: Path,
+    *,
+    activities: list | None = None,
+    task: TaskDefinition | None = None,
+    max_sub_task_attempts: int = 2,
+) -> TaskResult:
+    """Run the fan-out workflow with real git/validation and mock LLM+planner."""
+    if task is None:
+        task = TaskDefinition(
+            task_id="e2e-fanout",
+            description="Build schema and routes.",
+        )
+    if activities is None:
+        activities = _FANOUT_REAL_ACTIVITIES
+
+    forge_input = ForgeTaskInput(
+        task=task,
+        repo_root=str(git_repo),
+        plan=True,
+        max_sub_task_attempts=max_sub_task_attempts,
+    )
+
+    async with Worker(
+        env.client,
+        task_queue=FORGE_TASK_QUEUE,
+        workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
+        activities=activities,
+    ):
+        return await env.client.execute_workflow(
+            ForgeTaskWorkflow.run,
+            forge_input,
+            id=f"e2e-{task.task_id}",
+            task_queue=FORGE_TASK_QUEUE,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests — fan-out happy path
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndFanOut:
+    """Fan-out with 2 sub-tasks, both produce valid code."""
+
+    @pytest.fixture
+    async def result(self, env: WorkflowEnvironment, git_repo: Path) -> TaskResult:
+        _reset_e2e_fanout_state(
+            responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="schema.py", content=_SUBTASK1_PYTHON)],
+                    explanation="Created schema.",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="routes.py", content=_SUBTASK2_PYTHON)],
+                    explanation="Created routes.",
+                ),
+            ]
+        )
+        return await _run_fanout_e2e(env, git_repo)
+
+    @pytest.mark.asyncio
+    async def test_returns_success(self, result: TaskResult) -> None:
+        assert result.status == TransitionSignal.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_step_with_sub_tasks(self, result: TaskResult) -> None:
+        assert len(result.step_results) == 1
+        sr = result.step_results[0]
+        assert sr.step_id == "fan-step"
+        assert len(sr.sub_task_results) == 2
+
+    @pytest.mark.asyncio
+    async def test_files_merged_into_parent(self, result: TaskResult) -> None:
+        assert result.worktree_path is not None
+        wt = Path(result.worktree_path)
+        assert (wt / "schema.py").is_file()
+        assert (wt / "routes.py").is_file()
+
+    @pytest.mark.asyncio
+    async def test_parent_commit_exists(self, result: TaskResult) -> None:
+        assert result.worktree_path is not None
+        log = subprocess.run(
+            ["git", "log", "--oneline"],
+            cwd=result.worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "fan-out gather" in log.stdout
+
+    @pytest.mark.asyncio
+    async def test_sub_task_worktrees_cleaned_up(self, result: TaskResult, git_repo: Path) -> None:
+        """Sub-task worktrees should be removed after completion."""
+        worktrees_dir = git_repo / ".forge-worktrees"
+        # Parent worktree should exist, but sub-task worktrees should not
+        if worktrees_dir.exists():
+            sub_dirs = [d.name for d in worktrees_dir.iterdir() if d.is_dir()]
+            # No directory with ".sub." in the name should remain
+            assert not any(".sub." in d for d in sub_dirs)
+
+
+# ---------------------------------------------------------------------------
+# Tests — fan-out child failure
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndFanOutChildFailure:
+    """One sub-task produces invalid code → fan-out step fails."""
+
+    @pytest.fixture
+    async def result(self, env: WorkflowEnvironment, git_repo: Path) -> TaskResult:
+        _reset_e2e_fanout_state(
+            responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="schema.py", content=_SUBTASK1_PYTHON)],
+                    explanation="Created schema.",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="routes.py", content=_SUBTASK2_INVALID_PYTHON)],
+                    explanation="Created broken routes.",
+                ),
+            ]
+        )
+        return await _run_fanout_e2e(env, git_repo, max_sub_task_attempts=1)
+
+    @pytest.mark.asyncio
+    async def test_returns_failure(self, result: TaskResult) -> None:
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_error_populated(self, result: TaskResult) -> None:
+        assert result.error is not None
+        assert "fan-out failed" in result.error

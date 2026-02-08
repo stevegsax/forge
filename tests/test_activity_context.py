@@ -10,16 +10,21 @@ from forge.activities.context import (
     _read_context_files,
     assemble_context,
     assemble_step_context,
+    assemble_sub_task_context,
     build_step_system_prompt,
     build_step_user_prompt,
+    build_sub_task_system_prompt,
+    build_sub_task_user_prompt,
     build_system_prompt,
     build_user_prompt,
 )
 from forge.models import (
     AssembleContextInput,
     AssembleStepContextInput,
+    AssembleSubTaskContextInput,
     PlanStep,
     StepResult,
+    SubTask,
     TaskDefinition,
     TransitionSignal,
 )
@@ -273,4 +278,99 @@ class TestAssembleStepContext:
             worktree_path=str(worktree),
         )
         result = await assemble_step_context(input_data)
+        assert "### Context Files" not in result.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# build_sub_task_system_prompt (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSubTaskSystemPrompt:
+    def test_includes_parent_context(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Analyze schema.", target_files=["schema.py"])
+        prompt = build_sub_task_system_prompt("parent-task", "Build an API.", st, {})
+        assert "parent-task" in prompt
+        assert "Build an API." in prompt
+
+    def test_includes_sub_task_details(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Analyze schema.", target_files=["schema.py"])
+        prompt = build_sub_task_system_prompt("t1", "desc", st, {})
+        assert "st1" in prompt
+        assert "Analyze schema." in prompt
+        assert "- schema.py" in prompt
+
+    def test_includes_context_files(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["out.py"])
+        context = {"models.py": "class Model: pass"}
+        prompt = build_sub_task_system_prompt("t1", "desc", st, context)
+        assert "#### models.py" in prompt
+        assert "class Model: pass" in prompt
+
+    def test_empty_context_omits_section(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["out.py"])
+        prompt = build_sub_task_system_prompt("t1", "desc", st, {})
+        assert "### Context Files" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# build_sub_task_user_prompt (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSubTaskUserPrompt:
+    def test_includes_sub_task_id(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Create schema.", target_files=["schema.py"])
+        prompt = build_sub_task_user_prompt(st)
+        assert "st1" in prompt
+        assert "Create schema." in prompt
+
+
+# ---------------------------------------------------------------------------
+# assemble_sub_task_context (activity)
+# ---------------------------------------------------------------------------
+
+
+class TestAssembleSubTaskContext:
+    @pytest.mark.asyncio
+    async def test_reads_from_parent_worktree(self, tmp_path: Path) -> None:
+        """Context files are read from the parent worktree."""
+        parent_wt = tmp_path / "parent-wt"
+        parent_wt.mkdir()
+        (parent_wt / "models.py").write_text("# models from parent")
+
+        st = SubTask(
+            sub_task_id="st1",
+            description="Analyze.",
+            target_files=["schema.py"],
+            context_files=["models.py"],
+        )
+        input_data = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="Build API.",
+            sub_task=st,
+            worktree_path=str(parent_wt),
+        )
+        result = await assemble_sub_task_context(input_data)
+        assert result.task_id == "t1"
+        assert "# models from parent" in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_skips_missing_context_files(self, tmp_path: Path) -> None:
+        parent_wt = tmp_path / "parent-wt"
+        parent_wt.mkdir()
+
+        st = SubTask(
+            sub_task_id="st1",
+            description="d",
+            target_files=["out.py"],
+            context_files=["nonexistent.py"],
+        )
+        input_data = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="desc",
+            sub_task=st,
+            worktree_path=str(parent_wt),
+        )
+        result = await assemble_sub_task_context(input_data)
         assert "### Context Files" not in result.system_prompt

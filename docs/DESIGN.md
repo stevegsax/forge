@@ -245,9 +245,17 @@ Proves out: plan format, transition logic, incremental commit strategy.
 
 Deliverable: Describe a larger task, Forge plans the steps, executes them in order, with a reviewable commit history showing incremental progress.
 
-### Phase 3+ (Future)
+### Phase 3: Fan-Out / Gather (complete)
 
-- Fan-out / gather (parallel sub-agents).
+Plan steps can declare independent sub-tasks that execute in parallel via Temporal child workflows. Each sub-task runs in its own git worktree (compound task ID, branched from the parent branch). Results are gathered, checked for file conflicts, merged into the parent worktree, validated, and committed. Sub-tasks do not commit; the parent owns the commit.
+
+Proves out: child workflows, fan-out/gather primitive, compound task IDs, sub-task isolation and cleanup.
+
+Deliverable: Describe a task where a plan step has independent sub-tasks, Forge fans out child workflows, gathers their outputs, and commits the merged result.
+
+### Phase 4+ (Future)
+
+- Recursive fan-out (sub-tasks can fan out further).
 - Model routing (capability tiers mapped to concrete models).
 - Knowledge extraction (playbook generation and injection).
 - Multi-provider support.
