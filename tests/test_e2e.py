@@ -52,6 +52,23 @@ def greet(name: str) -> str:
 
 _INVALID_PYTHON = "def greet(name):\n  x=1\n  return f'Hello, {name}!'\n  y = 2\n"
 
+# Code with auto-fixable issues: typing.List instead of list, trailing whitespace
+_FIXABLE_PYTHON = '''\
+from typing import List
+
+
+def names() -> List[str]:
+    """Return a list of names."""
+    return ["Alice", "Bob"]
+'''
+
+# Expected content after ruff auto-fix
+_FIXED_PYTHON = '''\
+def names() -> list[str]:
+    """Return a list of names."""
+    return ["Alice", "Bob"]
+'''
+
 
 # ---------------------------------------------------------------------------
 # Mock LLM activities
@@ -90,6 +107,22 @@ async def mock_call_llm_invalid(context: AssembledContext) -> LLMCallResult:
     )
 
 
+@activity.defn(name="call_llm")
+async def mock_call_llm_fixable(context: AssembledContext) -> LLMCallResult:
+    """Return Python code with auto-fixable cosmetic issues."""
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=LLMResponse(
+            files=[FileOutput(file_path="hello.py", content=_FIXABLE_PYTHON)],
+            explanation="Created names module (with typing.List).",
+        ),
+        model_name="mock-model",
+        input_tokens=100,
+        output_tokens=50,
+        latency_ms=200.0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Activity lists
 # ---------------------------------------------------------------------------
@@ -106,6 +139,7 @@ _REAL_ACTIVITIES = [
 
 _ACTIVITIES_VALID = [*_REAL_ACTIVITIES, mock_call_llm_valid]
 _ACTIVITIES_INVALID = [*_REAL_ACTIVITIES, mock_call_llm_invalid]
+_ACTIVITIES_FIXABLE = [*_REAL_ACTIVITIES, mock_call_llm_fixable]
 
 
 # ---------------------------------------------------------------------------
@@ -297,3 +331,37 @@ class TestEndToEndWithContextFiles:
 
         result = await _run_e2e_workflow(env, git_repo, task=task)
         assert result.status == TransitionSignal.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Tests — auto-fix
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndAutoFix:
+    """LLM produces code with cosmetic issues → auto-fix cleans it → pipeline succeeds."""
+
+    @pytest.fixture
+    async def result(self, env: WorkflowEnvironment, git_repo: Path) -> TaskResult:
+        return await _run_e2e_workflow(
+            env,
+            git_repo,
+            activities=_ACTIVITIES_FIXABLE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_success_status(self, result: TaskResult) -> None:
+        assert result.status == TransitionSignal.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_output_file_was_fixed(self, result: TaskResult) -> None:
+        assert result.worktree_path is not None
+        output_file = Path(result.worktree_path) / "hello.py"
+        content = output_file.read_text()
+        assert "List[str]" not in content
+        assert "list[str]" in content
+
+    @pytest.mark.asyncio
+    async def test_validation_all_passed(self, result: TaskResult) -> None:
+        assert len(result.validation_results) > 0
+        assert all(v.passed for v in result.validation_results)

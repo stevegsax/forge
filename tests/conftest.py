@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
-if TYPE_CHECKING:
-    from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_RUFF_CONFIG_SRC = _REPO_ROOT / "tool-config" / "ruff.toml"
+
+
+@pytest.fixture
+def ruff_config(tmp_path: Path) -> Path:
+    """Copy the project ruff config into tmp_path so ruff commands find it."""
+    dest = tmp_path / "tool-config"
+    dest.mkdir()
+    shutil.copy(_RUFF_CONFIG_SRC, dest / "ruff.toml")
+    return dest / "ruff.toml"
 
 
 @pytest.fixture
@@ -37,7 +47,17 @@ def git_repo(tmp_path: Path) -> Path:
     readme = tmp_path / "README.md"
     readme.write_text("# Test repo\n")
 
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True)
+    # Copy ruff config so worktrees created from this repo have it.
+    tool_config = tmp_path / "tool-config"
+    tool_config.mkdir()
+    shutil.copy(_RUFF_CONFIG_SRC, tool_config / "ruff.toml")
+
+    subprocess.run(
+        ["git", "add", "README.md", "tool-config/ruff.toml"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
         cwd=tmp_path,

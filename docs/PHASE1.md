@@ -52,19 +52,26 @@ TaskDefinition:
     base_branch: str = "main"       # Branch to create worktree from
 
 ValidationConfig:
+    auto_fix: bool = True           # Run ruff --fix and ruff format before validation
     run_ruff_lint: bool = True
     run_ruff_format: bool = True
     run_tests: bool = False
     test_command: str | None = None
 
+ValidationResult:
+    check_name: str
+    passed: bool
+    summary: str                    # Concise summary of the result
+    details: str | None = None      # Extended details, not sent to LLM by default
+
 TaskResult:
     task_id: str
     status: TransitionSignal
     output_files: dict[str, str]    # path -> content
-    validation_output: str          # Summary of validation results
-    error: str | None               # If failed, why
-    worktree_path: str              # Where to review the result
-    worktree_branch: str            # Branch name
+    validation_results: list[ValidationResult]
+    error: str | None = None        # If failed, why
+    worktree_path: str | None = None  # Where to review the result
+    worktree_branch: str | None = None  # Branch name
 
 TransitionSignal: Literal[
     "success",
@@ -100,6 +107,8 @@ Export to a local collector (Jaeger or stdout for initial development).
 forge/
 ├── CLAUDE.md
 ├── pyproject.toml
+├── tool-config/
+│   └── ruff.toml              # Shared ruff config for worktrees
 ├── docs/
 │   ├── DESIGN.md
 │   ├── DECISIONS.md
@@ -113,11 +122,12 @@ forge/
         ├── activities/
         │   ├── __init__.py
         │   ├── context.py      # assemble_context activity
+        │   ├── git_activities.py  # Git worktree Temporal activities
         │   ├── llm.py          # call_llm activity
         │   ├── output.py       # write_output activity
         │   ├── validate.py     # validate_output activity
         │   └── transition.py   # evaluate_transition activity
-        ├── git.py              # Worktree management
+        ├── git.py              # Worktree management (pure functions)
         ├── tracing.py          # OpenTelemetry setup
         └── worker.py           # Temporal worker entry point
 ```

@@ -4,7 +4,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phase 0: Project skeleton. The design document is complete. Next step is implementing the Phase 1 minimal loop.
+Phase 1 is implemented. The minimal loop is operational: CLI submits a task, Temporal workflow executes the LLM call, writes output to a git worktree, runs auto-fix and validation, retries on failure, and commits the result for human review.
 
 ## Key Documents
 
@@ -50,8 +50,8 @@ Temporal provides the workflow engine. The LLM call and transition evaluation ar
 - Worktrees are disposable: on failure, document the problem, create a fresh worktree, start over.
 - Task ordering from the plan is the primary conflict avoidance mechanism.
 
-## Current Phase: Phase 1 — The Minimal Loop
+## Current Phase: Phase 1 — The Minimal Loop (Complete)
 
-Goal: A single workflow that executes one LLM call with hardcoded context, serializes the result, runs deterministic validation, and presents the result for human review. One model (Anthropic), one domain (Python code generation). No fan-out, no planning step, no model routing.
+Phase 1 is implemented. The system executes a single workflow step end-to-end: assemble context, call the LLM (Anthropic via pydantic-ai), write output to a git worktree, auto-fix with ruff, validate, and commit. On validation failure, the workflow retries from a clean worktree up to a configurable limit.
 
 See `docs/PHASE1.md` for the detailed specification.

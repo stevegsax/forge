@@ -8,7 +8,9 @@ import pytest
 
 from forge.activities.validate import (
     _run_ruff_format_check,
+    _run_ruff_format_fix,
     _run_ruff_lint,
+    _run_ruff_lint_fix,
     _SubprocessResult,
     parse_check_result,
     validate_output,
@@ -58,12 +60,12 @@ class TestParseCheckResult:
 
 
 class TestRunRuffLint:
-    def test_valid_python_passes(self, tmp_path: Path) -> None:
+    def test_valid_python_passes(self, tmp_path: Path, ruff_config: Path) -> None:
         (tmp_path / "good.py").write_text("x = 1\n")
         result = _run_ruff_lint(tmp_path, ["good.py"])
         assert result.passed is True
 
-    def test_invalid_python_fails(self, tmp_path: Path) -> None:
+    def test_invalid_python_fails(self, tmp_path: Path, ruff_config: Path) -> None:
         (tmp_path / "bad.py").write_text("import os\nimport sys\n")
         result = _run_ruff_lint(tmp_path, ["bad.py"])
         assert result.passed is False
@@ -71,12 +73,12 @@ class TestRunRuffLint:
 
 
 class TestRunRuffFormatCheck:
-    def test_formatted_python_passes(self, tmp_path: Path) -> None:
+    def test_formatted_python_passes(self, tmp_path: Path, ruff_config: Path) -> None:
         (tmp_path / "good.py").write_text("x = 1\n")
         result = _run_ruff_format_check(tmp_path, ["good.py"])
         assert result.passed is True
 
-    def test_unformatted_python_fails(self, tmp_path: Path) -> None:
+    def test_unformatted_python_fails(self, tmp_path: Path, ruff_config: Path) -> None:
         (tmp_path / "bad.py").write_text("x=1")
         result = _run_ruff_format_check(tmp_path, ["bad.py"])
         assert result.passed is False
@@ -89,7 +91,7 @@ class TestRunRuffFormatCheck:
 
 class TestValidateOutput:
     @pytest.mark.asyncio
-    async def test_valid_file_passes_all_checks(self, tmp_path: Path) -> None:
+    async def test_valid_file_passes_all_checks(self, tmp_path: Path, ruff_config: Path) -> None:
         (tmp_path / "clean.py").write_text("x = 1\n")
         input_data = ValidateOutputInput(
             task_id="v1",
@@ -102,13 +104,13 @@ class TestValidateOutput:
         assert all(r.passed for r in results)
 
     @pytest.mark.asyncio
-    async def test_invalid_file_fails(self, tmp_path: Path) -> None:
+    async def test_invalid_file_fails(self, tmp_path: Path, ruff_config: Path) -> None:
         (tmp_path / "bad.py").write_text("import os\nimport sys\n")
         input_data = ValidateOutputInput(
             task_id="v2",
             worktree_path=str(tmp_path),
             files=["bad.py"],
-            validation=ValidationConfig(run_ruff_lint=True, run_ruff_format=False),
+            validation=ValidationConfig(auto_fix=False, run_ruff_lint=True, run_ruff_format=False),
         )
         results = await validate_output(input_data)
         assert len(results) == 1
@@ -147,3 +149,74 @@ class TestValidateOutput:
         assert len(results) == 1
         assert results[0].passed is True
         assert results[0].check_name == "tests"
+
+    @pytest.mark.asyncio
+    async def test_auto_fix_makes_fixable_code_pass(
+        self, tmp_path: Path, ruff_config: Path
+    ) -> None:
+        """Code with typing.List passes validation when auto_fix=True."""
+        code = "from typing import List\n\ndef f() -> List[str]:\n    return []\n"
+        (tmp_path / "fixable.py").write_text(code)
+        input_data = ValidateOutputInput(
+            task_id="v5",
+            worktree_path=str(tmp_path),
+            files=["fixable.py"],
+            validation=ValidationConfig(auto_fix=True, run_ruff_lint=True, run_ruff_format=True),
+        )
+        results = await validate_output(input_data)
+        assert all(r.passed for r in results)
+
+    @pytest.mark.asyncio
+    async def test_auto_fix_disabled_leaves_fixable_issues(
+        self, tmp_path: Path, ruff_config: Path
+    ) -> None:
+        """Same code fails validation when auto_fix=False."""
+        code = "from typing import List\n\ndef f() -> List[str]:\n    return []\n"
+        (tmp_path / "fixable.py").write_text(code)
+        input_data = ValidateOutputInput(
+            task_id="v6",
+            worktree_path=str(tmp_path),
+            files=["fixable.py"],
+            validation=ValidationConfig(auto_fix=False, run_ruff_lint=True, run_ruff_format=True),
+        )
+        results = await validate_output(input_data)
+        assert any(not r.passed for r in results)
+
+
+# ---------------------------------------------------------------------------
+# ruff lint fix (imperative shell, real subprocess)
+# ---------------------------------------------------------------------------
+
+
+class TestRunRuffLintFix:
+    def test_fixes_auto_fixable_issues(self, tmp_path: Path, ruff_config: Path) -> None:
+        """typing.List → list after lint fix."""
+        p = tmp_path / "fixable.py"
+        p.write_text("from typing import List\n\ndef f() -> List[str]:\n    return []\n")
+        _run_ruff_lint_fix(tmp_path, ["fixable.py"])
+        content = p.read_text()
+        assert "List" not in content
+        assert "list[str]" in content
+
+    def test_leaves_unfixable_issues(self, tmp_path: Path, ruff_config: Path) -> None:
+        """F841 (unused var) requires --unsafe-fixes, not fixed by default."""
+        p = tmp_path / "unfixable.py"
+        p.write_text("def f() -> None:\n    x = 1\n    return\n")
+        _run_ruff_lint_fix(tmp_path, ["unfixable.py"])
+        content = p.read_text()
+        assert "x = 1" in content
+
+
+# ---------------------------------------------------------------------------
+# ruff format fix (imperative shell, real subprocess)
+# ---------------------------------------------------------------------------
+
+
+class TestRunRuffFormatFix:
+    def test_formats_unformatted_code(self, tmp_path: Path, ruff_config: Path) -> None:
+        """x=1 → x = 1 after format fix."""
+        p = tmp_path / "ugly.py"
+        p.write_text("x=1\n")
+        _run_ruff_format_fix(tmp_path, ["ugly.py"])
+        content = p.read_text()
+        assert "x = 1" in content

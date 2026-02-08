@@ -23,6 +23,7 @@ class TransitionSignal(StrEnum):
 class ValidationConfig(BaseModel):
     """Configuration for deterministic validation checks."""
 
+    auto_fix: bool = True
     run_ruff_lint: bool = True
     run_ruff_format: bool = True
     run_tests: bool = False

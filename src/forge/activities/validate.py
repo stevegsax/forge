@@ -5,7 +5,8 @@ Runs deterministic checks (ruff lint, ruff format, tests) against generated file
 Design follows Function Core / Imperative Shell:
 - Internal transport: _SubprocessResult
 - Pure function: parse_check_result
-- Imperative shell: _run_command, _run_ruff_lint, _run_ruff_format_check, _run_tests
+- Imperative shell (fix): _run_ruff_lint_fix, _run_ruff_format_fix
+- Imperative shell (check): _run_ruff_lint, _run_ruff_format_check, _run_tests
 - Temporal activity: validate_output
 """
 
@@ -20,6 +21,7 @@ from temporalio import activity
 from forge.models import ValidateOutputInput, ValidationResult
 
 SUBPROCESS_TIMEOUT_SECONDS = 60
+RUFF_CONFIG = "tool-config/ruff.toml"
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +99,26 @@ def parse_check_result(check_name: str, result: _SubprocessResult) -> Validation
 # ---------------------------------------------------------------------------
 
 
+def _run_ruff_lint_fix(worktree_path: Path, file_paths: list[str]) -> None:
+    """Run ruff lint auto-fix on the given files. Ignores exit code."""
+    _run_command(
+        ["ruff", "check", "--config", RUFF_CONFIG, "--fix", *file_paths],
+        cwd=worktree_path,
+    )
+
+
+def _run_ruff_format_fix(worktree_path: Path, file_paths: list[str]) -> None:
+    """Run ruff format on the given files. Ignores exit code."""
+    _run_command(
+        ["ruff", "format", "--config", RUFF_CONFIG, *file_paths],
+        cwd=worktree_path,
+    )
+
+
 def _run_ruff_lint(worktree_path: Path, file_paths: list[str]) -> ValidationResult:
     """Run ruff lint check on the given files."""
     result = _run_command(
-        ["ruff", "check", "--no-fix", *file_paths],
+        ["ruff", "check", "--config", RUFF_CONFIG, "--no-fix", *file_paths],
         cwd=worktree_path,
     )
     return parse_check_result("ruff_lint", result)
@@ -109,7 +127,7 @@ def _run_ruff_lint(worktree_path: Path, file_paths: list[str]) -> ValidationResu
 def _run_ruff_format_check(worktree_path: Path, file_paths: list[str]) -> ValidationResult:
     """Run ruff format check on the given files."""
     result = _run_command(
-        ["ruff", "format", "--check", *file_paths],
+        ["ruff", "format", "--config", RUFF_CONFIG, "--check", *file_paths],
         cwd=worktree_path,
     )
     return parse_check_result("ruff_format", result)
@@ -128,6 +146,14 @@ def _run_tests(worktree_path: Path, test_command: str) -> ValidationResult:
 async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     """Run enabled validation checks against generated files."""
     wt = Path(input.worktree_path)
+
+    # Fix phase: auto-correct cosmetic issues before checking.
+    # Lint fix first (may change imports), then format fix.
+    if input.validation.auto_fix and input.files:
+        _run_ruff_lint_fix(wt, input.files)
+        _run_ruff_format_fix(wt, input.files)
+
+    # Check phase: validate the (possibly fixed) files.
     results: list[ValidationResult] = []
 
     if input.validation.run_ruff_lint:

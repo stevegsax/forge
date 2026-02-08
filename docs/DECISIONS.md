@@ -121,3 +121,15 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Each phase of Forge's development uses the previous version to build the next iteration, starting with a minimal manual foundation.
 
 **Rationale:** The system is its own best test case. Early phases are simple (single-step, single-model, hardcoded context, human review). Each subsequent phase adds one dimension of complexity. Early halts become training data for improving the system.
+
+## D21: Auto-Fix Before Validation
+
+**Decision:** Run `ruff check --fix` and `ruff format` on generated files before running validation checks. Enabled by default via `ValidationConfig.auto_fix`. All ruff invocations use `--config tool-config/ruff.toml` to ensure consistent rules across worktrees (see D22).
+
+**Rationale:** Deterministic cosmetic cleanup (unused imports, `typing.List` → `list`, formatting) is not the LLM's job. Burning retry budget on issues that `ruff` can fix in milliseconds wastes tokens and time. Reserve validation failures for issues the LLM actually needs to think about: logic errors, test failures, architectural violations. The `auto_fix` flag exists for opt-out in debugging or evaluation scenarios.
+
+## D22: Standardized Tool Configuration Location
+
+**Decision:** Tool configurations live in `tool-config/` in the repository root. Ruff invocations reference `--config tool-config/ruff.toml` rather than relying on config file discovery.
+
+**Rationale:** Git worktrees share the repository's file tree, so `tool-config/` is available in every worktree automatically. Explicit `--config` avoids ambiguity from ruff's config file discovery, which can pick up different files depending on the working directory. A dedicated directory keeps tool configs separate from project metadata (`pyproject.toml`) and makes it obvious where to look.
