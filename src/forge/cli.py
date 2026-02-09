@@ -20,6 +20,7 @@ import click
 
 from forge.git import RepoDiscoveryError, discover_repo_root
 from forge.models import (
+    ContextConfig,
     ForgeTaskInput,
     TaskDefinition,
     TaskResult,
@@ -113,8 +114,17 @@ def build_task_definition(
     no_format: bool = False,
     run_tests: bool = False,
     test_command: str | None = None,
+    no_auto_discover: bool = False,
+    token_budget: int | None = None,
+    max_import_depth: int | None = None,
 ) -> TaskDefinition:
     """Build a TaskDefinition from CLI arguments."""
+    context_config = ContextConfig(auto_discover=not no_auto_discover)
+    if token_budget is not None:
+        context_config = context_config.model_copy(update={"token_budget": token_budget})
+    if max_import_depth is not None:
+        context_config = context_config.model_copy(update={"max_import_depth": max_import_depth})
+
     return TaskDefinition(
         task_id=task_id,
         description=description,
@@ -127,6 +137,7 @@ def build_task_definition(
             run_tests=run_tests,
             test_command=test_command,
         ),
+        context=context_config,
     )
 
 
@@ -269,6 +280,19 @@ def main() -> None:
     type=int,
     help="Retry limit per sub-task in fan-out steps.",
 )
+@click.option("--no-auto-discover", is_flag=True, help="Disable automatic context discovery.")
+@click.option(
+    "--token-budget",
+    type=int,
+    default=None,
+    help="Token budget for context (default: 100000).",
+)
+@click.option(
+    "--max-import-depth",
+    type=int,
+    default=None,
+    help="How deep to trace imports (default: 2).",
+)
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
@@ -293,6 +317,9 @@ def run(
     use_plan: bool,
     max_step_attempts: int,
     max_sub_task_attempts: int,
+    no_auto_discover: bool,
+    token_budget: int | None,
+    max_import_depth: int | None,
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -330,6 +357,9 @@ def run(
             no_format=no_format,
             run_tests=run_tests,
             test_command=test_command,
+            no_auto_discover=no_auto_discover,
+            token_budget=token_budget,
+            max_import_depth=max_import_depth,
         )
 
     # --- Discover repo root ---

@@ -30,6 +30,33 @@ class ValidationConfig(BaseModel):
     test_command: str | None = None
 
 
+class ContextConfig(BaseModel):
+    """Configuration for automatic context discovery."""
+
+    auto_discover: bool = True
+    token_budget: int = Field(default=100_000, description="Token budget for context.")
+    output_reserve: int = Field(default=16_000, description="Tokens reserved for LLM output.")
+    max_import_depth: int = Field(default=2, description="How deep to trace imports.")
+    include_repo_map: bool = True
+    repo_map_tokens: int = Field(default=2048, description="Token budget for the repo map.")
+    package_name: str | None = Field(
+        default=None,
+        description="Python package name for import graph. Auto-detected if None.",
+    )
+
+
+class ContextStats(BaseModel):
+    """Observability stats from context assembly."""
+
+    files_discovered: int = 0
+    files_included_full: int = 0
+    files_included_signatures: int = 0
+    files_truncated: int = 0
+    total_estimated_tokens: int = 0
+    budget_utilization: float = Field(default=0.0, description="0.0 to 1.0.")
+    repo_map_tokens: int = 0
+
+
 class TaskDefinition(BaseModel):
     """A single unit of work to be executed by the workflow."""
 
@@ -48,6 +75,7 @@ class TaskDefinition(BaseModel):
         default="main",
         description="Branch to create the worktree from.",
     )
+    context: ContextConfig = Field(default_factory=ContextConfig)
 
 
 class ValidationResult(BaseModel):
@@ -176,6 +204,7 @@ class AssembledContext(BaseModel):
     task_id: str
     system_prompt: str
     user_prompt: str
+    context_stats: ContextStats | None = None
 
 
 class LLMCallResult(BaseModel):

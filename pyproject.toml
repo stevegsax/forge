@@ -11,6 +11,9 @@ dependencies = [
     "opentelemetry-sdk>=1.28.0",
     "opentelemetry-exporter-otlp>=1.28.0",
     "click>=8.1.0",
+    "grimp>=3.5",
+    "networkx>=3.0",
+    "scipy>=1.14",
 ]
 
 [project.scripts]

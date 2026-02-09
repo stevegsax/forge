@@ -16,6 +16,7 @@ from forge.activities.planner import (
 )
 from forge.models import (
     AssembleContextInput,
+    ContextConfig,
     Plan,
     PlannerInput,
     PlanStep,
@@ -203,3 +204,46 @@ class TestAssemblePlannerContext:
         )
         result = await assemble_planner_context(input_data)
         assert "## Context Files" not in result.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: repo_map parameter
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPlannerSystemPromptWithRepoMap:
+    def test_includes_repo_map(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Build an API.")
+        repo_map = "src/forge/models.py:\n│class Foo:"
+        prompt = build_planner_system_prompt(task, {}, repo_map=repo_map)
+        assert "## Repository Structure" in prompt
+        assert "src/forge/models.py:" in prompt
+        assert "│class Foo:" in prompt
+
+    def test_repo_map_none_omits_section(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        prompt = build_planner_system_prompt(task, {}, repo_map=None)
+        assert "## Repository Structure" not in prompt
+
+    def test_repo_map_adds_context_guidance(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        prompt = build_planner_system_prompt(task, {}, repo_map="some map")
+        assert "automatically discovered from import graphs" in prompt
+
+
+class TestAssemblePlannerContextAutoDiscover:
+    @pytest.mark.asyncio
+    async def test_disabled_no_repo_map(self, tmp_path: Path) -> None:
+        config = ContextConfig(auto_discover=False)
+        task = TaskDefinition(
+            task_id="plan-no-auto",
+            description="Build something.",
+            context=config,
+        )
+        input_data = AssembleContextInput(
+            task=task,
+            repo_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+        )
+        result = await assemble_planner_context(input_data)
+        assert "## Repository Structure" not in result.system_prompt

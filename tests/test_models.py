@@ -5,9 +5,12 @@ from __future__ import annotations
 import pytest
 
 from forge.models import (
+    AssembledContext,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
     CommitChangesInput,
+    ContextConfig,
+    ContextStats,
     ForgeTaskInput,
     Plan,
     PlanCallResult,
@@ -321,3 +324,102 @@ class TestForgeTaskInputMaxSubTaskAttempts:
         td = TaskDefinition(task_id="t", description="d")
         inp = ForgeTaskInput(task=td, repo_root="/repo", max_sub_task_attempts=3)
         assert inp.max_sub_task_attempts == 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Context discovery models
+# ---------------------------------------------------------------------------
+
+
+class TestContextConfig:
+    def test_defaults(self) -> None:
+        config = ContextConfig()
+        assert config.auto_discover is True
+        assert config.token_budget == 100_000
+        assert config.output_reserve == 16_000
+        assert config.max_import_depth == 2
+        assert config.include_repo_map is True
+        assert config.repo_map_tokens == 2048
+        assert config.package_name is None
+
+    def test_round_trip(self) -> None:
+        config = ContextConfig(auto_discover=False, token_budget=50_000, package_name="myapp")
+        rebuilt = ContextConfig.model_validate_json(config.model_dump_json())
+        assert rebuilt == config
+
+
+class TestContextStats:
+    def test_defaults(self) -> None:
+        stats = ContextStats()
+        assert stats.files_discovered == 0
+        assert stats.files_included_full == 0
+        assert stats.files_included_signatures == 0
+        assert stats.files_truncated == 0
+        assert stats.total_estimated_tokens == 0
+        assert stats.budget_utilization == 0.0
+        assert stats.repo_map_tokens == 0
+
+    def test_round_trip(self) -> None:
+        stats = ContextStats(
+            files_discovered=10,
+            files_included_full=5,
+            files_included_signatures=3,
+            files_truncated=2,
+            total_estimated_tokens=5000,
+            budget_utilization=0.75,
+            repo_map_tokens=512,
+        )
+        rebuilt = ContextStats.model_validate_json(stats.model_dump_json())
+        assert rebuilt == stats
+
+
+class TestTaskDefinitionContextConfig:
+    def test_default_context_config(self) -> None:
+        td = TaskDefinition(task_id="t", description="d")
+        assert td.context.auto_discover is True
+        assert td.context.token_budget == 100_000
+
+    def test_custom_context_config(self) -> None:
+        config = ContextConfig(auto_discover=False, token_budget=50_000)
+        td = TaskDefinition(task_id="t", description="d", context=config)
+        assert td.context.auto_discover is False
+
+    def test_backward_compat_no_context(self) -> None:
+        """Old JSON without context field still deserializes."""
+        data = '{"task_id": "t", "description": "d"}'
+        td = TaskDefinition.model_validate_json(data)
+        assert td.context.auto_discover is True
+
+    def test_round_trip(self) -> None:
+        config = ContextConfig(auto_discover=False, package_name="forge")
+        td = TaskDefinition(task_id="t", description="d", context=config)
+        rebuilt = TaskDefinition.model_validate_json(td.model_dump_json())
+        assert rebuilt.context == config
+
+
+class TestAssembledContextStats:
+    def test_default_none(self) -> None:
+        ctx = AssembledContext(task_id="t", system_prompt="sys", user_prompt="usr")
+        assert ctx.context_stats is None
+
+    def test_with_stats(self) -> None:
+        stats = ContextStats(files_discovered=5, total_estimated_tokens=3000)
+        ctx = AssembledContext(
+            task_id="t",
+            system_prompt="sys",
+            user_prompt="usr",
+            context_stats=stats,
+        )
+        assert ctx.context_stats is not None
+        assert ctx.context_stats.files_discovered == 5
+
+    def test_round_trip(self) -> None:
+        stats = ContextStats(files_discovered=5)
+        ctx = AssembledContext(
+            task_id="t",
+            system_prompt="sys",
+            user_prompt="usr",
+            context_stats=stats,
+        )
+        rebuilt = AssembledContext.model_validate_json(ctx.model_dump_json())
+        assert rebuilt.context_stats == stats

@@ -761,3 +761,134 @@ class TestMaxSubTaskAttemptsFlag:
         )
         call_kwargs = mock_submit.call_args
         assert call_kwargs[1]["max_sub_task_attempts"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 CLI tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTaskDefinitionContextConfig:
+    def test_default_auto_discover(self) -> None:
+        td = build_task_definition(task_id="t", description="d", target_files=["a.py"])
+        assert td.context.auto_discover is True
+
+    def test_no_auto_discover(self) -> None:
+        td = build_task_definition(
+            task_id="t", description="d", target_files=["a.py"], no_auto_discover=True
+        )
+        assert td.context.auto_discover is False
+
+    def test_custom_token_budget(self) -> None:
+        td = build_task_definition(
+            task_id="t", description="d", target_files=["a.py"], token_budget=50_000
+        )
+        assert td.context.token_budget == 50_000
+
+    def test_custom_max_import_depth(self) -> None:
+        td = build_task_definition(
+            task_id="t", description="d", target_files=["a.py"], max_import_depth=3
+        )
+        assert td.context.max_import_depth == 3
+
+    def test_none_values_keep_defaults(self) -> None:
+        td = build_task_definition(
+            task_id="t",
+            description="d",
+            target_files=["a.py"],
+            token_budget=None,
+            max_import_depth=None,
+        )
+        assert td.context.token_budget == 100_000
+        assert td.context.max_import_depth == 2
+
+
+class TestContextDiscoveryFlags:
+    def test_flags_in_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "--no-auto-discover" in result.output
+        assert "--token-budget" in result.output
+        assert "--max-import-depth" in result.output
+
+    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli.discover_repo_root")
+    def test_no_auto_discover_flag(
+        self,
+        mock_discover: object,
+        mock_submit: AsyncMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--no-auto-discover",
+            ],
+        )
+        call_args = mock_submit.call_args
+        task_def = call_args[0][0]
+        assert task_def.context.auto_discover is False
+
+    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli.discover_repo_root")
+    def test_token_budget_flag(
+        self,
+        mock_discover: object,
+        mock_submit: AsyncMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--token-budget",
+                "50000",
+            ],
+        )
+        call_args = mock_submit.call_args
+        task_def = call_args[0][0]
+        assert task_def.context.token_budget == 50_000
+
+    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli.discover_repo_root")
+    def test_max_import_depth_flag(
+        self,
+        mock_discover: object,
+        mock_submit: AsyncMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--max-import-depth",
+                "3",
+            ],
+        )
+        call_args = mock_submit.call_args
+        task_def = call_args[0][0]
+        assert task_def.context.max_import_depth == 3

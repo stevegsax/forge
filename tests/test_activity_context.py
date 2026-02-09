@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from forge.activities.context import (
+    _build_context_stats,
+    _detect_package_name,
     _read_context_files,
     assemble_context,
     assemble_step_context,
@@ -16,12 +18,14 @@ from forge.activities.context import (
     build_sub_task_system_prompt,
     build_sub_task_user_prompt,
     build_system_prompt,
+    build_system_prompt_with_context,
     build_user_prompt,
 )
 from forge.models import (
     AssembleContextInput,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
+    ContextConfig,
     PlanStep,
     StepResult,
     SubTask,
@@ -374,3 +378,177 @@ class TestAssembleSubTaskContext:
         )
         result = await assemble_sub_task_context(input_data)
         assert "### Context Files" not in result.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: build_system_prompt_with_context (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSystemPromptWithContext:
+    def test_includes_task_and_targets(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="Build a module.", target_files=["out.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="out.py",
+                    content="# existing",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        prompt = build_system_prompt_with_context(task, packed)
+        assert "Build a module." in prompt
+        assert "- out.py" in prompt
+        assert "# existing" in prompt
+
+    def test_sections_by_priority(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="a.py",
+                    content="target content",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+                ContextItem(
+                    file_path="dep.py",
+                    content="dep content",
+                    representation=Representation.FULL,
+                    priority=3,
+                    estimated_tokens=5,
+                ),
+                ContextItem(
+                    file_path="trans.py",
+                    content="def f():",
+                    representation=Representation.SIGNATURES,
+                    priority=4,
+                    estimated_tokens=3,
+                ),
+                ContextItem(
+                    file_path="__repo_map__",
+                    content="repo map text",
+                    representation=Representation.REPO_MAP,
+                    priority=5,
+                    estimated_tokens=5,
+                ),
+                ContextItem(
+                    file_path="manual.txt",
+                    content="manual info",
+                    representation=Representation.FULL,
+                    priority=6,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=23,
+            items_included=5,
+        )
+        prompt = build_system_prompt_with_context(task, packed)
+        assert "## Target File Contents" in prompt
+        assert "## Direct Dependencies" in prompt
+        assert "## Interface Context" in prompt
+        assert "## Repository Structure" in prompt
+        assert "## Additional Context" in prompt
+        assert "trans.py (signatures)" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _build_context_stats (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildContextStats:
+    def test_basic_stats(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="a.py",
+                    content="code",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=10,
+                ),
+                ContextItem(
+                    file_path="b.py",
+                    content="def f():",
+                    representation=Representation.SIGNATURES,
+                    priority=4,
+                    estimated_tokens=5,
+                ),
+                ContextItem(
+                    file_path="__repo_map__",
+                    content="map",
+                    representation=Representation.REPO_MAP,
+                    priority=5,
+                    estimated_tokens=3,
+                ),
+            ],
+            total_estimated_tokens=18,
+            budget_utilization=0.5,
+            items_included=3,
+            items_truncated=1,
+        )
+        stats = _build_context_stats(packed)
+        assert stats.files_included_full == 1
+        assert stats.files_included_signatures == 1
+        assert stats.repo_map_tokens == 3
+        assert stats.files_truncated == 1
+        assert stats.total_estimated_tokens == 18
+        assert stats.files_discovered == 4  # included + truncated
+
+
+# ---------------------------------------------------------------------------
+# _detect_package_name
+# ---------------------------------------------------------------------------
+
+
+class TestDetectPackageName:
+    def test_detects_from_src(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        pkg = src / "myapp"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        assert _detect_package_name(str(tmp_path)) == "myapp"
+
+    def test_fallback_to_dir_name(self, tmp_path: Path) -> None:
+        assert _detect_package_name(str(tmp_path)) == tmp_path.name
+
+
+# ---------------------------------------------------------------------------
+# assemble_context with auto_discover disabled
+# ---------------------------------------------------------------------------
+
+
+class TestAssembleContextAutoDiscoverDisabled:
+    @pytest.mark.asyncio
+    async def test_disabled_uses_manual_context(self, tmp_path: Path) -> None:
+        (tmp_path / "ref.py").write_text("# reference")
+        config = ContextConfig(auto_discover=False)
+        task = TaskDefinition(
+            task_id="ctx-no-auto",
+            description="Generate code.",
+            target_files=["out.py"],
+            context_files=["ref.py"],
+            context=config,
+        )
+        input_data = AssembleContextInput(
+            task=task,
+            repo_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+        )
+        result = await assemble_context(input_data)
+        assert result.task_id == "ctx-no-auto"
+        assert "# reference" in result.system_prompt
+        assert result.context_stats is None

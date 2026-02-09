@@ -40,11 +40,13 @@ logger = logging.getLogger(__name__)
 def build_planner_system_prompt(
     task: TaskDefinition,
     context_file_contents: dict[str, str],
+    *,
+    repo_map: str | None = None,
 ) -> str:
     """Build the system prompt for the planning LLM call.
 
     Includes the task description, any target file hints, context files,
-    and instructions for decomposing the task into ordered steps.
+    optional repo map, and instructions for decomposing the task into ordered steps.
     """
     parts: list[str] = []
 
@@ -58,6 +60,17 @@ def build_planner_system_prompt(
         parts.append("## Target Files (hints)")
         for f in task.target_files:
             parts.append(f"- {f}")
+
+    if repo_map:
+        parts.append("")
+        parts.append("## Repository Structure")
+        parts.append(
+            "This is a compressed overview of the codebase, showing file paths "
+            "and key signatures ranked by importance."
+        )
+        parts.append("```")
+        parts.append(repo_map)
+        parts.append("```")
 
     if context_file_contents:
         parts.append("")
@@ -85,6 +98,15 @@ def build_planner_system_prompt(
     parts.append(
         "- context_files: Files from the repo (or created by prior steps) to include as context"
     )
+
+    if repo_map:
+        parts.append("")
+        parts.append(
+            "Note: Context is automatically discovered from import graphs for each step's "
+            "target files. Use context_files for files not reachable via imports "
+            "(e.g., config files, documentation, test fixtures)."
+        )
+
     parts.append("")
     parts.append("## Fan-Out Sub-Tasks")
     parts.append(
@@ -173,11 +195,54 @@ def create_planner_agent(model_name: str | None = None) -> Agent[None, Plan]:
 
 @activity.defn
 async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
-    """Read context files and assemble the prompts for the planning call."""
+    """Read context files and assemble the prompts for the planning call.
+
+    When auto_discover is enabled, builds a repo map to include in the
+    planner prompt, giving it a structural overview of the codebase.
+    """
     repo_root = Path(input.repo_root)
     context_contents = _read_context_files(repo_root, input.task.context_files)
 
-    system_prompt = build_planner_system_prompt(input.task, context_contents)
+    repo_map_text: str | None = None
+
+    if input.task.context.auto_discover:
+        try:
+            from forge.code_intel import (
+                build_import_graph,
+                extract_symbols,
+                generate_repo_map,
+                rank_files,
+            )
+
+            package_name = input.task.context.package_name or _detect_package_name(input.repo_root)
+            graph = build_import_graph(package_name)
+
+            # For the planner, rank all files (no specific targets)
+            all_modules = list(graph.modules)
+            ranked_set = rank_files(graph, all_modules[:5], "src", max_depth=3)
+
+            # Build summaries for ranked files
+            all_summaries = {}
+            for rf in ranked_set.ranked_files:
+                full = repo_root / rf.file_path
+                if full.is_file():
+                    source = full.read_text()
+                    summary = extract_symbols(source, rf.file_path, rf.module_name)
+                    all_summaries[rf.file_path] = summary
+
+            repo_map_result = generate_repo_map(
+                ranked_set.ranked_files,
+                all_summaries,
+                token_budget=input.task.context.repo_map_tokens,
+            )
+            if repo_map_result.content:
+                repo_map_text = repo_map_result.content
+        except Exception:
+            logger.warning("Failed to build repo map for planner", exc_info=True)
+
+    system_prompt = build_planner_system_prompt(
+        input.task, context_contents, repo_map=repo_map_text
+    )
     user_prompt = build_planner_user_prompt(input.task)
 
     return PlannerInput(
@@ -185,6 +250,16 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
+
+
+def _detect_package_name(repo_root: str) -> str:
+    """Detect the Python package name from the src/ directory."""
+    src_dir = Path(repo_root) / "src"
+    if src_dir.is_dir():
+        for child in sorted(src_dir.iterdir()):
+            if child.is_dir() and (child / "__init__.py").exists():
+                return child.name
+    return Path(repo_root).name
 
 
 @activity.defn
