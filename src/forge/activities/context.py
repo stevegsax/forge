@@ -213,6 +213,8 @@ def infer_task_tags(task: TaskDefinition) -> list[str]:
             tags.append("python")
         elif f.endswith(".ts") or f.endswith(".tsx"):
             tags.append("typescript")
+        elif f.endswith(".js") or f.endswith(".jsx"):
+            tags.append("javascript")
 
     desc_lower = task.description.lower()
     keyword_map = {
@@ -220,7 +222,9 @@ def infer_task_tags(task: TaskDefinition) -> list[str]:
         "refactor": "refactoring",
         "api": "api",
         "database": "database",
+        "migration": "migration",
         "cli": "cli",
+        "validate": "validation",
         "bug": "bug-fix",
         "fix": "bug-fix",
     }

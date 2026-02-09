@@ -55,6 +55,34 @@ class TestInferTaskTags:
         assert "refactoring" in tags
         assert "api" in tags
 
+    def test_javascript_files(self) -> None:
+        task = TaskDefinition(
+            task_id="t",
+            description="Create component",
+            target_files=["app.jsx"],
+        )
+        tags = infer_task_tags(task)
+        assert "javascript" in tags
+
+    def test_migration_keyword(self) -> None:
+        task = TaskDefinition(
+            task_id="t",
+            description="Add database migration",
+            target_files=[],
+        )
+        tags = infer_task_tags(task)
+        assert "database" in tags
+        assert "migration" in tags
+
+    def test_validation_keyword(self) -> None:
+        task = TaskDefinition(
+            task_id="t",
+            description="Validate input schema",
+            target_files=[],
+        )
+        tags = infer_task_tags(task)
+        assert "validation" in tags
+
     def test_default(self) -> None:
         task = TaskDefinition(
             task_id="t",

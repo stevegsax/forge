@@ -1,13 +1,14 @@
 """CLI entry point for Forge.
 
-Provides ``forge run``, ``forge worker``, and ``forge eval-planner`` subcommands.
+Provides ``forge run``, ``forge worker``, ``forge status``,
+``forge eval-planner``, ``forge extract``, and ``forge playbooks`` subcommands.
 
 Follows Function Core / Imperative Shell:
 - Pure functions: format_task_result, format_validation_results,
   build_task_definition, load_task_definition, format_eval_result,
-  format_deterministic_result
-- Async shell: _submit_and_wait, _submit_no_wait, _run_eval
-- Click commands: main, run, worker, eval_planner
+  format_deterministic_result, format_extraction_result, format_playbook_entry
+- Async shell: _submit_and_wait, _submit_no_wait, _run_eval, _submit_extraction
+- Click commands: main, run, worker, status, eval_planner, extract, playbooks
 """
 
 from __future__ import annotations

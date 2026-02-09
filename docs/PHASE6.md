@@ -69,8 +69,8 @@ During context assembly, playbooks are loaded and injected as `ContextItem` obje
 
 Tags are inferred deterministically from task metadata:
 
-- **File extensions:** `.py` -> `python`, `.ts`/`.tsx` -> `typescript`
-- **Description keywords:** `test` -> `test-writing`, `refactor` -> `refactoring`, `api` -> `api`, `bug`/`fix` -> `bug-fix`
+- **File extensions:** `.py` -> `python`, `.ts`/`.tsx` -> `typescript`, `.js`/`.jsx` -> `javascript`
+- **Description keywords:** `test` -> `test-writing`, `refactor` -> `refactoring`, `api` -> `api`, `database` -> `database`, `migration` -> `migration`, `cli` -> `cli`, `validate` -> `validation`, `bug`/`fix` -> `bug-fix`
 - **Default:** `code-generation` when no matches
 
 The same inference runs during extraction (to tag entries) and during retrieval (to query).

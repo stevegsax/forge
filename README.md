@@ -123,6 +123,25 @@ forge worker --temporal-address temporal.example.com:7233
 |--------|---------|-------------|
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 
+### `forge status`
+
+List recent workflow runs or show details for a specific workflow.
+
+```bash
+forge status                              # List recent runs
+forge status --workflow-id <id>           # Details for a specific run
+forge status --workflow-id <id> --verbose # Full prompts and interaction details
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--workflow-id` | — | Show details for a specific workflow run |
+| `--verbose` | off | Show full interaction details (prompts, tokens, latency) |
+| `--limit` | `20` | Number of recent runs to show |
+| `--json` | off | Machine-readable JSON output |
+
 ### `forge eval-planner`
 
 Evaluate planner output against an eval corpus. Runs deterministic checks and optionally LLM-as-judge scoring.
