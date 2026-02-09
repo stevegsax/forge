@@ -70,11 +70,15 @@ class TestDiscoverEvalCases:
 
     def test_skips_invalid_files(self, tmp_path: Path) -> None:
         good = tmp_path / "good.json"
-        good.write_text(json.dumps({
-            "case_id": "good",
-            "task": {"task_id": "t1", "description": "Test."},
-            "repo_root": "/tmp/repo",
-        }))
+        good.write_text(
+            json.dumps(
+                {
+                    "case_id": "good",
+                    "task": {"task_id": "t1", "description": "Test."},
+                    "repo_root": "/tmp/repo",
+                }
+            )
+        )
         bad = tmp_path / "bad.json"
         bad.write_text("not valid json")
 
@@ -93,18 +97,24 @@ class TestListRepoFiles:
         subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
         subprocess.run(
             ["git", "config", "user.email", "test@test.com"],
-            cwd=tmp_path, check=True, capture_output=True,
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
         )
         subprocess.run(
             ["git", "config", "user.name", "Test"],
-            cwd=tmp_path, check=True, capture_output=True,
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
         )
         (tmp_path / "a.py").write_text("x")
         (tmp_path / "b.py").write_text("y")
         subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "init"],
-            cwd=tmp_path, check=True, capture_output=True,
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
         )
 
         files = list_repo_files(tmp_path)

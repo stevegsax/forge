@@ -5,7 +5,8 @@ Decomposes a task into ordered steps using an LLM with structured output.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_planner_system_prompt, build_planner_user_prompt
 - Testable function: execute_planner_call (takes agent as argument)
-- Imperative shell: create_planner_agent, assemble_planner_context, call_planner
+- Imperative shell: create_planner_agent, assemble_planner_context, call_planner,
+  _persist_interaction
 """
 
 from __future__ import annotations
@@ -178,6 +179,40 @@ async def execute_planner_call(
 # ---------------------------------------------------------------------------
 
 
+def _persist_interaction(
+    planner_input: PlannerInput,
+    result: PlanCallResult,
+) -> None:
+    """Best-effort store write. Never raises (D42)."""
+    try:
+        from forge.models import AssembledContext
+        from forge.store import build_interaction_dict, get_db_path, get_engine, save_interaction
+
+        db_path = get_db_path()
+        if db_path is None:
+            return
+
+        # Build a minimal AssembledContext for the store
+        context = AssembledContext(
+            task_id=planner_input.task_id,
+            system_prompt=planner_input.system_prompt,
+            user_prompt=planner_input.user_prompt,
+        )
+
+        engine = get_engine(db_path)
+        data = build_interaction_dict(
+            task_id=planner_input.task_id,
+            step_id=None,
+            sub_task_id=None,
+            role="planner",
+            context=context,
+            llm_result=result,
+        )
+        save_interaction(engine, **data)
+    except Exception:
+        logger.warning("Failed to persist planner interaction to store", exc_info=True)
+
+
 def create_planner_agent(model_name: str | None = None) -> Agent[None, Plan]:
     """Create a pydantic-ai Agent configured for task decomposition."""
     from pydantic_ai import Agent
@@ -265,5 +300,22 @@ def _detect_package_name(repo_root: str) -> str:
 @activity.defn
 async def call_planner(input: PlannerInput) -> PlanCallResult:
     """Activity wrapper — creates an agent and delegates to execute_planner_call."""
-    agent = create_planner_agent()
-    return await execute_planner_call(input, agent)
+    from forge.tracing import get_tracer, llm_call_attributes
+
+    tracer = get_tracer()
+    with tracer.start_as_current_span("forge.call_planner") as span:
+        agent = create_planner_agent()
+        result = await execute_planner_call(input, agent)
+
+        span.set_attributes(
+            llm_call_attributes(
+                model_name=result.model_name,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                latency_ms=result.latency_ms,
+                task_id=input.task_id,
+            )
+        )
+
+        _persist_interaction(input, result)
+        return result

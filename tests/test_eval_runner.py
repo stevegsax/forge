@@ -167,15 +167,15 @@ class TestCompareRuns:
                     ],
                     overall_assessment="Test.",
                 )
-            results.append(PlanEvalResult(
-                case_id=case_id,
-                plan=_PLAN,
-                deterministic=det,
-                judge=judge,
-            ))
-        return EvalRunRecord(
-            run_id=run_id, model_name="test", results=results
-        )
+            results.append(
+                PlanEvalResult(
+                    case_id=case_id,
+                    plan=_PLAN,
+                    deterministic=det,
+                    judge=judge,
+                )
+            )
+        return EvalRunRecord(run_id=run_id, model_name="test", results=results)
 
     def test_no_changes(self) -> None:
         baseline = self._make_record("r1", [("c1", True, None)])

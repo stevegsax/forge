@@ -145,24 +145,35 @@ def _run_tests(worktree_path: Path, test_command: str) -> ValidationResult:
 @activity.defn
 async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     """Run enabled validation checks against generated files."""
-    wt = Path(input.worktree_path)
+    from forge.tracing import get_tracer, validation_attributes
 
-    # Fix phase: auto-correct cosmetic issues before checking.
-    # Lint fix first (may change imports), then format fix.
-    if input.validation.auto_fix and input.files:
-        _run_ruff_lint_fix(wt, input.files)
-        _run_ruff_format_fix(wt, input.files)
+    tracer = get_tracer()
+    with tracer.start_as_current_span("forge.validate_output") as span:
+        wt = Path(input.worktree_path)
 
-    # Check phase: validate the (possibly fixed) files.
-    results: list[ValidationResult] = []
+        # Fix phase: auto-correct cosmetic issues before checking.
+        # Lint fix first (may change imports), then format fix.
+        if input.validation.auto_fix and input.files:
+            _run_ruff_lint_fix(wt, input.files)
+            _run_ruff_format_fix(wt, input.files)
 
-    if input.validation.run_ruff_lint:
-        results.append(_run_ruff_lint(wt, input.files))
+        # Check phase: validate the (possibly fixed) files.
+        results: list[ValidationResult] = []
 
-    if input.validation.run_ruff_format:
-        results.append(_run_ruff_format_check(wt, input.files))
+        if input.validation.run_ruff_lint:
+            results.append(_run_ruff_lint(wt, input.files))
 
-    if input.validation.run_tests and input.validation.test_command:
-        results.append(_run_tests(wt, input.validation.test_command))
+        if input.validation.run_ruff_format:
+            results.append(_run_ruff_format_check(wt, input.files))
 
-    return results
+        if input.validation.run_tests and input.validation.test_command:
+            results.append(_run_tests(wt, input.validation.test_command))
+
+        span.set_attributes(
+            validation_attributes(
+                [(r.check_name, r.passed) for r in results],
+                task_id=input.task_id,
+            )
+        )
+
+        return results

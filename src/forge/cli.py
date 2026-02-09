@@ -31,7 +31,7 @@ from forge.models import (
 
 if TYPE_CHECKING:
     from forge.eval.models import DeterministicResult, PlanEvalResult
-    from forge.models import StepResult, SubTaskResult, ValidationResult
+    from forge.models import LLMStats, StepResult, SubTaskResult, ValidationResult
 
 # ---------------------------------------------------------------------------
 # Exit codes
@@ -102,6 +102,71 @@ def format_task_result(result: TaskResult) -> str:
         lines.append(f"Worktree: {result.worktree_path}")
     if result.worktree_branch:
         lines.append(f"Branch: {result.worktree_branch}")
+
+    return "\n".join(lines)
+
+
+def format_llm_stats(stats: LLMStats) -> str:
+    """Format LLMStats as a compact human-readable string."""
+    return (
+        f"model={stats.model_name} "
+        f"tokens={stats.input_tokens}in/{stats.output_tokens}out "
+        f"latency={stats.latency_ms:.0f}ms"
+    )
+
+
+def format_verbose_result(result: TaskResult) -> str:
+    """Format a TaskResult with full interaction details from the store."""
+    lines = [format_task_result(result)]
+
+    if result.llm_stats:
+        lines.append("")
+        lines.append(f"LLM: {format_llm_stats(result.llm_stats)}")
+
+    if result.planner_stats:
+        lines.append(f"Planner: {format_llm_stats(result.planner_stats)}")
+
+    if result.context_stats:
+        cs = result.context_stats
+        lines.append("")
+        lines.append("Context:")
+        lines.append(f"  Files discovered: {cs.files_discovered}")
+        lines.append(f"  Full content: {cs.files_included_full}")
+        lines.append(f"  Signatures only: {cs.files_included_signatures}")
+        lines.append(f"  Estimated tokens: {cs.total_estimated_tokens}")
+        lines.append(f"  Budget utilization: {cs.budget_utilization:.1%}")
+
+    for sr in result.step_results:
+        if sr.llm_stats:
+            lines.append(f"  Step {sr.step_id}: {format_llm_stats(sr.llm_stats)}")
+        for st in sr.sub_task_results:
+            if st.llm_stats:
+                lines.append(f"    Sub-task {st.sub_task_id}: {format_llm_stats(st.llm_stats)}")
+
+    # Query store for interaction details
+    try:
+        from forge.store import get_db_path, get_engine, get_interactions
+
+        db_path = get_db_path()
+        if db_path is not None and db_path.exists():
+            engine = get_engine(db_path)
+            interactions = get_interactions(engine, result.task_id)
+            if interactions:
+                lines.append("")
+                lines.append(f"Interactions ({len(interactions)}):")
+                for ix in interactions:
+                    role = ix["role"]
+                    model = ix["model_name"]
+                    tokens = f"{ix['input_tokens']}in/{ix['output_tokens']}out"
+                    latency = f"{ix['latency_ms']:.0f}ms"
+                    step_info = ""
+                    if ix.get("step_id"):
+                        step_info = f" step={ix['step_id']}"
+                    if ix.get("sub_task_id"):
+                        step_info += f" sub_task={ix['sub_task_id']}"
+                    lines.append(f"  [{role}]{step_info} {model} {tokens} {latency}")
+    except Exception:
+        pass
 
     return "\n".join(lines)
 
@@ -235,6 +300,21 @@ async def _submit_no_wait(
     return handle.id
 
 
+def _persist_run(result: TaskResult, workflow_id: str) -> None:
+    """Best-effort persistence of run result to the store."""
+    try:
+        from forge.store import get_db_path, get_engine
+        from forge.store import save_run as store_save_run
+
+        db_path = get_db_path()
+        if db_path is None:
+            return
+        engine = get_engine(db_path)
+        store_save_run(engine, result, workflow_id)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Click commands
 # ---------------------------------------------------------------------------
@@ -282,6 +362,7 @@ def main() -> None:
     type=int,
     help="Retry limit per sub-task in fan-out steps.",
 )
+@click.option("--verbose", is_flag=True, help="Show detailed LLM stats and interactions.")
 @click.option("--no-auto-discover", is_flag=True, help="Disable automatic context discovery.")
 @click.option(
     "--token-budget",
@@ -319,6 +400,7 @@ def run(
     use_plan: bool,
     max_step_attempts: int,
     max_sub_task_attempts: int,
+    verbose: bool,
     no_auto_discover: bool,
     token_budget: int | None,
     max_import_depth: int | None,
@@ -398,8 +480,15 @@ def run(
                     max_sub_task_attempts=max_sub_task_attempts,
                 )
             )
+
+            # Persist run to store (best-effort)
+            workflow_id = f"forge-task-{task_def.task_id}"
+            _persist_run(result, workflow_id)
+
             if output_json:
                 click.echo(result.model_dump_json(indent=2))
+            elif verbose:
+                click.echo(format_verbose_result(result))
             else:
                 click.echo(format_task_result(result))
 
@@ -423,6 +512,91 @@ def worker(temporal_address: str) -> None:
     from forge.worker import run_worker
 
     asyncio.run(run_worker(address=temporal_address))
+
+
+# ---------------------------------------------------------------------------
+# Status command
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--workflow-id", default=None, help="Show details for a specific workflow run.")
+@click.option("--verbose", is_flag=True, help="Show full interaction details.")
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+@click.option(
+    "--limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Number of recent runs to show.",
+)
+def status(
+    workflow_id: str | None,
+    verbose: bool,
+    output_json: bool,
+    limit: int,
+) -> None:
+    """List recent runs or show details for a specific workflow."""
+    import json as json_mod
+
+    from forge.store import get_db_path, get_engine, get_interactions, get_run, list_recent_runs
+
+    db_path = get_db_path()
+    if db_path is None or not db_path.exists():
+        click.echo("No store available. Set FORGE_DB_PATH or run a workflow first.", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    engine = get_engine(db_path)
+
+    if workflow_id:
+        run_data = get_run(engine, workflow_id)
+        if run_data is None:
+            click.echo(f"No run found for workflow ID: {workflow_id}", err=True)
+            sys.exit(EXIT_FAILURE)
+
+        if output_json:
+            click.echo(json_mod.dumps(run_data, indent=2, default=str))
+        else:
+            click.echo(f"Workflow: {run_data['workflow_id']}")
+            click.echo(f"Task: {run_data['task_id']}")
+            click.echo(f"Status: {run_data['status']}")
+            click.echo(f"Created: {run_data['created_at']}")
+
+            if verbose:
+                task_id = run_data["task_id"]
+                interactions = get_interactions(engine, task_id)
+                if interactions:
+                    click.echo("")
+                    click.echo(f"Interactions ({len(interactions)}):")
+                    for ix in interactions:
+                        role = ix["role"]
+                        model = ix["model_name"]
+                        tokens = f"{ix['input_tokens']}in/{ix['output_tokens']}out"
+                        latency = f"{ix['latency_ms']:.0f}ms"
+                        step_info = ""
+                        if ix.get("step_id"):
+                            step_info = f" step={ix['step_id']}"
+                        if ix.get("sub_task_id"):
+                            step_info += f" sub_task={ix['sub_task_id']}"
+                        click.echo(f"  [{role}]{step_info} {model} {tokens} {latency}")
+
+                        click.echo(f"    System prompt: {ix['system_prompt'][:200]}...")
+                        click.echo(f"    User prompt: {ix['user_prompt'][:200]}")
+    else:
+        runs = list_recent_runs(engine, limit=limit)
+        if not runs:
+            click.echo("No runs found.")
+            return
+
+        if output_json:
+            click.echo(json_mod.dumps(runs, indent=2, default=str))
+        else:
+            click.echo(f"Recent runs ({len(runs)}):")
+            click.echo("")
+            for r in runs:
+                click.echo(
+                    f"  {r['workflow_id']}  {r['task_id']}  {r['status']}  {r['created_at']}"
+                )
 
 
 # ---------------------------------------------------------------------------

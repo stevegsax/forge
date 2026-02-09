@@ -6,6 +6,7 @@ and runs the worker until interrupted.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from temporalio.client import Client
@@ -32,11 +33,34 @@ from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWor
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
+logger = logging.getLogger(__name__)
+
+
+def _init_store() -> None:
+    """Run database migrations on startup (best-effort)."""
+    try:
+        from forge.store import get_db_path, run_migrations
+
+        db_path = get_db_path()
+        if db_path is None:
+            logger.info("Observability store disabled (FORGE_DB_PATH is empty)")
+            return
+
+        run_migrations(db_path)
+        logger.info("Database migrations complete: %s", db_path)
+    except Exception:
+        logger.warning("Failed to run database migrations", exc_info=True)
+
 
 async def run_worker(address: str | None = None) -> None:
     """Connect to Temporal and run the Forge worker."""
+    from forge.tracing import init_tracing, shutdown_tracing
+
     if address is None:
         address = os.environ.get("FORGE_TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS)
+
+    _init_store()
+    init_tracing()
 
     client = await Client.connect(
         address,
@@ -65,4 +89,7 @@ async def run_worker(address: str | None = None) -> None:
         ],
     )
 
-    await worker.run()
+    try:
+        await worker.run()
+    finally:
+        shutdown_tracing()

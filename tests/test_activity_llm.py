@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from forge.activities.llm import create_agent, execute_llm_call
-from forge.models import AssembledContext, FileOutput, LLMResponse
+from forge.activities.llm import _persist_interaction, create_agent, execute_llm_call
+from forge.models import AssembledContext, FileOutput, LLMCallResult, LLMResponse
 
 # ---------------------------------------------------------------------------
 # create_agent
@@ -116,3 +116,70 @@ class TestExecuteLlmCall:
         result = await execute_llm_call(context, agent)
 
         assert result.response.explanation == "Created output file."
+
+
+# ---------------------------------------------------------------------------
+# _persist_interaction (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistInteraction:
+    def _make_context(self) -> AssembledContext:
+        return AssembledContext(
+            task_id="llm-task",
+            system_prompt="sys",
+            user_prompt="usr",
+        )
+
+    def _make_result(self) -> LLMCallResult:
+        return LLMCallResult(
+            task_id="llm-task",
+            response=LLMResponse(
+                files=[FileOutput(file_path="out.py", content="pass")],
+                explanation="Done.",
+            ),
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+        )
+
+    @patch("forge.store.save_interaction")
+    @patch("forge.store.get_engine")
+    @patch("forge.store.get_db_path")
+    def test_calls_save_interaction(
+        self,
+        mock_get_db_path: MagicMock,
+        mock_get_engine: MagicMock,
+        mock_save: MagicMock,
+    ) -> None:
+        from pathlib import Path
+
+        mock_get_db_path.return_value = Path("/tmp/test.db")
+        mock_get_engine.return_value = MagicMock()
+
+        _persist_interaction(self._make_context(), self._make_result())
+        mock_save.assert_called_once()
+
+    @patch("forge.store.get_db_path")
+    def test_skips_when_disabled(self, mock_get_db_path: MagicMock) -> None:
+        mock_get_db_path.return_value = None
+        # Should not raise
+        _persist_interaction(self._make_context(), self._make_result())
+
+    @patch("forge.store.save_interaction", side_effect=RuntimeError("db error"))
+    @patch("forge.store.get_engine")
+    @patch("forge.store.get_db_path")
+    def test_catches_exceptions(
+        self,
+        mock_get_db_path: MagicMock,
+        mock_get_engine: MagicMock,
+        mock_save: MagicMock,
+    ) -> None:
+        from pathlib import Path
+
+        mock_get_db_path.return_value = Path("/tmp/test.db")
+        mock_get_engine.return_value = MagicMock()
+
+        # Should not raise despite save_interaction throwing
+        _persist_interaction(self._make_context(), self._make_result())

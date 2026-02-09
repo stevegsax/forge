@@ -118,8 +118,7 @@ def check_sub_task_targets_non_overlapping(
             for f in st.target_files:
                 if f in seen_files:
                     overlaps.append(
-                        f"{step.step_id}: {f} claimed by "
-                        f"{seen_files[f]} and {st.sub_task_id}"
+                        f"{step.step_id}: {f} claimed by {seen_files[f]} and {st.sub_task_id}"
                     )
                 else:
                     seen_files[f] = st.sub_task_id
@@ -234,9 +233,7 @@ def check_no_forward_references(
                     if f not in available:
                         for j in range(i, len(plan.steps)):
                             if f in step_outputs[j]:
-                                forward_refs.append(
-                                    f"{step.step_id}/{st.sub_task_id}: {f}"
-                                )
+                                forward_refs.append(f"{step.step_id}/{st.sub_task_id}: {f}")
                                 break
 
     if forward_refs:

@@ -16,10 +16,12 @@ from forge.cli import (
     build_task_definition,
     format_deterministic_result,
     format_eval_result,
+    format_llm_stats,
     format_step_result,
     format_sub_task_result,
     format_task_result,
     format_validation_results,
+    format_verbose_result,
     load_task_definition,
     main,
 )
@@ -1025,3 +1027,192 @@ class TestEvalPlannerCommand:
         if result.exit_code == 0:
             json_files = list(tmp_path.glob("*.json"))
             assert len(json_files) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 CLI tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatLlmStats:
+    def test_format(self) -> None:
+        from forge.models import LLMStats
+
+        stats = LLMStats(
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=250.0,
+        )
+        output = format_llm_stats(stats)
+        assert "test-model" in output
+        assert "100in" in output
+        assert "50out" in output
+        assert "250ms" in output
+
+
+class TestFormatVerboseResult:
+    def test_with_llm_stats(self) -> None:
+        from forge.models import LLMStats
+
+        stats = LLMStats(
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=250.0,
+        )
+        result = TaskResult(
+            task_id="t",
+            status=TransitionSignal.SUCCESS,
+            llm_stats=stats,
+        )
+        output = format_verbose_result(result)
+        assert "LLM:" in output
+        assert "test-model" in output
+
+    def test_with_context_stats(self) -> None:
+        from forge.models import ContextStats
+
+        result = TaskResult(
+            task_id="t",
+            status=TransitionSignal.SUCCESS,
+            context_stats=ContextStats(
+                files_discovered=10,
+                files_included_full=5,
+                total_estimated_tokens=5000,
+                budget_utilization=0.75,
+            ),
+        )
+        output = format_verbose_result(result)
+        assert "Context:" in output
+        assert "Files discovered: 10" in output
+        assert "75.0%" in output
+
+    def test_without_stats(self) -> None:
+        result = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        output = format_verbose_result(result)
+        assert "Task: t" in output
+        assert "LLM:" not in output
+
+
+class TestVerboseFlag:
+    def test_verbose_in_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "--verbose" in result.output
+
+    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli.discover_repo_root")
+    @patch("forge.cli._persist_run")
+    def test_verbose_flag_shows_stats(
+        self,
+        mock_persist: object,
+        mock_discover: object,
+        mock_submit: AsyncMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        from forge.models import LLMStats
+
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.return_value = TaskResult(
+            task_id="t",
+            status=TransitionSignal.SUCCESS,
+            llm_stats=LLMStats(
+                model_name="test-model",
+                input_tokens=100,
+                output_tokens=50,
+                latency_ms=250.0,
+            ),
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--verbose",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "LLM:" in result.output
+        assert "test-model" in result.output
+
+
+class TestStatusCommand:
+    def test_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["status", "--help"])
+        assert result.exit_code == 0
+        assert "--workflow-id" in result.output
+        assert "--verbose" in result.output
+        assert "--json" in result.output
+
+    def test_no_store(self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_DB_PATH", "")
+        result = cli_runner.invoke(main, ["status"])
+        assert result.exit_code == EXIT_FAILURE
+        assert "No store available" in result.output
+
+    def test_list_runs(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_run
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_run(
+            engine,
+            TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
+            "wf-123",
+        )
+
+        result = cli_runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "wf-123" in result.output
+
+    def test_specific_run(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_run
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_run(
+            engine,
+            TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
+            "wf-123",
+        )
+
+        result = cli_runner.invoke(main, ["status", "--workflow-id", "wf-123"])
+        assert result.exit_code == 0
+        assert "wf-123" in result.output
+        assert "t1" in result.output
+
+    def test_json_output(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_run
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_run(
+            engine,
+            TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
+            "wf-123",
+        )
+
+        result = cli_runner.invoke(main, ["status", "--json"])
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert isinstance(parsed, list)

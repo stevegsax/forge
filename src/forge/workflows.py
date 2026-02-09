@@ -44,6 +44,8 @@ with workflow.unsafe.imports_passed_through():
         WriteFilesInput,
         WriteOutputInput,
         WriteResult,
+        build_llm_stats,
+        build_planner_stats,
     )
 
 FORGE_TASK_QUEUE = "forge-task-queue"
@@ -194,6 +196,8 @@ class ForgeTaskWorkflow:
                     validation_results=validation_results,
                     worktree_path=wt_output.worktree_path,
                     worktree_branch=wt_output.branch_name,
+                    llm_stats=build_llm_stats(llm_result),
+                    context_stats=context.context_stats,
                 )
 
             if signal == TransitionSignal.FAILURE_RETRYABLE:
@@ -229,6 +233,8 @@ class ForgeTaskWorkflow:
                 error=error,
                 worktree_path=wt_output.worktree_path,
                 worktree_branch=wt_output.branch_name,
+                llm_stats=build_llm_stats(llm_result),
+                context_stats=context.context_stats,
             )
 
         # Should not be reachable, but satisfy the type checker.
@@ -275,6 +281,7 @@ class ForgeTaskWorkflow:
             result_type=PlanCallResult,
         )
         plan: Plan = planner_result.plan
+        p_stats = build_planner_stats(planner_result)
         step_results: list[StepResult] = []
         all_output_files: dict[str, str] = {}
 
@@ -294,6 +301,7 @@ class ForgeTaskWorkflow:
                         worktree_branch=wt_output.branch_name,
                         step_results=step_results,
                         plan=plan,
+                        planner_stats=p_stats,
                     )
                 all_output_files.update(step_result.output_files)
                 continue
@@ -385,6 +393,7 @@ class ForgeTaskWorkflow:
                             output_files=output_files,
                             validation_results=validation_results,
                             commit_sha=commit_output.commit_sha,
+                            llm_stats=build_llm_stats(llm_result),
                         )
                     )
                     all_output_files.update(output_files)
@@ -413,6 +422,7 @@ class ForgeTaskWorkflow:
                         output_files=output_files,
                         validation_results=validation_results,
                         error=error,
+                        llm_stats=build_llm_stats(llm_result),
                     )
                 )
                 return TaskResult(
@@ -425,6 +435,7 @@ class ForgeTaskWorkflow:
                     worktree_branch=wt_output.branch_name,
                     step_results=step_results,
                     plan=plan,
+                    planner_stats=p_stats,
                 )
 
             if not step_succeeded:
@@ -441,6 +452,7 @@ class ForgeTaskWorkflow:
             worktree_branch=wt_output.branch_name,
             step_results=step_results,
             plan=plan,
+            planner_stats=p_stats,
         )
 
     # ------------------------------------------------------------------
@@ -720,6 +732,7 @@ class ForgeSubTaskWorkflow:
                     output_files=output_files,
                     validation_results=validation_results,
                     digest=digest,
+                    llm_stats=build_llm_stats(llm_result),
                 )
 
             if signal == TransitionSignal.FAILURE_TERMINAL:
@@ -729,6 +742,7 @@ class ForgeSubTaskWorkflow:
                     status=TransitionSignal.FAILURE_TERMINAL,
                     validation_results=validation_results,
                     error=error,
+                    llm_stats=build_llm_stats(llm_result),
                 )
 
             # FAILURE_RETRYABLE — worktree already removed, loop will recreate

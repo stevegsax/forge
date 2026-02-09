@@ -140,6 +140,7 @@ class SubTaskResult(BaseModel):
     validation_results: list[ValidationResult] = Field(default_factory=list)
     digest: str = Field(default="", description="From LLMResponse.explanation (D18).")
     error: str | None = None
+    llm_stats: LLMStats | None = None
 
 
 class StepResult(BaseModel):
@@ -152,6 +153,7 @@ class StepResult(BaseModel):
     commit_sha: str | None = None
     error: str | None = None
     sub_task_results: list[SubTaskResult] = Field(default_factory=list)
+    llm_stats: LLMStats | None = None
 
 
 class TaskResult(BaseModel):
@@ -172,6 +174,43 @@ class TaskResult(BaseModel):
     worktree_branch: str | None = None
     step_results: list[StepResult] = Field(default_factory=list)
     plan: Plan | None = None
+    llm_stats: LLMStats | None = None
+    planner_stats: LLMStats | None = None
+    context_stats: ContextStats | None = None
+
+
+# ---------------------------------------------------------------------------
+# LLM statistics (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+class LLMStats(BaseModel):
+    """Lightweight LLM call statistics for Temporal payloads."""
+
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+
+
+def build_llm_stats(llm_result: LLMCallResult) -> LLMStats:
+    """Build LLMStats from an LLMCallResult."""
+    return LLMStats(
+        model_name=llm_result.model_name,
+        input_tokens=llm_result.input_tokens,
+        output_tokens=llm_result.output_tokens,
+        latency_ms=llm_result.latency_ms,
+    )
+
+
+def build_planner_stats(planner_result: PlanCallResult) -> LLMStats:
+    """Build LLMStats from a PlanCallResult."""
+    return LLMStats(
+        model_name=planner_result.model_name,
+        input_tokens=planner_result.input_tokens,
+        output_tokens=planner_result.output_tokens,
+        latency_ms=planner_result.latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +244,8 @@ class AssembledContext(BaseModel):
     system_prompt: str
     user_prompt: str
     context_stats: ContextStats | None = None
+    step_id: str | None = None
+    sub_task_id: str | None = None
 
 
 class LLMCallResult(BaseModel):

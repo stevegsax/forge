@@ -295,9 +295,7 @@ class TestCheckAllTaskTargetsCovered:
         assert r.status == CheckStatus.SKIP
 
     def test_pass_all_covered(self) -> None:
-        task = TaskDefinition(
-            task_id="t1", description="Test.", target_files=["a.py", "b.py"]
-        )
+        task = TaskDefinition(task_id="t1", description="Test.", target_files=["a.py", "b.py"])
         plan = _plan(
             PlanStep(step_id="s1", description="x", target_files=["a.py"]),
             PlanStep(step_id="s2", description="y", target_files=["b.py"]),
@@ -429,9 +427,7 @@ class TestRunDeterministicChecks:
         assert result.all_passed is False
 
     def test_with_known_repo_files(self) -> None:
-        task = TaskDefinition(
-            task_id="t1", description="Test.", target_files=["a.py"]
-        )
+        task = TaskDefinition(task_id="t1", description="Test.", target_files=["a.py"])
         plan = _plan(
             PlanStep(
                 step_id="s1",

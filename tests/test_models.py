@@ -11,7 +11,11 @@ from forge.models import (
     CommitChangesInput,
     ContextConfig,
     ContextStats,
+    FileOutput,
     ForgeTaskInput,
+    LLMCallResult,
+    LLMResponse,
+    LLMStats,
     Plan,
     PlanCallResult,
     PlannerInput,
@@ -25,6 +29,8 @@ from forge.models import (
     TaskResult,
     TransitionSignal,
     WriteFilesInput,
+    build_llm_stats,
+    build_planner_stats,
 )
 
 # ---------------------------------------------------------------------------
@@ -423,3 +429,141 @@ class TestAssembledContextStats:
         )
         rebuilt = AssembledContext.model_validate_json(ctx.model_dump_json())
         assert rebuilt.context_stats == stats
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Observability store models
+# ---------------------------------------------------------------------------
+
+
+class TestLLMStats:
+    def test_creation(self) -> None:
+        stats = LLMStats(
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=250.0,
+        )
+        assert stats.model_name == "test-model"
+        assert stats.input_tokens == 100
+        assert stats.output_tokens == 50
+        assert stats.latency_ms == 250.0
+
+    def test_round_trip(self) -> None:
+        stats = LLMStats(
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=250.0,
+        )
+        rebuilt = LLMStats.model_validate_json(stats.model_dump_json())
+        assert rebuilt == stats
+
+
+class TestBuildLlmStats:
+    def test_from_llm_call_result(self) -> None:
+        result = LLMCallResult(
+            task_id="t",
+            response=LLMResponse(
+                files=[FileOutput(file_path="a.py", content="pass")],
+                explanation="Created.",
+            ),
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=250.0,
+        )
+        stats = build_llm_stats(result)
+        assert stats.model_name == "test-model"
+        assert stats.input_tokens == 100
+        assert stats.output_tokens == 50
+        assert stats.latency_ms == 250.0
+
+
+class TestBuildPlannerStats:
+    def test_from_plan_call_result(self) -> None:
+        plan = Plan(
+            task_id="t",
+            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"])],
+            explanation="test",
+        )
+        result = PlanCallResult(
+            task_id="t",
+            plan=plan,
+            model_name="planner-model",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=500.0,
+        )
+        stats = build_planner_stats(result)
+        assert stats.model_name == "planner-model"
+        assert stats.input_tokens == 200
+        assert stats.output_tokens == 100
+        assert stats.latency_ms == 500.0
+
+
+class TestTaskResultLLMStats:
+    def test_default_none(self) -> None:
+        result = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        assert result.llm_stats is None
+        assert result.planner_stats is None
+        assert result.context_stats is None
+
+    def test_with_stats(self) -> None:
+        stats = LLMStats(model_name="m", input_tokens=1, output_tokens=2, latency_ms=3.0)
+        result = TaskResult(
+            task_id="t",
+            status=TransitionSignal.SUCCESS,
+            llm_stats=stats,
+            planner_stats=stats,
+            context_stats=ContextStats(files_discovered=5),
+        )
+        assert result.llm_stats == stats
+        assert result.planner_stats == stats
+        assert result.context_stats is not None
+
+    def test_backward_compat(self) -> None:
+        """Old results without llm_stats still deserialize."""
+        data = '{"task_id": "t", "status": "success"}'
+        result = TaskResult.model_validate_json(data)
+        assert result.llm_stats is None
+
+
+class TestStepResultLLMStats:
+    def test_default_none(self) -> None:
+        sr = StepResult(step_id="s1", status=TransitionSignal.SUCCESS)
+        assert sr.llm_stats is None
+
+
+class TestSubTaskResultLLMStats:
+    def test_default_none(self) -> None:
+        sr = SubTaskResult(sub_task_id="st1", status=TransitionSignal.SUCCESS)
+        assert sr.llm_stats is None
+
+
+class TestAssembledContextStepSubTaskId:
+    def test_defaults_none(self) -> None:
+        ctx = AssembledContext(task_id="t", system_prompt="sys", user_prompt="usr")
+        assert ctx.step_id is None
+        assert ctx.sub_task_id is None
+
+    def test_with_ids(self) -> None:
+        ctx = AssembledContext(
+            task_id="t",
+            system_prompt="sys",
+            user_prompt="usr",
+            step_id="step-1",
+            sub_task_id="st-1",
+        )
+        assert ctx.step_id == "step-1"
+        assert ctx.sub_task_id == "st-1"
+
+    def test_round_trip(self) -> None:
+        ctx = AssembledContext(
+            task_id="t",
+            system_prompt="sys",
+            user_prompt="usr",
+            step_id="step-1",
+        )
+        rebuilt = AssembledContext.model_validate_json(ctx.model_dump_json())
+        assert rebuilt.step_id == "step-1"

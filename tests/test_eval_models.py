@@ -72,9 +72,7 @@ class TestDeterministicResult:
         assert r.checks == []
 
     def test_with_failing_check(self) -> None:
-        check = DeterministicCheckResult(
-            check_name="x", status=CheckStatus.FAIL, message="bad"
-        )
+        check = DeterministicCheckResult(check_name="x", status=CheckStatus.FAIL, message="bad")
         r = DeterministicResult(checks=[check], all_passed=False)
         assert r.all_passed is False
 
@@ -199,14 +197,10 @@ class TestPlanEvalResult:
         )
         det = DeterministicResult(checks=[], all_passed=True)
         verdict = JudgeVerdict(
-            scores=[
-                JudgeScore(criterion=JudgeCriterion.COMPLETENESS, score=5, rationale="Good.")
-            ],
+            scores=[JudgeScore(criterion=JudgeCriterion.COMPLETENESS, score=5, rationale="Good.")],
             overall_assessment="Fine.",
         )
-        result = PlanEvalResult(
-            case_id="case-1", plan=plan, deterministic=det, judge=verdict
-        )
+        result = PlanEvalResult(case_id="case-1", plan=plan, deterministic=det, judge=verdict)
         assert result.judge is not None
 
 

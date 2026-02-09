@@ -211,6 +211,15 @@ async def assemble_context(input: AssembleContextInput) -> AssembledContext:
     automatic context discovery via import graph analysis. Otherwise
     falls back to manual context_files.
     """
+    from forge.tracing import get_tracer
+
+    tracer = get_tracer()
+    with tracer.start_as_current_span("forge.assemble_context"):
+        return await _assemble_context_inner(input)
+
+
+async def _assemble_context_inner(input: AssembleContextInput) -> AssembledContext:
+    """Inner implementation of assemble_context (extracted for span wrapping)."""
     task = input.task
     repo_root = Path(input.repo_root)
 
@@ -351,6 +360,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         task_id=input.task.task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
+        step_id=input.step.step_id,
     )
 
 
@@ -431,4 +441,5 @@ async def assemble_sub_task_context(
         task_id=input.parent_task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
+        sub_task_id=input.sub_task.sub_task_id,
     )
