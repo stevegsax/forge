@@ -1,0 +1,17 @@
+{
+    "case_id": "fan-out",
+    "task": {
+        "task_id": "add-tests",
+        "description": "Add unit tests for both models and api modules. Tests for each module are independent.",
+        "target_files": [
+            "tests/test_models.py",
+            "tests/test_api.py"
+        ],
+        "context_files": [
+            "src/myapp/models.py",
+            "src/myapp/api.py"
+        ]
+    },
+    "repo_root": "tests/fixtures/eval/simple_project",
+    "tags": ["fan-out", "testing", "simple"]
+}

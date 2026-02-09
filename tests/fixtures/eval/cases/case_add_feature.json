@@ -1,0 +1,17 @@
+{
+    "case_id": "add-feature",
+    "task": {
+        "task_id": "add-auth",
+        "description": "Add user authentication with password hashing to the simple project.",
+        "target_files": [
+            "src/myapp/auth.py",
+            "src/myapp/models.py"
+        ],
+        "context_files": [
+            "src/myapp/models.py",
+            "src/myapp/api.py"
+        ]
+    },
+    "repo_root": "tests/fixtures/eval/simple_project",
+    "tags": ["feature", "simple"]
+}

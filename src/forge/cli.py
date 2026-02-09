@@ -1,12 +1,13 @@
 """CLI entry point for Forge.
 
-Provides ``forge run`` and ``forge worker`` subcommands.
+Provides ``forge run``, ``forge worker``, and ``forge eval-planner`` subcommands.
 
 Follows Function Core / Imperative Shell:
 - Pure functions: format_task_result, format_validation_results,
-  build_task_definition, load_task_definition
-- Async shell: _submit_and_wait, _submit_no_wait
-- Click commands: main, run, worker
+  build_task_definition, load_task_definition, format_eval_result,
+  format_deterministic_result
+- Async shell: _submit_and_wait, _submit_no_wait, _run_eval
+- Click commands: main, run, worker, eval_planner
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
+    from forge.eval.models import DeterministicResult, PlanEvalResult
     from forge.models import StepResult, SubTaskResult, ValidationResult
 
 # ---------------------------------------------------------------------------
@@ -421,3 +423,199 @@ def worker(temporal_address: str) -> None:
     from forge.worker import run_worker
 
     asyncio.run(run_worker(address=temporal_address))
+
+
+# ---------------------------------------------------------------------------
+# Eval-planner pure functions
+# ---------------------------------------------------------------------------
+
+
+def format_deterministic_result(det: DeterministicResult) -> str:
+    """Format a DeterministicResult as human-readable lines."""
+    from forge.eval.models import CheckStatus
+
+    lines: list[str] = []
+    for check in det.checks:
+        tag = {CheckStatus.PASS: "PASS", CheckStatus.FAIL: "FAIL", CheckStatus.SKIP: "SKIP"}[
+            check.status
+        ]
+        lines.append(f"  [{tag}] {check.check_name}: {check.message}")
+        for detail in check.details:
+            lines.append(f"         {detail}")
+    return "\n".join(lines)
+
+
+def format_eval_result(result: PlanEvalResult) -> str:
+    """Format a PlanEvalResult for human-readable terminal output."""
+    lines: list[str] = [
+        f"Case: {result.case_id}",
+        f"Plan: {len(result.plan.steps)} step(s)",
+        f"Deterministic: {'PASS' if result.deterministic.all_passed else 'FAIL'}",
+    ]
+    lines.append(format_deterministic_result(result.deterministic))
+
+    if result.judge:
+        lines.append("")
+        lines.append("Judge scores:")
+        for score in result.judge.scores:
+            lines.append(f"  {score.criterion.value}: {score.score}/5 — {score.rationale}")
+        lines.append(f"  Overall: {result.judge.overall_assessment}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Eval-planner async shell
+# ---------------------------------------------------------------------------
+
+
+async def _run_eval(
+    corpus_dir: str,
+    plans_dir: str | None,
+    *,
+    run_judge: bool,
+    judge_model: str | None,
+) -> list[PlanEvalResult]:
+    """Load corpus, discover plans, and run evaluation."""
+    from forge.eval.corpus import discover_eval_cases, list_repo_files
+    from forge.eval.deterministic import run_deterministic_checks
+    from forge.eval.runner import build_eval_result
+    from forge.models import Plan
+
+    cases = discover_eval_cases(Path(corpus_dir))
+    if not cases:
+        click.echo("No eval cases found.", err=True)
+        return []
+
+    # Load plans from plans_dir if provided, otherwise use reference plans from cases
+    plans: dict[str, Plan] = {}
+    if plans_dir:
+        plans_path = Path(plans_dir)
+        if plans_path.is_dir():
+            for json_file in sorted(plans_path.glob("*.json")):
+                try:
+                    content = json_file.read_text()
+                    plan = Plan.model_validate_json(content)
+                    plans[plan.task_id] = plan
+                except Exception:
+                    click.echo(f"Warning: skipping invalid plan {json_file}", err=True)
+
+    results: list[PlanEvalResult] = []
+    for case in cases:
+        # Try to find a plan: by task_id from plans_dir, or reference_plan from case
+        plan = plans.get(case.task.task_id) or case.reference_plan
+        if plan is None:
+            click.echo(f"Warning: no plan for case {case.case_id}, skipping.", err=True)
+            continue
+
+        repo_root = Path(case.repo_root)
+        known_files = list_repo_files(repo_root) if repo_root.is_dir() else None
+
+        det = run_deterministic_checks(plan, case.task, known_files)
+
+        verdict = None
+        if run_judge:
+            from forge.eval.judge import judge_plan
+
+            verdict = await judge_plan(case, plan, model_name=judge_model)
+
+        result = build_eval_result(case.case_id, plan, det, verdict)
+        results.append(result)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# eval-planner command
+# ---------------------------------------------------------------------------
+
+
+@main.command("eval-planner")
+@click.option(
+    "--corpus-dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing eval case JSON files.",
+)
+@click.option(
+    "--plans-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Directory containing plan JSON files.",
+)
+@click.option("--judge/--no-judge", default=False, help="Run LLM judge scoring.")
+@click.option(
+    "--judge-model",
+    default=None,
+    help="Model to use as judge (default: claude-sonnet-4-5-20250929).",
+)
+@click.option("--dry-run", is_flag=True, help="List cases without evaluating.")
+@click.option(
+    "--output-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory to save run results JSON.",
+)
+@click.option("--json", "output_json", is_flag=True, help="Output results as JSON.")
+def eval_planner(
+    corpus_dir: str,
+    plans_dir: str | None,
+    judge: bool,
+    judge_model: str | None,
+    dry_run: bool,
+    output_dir: str | None,
+    output_json: bool,
+) -> None:
+    """Evaluate planner output against an eval corpus."""
+    from forge.eval.corpus import discover_eval_cases
+
+    cases = discover_eval_cases(Path(corpus_dir))
+    if not cases:
+        click.echo("No eval cases found.", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    if dry_run:
+        click.echo(f"Found {len(cases)} eval case(s):")
+        for case in cases:
+            tags = f" [{', '.join(case.tags)}]" if case.tags else ""
+            click.echo(f"  {case.case_id}: {case.task.description}{tags}")
+        return
+
+    results = asyncio.run(
+        _run_eval(corpus_dir, plans_dir, run_judge=judge, judge_model=judge_model)
+    )
+
+    if not results:
+        click.echo("No results produced.", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    if output_json:
+        import json
+
+        data = [r.model_dump(mode="json") for r in results]
+        click.echo(json.dumps(data, indent=2, default=str))
+    else:
+        for result in results:
+            click.echo(format_eval_result(result))
+            click.echo("")
+
+    # Save if output-dir specified
+    if output_dir:
+        import uuid
+
+        from forge.eval.models import EvalRunRecord
+
+        record = EvalRunRecord(
+            run_id=str(uuid.uuid4())[:8],
+            model_name="unknown",
+            judge_model=judge_model if judge else None,
+            results=results,
+        )
+        from forge.eval.runner import save_run
+
+        path = save_run(record, output_dir=Path(output_dir))
+        click.echo(f"Results saved to {path}")
+
+    # Exit with failure if any deterministic check failed
+    if any(not r.deterministic.all_passed for r in results):
+        sys.exit(EXIT_FAILURE)

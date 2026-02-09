@@ -1,0 +1,17 @@
+{
+    "case_id": "refactor",
+    "task": {
+        "task_id": "refactor-models",
+        "description": "Refactor the data models to use Pydantic BaseModel instead of dataclasses.",
+        "target_files": [
+            "src/myapp/models.py",
+            "src/myapp/api.py"
+        ],
+        "context_files": [
+            "src/myapp/models.py",
+            "src/myapp/api.py"
+        ]
+    },
+    "repo_root": "tests/fixtures/eval/simple_project",
+    "tags": ["refactor", "simple"]
+}

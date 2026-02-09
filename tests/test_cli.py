@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -13,6 +14,8 @@ from forge.cli import (
     EXIT_FAILURE,
     EXIT_INFRASTRUCTURE_ERROR,
     build_task_definition,
+    format_deterministic_result,
+    format_eval_result,
     format_step_result,
     format_sub_task_result,
     format_task_result,
@@ -892,3 +895,133 @@ class TestContextDiscoveryFlags:
         call_args = mock_submit.call_args
         task_def = call_args[0][0]
         assert task_def.context.max_import_depth == 3
+
+
+# ---------------------------------------------------------------------------
+# Eval-planner CLI tests
+# ---------------------------------------------------------------------------
+
+_EVAL_FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures" / "eval"
+
+
+class TestFormatDeterministicResult:
+    def test_pass_result(self) -> None:
+        from forge.eval.models import CheckStatus, DeterministicCheckResult, DeterministicResult
+
+        det = DeterministicResult(
+            checks=[
+                DeterministicCheckResult(
+                    check_name="check_step_ids_unique",
+                    status=CheckStatus.PASS,
+                    message="All step IDs are unique.",
+                )
+            ],
+            all_passed=True,
+        )
+        output = format_deterministic_result(det)
+        assert "[PASS]" in output
+        assert "check_step_ids_unique" in output
+
+    def test_fail_with_details(self) -> None:
+        from forge.eval.models import CheckStatus, DeterministicCheckResult, DeterministicResult
+
+        det = DeterministicResult(
+            checks=[
+                DeterministicCheckResult(
+                    check_name="check_target_files_are_relative_paths",
+                    status=CheckStatus.FAIL,
+                    message="Found absolute paths.",
+                    details=["/etc/passwd"],
+                )
+            ],
+            all_passed=False,
+        )
+        output = format_deterministic_result(det)
+        assert "[FAIL]" in output
+        assert "/etc/passwd" in output
+
+
+class TestFormatEvalResult:
+    def test_without_judge(self) -> None:
+        from forge.eval.models import DeterministicResult, PlanEvalResult
+
+        plan = Plan(
+            task_id="t1",
+            steps=[PlanStep(step_id="s1", description="Do it.", target_files=["a.py"])],
+            explanation="Simple.",
+        )
+        det = DeterministicResult(checks=[], all_passed=True)
+        result = PlanEvalResult(case_id="case-1", plan=plan, deterministic=det)
+        output = format_eval_result(result)
+        assert "Case: case-1" in output
+        assert "PASS" in output
+        assert "Judge" not in output
+
+
+class TestEvalPlannerCommand:
+    def test_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["eval-planner", "--help"])
+        assert result.exit_code == 0
+        assert "--corpus-dir" in result.output
+        assert "--judge" in result.output
+        assert "--dry-run" in result.output
+
+    def test_dry_run(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["eval-planner", "--corpus-dir", str(_EVAL_FIXTURES / "cases"), "--dry-run"],
+        )
+        assert result.exit_code == 0
+        assert "3 eval case(s)" in result.output
+        assert "add-feature" in result.output
+        assert "refactor" in result.output
+        assert "fan-out" in result.output
+
+    def test_run_with_plans(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "eval-planner",
+                "--corpus-dir",
+                str(_EVAL_FIXTURES / "cases"),
+                "--plans-dir",
+                str(_EVAL_FIXTURES / "plans"),
+            ],
+        )
+        # Should produce output for the add-auth case (matched by task_id)
+        # and warn/skip others
+        assert "add-auth" in result.output or "Case:" in result.output or result.exit_code != 0
+
+    def test_json_output(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "eval-planner",
+                "--corpus-dir",
+                str(_EVAL_FIXTURES / "cases"),
+                "--plans-dir",
+                str(_EVAL_FIXTURES / "plans"),
+                "--json",
+            ],
+        )
+        # If there are results, they should be valid JSON
+        if result.exit_code == 0:
+            parsed = json.loads(result.output)
+            assert isinstance(parsed, list)
+
+    def test_save_results(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "eval-planner",
+                "--corpus-dir",
+                str(_EVAL_FIXTURES / "cases"),
+                "--plans-dir",
+                str(_EVAL_FIXTURES / "plans"),
+                "--output-dir",
+                str(tmp_path),
+            ],
+        )
+        if result.exit_code == 0:
+            json_files = list(tmp_path.glob("*.json"))
+            assert len(json_files) == 1

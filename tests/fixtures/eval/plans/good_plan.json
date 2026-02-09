@@ -1,0 +1,18 @@
+{
+    "task_id": "add-auth",
+    "steps": [
+        {
+            "step_id": "update-models",
+            "description": "Add password_hash field to User model.",
+            "target_files": ["src/myapp/models.py"],
+            "context_files": ["src/myapp/models.py"]
+        },
+        {
+            "step_id": "create-auth",
+            "description": "Create auth module with password hashing and verification.",
+            "target_files": ["src/myapp/auth.py"],
+            "context_files": ["src/myapp/models.py"]
+        }
+    ],
+    "explanation": "First update the model to support authentication fields, then create the auth module that depends on the updated model."
+}
