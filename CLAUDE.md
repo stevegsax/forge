@@ -4,7 +4,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phases 1–4 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, and intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented. Phase 5 (observability store) is specified but not yet started.
+Phases 1–5 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, and an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
 
 ## Key Documents
 
@@ -62,6 +62,6 @@ Temporal provides the workflow engine. The LLM call and transition evaluation ar
 
 All modes use automatic context discovery (Phase 4) by default: import graph analysis via `grimp`, PageRank ranking via `networkx`, symbol extraction via `ast`, and token budget packing. Disable with `--no-auto-discover`.
 
-## Next Phase: Phase 5 — Observability Store
+## Next Phase: Phase 6+
 
-See `docs/PHASE5.md` for the full specification.
+See the Phase 6+ section in `docs/DESIGN.md` for future work.

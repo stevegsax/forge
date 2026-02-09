@@ -277,7 +277,7 @@ Proves out: evaluation corpus format, deterministic plan validation, LLM-as-judg
 
 Deliverable: Run `forge eval-planner --corpus-dir eval/corpus --judge` to evaluate planner output with both structural checks and LLM scoring.
 
-### Phase 5: Observability Store
+### Phase 5: Observability Store (complete)
 
 Persist full LLM interaction data to a local SQLite database so operators can inspect prompts, context, token usage, and results for every step of every workflow. Add lightweight statistics to Temporal result payloads. Provide CLI commands for inspecting workflow history and step details. See `docs/PHASE5.md` for the full specification.
 
