@@ -4,7 +4,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phase 3 is implemented. The system supports fan-out/gather: plan steps can declare independent sub-tasks that execute in parallel via Temporal child workflows. Each sub-task runs in its own git worktree, and results are gathered, checked for file conflicts, merged into the parent worktree, validated, and committed. Phase 2 planning and multi-step execution remains fully backward compatible. Phase 1 single-step mode remains the default.
+Phases 1–4 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, and intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented. Phase 5 (observability store) is specified but not yet started.
 
 ## Key Documents
 
@@ -13,6 +13,8 @@ Phase 3 is implemented. The system supports fan-out/gather: plan steps can decla
 - `docs/PHASE1.md` — Detailed specification for Phase 1 (the minimal loop).
 - `docs/PHASE2.md` — Detailed specification for Phase 2 (planning and multi-step).
 - `docs/PHASE3.md` — Detailed specification for Phase 3 (fan-out / gather).
+- `docs/PHASE4.md` — Detailed specification for Phase 4 (intelligent context assembly).
+- `docs/PHASE5.md` — Detailed specification for Phase 5 (observability store).
 
 ## Development Conventions
 
@@ -52,12 +54,14 @@ Temporal provides the workflow engine. The LLM call and transition evaluation ar
 - Worktrees are disposable: on failure, document the problem, create a fresh worktree, start over.
 - Task ordering from the plan is the primary conflict avoidance mechanism.
 
-## Current Phase: Phase 3 — Fan-Out / Gather (Complete)
-
-Phase 3 is implemented. The system supports three modes:
+## Execution Modes
 
 - **Single-step** (`plan=False`, default): Phase 1 behavior. Assemble context, call LLM, write, validate, commit. Retries from a clean worktree.
 - **Planned** (`plan=True`): A planner LLM decomposes the task into ordered steps. Each step executes the universal workflow step and commits on success. Step-level retry resets uncommitted changes without losing prior commits.
 - **Fan-out** (planned steps with `sub_tasks`): Steps with sub-tasks fan out to parallel child workflows. Each sub-task runs in its own worktree, results are gathered and merged, then validated and committed by the parent.
 
-See `docs/PHASE1.md`, `docs/PHASE2.md`, and `docs/PHASE3.md` for specifications.
+All modes use automatic context discovery (Phase 4) by default: import graph analysis via `grimp`, PageRank ranking via `networkx`, symbol extraction via `ast`, and token budget packing. Disable with `--no-auto-discover`.
+
+## Next Phase: Phase 5 — Observability Store
+
+See `docs/PHASE5.md` for the full specification.

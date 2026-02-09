@@ -216,11 +216,14 @@ forge/
 │   ├── DECISIONS.md
 │   ├── PHASE1.md
 │   ├── PHASE2.md
-│   └── PHASE3.md
+│   ├── PHASE3.md
+│   ├── PHASE4.md
+│   ├── PHASE5.md
+│   └── test-strategy.md
 └── src/
     └── forge/
         ├── __init__.py
-        ├── cli.py              # CLI entry point (forge run, forge worker)
+        ├── cli.py              # CLI entry point (forge run, forge worker, forge eval-planner)
         ├── models.py           # Pydantic models for all phases
         ├── workflows.py        # Temporal workflows (Phase 1 / Phase 2 / Phase 3 fan-out)
         ├── activities/
@@ -232,6 +235,19 @@ forge/
         │   ├── output.py       # write_output, write_files activities
         │   ├── validate.py     # validate_output activity
         │   └── transition.py   # evaluate_transition activity
+        ├── code_intel/          # Phase 4: intelligent context assembly
+        │   ├── __init__.py     # Public API: discover_context, etc.
+        │   ├── parser.py       # ast-based symbol extraction
+        │   ├── graph.py        # Import graph (grimp) and PageRank ranking
+        │   ├── repo_map.py     # Compressed structural overview
+        │   └── budget.py       # Token estimation and priority-based packing
+        ├── eval/                # Planner evaluation framework
+        │   ├── __init__.py
+        │   ├── corpus.py       # Eval case discovery and loading
+        │   ├── deterministic.py # Structural plan validation checks
+        │   ├── judge.py        # LLM-as-judge scoring
+        │   ├── models.py       # Eval data models
+        │   └── runner.py       # Eval orchestration and results
         ├── git.py              # Worktree management (pure functions + subprocess shell)
         ├── tracing.py          # OpenTelemetry setup
         └── worker.py           # Temporal worker entry point

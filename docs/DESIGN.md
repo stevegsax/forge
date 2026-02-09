@@ -269,6 +269,14 @@ Proves out: import graph analysis (grimp), symbol extraction (ast), PageRank ran
 
 Deliverable: Describe a task with only `target_files` and a description, and Forge automatically discovers which existing files to include as context — ranked by importance and packed within the target model's token budget.
 
+### Planner Evaluation Framework (complete)
+
+Deterministic structural checks and LLM-as-judge scoring for planner output. Eval cases define expected properties (file coverage, step ordering, constraint adherence) and the framework validates plans against them. The `forge eval-planner` CLI command runs evaluations against an eval corpus.
+
+Proves out: evaluation corpus format, deterministic plan validation, LLM-as-judge integration.
+
+Deliverable: Run `forge eval-planner --corpus-dir eval/corpus --judge` to evaluate planner output with both structural checks and LLM scoring.
+
 ### Phase 5: Observability Store
 
 Persist full LLM interaction data to a local SQLite database so operators can inspect prompts, context, token usage, and results for every step of every workflow. Add lightweight statistics to Temporal result payloads. Provide CLI commands for inspecting workflow history and step details. See `docs/PHASE5.md` for the full specification.
@@ -285,6 +293,5 @@ Deliverable: Run a multi-step planned workflow, then use `forge status --workflo
 - Multi-provider support.
 - Conflict resolution workflow.
 - Additional task domains (TypeScript code generation, research, analysis).
-- Evaluation and reporting.
 
 Each phase uses the previous version to build the next iteration.
