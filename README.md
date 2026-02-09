@@ -101,6 +101,13 @@ forge run --task-file task.json
 | `--token-budget` | `100000` | Token budget for context assembly |
 | `--max-import-depth` | `2` | How deep to trace imports |
 
+**Exploration options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--max-exploration-rounds` | `10` | Max rounds of LLM-guided context exploration (0 disables) |
+| `--no-explore` | off | Disable LLM-guided context exploration |
+
 **Common options:**
 
 | Option | Default | Description |
@@ -212,3 +219,4 @@ forge playbooks --task-id my-task      # Filter by source task
 - `docs/PHASE4.md` — Phase 4 spec: intelligent context assembly
 - `docs/PHASE5.md` — Phase 5 spec: observability store
 - `docs/PHASE6.md` — Phase 6 spec: knowledge extraction
+- `docs/PHASE7.md` — Phase 7 spec: LLM-guided context exploration

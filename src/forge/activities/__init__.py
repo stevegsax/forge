@@ -7,6 +7,10 @@ from forge.activities.context import (
     assemble_step_context,
     assemble_sub_task_context,
 )
+from forge.activities.exploration import (
+    call_exploration_llm,
+    fulfill_context_requests,
+)
 from forge.activities.extraction import (
     call_extraction_llm,
     fetch_extraction_input,
@@ -29,6 +33,7 @@ __all__ = [
     "assemble_planner_context",
     "assemble_step_context",
     "assemble_sub_task_context",
+    "call_exploration_llm",
     "call_extraction_llm",
     "call_llm",
     "call_planner",
@@ -36,6 +41,7 @@ __all__ = [
     "create_worktree_activity",
     "evaluate_transition",
     "fetch_extraction_input",
+    "fulfill_context_requests",
     "remove_worktree_activity",
     "reset_worktree_activity",
     "save_extraction_results",

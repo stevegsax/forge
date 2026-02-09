@@ -5,6 +5,7 @@ Orchestrates the core activities and git activities into retry loops.
 Phase 1 (plan=False): Single-step execution with task-level retry.
 Phase 2 (plan=True): Planning + multi-step execution with step-level retry.
 Phase 3 (fan-out): Steps with sub_tasks spawn child workflows in parallel.
+Phase 7 (exploration): LLM-guided context exploration loop before generation.
 
 Temporal workflows must be deterministic — all I/O happens in activities.
 """
@@ -23,9 +24,13 @@ with workflow.unsafe.imports_passed_through():
         AssembleSubTaskContextInput,
         CommitChangesInput,
         CommitChangesOutput,
+        ContextResult,
         CreateWorktreeInput,
         CreateWorktreeOutput,
+        ExplorationInput,
+        ExplorationResponse,
         ForgeTaskInput,
+        FulfillContextInput,
         LLMCallResult,
         Plan,
         PlanCallResult,
@@ -36,6 +41,7 @@ with workflow.unsafe.imports_passed_through():
         StepResult,
         SubTaskInput,
         SubTaskResult,
+        TaskDefinition,
         TaskResult,
         TransitionInput,
         TransitionSignal,
@@ -47,6 +53,7 @@ with workflow.unsafe.imports_passed_through():
         build_llm_stats,
         build_planner_stats,
     )
+    from forge.providers import PROVIDER_SPECS
 
 FORGE_TASK_QUEUE = "forge-task-queue"
 
@@ -61,6 +68,8 @@ _WRITE_TIMEOUT = timedelta(seconds=30)
 _VALIDATE_TIMEOUT = timedelta(minutes=2)
 _TRANSITION_TIMEOUT = timedelta(seconds=10)
 _CHILD_WORKFLOW_TIMEOUT = timedelta(minutes=15)
+_EXPLORATION_LLM_TIMEOUT = timedelta(minutes=5)
+_EXPLORATION_FULFILL_TIMEOUT = timedelta(minutes=2)
 
 
 @workflow.defn
@@ -97,6 +106,72 @@ class ForgeTaskWorkflow:
         return await self._run_single_step(input)
 
     # ------------------------------------------------------------------
+    # Phase 7: LLM-guided context exploration
+    # ------------------------------------------------------------------
+
+    async def _run_exploration_loop(
+        self,
+        task: TaskDefinition,
+        repo_root: str,
+        worktree_path: str,
+        max_rounds: int,
+    ) -> list[ContextResult]:
+        """LLM-guided context exploration loop.
+
+        The exploration LLM requests context from providers until it signals
+        readiness (empty requests list) or the round limit is reached.
+        """
+        accumulated: list[ContextResult] = []
+
+        for round_num in range(1, max_rounds + 1):
+            exploration_result = await workflow.execute_activity(
+                "call_exploration_llm",
+                ExplorationInput(
+                    task=task,
+                    available_providers=PROVIDER_SPECS,
+                    accumulated_context=accumulated,
+                    round_number=round_num,
+                    max_rounds=max_rounds,
+                ),
+                start_to_close_timeout=_EXPLORATION_LLM_TIMEOUT,
+                result_type=ExplorationResponse,
+            )
+
+            if not exploration_result.requests:
+                break  # LLM is ready to generate
+
+            context_results = await workflow.execute_activity(
+                "fulfill_context_requests",
+                FulfillContextInput(
+                    requests=exploration_result.requests,
+                    repo_root=repo_root,
+                    worktree_path=worktree_path,
+                ),
+                start_to_close_timeout=_EXPLORATION_FULFILL_TIMEOUT,
+                result_type=list[ContextResult],
+            )
+            accumulated.extend(context_results)
+
+        return accumulated
+
+    @staticmethod
+    def _format_exploration_context(results: list[ContextResult]) -> str:
+        """Format exploration results as a prompt section."""
+        if not results:
+            return ""
+
+        parts = ["", "## Exploration Results"]
+        for ctx in results:
+            parts.append("")
+            parts.append(f"### From: {ctx.provider}")
+            content = ctx.content
+            if len(content) > 8000:
+                content = content[:8000] + "\n... (truncated)"
+            parts.append(content)
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
     # Phase 1: Single-step execution (unchanged from Phase 1)
     # ------------------------------------------------------------------
 
@@ -128,6 +203,25 @@ class ForgeTaskWorkflow:
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
                 result_type=AssembledContext,
             )
+
+            # --- Exploration loop (Phase 7) ---
+            if input.max_exploration_rounds > 0:
+                exploration_results = await self._run_exploration_loop(
+                    task=task,
+                    repo_root=input.repo_root,
+                    worktree_path=wt_output.worktree_path,
+                    max_rounds=input.max_exploration_rounds,
+                )
+                exploration_section = self._format_exploration_context(exploration_results)
+                if exploration_section:
+                    context = AssembledContext(
+                        task_id=context.task_id,
+                        system_prompt=context.system_prompt + exploration_section,
+                        user_prompt=context.user_prompt,
+                        context_stats=context.context_stats,
+                        step_id=context.step_id,
+                        sub_task_id=context.sub_task_id,
+                    )
 
             # --- Call LLM ---
             llm_result = await workflow.execute_activity(
@@ -272,6 +366,22 @@ class ForgeTaskWorkflow:
             start_to_close_timeout=_CONTEXT_TIMEOUT,
             result_type=PlannerInput,
         )
+
+        # --- Exploration loop for planner (Phase 7) ---
+        if input.max_exploration_rounds > 0:
+            exploration_results = await self._run_exploration_loop(
+                task=task,
+                repo_root=input.repo_root,
+                worktree_path=wt_output.worktree_path,
+                max_rounds=input.max_exploration_rounds,
+            )
+            exploration_section = self._format_exploration_context(exploration_results)
+            if exploration_section:
+                planner_input = PlannerInput(
+                    task_id=planner_input.task_id,
+                    system_prompt=planner_input.system_prompt + exploration_section,
+                    user_prompt=planner_input.user_prompt,
+                )
 
         # --- Call planner ---
         planner_result = await workflow.execute_activity(

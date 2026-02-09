@@ -283,3 +283,9 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Add a `PLAYBOOK` value to the `Representation` enum to distinguish playbook context items from repo map items, both of which sit at priority 5.
 
 **Rationale:** Before Phase 6, priority 5 was exclusively used by repo map items. Playbook items also belong at priority 5 (lower priority than file content, higher than manual context). Adding a distinct representation type allows `build_system_prompt_with_context` to filter and render each type in its own section without ambiguity.
+
+## D48: LLM-Guided Context Exploration
+
+**Decision:** The LLM chooses what context to request from a menu of available providers. Context requests are fulfilled by Temporal activities, not inline tool calls. The LLM iterates until it signals readiness to generate.
+
+**Rationale:** The LLM knows what information it needs better than a deterministic heuristic. Fulfillment via Temporal activities provides durability, retries, and observability for each analysis step. A configurable round limit bounds token spend. The exploration results feed into the generation prompt, keeping the exploration and generation phases cleanly separated.

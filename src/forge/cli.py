@@ -248,6 +248,7 @@ async def _submit_and_wait(
     plan: bool = False,
     max_step_attempts: int = 2,
     max_sub_task_attempts: int = 2,
+    max_exploration_rounds: int = 10,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
@@ -266,6 +267,7 @@ async def _submit_and_wait(
             plan=plan,
             max_step_attempts=max_step_attempts,
             max_sub_task_attempts=max_sub_task_attempts,
+            max_exploration_rounds=max_exploration_rounds,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -282,6 +284,7 @@ async def _submit_no_wait(
     plan: bool = False,
     max_step_attempts: int = 2,
     max_sub_task_attempts: int = 2,
+    max_exploration_rounds: int = 10,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
@@ -300,6 +303,7 @@ async def _submit_no_wait(
             plan=plan,
             max_step_attempts=max_step_attempts,
             max_sub_task_attempts=max_sub_task_attempts,
+            max_exploration_rounds=max_exploration_rounds,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -384,6 +388,14 @@ def main() -> None:
     help="How deep to trace imports (default: 2).",
 )
 @click.option(
+    "--max-exploration-rounds",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Max rounds of LLM-guided context exploration (0 disables).",
+)
+@click.option("--no-explore", is_flag=True, help="Disable LLM-guided context exploration.")
+@click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
     default=DEFAULT_TEMPORAL_ADDRESS,
@@ -411,6 +423,8 @@ def run(
     no_auto_discover: bool,
     token_budget: int | None,
     max_import_depth: int | None,
+    max_exploration_rounds: int,
+    no_explore: bool,
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -460,6 +474,9 @@ def run(
         click.echo(f"Error: {e}", err=True)
         sys.exit(EXIT_INFRASTRUCTURE_ERROR)
 
+    # --- Compute exploration rounds ---
+    effective_exploration_rounds = 0 if no_explore else max_exploration_rounds
+
     # --- Submit ---
     try:
         if no_wait:
@@ -472,6 +489,7 @@ def run(
                     plan=use_plan,
                     max_step_attempts=max_step_attempts,
                     max_sub_task_attempts=max_sub_task_attempts,
+                    max_exploration_rounds=effective_exploration_rounds,
                 )
             )
             click.echo(workflow_id)
@@ -485,6 +503,7 @@ def run(
                     plan=use_plan,
                     max_step_attempts=max_step_attempts,
                     max_sub_task_attempts=max_sub_task_attempts,
+                    max_exploration_rounds=effective_exploration_rounds,
                 )
             )
 

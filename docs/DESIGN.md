@@ -293,7 +293,15 @@ Proves out: playbook storage, extraction workflow, tag-based retrieval, playbook
 
 Deliverable: Run `forge extract` to process completed runs, then verify playbook entries appear in future task contexts via `forge playbooks`.
 
-### Phase 7+ (Future)
+### Phase 7: LLM-Guided Context Exploration
+
+Add an exploration loop before code generation. The LLM requests context from a menu of providers (file reads, code search, symbol lists, import graphs, test execution, linting, git history, repo maps, past runs, playbooks) until it signals readiness. Requests are fulfilled by Temporal activities. A configurable round limit bounds token spend. See `docs/PHASE7.md` for the full specification.
+
+Proves out: LLM-directed context gathering, provider registry pattern, exploration loop integration into both single-step and planned workflows, `--max-exploration-rounds` and `--no-explore` CLI options.
+
+Deliverable: Run `forge run` with exploration enabled and observe the LLM requesting context before generating code.
+
+### Phase 8+ (Future)
 
 - Recursive fan-out (sub-tasks can fan out further).
 - Model routing (capability tiers mapped to concrete models).

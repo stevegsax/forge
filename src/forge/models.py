@@ -233,6 +233,61 @@ class LLMResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Exploration models (Phase 7)
+# ---------------------------------------------------------------------------
+
+
+class ContextProviderSpec(BaseModel):
+    """Description of an available context provider shown to the LLM."""
+
+    name: str
+    description: str
+    parameters: dict[str, str] = Field(description="param_name -> description")
+
+
+class ContextRequest(BaseModel):
+    """A request for specific context from a provider."""
+
+    provider: str
+    params: dict[str, str] = Field(default_factory=dict)
+    reasoning: str = Field(description="Why this context is needed.")
+
+
+class ExplorationResponse(BaseModel):
+    """Output from the exploration LLM call."""
+
+    requests: list[ContextRequest] = Field(
+        description="Context requests. Empty list signals readiness to generate.",
+    )
+
+
+class ContextResult(BaseModel):
+    """Result of fulfilling a context request."""
+
+    provider: str
+    content: str
+    estimated_tokens: int
+
+
+class FulfillContextInput(BaseModel):
+    """Input to the fulfill_context_requests activity."""
+
+    requests: list[ContextRequest]
+    repo_root: str
+    worktree_path: str
+
+
+class ExplorationInput(BaseModel):
+    """Input to the exploration LLM call."""
+
+    task: TaskDefinition
+    available_providers: list[ContextProviderSpec]
+    accumulated_context: list[ContextResult] = Field(default_factory=list)
+    round_number: int
+    max_rounds: int
+
+
+# ---------------------------------------------------------------------------
 # Knowledge extraction models (Phase 6)
 # ---------------------------------------------------------------------------
 
@@ -354,6 +409,10 @@ class ForgeTaskInput(BaseModel):
     max_sub_task_attempts: int = Field(
         default=2,
         description="Max retry attempts per sub-task in fan-out steps.",
+    )
+    max_exploration_rounds: int = Field(
+        default=10,
+        description="Max rounds of LLM-guided context exploration (0 disables).",
     )
 
 
