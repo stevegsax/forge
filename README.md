@@ -144,6 +144,45 @@ forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
 | `--output-dir` | — | Directory to save run results JSON |
 | `--json` | off | Output results as JSON |
 
+### `forge extract`
+
+Extract knowledge from completed workflow runs into playbook entries.
+
+```bash
+forge extract                          # Extract from last 24h, up to 10 runs
+forge extract --dry-run                # List unextracted runs without processing
+forge extract --limit 50 --since-hours 168  # Last week, up to 50 runs
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--limit` | `10` | Max runs to process |
+| `--since-hours` | `24` | Look-back window in hours |
+| `--dry-run` | off | List unextracted runs without running extraction |
+| `--json` | off | Machine-readable JSON output |
+| `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
+
+### `forge playbooks`
+
+List and inspect playbook entries.
+
+```bash
+forge playbooks                        # List recent playbooks
+forge playbooks --tag python           # Filter by tag
+forge playbooks --task-id my-task      # Filter by source task
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--tag` | — | Filter by tag (repeatable) |
+| `--task-id` | — | Filter by source task ID |
+| `--limit` | `20` | Max entries to show |
+| `--json` | off | Machine-readable JSON output |
+
 ## Documentation
 
 - `docs/DESIGN.md` — Architecture and design document
@@ -153,3 +192,4 @@ forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
 - `docs/PHASE3.md` — Phase 3 spec: fan-out / gather
 - `docs/PHASE4.md` — Phase 4 spec: intelligent context assembly
 - `docs/PHASE5.md` — Phase 5 spec: observability store
+- `docs/PHASE6.md` — Phase 6 spec: knowledge extraction

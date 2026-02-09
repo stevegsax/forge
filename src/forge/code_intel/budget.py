@@ -27,6 +27,7 @@ class Representation(StrEnum):
     FULL = "full"
     SIGNATURES = "signatures"
     REPO_MAP = "repo_map"
+    PLAYBOOK = "playbook"
 
 
 class ContextItem(BaseModel):

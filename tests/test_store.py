@@ -16,13 +16,18 @@ from forge.models import (
 )
 from forge.store import (
     build_interaction_dict,
+    build_playbook_dict,
     get_db_path,
     get_engine,
     get_interactions,
+    get_playbooks_by_tags,
     get_run,
+    get_unextracted_runs,
+    list_recent_playbooks,
     list_recent_runs,
     run_migrations,
     save_interaction,
+    save_playbooks,
     save_run,
 )
 
@@ -330,3 +335,245 @@ class TestRunMigrations:
         db_path = tmp_path / "fresh.db"
         run_migrations(db_path)
         run_migrations(db_path)  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# build_playbook_dict
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPlaybookDict:
+    def test_basic(self) -> None:
+        from forge.models import PlaybookEntry
+
+        entry = PlaybookEntry(
+            title="Test lesson",
+            content="Always do X.",
+            tags=["python", "test-writing"],
+            source_task_id="t1",
+            source_workflow_id="wf-1",
+        )
+        result = build_playbook_dict(entry, "extract-wf-1")
+        assert result["title"] == "Test lesson"
+        assert result["content"] == "Always do X."
+        assert result["tags_json"] == '["python", "test-writing"]'
+        assert result["source_task_id"] == "t1"
+        assert result["source_workflow_id"] == "wf-1"
+        assert result["extraction_workflow_id"] == "extract-wf-1"
+
+
+# ---------------------------------------------------------------------------
+# Playbook roundtrip tests (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookRoundtrip:
+    def _insert_playbook(
+        self,
+        engine: object,
+        *,
+        title: str = "Lesson",
+        tags: list[str] | None = None,
+        source_task_id: str = "t1",
+        source_workflow_id: str = "wf-1",
+    ) -> None:
+        import json
+
+        if tags is None:
+            tags = ["python"]
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": title,
+                    "content": "Content.",
+                    "tags_json": json.dumps(tags),
+                    "source_task_id": source_task_id,
+                    "source_workflow_id": source_workflow_id,
+                    "extraction_workflow_id": "extract-1",
+                }
+            ],
+        )
+
+    def test_save_and_get_by_tags(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        self._insert_playbook(engine, tags=["python", "api"])
+        self._insert_playbook(engine, title="JS lesson", tags=["javascript"])
+
+        results = get_playbooks_by_tags(engine, ["python"], limit=10)
+        assert len(results) == 1
+        assert results[0]["title"] == "Lesson"
+
+    def test_get_by_tags_multiple_match(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        self._insert_playbook(engine, title="A", tags=["python"])
+        self._insert_playbook(engine, title="B", tags=["python", "api"])
+
+        results = get_playbooks_by_tags(engine, ["python"], limit=10)
+        assert len(results) == 2
+
+    def test_get_by_tags_no_match(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        self._insert_playbook(engine, tags=["python"])
+        results = get_playbooks_by_tags(engine, ["rust"], limit=10)
+        assert results == []
+
+    def test_get_by_tags_empty_input(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        results = get_playbooks_by_tags(engine, [], limit=10)
+        assert results == []
+
+    def test_list_recent_playbooks(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        self._insert_playbook(engine, title="A")
+        self._insert_playbook(engine, title="B")
+        self._insert_playbook(engine, title="C")
+
+        results = list_recent_playbooks(engine, limit=2)
+        assert len(results) == 2
+
+    def test_list_recent_playbooks_empty(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        results = list_recent_playbooks(engine)
+        assert results == []
+
+
+# ---------------------------------------------------------------------------
+# get_unextracted_runs (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+class TestGetUnextractedRuns:
+    def test_returns_runs_without_playbooks(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        # Add two runs
+        for i in range(2):
+            save_run(
+                engine,
+                TaskResult(task_id=f"t{i}", status=TransitionSignal.SUCCESS),
+                f"wf-{i}",
+            )
+
+        runs = get_unextracted_runs(engine, limit=50)
+        assert len(runs) == 2
+
+    def test_excludes_extracted_runs(self, tmp_path: Path) -> None:
+        import json
+
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        # Add two runs
+        save_run(
+            engine,
+            TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
+            "wf-1",
+        )
+        save_run(
+            engine,
+            TaskResult(task_id="t2", status=TransitionSignal.SUCCESS),
+            "wf-2",
+        )
+
+        # Mark wf-1 as extracted
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": "Lesson",
+                    "content": "Content.",
+                    "tags_json": json.dumps(["python"]),
+                    "source_task_id": "t1",
+                    "source_workflow_id": "wf-1",
+                    "extraction_workflow_id": "extract-1",
+                }
+            ],
+        )
+
+        runs = get_unextracted_runs(engine, limit=50)
+        assert len(runs) == 1
+        assert runs[0]["workflow_id"] == "wf-2"
+
+    def test_empty_when_all_extracted(self, tmp_path: Path) -> None:
+        import json
+
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        save_run(
+            engine,
+            TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
+            "wf-1",
+        )
+
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": "Lesson",
+                    "content": "Content.",
+                    "tags_json": json.dumps(["python"]),
+                    "source_task_id": "t1",
+                    "source_workflow_id": "wf-1",
+                    "extraction_workflow_id": "extract-1",
+                }
+            ],
+        )
+
+        runs = get_unextracted_runs(engine, limit=50)
+        assert runs == []
+
+
+# ---------------------------------------------------------------------------
+# 002 migration
+# ---------------------------------------------------------------------------
+
+
+class TestMigration002:
+    def test_creates_playbooks_table(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        import json
+
+        # Should be able to insert into playbooks
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": "Lesson",
+                    "content": "Content.",
+                    "tags_json": json.dumps(["python"]),
+                    "source_task_id": "t1",
+                    "source_workflow_id": "wf-1",
+                    "extraction_workflow_id": "extract-1",
+                }
+            ],
+        )
+        results = list_recent_playbooks(engine, limit=10)
+        assert len(results) == 1
+        assert results[0]["title"] == "Lesson"

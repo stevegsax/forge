@@ -233,6 +233,38 @@ class LLMResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Knowledge extraction models (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+class PlaybookEntry(BaseModel):
+    """A structured lesson extracted from completed work."""
+
+    title: str = Field(description="Short descriptive title of the lesson.")
+    content: str = Field(description="The actionable lesson or pattern.")
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Index tags: task type, domain, error pattern, etc.",
+    )
+    source_task_id: str = Field(description="Task ID this was extracted from.")
+    source_workflow_id: str = Field(
+        default="",
+        description="Workflow ID this was extracted from.",
+    )
+
+
+class ExtractionResult(BaseModel):
+    """Structured output from the knowledge extraction LLM call."""
+
+    entries: list[PlaybookEntry] = Field(
+        description="Extracted playbook entries from the completed work.",
+    )
+    summary: str = Field(
+        description="Brief summary of what was extracted and why.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Inter-activity transport
 # ---------------------------------------------------------------------------
 
@@ -447,3 +479,58 @@ class AssembleStepContextInput(BaseModel):
     completed_steps: list[StepResult] = Field(default_factory=list)
     repo_root: str
     worktree_path: str
+
+
+# ---------------------------------------------------------------------------
+# Extraction activity I/O models (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+class FetchExtractionInput(BaseModel):
+    """Input to the fetch_extraction_input activity."""
+
+    limit: int = Field(default=10, description="Max runs to extract from.")
+    since_hours: int = Field(default=24, description="Look-back window in hours.")
+
+
+class ExtractionInput(BaseModel):
+    """Output of fetch_extraction_input, input to call_extraction_llm."""
+
+    system_prompt: str
+    user_prompt: str
+    source_workflow_ids: list[str] = Field(
+        description="Workflow IDs being processed.",
+    )
+
+
+class ExtractionCallResult(BaseModel):
+    """Output of call_extraction_llm."""
+
+    result: ExtractionResult
+    source_workflow_ids: list[str]
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+
+
+class SaveExtractionInput(BaseModel):
+    """Input to save_extraction_results activity."""
+
+    entries: list[PlaybookEntry]
+    source_workflow_ids: list[str]
+    extraction_workflow_id: str
+
+
+class ExtractionWorkflowInput(BaseModel):
+    """Input to ForgeExtractionWorkflow."""
+
+    limit: int = Field(default=10, description="Max runs to extract from.")
+    since_hours: int = Field(default=24, description="Look-back window in hours.")
+
+
+class ExtractionWorkflowResult(BaseModel):
+    """Output of ForgeExtractionWorkflow."""
+
+    entries_created: int
+    source_workflow_ids: list[str] = Field(default_factory=list)

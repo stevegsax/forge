@@ -30,7 +30,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from forge.code_intel.budget import PackedContext
+    from forge.code_intel.budget import ContextItem, PackedContext
 
 logger = logging.getLogger(__name__)
 
@@ -115,14 +115,29 @@ def build_system_prompt_with_context(task: TaskDefinition, packed: PackedContext
         priority=4,
     )
 
-    # Repo map
-    repo_map_items = [i for i in packed.items if i.priority == 5]
+    # Repo map (priority 5, REPO_MAP representation)
+    from forge.code_intel.budget import Representation
+
+    repo_map_items = [i for i in packed.items if i.representation == Representation.REPO_MAP]
     if repo_map_items:
         parts.append("")
         parts.append("## Repository Structure")
         parts.append("```")
         parts.append(repo_map_items[0].content)
         parts.append("```")
+
+    # Playbooks (priority 5, PLAYBOOK representation)
+    playbook_items = [i for i in packed.items if i.representation == Representation.PLAYBOOK]
+    if playbook_items:
+        parts.append("")
+        parts.append("## Relevant Playbooks")
+        parts.append(
+            "The following are lessons learned from previous tasks. "
+            "Consider these when generating code."
+        )
+        for item in playbook_items:
+            parts.append("")
+            parts.append(item.content)
 
     _append_context_section(
         parts,
@@ -182,8 +197,94 @@ def _build_context_stats(packed: PackedContext) -> ContextStats:
 
 
 # ---------------------------------------------------------------------------
+# Playbook injection (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+def infer_task_tags(task: TaskDefinition) -> list[str]:
+    """Infer search tags from a task definition for playbook retrieval.
+
+    Deterministic: extracts tags from file extensions and description keywords.
+    """
+    tags: list[str] = []
+
+    for f in task.target_files:
+        if f.endswith(".py"):
+            tags.append("python")
+        elif f.endswith(".ts") or f.endswith(".tsx"):
+            tags.append("typescript")
+
+    desc_lower = task.description.lower()
+    keyword_map = {
+        "test": "test-writing",
+        "refactor": "refactoring",
+        "api": "api",
+        "database": "database",
+        "cli": "cli",
+        "bug": "bug-fix",
+        "fix": "bug-fix",
+    }
+    for keyword, tag in keyword_map.items():
+        if keyword in desc_lower:
+            tags.append(tag)
+
+    if not tags:
+        tags.append("code-generation")
+
+    return sorted(set(tags))
+
+
+def build_playbook_context_items(playbooks: list[dict]) -> list[ContextItem]:
+    """Convert playbook dicts from the store to ContextItem objects at priority 5.
+
+    Uses Representation.PLAYBOOK to distinguish from repo map items
+    (also at priority 5 but using Representation.REPO_MAP).
+    """
+    from forge.code_intel.budget import ContextItem, Representation
+    from forge.code_intel.repo_map import estimate_tokens
+
+    items: list[ContextItem] = []
+    for pb in playbooks:
+        content = f"**{pb['title']}**\n{pb['content']}"
+        items.append(
+            ContextItem(
+                file_path=f"playbook:{pb['title']}",
+                content=content,
+                representation=Representation.PLAYBOOK,
+                priority=5,
+                importance=0.0,
+                estimated_tokens=estimate_tokens(content),
+            )
+        )
+    return items
+
+
+# ---------------------------------------------------------------------------
 # Imperative shell
 # ---------------------------------------------------------------------------
+
+
+def _load_playbooks_for_task(task: TaskDefinition) -> list[dict]:
+    """Best-effort load of relevant playbooks from the store.
+
+    Returns empty list on any error (D42 pattern).
+    """
+    try:
+        from forge.store import get_db_path, get_engine, get_playbooks_by_tags
+
+        db_path = get_db_path()
+        if db_path is None or not db_path.exists():
+            return []
+
+        tags = infer_task_tags(task)
+        if not tags:
+            return []
+
+        engine = get_engine(db_path)
+        return get_playbooks_by_tags(engine, tags, limit=5)
+    except Exception:
+        logger.warning("Failed to load playbooks from store", exc_info=True)
+        return []
 
 
 def _read_context_files(base_path: Path, file_paths: list[str]) -> dict[str, str]:
@@ -225,6 +326,7 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
 
     if task.context.auto_discover and task.target_files:
         from forge.code_intel import discover_context
+        from forge.code_intel.budget import pack_context
 
         manual_contents = _read_context_files(repo_root, task.context_files)
 
@@ -239,6 +341,13 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
             include_repo_map=task.context.include_repo_map,
             repo_map_tokens=task.context.repo_map_tokens,
         )
+
+        # Inject playbooks (best-effort, D42)
+        playbooks = _load_playbooks_for_task(task)
+        if playbooks:
+            playbook_items = build_playbook_context_items(playbooks)
+            all_items = packed.items + playbook_items
+            packed = pack_context(all_items, task.context.token_budget)
 
         system_prompt = build_system_prompt_with_context(task, packed)
         context_stats = _build_context_stats(packed)

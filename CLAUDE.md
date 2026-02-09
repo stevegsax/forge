@@ -4,7 +4,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phases 1–5 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, and an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
+Phases 1–6 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, and knowledge extraction with playbook generation and injection into future task contexts. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
 
 ## Key Documents
 
@@ -15,6 +15,7 @@ Phases 1–5 are implemented. The system supports single-step execution, planned
 - `docs/PHASE3.md` — Detailed specification for Phase 3 (fan-out / gather).
 - `docs/PHASE4.md` — Detailed specification for Phase 4 (intelligent context assembly).
 - `docs/PHASE5.md` — Detailed specification for Phase 5 (observability store).
+- `docs/PHASE6.md` — Detailed specification for Phase 6 (knowledge extraction).
 
 ## Development Conventions
 
@@ -62,6 +63,6 @@ Temporal provides the workflow engine. The LLM call and transition evaluation ar
 
 All modes use automatic context discovery (Phase 4) by default: import graph analysis via `grimp`, PageRank ranking via `networkx`, symbol extraction via `ast`, and token budget packing. Disable with `--no-auto-discover`.
 
-## Next Phase: Phase 6+
+## Next Phase: Phase 7+
 
-See the Phase 6+ section in `docs/DESIGN.md` for future work.
+See the Phase 7+ section in `docs/DESIGN.md` for future work.

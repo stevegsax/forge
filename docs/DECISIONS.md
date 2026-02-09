@@ -253,3 +253,33 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Store writes in LLM activities are wrapped in try/except and log warnings on failure. The store never blocks or fails the main workflow.
 
 **Rationale:** Observability is secondary to task execution. If the database is unavailable (disk full, permissions, corruption), the LLM call should still succeed and return its result to the workflow. The store is a side effect, not a dependency. This also simplifies testing — activities can be tested without a database by setting `FORGE_DB_PATH` to empty string.
+
+## D43: Playbooks as Flat Tagged Entries
+
+**Decision:** Playbook entries are flat rows in a `playbooks` table, indexed by JSON tag arrays. No hierarchy or categorization beyond tags.
+
+**Rationale:** Flat entries are simple to store, query, and display. Tags provide flexible categorization without requiring a taxonomy. SQLite's `json_each()` function enables efficient tag-based queries. Hierarchy (e.g., grouping by project or domain) can be added later as a view over the same data without schema changes.
+
+## D44: Extraction as a Temporal Workflow
+
+**Decision:** Knowledge extraction is a Temporal workflow with three activities: fetch input, call LLM, save results. It follows D2 (universal workflow step).
+
+**Rationale:** Extraction is another instance of the universal workflow step: construct context, call LLM, serialize result. Using a Temporal workflow provides the same durability, retry, and observability guarantees as task execution. The three-activity decomposition separates I/O (store reads/writes) from the LLM call, enabling independent retry and timeout configuration.
+
+## D45: Relevance by Tag Overlap
+
+**Decision:** Playbook retrieval uses deterministic tag matching rather than semantic similarity (vector embeddings).
+
+**Rationale:** Tag inference from file extensions and description keywords is deterministic, fast, and transparent. It requires no embedding model, no vector database, and no similarity threshold tuning. The tags used for retrieval are the same tags used during extraction, so the matching is consistent. Semantic similarity can be added later if tag overlap proves insufficient.
+
+## D46: Playbooks Share the Observability Store
+
+**Decision:** Playbooks are stored in the same SQLite database as interactions and runs, managed by the same Alembic migration system.
+
+**Rationale:** A single database simplifies deployment, backup, and migration. The observability store already handles connection management, WAL mode, and migration on worker startup. Adding a table is a single Alembic migration. The `playbooks` table references `source_workflow_id` from the `runs` table, making cross-table queries straightforward.
+
+## D47: PLAYBOOK Representation Type
+
+**Decision:** Add a `PLAYBOOK` value to the `Representation` enum to distinguish playbook context items from repo map items, both of which sit at priority 5.
+
+**Rationale:** Before Phase 6, priority 5 was exclusively used by repo map items. Playbook items also belong at priority 5 (lower priority than file content, higher than manual context). Adding a distinct representation type allows `build_system_prompt_with_context` to filter and render each type in its own section without ambiguity.

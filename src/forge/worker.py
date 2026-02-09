@@ -18,17 +18,21 @@ from forge.activities import (
     assemble_planner_context,
     assemble_step_context,
     assemble_sub_task_context,
+    call_extraction_llm,
     call_llm,
     call_planner,
     commit_changes_activity,
     create_worktree_activity,
     evaluate_transition,
+    fetch_extraction_input,
     remove_worktree_activity,
     reset_worktree_activity,
+    save_extraction_results,
     validate_output,
     write_files,
     write_output,
 )
+from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
@@ -70,19 +74,22 @@ async def run_worker(address: str | None = None) -> None:
     worker = Worker(
         client,
         task_queue=FORGE_TASK_QUEUE,
-        workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
+        workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow, ForgeExtractionWorkflow],
         activities=[
             assemble_context,
             assemble_planner_context,
             assemble_step_context,
             assemble_sub_task_context,
+            call_extraction_llm,
             call_llm,
             call_planner,
             commit_changes_activity,
             create_worktree_activity,
             evaluate_transition,
+            fetch_extraction_input,
             remove_worktree_activity,
             reset_worktree_activity,
+            save_extraction_results,
             validate_output,
             write_files,
             write_output,

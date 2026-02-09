@@ -285,11 +285,18 @@ Proves out: SQLite observability store, SQLAlchemy ORM, Alembic migrations, best
 
 Deliverable: Run a multi-step planned workflow, then use `forge status --workflow-id <id> --verbose` to see the full prompt, assembled context, model name, token usage, and LLM response for each step.
 
-### Phase 6+ (Future)
+### Phase 6: Knowledge Extraction (complete)
+
+Extract structured lessons from completed workflow results and inject them as playbook entries into future task contexts. Extraction runs as an independent Temporal workflow, producing tagged entries stored in the existing SQLite database. At context assembly time, relevant playbooks are retrieved by tag overlap and injected at priority 5 within the token budget. See `docs/PHASE6.md` for the full specification.
+
+Proves out: playbook storage, extraction workflow, tag-based retrieval, playbook injection into context assembly, `forge extract` and `forge playbooks` CLI commands.
+
+Deliverable: Run `forge extract` to process completed runs, then verify playbook entries appear in future task contexts via `forge playbooks`.
+
+### Phase 7+ (Future)
 
 - Recursive fan-out (sub-tasks can fan out further).
 - Model routing (capability tiers mapped to concrete models).
-- Knowledge extraction (playbook generation and injection).
 - Multi-provider support.
 - Conflict resolution workflow.
 - Additional task domains (TypeScript code generation, research, analysis).

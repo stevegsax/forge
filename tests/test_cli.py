@@ -1216,3 +1216,199 @@ class TestStatusCommand:
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert isinstance(parsed, list)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 CLI tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractCommand:
+    def test_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["extract", "--help"])
+        assert result.exit_code == 0
+        assert "--limit" in result.output
+        assert "--dry-run" in result.output
+
+    def test_dry_run_no_store(self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_DB_PATH", "")
+        result = cli_runner.invoke(main, ["extract", "--dry-run"])
+        assert result.exit_code == EXIT_FAILURE
+        assert "No store available" in result.output
+
+    def test_dry_run_with_runs(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_run
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_run(
+            engine,
+            TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
+            "wf-123",
+        )
+
+        result = cli_runner.invoke(main, ["extract", "--dry-run"])
+        assert result.exit_code == 0
+        assert "wf-123" in result.output
+        assert "Unextracted runs" in result.output
+
+    def test_dry_run_no_unextracted(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import run_migrations
+
+        run_migrations(db_path)
+
+        result = cli_runner.invoke(main, ["extract", "--dry-run"])
+        assert result.exit_code == 0
+        assert "No unextracted runs found" in result.output
+
+
+class TestPlaybooksCommand:
+    def test_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["playbooks", "--help"])
+        assert result.exit_code == 0
+        assert "--tag" in result.output
+        assert "--json" in result.output
+
+    def test_no_store(self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_DB_PATH", "")
+        result = cli_runner.invoke(main, ["playbooks"])
+        assert result.exit_code == EXIT_FAILURE
+        assert "No store available" in result.output
+
+    def test_list_playbooks(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_playbooks
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": "Test lesson",
+                    "content": "Always do X.",
+                    "tags_json": '["python"]',
+                    "source_task_id": "t1",
+                    "source_workflow_id": "wf-1",
+                    "extraction_workflow_id": "extract-1",
+                }
+            ],
+        )
+
+        result = cli_runner.invoke(main, ["playbooks"])
+        assert result.exit_code == 0
+        assert "Test lesson" in result.output
+        assert "python" in result.output
+
+    def test_tag_filter(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_playbooks
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": "Python lesson",
+                    "content": "Do X.",
+                    "tags_json": '["python"]',
+                    "source_task_id": "t1",
+                    "source_workflow_id": "wf-1",
+                    "extraction_workflow_id": "extract-1",
+                },
+                {
+                    "title": "JS lesson",
+                    "content": "Do Y.",
+                    "tags_json": '["javascript"]',
+                    "source_task_id": "t2",
+                    "source_workflow_id": "wf-2",
+                    "extraction_workflow_id": "extract-1",
+                },
+            ],
+        )
+
+        result = cli_runner.invoke(main, ["playbooks", "--tag", "python"])
+        assert result.exit_code == 0
+        assert "Python lesson" in result.output
+        assert "JS lesson" not in result.output
+
+    def test_json_output(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_playbooks
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": "Test lesson",
+                    "content": "Always do X.",
+                    "tags_json": '["python"]',
+                    "source_task_id": "t1",
+                    "source_workflow_id": "wf-1",
+                    "extraction_workflow_id": "extract-1",
+                }
+            ],
+        )
+
+        result = cli_runner.invoke(main, ["playbooks", "--json"])
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert isinstance(parsed, list)
+        assert parsed[0]["title"] == "Test lesson"
+
+    def test_empty_playbooks(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import run_migrations
+
+        run_migrations(db_path)
+
+        result = cli_runner.invoke(main, ["playbooks"])
+        assert result.exit_code == 0
+        assert "No playbooks found" in result.output

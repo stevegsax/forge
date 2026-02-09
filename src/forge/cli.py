@@ -31,7 +31,13 @@ from forge.models import (
 
 if TYPE_CHECKING:
     from forge.eval.models import DeterministicResult, PlanEvalResult
-    from forge.models import LLMStats, StepResult, SubTaskResult, ValidationResult
+    from forge.models import (
+        ExtractionWorkflowResult,
+        LLMStats,
+        StepResult,
+        SubTaskResult,
+        ValidationResult,
+    )
 
 # ---------------------------------------------------------------------------
 # Exit codes
@@ -597,6 +603,189 @@ def status(
                 click.echo(
                     f"  {r['workflow_id']}  {r['task_id']}  {r['status']}  {r['created_at']}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Extract command (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+def format_extraction_result(result: ExtractionWorkflowResult) -> str:
+    """Format an ExtractionWorkflowResult for human-readable output."""
+    lines = [
+        f"Entries created: {result.entries_created}",
+        f"Runs processed: {len(result.source_workflow_ids)}",
+    ]
+    if result.source_workflow_ids:
+        lines.append("")
+        lines.append("Source workflows:")
+        for wid in result.source_workflow_ids:
+            lines.append(f"  {wid}")
+    return "\n".join(lines)
+
+
+async def _submit_extraction(
+    temporal_address: str,
+    limit: int,
+    since_hours: int,
+) -> ExtractionWorkflowResult:
+    """Submit extraction workflow to Temporal and wait for completion."""
+    from temporalio.client import Client
+    from temporalio.contrib.pydantic import pydantic_data_converter
+
+    from forge.extraction_workflow import ForgeExtractionWorkflow
+    from forge.models import ExtractionWorkflowInput
+    from forge.workflows import FORGE_TASK_QUEUE
+
+    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+
+    result = await client.execute_workflow(
+        ForgeExtractionWorkflow.run,
+        ExtractionWorkflowInput(limit=limit, since_hours=since_hours),
+        id="forge-extraction",
+        task_queue=FORGE_TASK_QUEUE,
+    )
+    return result
+
+
+@main.command()
+@click.option(
+    "--limit",
+    default=10,
+    show_default=True,
+    type=int,
+    help="Max runs to process.",
+)
+@click.option(
+    "--since-hours",
+    default=24,
+    show_default=True,
+    type=int,
+    help="Look-back window in hours.",
+)
+@click.option("--dry-run", is_flag=True, help="Show unextracted runs without running extraction.")
+@click.option("--json", "output_json", is_flag=True, help="Output result as JSON.")
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+    help="Temporal server address.",
+)
+def extract(
+    limit: int,
+    since_hours: int,
+    dry_run: bool,
+    output_json: bool,
+    temporal_address: str,
+) -> None:
+    """Extract knowledge from completed runs into playbooks."""
+    if dry_run:
+        from forge.store import get_db_path, get_engine, get_unextracted_runs
+
+        db_path = get_db_path()
+        if db_path is None or not db_path.exists():
+            click.echo("No store available.", err=True)
+            sys.exit(EXIT_FAILURE)
+
+        engine = get_engine(db_path)
+        runs = get_unextracted_runs(engine, limit=limit)
+
+        if not runs:
+            click.echo("No unextracted runs found.")
+            return
+
+        click.echo(f"Unextracted runs ({len(runs)}):")
+        click.echo("")
+        for r in runs:
+            click.echo(f"  {r['workflow_id']}  {r['task_id']}  {r['status']}  {r['created_at']}")
+        return
+
+    try:
+        result = asyncio.run(_submit_extraction(temporal_address, limit, since_hours))
+
+        if output_json:
+            click.echo(result.model_dump_json(indent=2))
+        else:
+            click.echo(format_extraction_result(result))
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+
+# ---------------------------------------------------------------------------
+# Playbooks command (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+def format_playbook_entry(entry: dict) -> str:
+    """Format a playbook entry for human-readable terminal output."""
+    import json as json_mod
+
+    tags = json_mod.loads(entry["tags_json"]) if isinstance(entry.get("tags_json"), str) else []
+    lines = [
+        f"  [{entry['id']}] {entry['title']}",
+        f"    Tags: {', '.join(tags)}",
+        f"    Source: {entry['source_task_id']} ({entry['source_workflow_id']})",
+        f"    Created: {entry['created_at']}",
+    ]
+    return "\n".join(lines)
+
+
+@main.command()
+@click.option("--tag", multiple=True, help="Filter by tag (repeatable).")
+@click.option("--task-id", "filter_task_id", default=None, help="Filter by source task ID.")
+@click.option(
+    "--limit",
+    default=20,
+    show_default=True,
+    type=int,
+    help="Max entries to show.",
+)
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+def playbooks(
+    tag: tuple[str, ...],
+    filter_task_id: str | None,
+    limit: int,
+    output_json: bool,
+) -> None:
+    """List and inspect playbook entries."""
+    import json as json_mod
+
+    from forge.store import (
+        get_db_path,
+        get_engine,
+        get_playbooks_by_tags,
+        list_recent_playbooks,
+    )
+
+    db_path = get_db_path()
+    if db_path is None or not db_path.exists():
+        click.echo("No store available. Run a workflow first.", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    engine = get_engine(db_path)
+
+    if tag:
+        entries = get_playbooks_by_tags(engine, list(tag), limit=limit)
+    else:
+        entries = list_recent_playbooks(engine, limit=limit)
+
+    if filter_task_id:
+        entries = [e for e in entries if e.get("source_task_id") == filter_task_id]
+
+    if not entries:
+        click.echo("No playbooks found.")
+        return
+
+    if output_json:
+        click.echo(json_mod.dumps(entries, indent=2, default=str))
+    else:
+        click.echo(f"Playbooks ({len(entries)}):")
+        click.echo("")
+        for entry in entries:
+            click.echo(format_playbook_entry(entry))
+            click.echo("")
 
 
 # ---------------------------------------------------------------------------
