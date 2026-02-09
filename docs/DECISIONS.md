@@ -229,3 +229,27 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Do not integrate LSP in Phase 4. Defer to a future phase.
 
 **Rationale:** Research confirms the hybrid ast + LSP pattern is the consensus for production tools (Claude Code, Kiro, OpenCode all use it). However, LSP requires managing language server lifecycles across multiple git worktrees, which adds significant operational complexity. The `ast` module + `grimp` combination provides sufficient analysis for Phase 4's goals (import discovery, symbol extraction, importance ranking). LSP becomes valuable when Forge needs precise cross-file reference tracking ("find all callers of this function"), type inference beyond annotations, or diagnostic feedback loops — natural additions once Phase 4's foundation is proven.
+
+## D39: SQLite Observability Store Outside Temporal Payloads
+
+**Decision:** Full LLM interaction data (prompts, context, responses) is persisted to a local SQLite database rather than stored in Temporal workflow results. Temporal payloads carry only lightweight statistics (model name, token counts, latency).
+
+**Rationale:** Temporal has a ~2MB payload limit for workflow results. A planned workflow with 5 steps could produce 2MB+ of prompts alone (each step assembles up to 100k tokens of context). Storing prompts in the Temporal result would hit this limit. A local SQLite database has no such constraint and provides rich queryability (filter by task, step, date range). The Temporal result remains lean and fast to retrieve, while the full observability data is available via CLI queries against SQLite.
+
+## D40: SQLAlchemy for Database Access
+
+**Decision:** Use SQLAlchemy (Core + ORM) for all database access rather than raw `sqlite3`.
+
+**Rationale:** SQLAlchemy provides a well-tested abstraction over database connections, transactions, and schema definition. It handles connection pooling, thread safety, and migration support (via Alembic) that would require manual implementation with raw `sqlite3`. The ORM layer maps directly to Pydantic models, reducing boilerplate. SQLAlchemy also enables future migration to PostgreSQL or another backend without changing application code — important if Forge eventually runs with a shared database in a multi-worker deployment.
+
+## D41: Alembic for Schema Management
+
+**Decision:** Use Alembic for database schema migrations rather than ad-hoc `CREATE TABLE IF NOT EXISTS` statements.
+
+**Rationale:** The observability schema will evolve as Forge adds features (tool calling, cost tracking, evaluation scores). Alembic provides versioned migrations, rollback support, and autogeneration from SQLAlchemy models. This prevents schema drift between development and production databases and makes schema changes reviewable in version control. The initial migration creates the baseline schema; subsequent features add migrations incrementally.
+
+## D42: Best-Effort Store Writes in Activities
+
+**Decision:** Store writes in LLM activities are wrapped in try/except and log warnings on failure. The store never blocks or fails the main workflow.
+
+**Rationale:** Observability is secondary to task execution. If the database is unavailable (disk full, permissions, corruption), the LLM call should still succeed and return its result to the workflow. The store is a side effect, not a dependency. This also simplifies testing — activities can be tested without a database by setting `FORGE_DB_PATH` to empty string.

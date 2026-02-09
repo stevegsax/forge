@@ -137,12 +137,18 @@ Runs as an independent workflow on its own schedule, not on the critical path of
 
 ### Observability
 
+**Observability Store.** Full LLM interaction data — assembled prompts, model responses, token usage, context assembly statistics — is persisted to a local SQLite database at `$XDG_STATE_HOME/forge/forge.db`. This separates heavyweight observability data from Temporal's workflow results, which carry only lightweight statistics (model name, token counts, latency). The CLI queries the store for detailed inspection (`forge run --verbose`, `forge status --verbose`).
+
+The store is managed by SQLAlchemy with Alembic migrations. Schema changes are versioned and reviewable. Activities write to the store as a best-effort side effect (D42) — store failures never block workflow execution.
+
 **OpenTelemetry** traces covering the full hierarchy:
 
 - Pipeline run
 - Workflow instance
 - Activity (LLM call, validation, context assembly)
 - Individual LLM request/response
+
+OTel tracing is initialized in the worker and spans are emitted by LLM, planner, context assembly, and validation activities.
 
 **Execution journal:** Records decisions (why this task was assigned to this model, why this transition was chosen), not just events (timing, status codes). The journal makes traces legible to human reviewers during escalation.
 
@@ -212,6 +218,8 @@ The orchestrator needs a finite set of outcome signals to act on:
 | LLM providers | Anthropic, OpenAI, Mistral, local models |
 | LLM client library | pydantic-ai |
 | Data store / isolation | git, git worktrees |
+| Observability store | SQLite + SQLAlchemy |
+| Schema migrations | Alembic |
 
 **Code generation domain (initial use case):**
 
@@ -253,7 +261,23 @@ Proves out: child workflows, fan-out/gather primitive, compound task IDs, sub-ta
 
 Deliverable: Describe a task where a plan step has independent sub-tasks, Forge fans out child workflows, gathers their outputs, and commits the merged result.
 
-### Phase 4+ (Future)
+### Phase 4: Intelligent Context Assembly (complete)
+
+Automatic context discovery and importance ranking via import graph analysis, PageRank, and token budget management. Replaces manual `context_files` specification with automatic discovery that supplements manual context. See `docs/PHASE4.md` for the full specification.
+
+Proves out: import graph analysis (grimp), symbol extraction (ast), PageRank ranking, token budget packing, repo map generation.
+
+Deliverable: Describe a task with only `target_files` and a description, and Forge automatically discovers which existing files to include as context — ranked by importance and packed within the target model's token budget.
+
+### Phase 5: Observability Store
+
+Persist full LLM interaction data to a local SQLite database so operators can inspect prompts, context, token usage, and results for every step of every workflow. Add lightweight statistics to Temporal result payloads. Provide CLI commands for inspecting workflow history and step details. See `docs/PHASE5.md` for the full specification.
+
+Proves out: SQLite observability store, SQLAlchemy ORM, Alembic migrations, best-effort store writes, CLI inspection commands.
+
+Deliverable: Run a multi-step planned workflow, then use `forge status --workflow-id <id> --verbose` to see the full prompt, assembled context, model name, token usage, and LLM response for each step.
+
+### Phase 6+ (Future)
 
 - Recursive fan-out (sub-tasks can fan out further).
 - Model routing (capability tiers mapped to concrete models).
