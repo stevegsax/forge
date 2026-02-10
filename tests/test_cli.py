@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -37,6 +37,28 @@ from forge.models import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _async_result(value: object = None):
+    """Return an async function that returns *value*.
+
+    Use as ``mock.side_effect = _async_result(TaskResult(...))`` on a plain
+    MagicMock to make ``asyncio.run(mock(...))`` return *value*.
+
+    Unlike ``AsyncMock``, this avoids orphaned internal coroutines that
+    trigger 'coroutine was never awaited' warnings when the mock is called
+    via ``asyncio.run()`` rather than ``await``.
+    """
+
+    async def _fn(*_args: object, **_kwargs: object) -> object:
+        return value
+
+    return _fn
 
 
 # ---------------------------------------------------------------------------
@@ -320,17 +342,17 @@ class TestRunCommandValidation:
 class TestRunCommandExecution:
     """Tests for ``forge run`` execution paths."""
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_success_exit_code(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
         success_result: TaskResult,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = success_result
+        mock_submit.side_effect = _async_result(success_result)
 
         result = cli_runner.invoke(
             main,
@@ -348,17 +370,17 @@ class TestRunCommandExecution:
         assert "Task: test-task" in result.output
         assert "Status: success" in result.output
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_failure_exit_code(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
         failure_result: TaskResult,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = failure_result
+        mock_submit.side_effect = _async_result(failure_result)
 
         result = cli_runner.invoke(
             main,
@@ -374,17 +396,17 @@ class TestRunCommandExecution:
         )
         assert result.exit_code == EXIT_FAILURE
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_json_output(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
         success_result: TaskResult,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = success_result
+        mock_submit.side_effect = _async_result(success_result)
 
         result = cli_runner.invoke(
             main,
@@ -404,16 +426,16 @@ class TestRunCommandExecution:
         assert parsed["task_id"] == "test-task"
         assert parsed["status"] == "success"
 
-    @patch("forge.cli._submit_no_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_no_wait")
     @patch("forge.cli.discover_repo_root")
     def test_no_wait_mode(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = "forge-task-test-task"
+        mock_submit.side_effect = _async_result("forge-task-test-task")
 
         result = cli_runner.invoke(
             main,
@@ -455,12 +477,12 @@ class TestRunCommandExecution:
         )
         assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_temporal_connection_error(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
@@ -481,18 +503,18 @@ class TestRunCommandExecution:
         assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
         assert "Connection refused" in result.stderr
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_task_file_mode(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
         tmp_path: Path,
         success_result: TaskResult,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = success_result
+        mock_submit.side_effect = _async_result(success_result)
 
         task_data = {
             "task_id": "file-task",
@@ -509,17 +531,17 @@ class TestRunCommandExecution:
         task_def = call_args[0][0]
         assert task_def.task_id == "file-task"
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_validation_flags_passed(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
         success_result: TaskResult,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = success_result
+        mock_submit.side_effect = _async_result(success_result)
 
         result = cli_runner.invoke(
             main,
@@ -552,10 +574,10 @@ class TestWorkerCommand:
     """Tests for ``forge worker`` command."""
 
     @patch("forge.cli.asyncio.run")
-    @patch("forge.worker.run_worker", new_callable=AsyncMock)
+    @patch("forge.worker.run_worker", new_callable=MagicMock)
     def test_worker_invokes_run_worker(
         self,
-        mock_run_worker: AsyncMock,
+        mock_run_worker: MagicMock,
         mock_asyncio_run: object,
         cli_runner: CliRunner,
     ) -> None:
@@ -635,11 +657,11 @@ class TestPlanFlag:
         # This will fail at the submit stage, but the validation should pass
         with (
             patch("forge.cli.discover_repo_root") as mock_discover,
-            patch("forge.cli._submit_and_wait", new_callable=AsyncMock) as mock_submit,
+            patch("forge.cli._submit_and_wait") as mock_submit,
         ):
             mock_discover.return_value = "/repo"
-            mock_submit.return_value = TaskResult(
-                task_id="plan-task", status=TransitionSignal.SUCCESS
+            mock_submit.side_effect = _async_result(
+                TaskResult(task_id="plan-task", status=TransitionSignal.SUCCESS)
             )
             result = cli_runner.invoke(
                 main,
@@ -669,16 +691,18 @@ class TestPlanFlag:
         assert result.exit_code != 0
         assert "--target-file is required" in result.output
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_plan_flag_passed_to_submit(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
         cli_runner.invoke(
             main,
             [
@@ -741,16 +765,18 @@ class TestMaxSubTaskAttemptsFlag:
         result = cli_runner.invoke(main, ["run", "--help"])
         assert "--max-sub-task-attempts" in result.output
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_flag_passed_to_submit(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
         cli_runner.invoke(
             main,
             [
@@ -826,16 +852,18 @@ class TestContextDiscoveryFlags:
         assert "--max-import-depth" in result.output
         assert "--include-deps" in result.output
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_no_auto_discover_flag(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
         cli_runner.invoke(
             main,
             [
@@ -853,16 +881,18 @@ class TestContextDiscoveryFlags:
         task_def = call_args[0][0]
         assert task_def.context.auto_discover is False
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_token_budget_flag(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
         cli_runner.invoke(
             main,
             [
@@ -881,16 +911,18 @@ class TestContextDiscoveryFlags:
         task_def = call_args[0][0]
         assert task_def.context.token_budget == 50_000
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_include_deps_flag(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
         cli_runner.invoke(
             main,
             [
@@ -908,16 +940,18 @@ class TestContextDiscoveryFlags:
         task_def = call_args[0][0]
         assert task_def.context.include_dependencies is True
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     def test_max_import_depth_flag(
         self,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
         cli_runner.invoke(
             main,
             [
@@ -1138,28 +1172,30 @@ class TestVerboseFlag:
         result = cli_runner.invoke(main, ["run", "--help"])
         assert "--verbose" in result.output
 
-    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
     @patch("forge.cli._persist_run")
     def test_verbose_flag_shows_stats(
         self,
         mock_persist: object,
         mock_discover: object,
-        mock_submit: AsyncMock,
+        mock_submit: MagicMock,
         cli_runner: CliRunner,
     ) -> None:
         from forge.models import LLMStats
 
         mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
-        mock_submit.return_value = TaskResult(
-            task_id="t",
-            status=TransitionSignal.SUCCESS,
-            llm_stats=LLMStats(
-                model_name="test-model",
-                input_tokens=100,
-                output_tokens=50,
-                latency_ms=250.0,
-            ),
+        mock_submit.side_effect = _async_result(
+            TaskResult(
+                task_id="t",
+                status=TransitionSignal.SUCCESS,
+                llm_stats=LLMStats(
+                    model_name="test-model",
+                    input_tokens=100,
+                    output_tokens=50,
+                    latency_ms=250.0,
+                ),
+            )
         )
         result = cli_runner.invoke(
             main,
