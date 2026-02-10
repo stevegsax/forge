@@ -575,3 +575,176 @@ class TestAssembleContextAutoDiscoverDisabled:
         assert result.task_id == "ctx-no-auto"
         assert "# reference" in result.system_prompt
         assert result.context_stats is None
+
+
+# ---------------------------------------------------------------------------
+# D50: Target file contents in step/sub-task context
+# ---------------------------------------------------------------------------
+
+
+class TestBuildStepSystemPromptTargetFiles:
+    def test_includes_target_file_contents(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        step = PlanStep(step_id="s1", description="Edit module.", target_files=["mod.py"])
+        target_contents = {"mod.py": "def existing():\n    pass\n"}
+        prompt = build_step_system_prompt(task, step, 0, 1, [], {}, target_contents)
+        assert "### Current Target File Contents" in prompt
+        assert "#### mod.py" in prompt
+        assert "def existing():" in prompt
+
+    def test_omits_section_when_no_target_contents(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        step = PlanStep(step_id="s1", description="Create module.", target_files=["new.py"])
+        prompt = build_step_system_prompt(task, step, 0, 1, [], {})
+        assert "### Current Target File Contents" not in prompt
+
+    def test_includes_output_requirements(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        step = PlanStep(step_id="s1", description="Edit module.", target_files=["mod.py"])
+        prompt = build_step_system_prompt(task, step, 0, 1, [], {})
+        assert "### Output Requirements" in prompt
+        assert "edits" in prompt
+        assert "files" in prompt
+
+
+class TestBuildSubTaskSystemPromptTargetFiles:
+    def test_includes_target_file_contents(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Edit.", target_files=["mod.py"])
+        target_contents = {"mod.py": "class Existing: pass"}
+        prompt = build_sub_task_system_prompt("t1", "desc", st, {}, target_contents)
+        assert "### Current Target File Contents" in prompt
+        assert "#### mod.py" in prompt
+        assert "class Existing: pass" in prompt
+
+    def test_omits_section_when_no_target_contents(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Create.", target_files=["new.py"])
+        prompt = build_sub_task_system_prompt("t1", "desc", st, {})
+        assert "### Current Target File Contents" not in prompt
+
+    def test_includes_output_requirements(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Edit.", target_files=["mod.py"])
+        prompt = build_sub_task_system_prompt("t1", "desc", st, {})
+        assert "### Output Requirements" in prompt
+        assert "edits" in prompt
+        assert "files" in prompt
+
+
+class TestAssembleStepContextTargetFiles:
+    @pytest.mark.asyncio
+    async def test_reads_target_files_from_worktree(self, tmp_path: Path) -> None:
+        """Target files are read from worktree and included in prompt."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "target.py").write_text("# existing target content")
+
+        task = TaskDefinition(task_id="t1", description="Edit target.")
+        step = PlanStep(
+            step_id="s1",
+            description="Modify target.",
+            target_files=["target.py"],
+        )
+        input_data = AssembleStepContextInput(
+            task=task,
+            step=step,
+            step_index=0,
+            total_steps=1,
+            repo_root=str(tmp_path),
+            worktree_path=str(worktree),
+        )
+        result = await assemble_step_context(input_data)
+        assert "# existing target content" in result.system_prompt
+        assert "### Current Target File Contents" in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_missing_target_files_are_skipped(self, tmp_path: Path) -> None:
+        """Non-existent target files are gracefully skipped (new files)."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        task = TaskDefinition(task_id="t1", description="Create new.")
+        step = PlanStep(
+            step_id="s1",
+            description="Create new file.",
+            target_files=["new_file.py"],
+        )
+        input_data = AssembleStepContextInput(
+            task=task,
+            step=step,
+            step_index=0,
+            total_steps=1,
+            repo_root=str(tmp_path),
+            worktree_path=str(worktree),
+        )
+        result = await assemble_step_context(input_data)
+        assert "### Current Target File Contents" not in result.system_prompt
+
+
+class TestAssembleSubTaskContextTargetFiles:
+    @pytest.mark.asyncio
+    async def test_reads_target_files_from_parent_worktree(self, tmp_path: Path) -> None:
+        """Target files are read from parent worktree and included in prompt."""
+        parent_wt = tmp_path / "parent-wt"
+        parent_wt.mkdir()
+        (parent_wt / "target.py").write_text("# parent target content")
+
+        st = SubTask(
+            sub_task_id="st1",
+            description="Edit target.",
+            target_files=["target.py"],
+        )
+        input_data = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="Build API.",
+            sub_task=st,
+            worktree_path=str(parent_wt),
+        )
+        result = await assemble_sub_task_context(input_data)
+        assert "# parent target content" in result.system_prompt
+        assert "### Current Target File Contents" in result.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# D50: Updated output requirements in prompts
+# ---------------------------------------------------------------------------
+
+
+class TestOutputRequirementsInPrompts:
+    def test_single_step_prompt_describes_edits(self) -> None:
+        prompt = build_user_prompt()
+        assert "edits" in prompt
+        assert "files" in prompt
+
+    def test_step_user_prompt_describes_edits(self) -> None:
+        step = PlanStep(step_id="s1", description="Edit.", target_files=["a.py"])
+        prompt = build_step_user_prompt(step)
+        assert "edits" in prompt
+        assert "files" in prompt
+
+    def test_sub_task_user_prompt_describes_edits(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Edit.", target_files=["a.py"])
+        prompt = build_sub_task_user_prompt(st)
+        assert "edits" in prompt
+        assert "files" in prompt
+
+    def test_system_prompt_with_context_output_requirements(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="Build.", target_files=["out.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="out.py",
+                    content="# existing",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        prompt = build_system_prompt_with_context(task, packed)
+        assert "edits" in prompt
+        assert "files" in prompt
+        assert "search" in prompt
+        assert "replace" in prompt

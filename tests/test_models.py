@@ -11,6 +11,7 @@ from forge.models import (
     CommitChangesInput,
     ContextConfig,
     ContextStats,
+    FileEdit,
     FileOutput,
     ForgeTaskInput,
     LLMCallResult,
@@ -21,6 +22,7 @@ from forge.models import (
     PlannerInput,
     PlanStep,
     ResetWorktreeInput,
+    SearchReplaceEdit,
     StepResult,
     SubTask,
     SubTaskInput,
@@ -29,6 +31,7 @@ from forge.models import (
     TaskResult,
     TransitionSignal,
     WriteFilesInput,
+    WriteResult,
     build_llm_stats,
     build_planner_stats,
 )
@@ -567,3 +570,102 @@ class TestAssembledContextStepSubTaskId:
         )
         rebuilt = AssembledContext.model_validate_json(ctx.model_dump_json())
         assert rebuilt.step_id == "step-1"
+
+
+# ---------------------------------------------------------------------------
+# D50: SearchReplaceEdit, FileEdit, updated LLMResponse, WriteResult
+# ---------------------------------------------------------------------------
+
+
+class TestSearchReplaceEdit:
+    def test_creation(self) -> None:
+        edit = SearchReplaceEdit(search="old_func", replace="new_func")
+        assert edit.search == "old_func"
+        assert edit.replace == "new_func"
+
+    def test_round_trip(self) -> None:
+        edit = SearchReplaceEdit(search="old", replace="new")
+        rebuilt = SearchReplaceEdit.model_validate_json(edit.model_dump_json())
+        assert rebuilt == edit
+
+
+class TestFileEdit:
+    def test_creation(self) -> None:
+        edit = FileEdit(
+            file_path="src/main.py",
+            edits=[SearchReplaceEdit(search="old", replace="new")],
+        )
+        assert edit.file_path == "src/main.py"
+        assert len(edit.edits) == 1
+
+    def test_round_trip(self) -> None:
+        edit = FileEdit(
+            file_path="src/main.py",
+            edits=[
+                SearchReplaceEdit(search="a", replace="b"),
+                SearchReplaceEdit(search="c", replace="d"),
+            ],
+        )
+        rebuilt = FileEdit.model_validate_json(edit.model_dump_json())
+        assert rebuilt == edit
+
+
+class TestLLMResponseEdits:
+    def test_edits_defaults_to_empty(self) -> None:
+        resp = LLMResponse(explanation="test")
+        assert resp.edits == []
+        assert resp.files == []
+
+    def test_files_defaults_to_empty(self) -> None:
+        resp = LLMResponse(
+            edits=[
+                FileEdit(
+                    file_path="a.py",
+                    edits=[SearchReplaceEdit(search="x", replace="y")],
+                )
+            ],
+            explanation="edit only",
+        )
+        assert resp.files == []
+        assert len(resp.edits) == 1
+
+    def test_backward_compat_without_edits(self) -> None:
+        """Old JSON payloads without edits field still deserialize."""
+        data = '{"files": [{"file_path": "a.py", "content": "pass"}], "explanation": "test"}'
+        resp = LLMResponse.model_validate_json(data)
+        assert len(resp.files) == 1
+        assert resp.edits == []
+
+    def test_round_trip_with_both(self) -> None:
+        resp = LLMResponse(
+            files=[FileOutput(file_path="new.py", content="# new")],
+            edits=[
+                FileEdit(
+                    file_path="old.py",
+                    edits=[SearchReplaceEdit(search="old", replace="new")],
+                )
+            ],
+            explanation="mixed",
+        )
+        rebuilt = LLMResponse.model_validate_json(resp.model_dump_json())
+        assert rebuilt == resp
+
+
+class TestWriteResultOutputFiles:
+    def test_output_files_defaults_to_empty(self) -> None:
+        wr = WriteResult(task_id="t", files_written=["a.py"])
+        assert wr.output_files == {}
+
+    def test_output_files_populated(self) -> None:
+        wr = WriteResult(
+            task_id="t",
+            files_written=["a.py"],
+            output_files={"a.py": "content"},
+        )
+        assert wr.output_files == {"a.py": "content"}
+
+    def test_backward_compat_without_output_files(self) -> None:
+        """Old JSON payloads without output_files still deserialize."""
+        data = '{"task_id": "t", "files_written": ["a.py"]}'
+        wr = WriteResult.model_validate_json(data)
+        assert wr.output_files == {}

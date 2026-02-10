@@ -233,10 +233,31 @@ class FileOutput(BaseModel):
     content: str = Field(description="Complete file content.")
 
 
+class SearchReplaceEdit(BaseModel):
+    """A single search/replace operation within a file."""
+
+    search: str = Field(description="Exact text to find in the file. Must match exactly once.")
+    replace: str = Field(description="Text to replace the match with.")
+
+
+class FileEdit(BaseModel):
+    """Edits to an existing file via search/replace."""
+
+    file_path: str = Field(description="Relative path within the worktree.")
+    edits: list[SearchReplaceEdit] = Field(description="Ordered search/replace edits to apply.")
+
+
 class LLMResponse(BaseModel):
     """Structured output model for pydantic-ai Agent."""
 
-    files: list[FileOutput] = Field(description="Files to create or modify.")
+    files: list[FileOutput] = Field(
+        default_factory=list,
+        description="New files to create with complete content.",
+    )
+    edits: list[FileEdit] = Field(
+        default_factory=list,
+        description="Search/replace edits for existing files.",
+    )
     explanation: str = Field(description="Brief explanation of what was produced.")
 
 
@@ -359,6 +380,10 @@ class WriteResult(BaseModel):
 
     task_id: str
     files_written: list[str]
+    output_files: dict[str, str] = Field(
+        default_factory=dict,
+        description="Final file contents (path -> content) for all written files.",
+    )
 
 
 # ---------------------------------------------------------------------------

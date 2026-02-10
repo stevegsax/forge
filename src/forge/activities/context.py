@@ -73,9 +73,13 @@ def build_system_prompt(task: TaskDefinition, context_file_contents: dict[str, s
 def build_user_prompt() -> str:
     """Build the user prompt.
 
-    Short instruction directing the LLM to produce all target files.
+    Short instruction directing the LLM to produce target files or edits.
     """
-    return "Generate the code described above. Produce all target files with complete content."
+    return (
+        "Generate the code described above. "
+        "For existing files, use `edits` with search/replace operations. "
+        "For new files, use `files` with complete content."
+    )
 
 
 def build_system_prompt_with_context(task: TaskDefinition, packed: PackedContext) -> str:
@@ -150,8 +154,14 @@ def build_system_prompt_with_context(task: TaskDefinition, packed: PackedContext
     parts.append("")
     parts.append("## Output Requirements")
     parts.append(
-        "You MUST respond with a valid LLMResponse containing a `files` list and "
-        "an `explanation` string. Each file entry needs `file_path` and `content`. "
+        "You MUST respond with a valid LLMResponse containing an `explanation` string "
+        "and either `files`, `edits`, or both.\n\n"
+        "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
+        "`file_path` and `content` (complete file content).\n"
+        "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
+        "`file_path` and a list of `edits`, where each edit has `search` (exact text "
+        "to find, must match exactly once) and `replace` (replacement text).\n\n"
+        "A file path must NOT appear in both `files` and `edits`. "
         "Do NOT return an empty object."
     )
 
@@ -406,11 +416,12 @@ def build_step_system_prompt(
     total_steps: int,
     completed_steps: list[StepResult],
     context_file_contents: dict[str, str],
+    target_file_contents: dict[str, str] | None = None,
 ) -> str:
     """Build the system prompt for a single step execution.
 
     Includes the overall task summary, plan progress, current step details,
-    and context files read from the worktree.
+    context files, and current target file contents from the worktree.
     """
     parts: list[str] = []
 
@@ -438,6 +449,16 @@ def build_step_system_prompt(
     for f in step.target_files:
         parts.append(f"- {f}")
 
+    if target_file_contents:
+        parts.append("")
+        parts.append("### Current Target File Contents")
+        for file_path, content in target_file_contents.items():
+            parts.append("")
+            parts.append(f"#### {file_path}")
+            parts.append("```")
+            parts.append(content)
+            parts.append("```")
+
     if context_file_contents:
         parts.append("")
         parts.append("### Context Files")
@@ -448,6 +469,20 @@ def build_step_system_prompt(
             parts.append(content)
             parts.append("```")
 
+    parts.append("")
+    parts.append("### Output Requirements")
+    parts.append(
+        "You MUST respond with a valid LLMResponse containing an `explanation` string "
+        "and either `files`, `edits`, or both.\n\n"
+        "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
+        "`file_path` and `content` (complete file content).\n"
+        "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
+        "`file_path` and a list of `edits`, where each edit has `search` (exact text "
+        "to find, must match exactly once) and `replace` (replacement text).\n\n"
+        "A file path must NOT appear in both `files` and `edits`. "
+        "Do NOT return an empty object."
+    )
+
     return "\n".join(parts)
 
 
@@ -455,7 +490,8 @@ def build_step_user_prompt(step: PlanStep) -> str:
     """Build the user prompt for a single step execution."""
     return (
         f"Execute step '{step.step_id}': {step.description}\n\n"
-        "Produce all target files with complete content."
+        "For existing files, use `edits` with search/replace operations. "
+        "For new files, use `files` with complete content."
     )
 
 
@@ -465,9 +501,12 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
 
     Context files are read from the **worktree** (not repo root) so that
     later steps can see files created by earlier steps.
+    Target files are also read from the worktree so the LLM can produce
+    search/replace edits instead of rewriting entire files.
     """
     worktree = Path(input.worktree_path)
     context_contents = _read_context_files(worktree, input.step.context_files)
+    target_contents = _read_context_files(worktree, input.step.target_files)
 
     system_prompt = build_step_system_prompt(
         task=input.task,
@@ -476,6 +515,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         total_steps=input.total_steps,
         completed_steps=input.completed_steps,
         context_file_contents=context_contents,
+        target_file_contents=target_contents,
     )
     user_prompt = build_step_user_prompt(input.step)
 
@@ -497,11 +537,12 @@ def build_sub_task_system_prompt(
     parent_description: str,
     sub_task: SubTask,
     context_file_contents: dict[str, str],
+    target_file_contents: dict[str, str] | None = None,
 ) -> str:
     """Build the system prompt for a sub-task execution.
 
     Includes parent task context, sub-task description, target files,
-    and context files read from the parent worktree.
+    current target file contents, and context files read from the parent worktree.
     """
     parts: list[str] = []
 
@@ -519,6 +560,16 @@ def build_sub_task_system_prompt(
     for f in sub_task.target_files:
         parts.append(f"- {f}")
 
+    if target_file_contents:
+        parts.append("")
+        parts.append("### Current Target File Contents")
+        for file_path, content in target_file_contents.items():
+            parts.append("")
+            parts.append(f"#### {file_path}")
+            parts.append("```")
+            parts.append(content)
+            parts.append("```")
+
     if context_file_contents:
         parts.append("")
         parts.append("### Context Files")
@@ -529,6 +580,20 @@ def build_sub_task_system_prompt(
             parts.append(content)
             parts.append("```")
 
+    parts.append("")
+    parts.append("### Output Requirements")
+    parts.append(
+        "You MUST respond with a valid LLMResponse containing an `explanation` string "
+        "and either `files`, `edits`, or both.\n\n"
+        "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
+        "`file_path` and `content` (complete file content).\n"
+        "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
+        "`file_path` and a list of `edits`, where each edit has `search` (exact text "
+        "to find, must match exactly once) and `replace` (replacement text).\n\n"
+        "A file path must NOT appear in both `files` and `edits`. "
+        "Do NOT return an empty object."
+    )
+
     return "\n".join(parts)
 
 
@@ -536,7 +601,8 @@ def build_sub_task_user_prompt(sub_task: SubTask) -> str:
     """Build the user prompt for a sub-task execution."""
     return (
         f"Execute sub-task '{sub_task.sub_task_id}': {sub_task.description}\n\n"
-        "Produce all target files with complete content."
+        "For existing files, use `edits` with search/replace operations. "
+        "For new files, use `files` with complete content."
     )
 
 
@@ -548,15 +614,19 @@ async def assemble_sub_task_context(
 
     Context files are read from the **parent worktree** because the sub-task
     worktree starts empty (branched from parent branch).
+    Target files are also read from the parent worktree so the LLM can produce
+    search/replace edits instead of rewriting entire files.
     """
     parent_worktree = Path(input.worktree_path)
     context_contents = _read_context_files(parent_worktree, input.sub_task.context_files)
+    target_contents = _read_context_files(parent_worktree, input.sub_task.target_files)
 
     system_prompt = build_sub_task_system_prompt(
         parent_task_id=input.parent_task_id,
         parent_description=input.parent_description,
         sub_task=input.sub_task,
         context_file_contents=context_contents,
+        target_file_contents=target_contents,
     )
     user_prompt = build_sub_task_user_prompt(input.sub_task)
 

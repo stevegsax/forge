@@ -269,7 +269,7 @@ class ForgeTaskWorkflow:
             signal = TransitionSignal(signal_value)
 
             # --- Collect output files ---
-            output_files = {f.file_path: f.content for f in llm_result.response.files}
+            output_files = write_result.output_files
 
             # --- Act on signal ---
             if signal == TransitionSignal.SUCCESS:
@@ -480,7 +480,7 @@ class ForgeTaskWorkflow:
                 )
                 signal = TransitionSignal(signal_value)
 
-                output_files = {f.file_path: f.content for f in llm_result.response.files}
+                output_files = write_result.output_files
 
                 if signal == TransitionSignal.SUCCESS:
                     # Commit this step's changes
@@ -820,7 +820,7 @@ class ForgeSubTaskWorkflow:
             signal = TransitionSignal(signal_value)
 
             # --- Collect output files before cleanup ---
-            output_files = {f.file_path: f.content for f in llm_result.response.files}
+            output_files = write_result.output_files
             digest = llm_result.response.explanation
 
             # --- Remove worktree (always — sub-tasks don't commit) ---
