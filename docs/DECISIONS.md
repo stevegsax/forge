@@ -289,3 +289,9 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** The LLM chooses what context to request from a menu of available providers. Context requests are fulfilled by Temporal activities, not inline tool calls. The LLM iterates until it signals readiness to generate.
 
 **Rationale:** The LLM knows what information it needs better than a deterministic heuristic. Fulfillment via Temporal activities provides durability, retries, and observability for each analysis step. A configurable round limit bounds token spend. The exploration results feed into the generation prompt, keeping the exploration and generation phases cleanly separated.
+
+## D49: Progressive Disclosure for Context Assembly
+
+**Decision:** By default, only target file contents and the repo map are assembled upfront. Dependency file contents (direct imports at priority 3) and transitive symbol signatures (priority 4) are omitted unless `--include-deps` is passed. The `discover_context()` function accepts an `include_dependencies` parameter (default `False`), and the `ContextConfig` model exposes this as `include_dependencies`.
+
+**Rationale:** Dumping all auto-discovered dependency code into the system prompt overwhelms the model. For a simple task like "add a docstring to main()" targeting `cli.py`, the upfront approach produced a 161K-character prompt where 69% was dependency code the model did not need. This caused the model to return empty structured output instead of proper `LLMResponse` tool calls. The planner already follows the lean pattern (task + repo map only, no dependency dumps). Phase 7's exploration providers (`read_file`, `symbol_list`, `discover_context`) let the model pull dependencies on demand when it actually needs them. The `--include-deps` flag restores the old behavior for tasks that benefit from upfront dependency context.

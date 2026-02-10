@@ -62,7 +62,7 @@ Temporal provides the workflow engine. The LLM call and transition evaluation ar
 - **Planned** (`plan=True`): A planner LLM decomposes the task into ordered steps. Each step executes the universal workflow step and commits on success. Step-level retry resets uncommitted changes without losing prior commits.
 - **Fan-out** (planned steps with `sub_tasks`): Steps with sub-tasks fan out to parallel child workflows. Each sub-task runs in its own worktree, results are gathered and merged, then validated and committed by the parent.
 
-All modes use automatic context discovery (Phase 4) by default: import graph analysis via `grimp`, PageRank ranking via `networkx`, symbol extraction via `ast`, and token budget packing. Disable with `--no-auto-discover`.
+All modes use automatic context discovery (Phase 4) by default: import graph analysis via `grimp`, PageRank ranking via `networkx`, symbol extraction via `ast`, and token budget packing. By default, only target file contents and the repo map are assembled upfront (progressive disclosure); dependency file contents and transitive signatures are omitted to keep prompts lean. The LLM can pull dependencies on demand via exploration providers (Phase 7). Use `--include-deps` to include dependency contents upfront. Disable auto-discovery entirely with `--no-auto-discover`.
 
 All modes support LLM-guided context exploration (Phase 7) by default: the LLM requests context from providers (file reads, code search, symbols, import graphs, tests, lint, git history, repo maps, past runs, playbooks) before generating code. Disable with `--no-explore` or set `--max-exploration-rounds 0`.
 

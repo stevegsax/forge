@@ -218,8 +218,8 @@ Context assembly is a bin-packing problem with a priority ordering (from D14 in 
 |----------|---------|----------------|-------|
 | 1 (highest) | Task description, definition of "done" | Verbatim | Always included |
 | 2 | Target file current content (if modifying existing files) | Full content | The files being changed |
-| 3 | Direct imports of target files | Full content | Immediate dependencies |
-| 4 | Interface context (transitive imports, ranked by PageRank) | Signatures only | Higher-ranked files first |
+| 3 | Direct imports of target files | Full content | Only with `--include-deps` |
+| 4 | Interface context (transitive imports, ranked by PageRank) | Signatures only | Only with `--include-deps` |
 | 5 | Repo map | Compressed overview | Structural orientation |
 | 6 | Manually specified `context_files` (if any) | Full content | Escape hatch for non-code context |
 
@@ -280,12 +280,17 @@ The four existing assembly functions gain an optional automatic context discover
 2. If target_files are specified:
    a. Build import graph via grimp.
    b. Run PageRank to rank files by importance.
-   c. Extract symbols for transitive imports.
-   d. Read current content of target files (if they exist — for modification tasks).
+   c. Read current content of target files (if they exist — for modification tasks).
+   d. If include_dependencies=True:
+      - Read direct import contents.
+      - Extract symbols for transitive imports.
+      - Compute signature fallbacks for direct imports.
    e. Generate repo map.
 3. Pack all context items within the token budget (binary search).
-4. Build prompt from packed context.
+4. Build prompt from packed context (includes Output Requirements reminder).
 ```
+
+By default (`include_dependencies=False`), steps 2d are skipped. This produces lean prompts containing only target files and the repo map. The LLM can request dependency context on demand via Phase 7's exploration providers.
 
 **Integration point:** The assembly activities call a new pure function `discover_context(target_files, project_root, manual_context, budget)` that returns `PackedContext`. The prompt-building functions accept `PackedContext` instead of `dict[str, str]`.
 
@@ -296,12 +301,15 @@ New models added to `models.py`:
 ```
 ContextConfig:
     auto_discover: bool = True              # Enable automatic context discovery
+    include_dependencies: bool = False      # Include direct import contents and transitive signatures upfront
     token_budget: int = 100_000             # Token budget for context (targets ~50% of 200k window)
     output_reserve: int = 16_000            # Tokens reserved for LLM output
     max_import_depth: int = 2               # How deep to trace imports
     include_repo_map: bool = True           # Include compressed repo map
     repo_map_tokens: int = 2048             # Token budget for the repo map
 ```
+
+When `include_dependencies` is False (default), `discover_context()` skips reading direct import contents (step 4), extracting transitive symbol signatures (step 5), and computing signature fallbacks (step 7). Only target file contents and the repo map are assembled upfront. The LLM can pull dependencies on demand via Phase 7's exploration providers.
 
 Modified models:
 
@@ -427,11 +435,18 @@ No other new dependencies. Symbol extraction uses Python's stdlib `ast` module. 
 ## CLI Usage
 
 ```bash
-# Automatic context discovery (default when auto_discover=True)
+# Default: target files + repo map only (progressive disclosure)
 forge run \
     --task-id my-task \
     --description "Add error handling to the API client" \
     --target-file src/forge/api/client.py
+
+# Include dependency contents upfront (pre-progressive-disclosure behavior)
+forge run \
+    --task-id my-task \
+    --description "Add error handling to the API client" \
+    --target-file src/forge/api/client.py \
+    --include-deps
 
 # Disable automatic discovery (revert to manual context_files)
 forge run \
@@ -449,9 +464,10 @@ forge run \
     --token-budget 100000
 ```
 
-New CLI options:
+CLI options:
 
-- `--no-auto-discover` — Disable automatic context discovery.
+- `--no-auto-discover` — Disable automatic context discovery entirely.
+- `--include-deps` — Include dependency file contents in upfront context (default: off).
 - `--token-budget` — Total token budget for context (default: `100000`).
 - `--max-import-depth` — How deep to trace imports (default: `2`).
 

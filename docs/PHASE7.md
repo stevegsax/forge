@@ -40,7 +40,7 @@ Each provider wraps an existing tool. No new dependencies.
 | `git_log` | Recent commit history | `path`, `n` |
 | `git_diff` | Diff against base branch | `base` |
 | `repo_map` | Ranked project structure | (none) |
-| `discover_context` | Full auto-discovery for target files | `target_files` |
+| `discover_context` | Full auto-discovery for target files (always includes dependencies) | `target_files` |
 | `past_runs` | Recent workflow results | `limit` |
 | `playbooks` | Relevant playbook entries | `tags` |
 
@@ -75,6 +75,7 @@ Two new activities in `src/forge/activities/exploration.py`:
 |--------|---------|-------------|
 | `--max-exploration-rounds` | `10` | Max rounds of exploration (0 disables) |
 | `--no-explore` | off | Disable exploration entirely |
+| `--include-deps` | off | Include dependency contents in upfront context (see D49) |
 
 ## Key Files
 

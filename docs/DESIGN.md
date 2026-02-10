@@ -90,6 +90,8 @@ The planner specifies a **capability tier** per task rather than a concrete mode
 
 Context assembly is deterministic, budget-aware, and pre-computed. It is the system's core competency alongside prompt construction.
 
+**Progressive disclosure (default).** By default, only target file contents and the repo map are assembled upfront. Dependency file contents (direct imports) and transitive symbol signatures are omitted to keep prompts lean. The LLM can pull dependencies on demand via Phase 7's exploration providers (`read_file`, `symbol_list`, `discover_context`, etc.). This prevents overwhelming the model with large prompts that degrade output quality. Use `--include-deps` to include dependency contents upfront (the pre-Phase 8 behavior).
+
 **Sources:**
 
 - Task-specific analysis tools: tree-sitter and LSPs for code tasks; other domain-appropriate tools for non-code tasks.
@@ -102,7 +104,7 @@ Context assembly is deterministic, budget-aware, and pre-computed. It is the sys
 
 1. Task description and definition of "done"
 2. Immediate working context (files the task will read/write, reference material)
-3. Interface context (type signatures, API contracts, schemas, specifications)
+3. Interface context (type signatures, API contracts, schemas, specifications) — only with `--include-deps`
 4. Deterministic analysis results (existing validation output, computed facts)
 5. Relevant playbooks
 6. Broader project context (structure, conventions, related work)
@@ -264,6 +266,8 @@ Deliverable: Describe a task where a plan step has independent sub-tasks, Forge 
 ### Phase 4: Intelligent Context Assembly (complete)
 
 Automatic context discovery and importance ranking via import graph analysis, PageRank, and token budget management. Replaces manual `context_files` specification with automatic discovery that supplements manual context. See `docs/PHASE4.md` for the full specification.
+
+By default, only target file contents and the repo map are assembled upfront (progressive disclosure). Dependency file contents and transitive signatures are included only when `--include-deps` is passed. The LLM can pull dependencies on demand via Phase 7's exploration providers.
 
 Proves out: import graph analysis (grimp), symbol extraction (ast), PageRank ranking, token budget packing, repo map generation.
 
