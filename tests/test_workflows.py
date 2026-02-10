@@ -61,6 +61,7 @@ _FORGE_INPUT = ForgeTaskInput(
     task=_TASK,
     repo_root="/tmp/repo",
     max_attempts=2,
+    max_exploration_rounds=0,
 )
 
 _LLM_RESPONSE = LLMResponse(
@@ -501,6 +502,7 @@ _PLANNED_INPUT = ForgeTaskInput(
     repo_root="/tmp/repo",
     plan=True,
     max_step_attempts=2,
+    max_exploration_rounds=0,
 )
 
 
@@ -1094,6 +1096,7 @@ _FANOUT_INPUT = ForgeTaskInput(
     repo_root="/tmp/repo",
     plan=True,
     max_sub_task_attempts=2,
+    max_exploration_rounds=0,
 )
 
 
@@ -1382,3 +1385,549 @@ class TestPlannedBackwardCompat:
         result = await _run_planned_workflow(env)
         assert result.status == TransitionSignal.SUCCESS
         assert len(result.step_results) == 2
+
+
+# ===========================================================================
+# Phase 8: Error-aware retry tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Mock activities that capture context assembly inputs
+# ---------------------------------------------------------------------------
+
+_P8_CALL_LOG: list[str] = []
+_P8_TRANSITION_SEQUENCE: list[str] = []
+_P8_ASSEMBLE_CONTEXT_INPUTS: list[AssembleContextInput] = []
+_P8_VALIDATE_RESPONSES: list[list[ValidationResult]] = []
+
+
+def _reset_p8_state(
+    transitions: list[str] | None = None,
+    validate_responses: list[list[ValidationResult]] | None = None,
+) -> None:
+    _P8_CALL_LOG.clear()
+    _P8_TRANSITION_SEQUENCE.clear()
+    _P8_ASSEMBLE_CONTEXT_INPUTS.clear()
+    _P8_VALIDATE_RESPONSES.clear()
+    if transitions:
+        _P8_TRANSITION_SEQUENCE.extend(transitions)
+    if validate_responses:
+        _P8_VALIDATE_RESPONSES.extend(validate_responses)
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_p8_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _P8_CALL_LOG.append("create_worktree")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="remove_worktree_activity")
+async def mock_p8_remove_worktree(input: RemoveWorktreeInput) -> None:
+    _P8_CALL_LOG.append("remove_worktree")
+
+
+@activity.defn(name="commit_changes_activity")
+async def mock_p8_commit(input: CommitChangesInput) -> CommitChangesOutput:
+    _P8_CALL_LOG.append(f"commit:{input.status}")
+    return CommitChangesOutput(commit_sha="d" * 40)
+
+
+@activity.defn(name="assemble_context")
+async def mock_p8_assemble_context(input: AssembleContextInput) -> AssembledContext:
+    _P8_CALL_LOG.append("assemble_context")
+    _P8_ASSEMBLE_CONTEXT_INPUTS.append(input)
+    return AssembledContext(
+        task_id=input.task.task_id,
+        system_prompt="system prompt",
+        user_prompt="user prompt",
+    )
+
+
+@activity.defn(name="call_llm")
+async def mock_p8_call_llm(context: AssembledContext) -> LLMCallResult:
+    _P8_CALL_LOG.append("call_llm")
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=LLMResponse(
+            files=[FileOutput(file_path="hello.py", content="print('hello')\n")],
+            explanation="output",
+        ),
+        model_name="mock-model",
+        input_tokens=100,
+        output_tokens=50,
+        latency_ms=200.0,
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_p8_write_output(input: WriteOutputInput) -> WriteResult:
+    _P8_CALL_LOG.append("write_output")
+    return WriteResult(task_id=input.llm_result.task_id, files_written=["hello.py"])
+
+
+@activity.defn(name="validate_output")
+async def mock_p8_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+    _P8_CALL_LOG.append("validate_output")
+    if _P8_VALIDATE_RESPONSES:
+        return _P8_VALIDATE_RESPONSES.pop(0)
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_p8_evaluate_transition(input: TransitionInput) -> str:
+    _P8_CALL_LOG.append("evaluate_transition")
+    if _P8_TRANSITION_SEQUENCE:
+        return _P8_TRANSITION_SEQUENCE.pop(0)
+    return TransitionSignal.SUCCESS.value
+
+
+_P8_MOCK_ACTIVITIES = [
+    mock_p8_create_worktree,
+    mock_p8_remove_worktree,
+    mock_p8_commit,
+    mock_p8_assemble_context,
+    mock_p8_call_llm,
+    mock_p8_write_output,
+    mock_p8_validate_output,
+    mock_p8_evaluate_transition,
+]
+
+
+class TestSingleStepErrorAwareRetry:
+    """Phase 8: prior_errors are passed through single-step retry loop."""
+
+    @pytest.mark.asyncio
+    async def test_first_attempt_has_no_prior_errors(self, env: WorkflowEnvironment) -> None:
+        _reset_p8_state(transitions=[TransitionSignal.SUCCESS.value])
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_P8_MOCK_ACTIVITIES,
+        ):
+            await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=_TASK,
+                    repo_root="/tmp/repo",
+                    max_attempts=2,
+                    max_exploration_rounds=0,
+                ),
+                id="test-p8-first-attempt",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+        assert len(_P8_ASSEMBLE_CONTEXT_INPUTS) == 1
+        first = _P8_ASSEMBLE_CONTEXT_INPUTS[0]
+        assert first.prior_errors == []
+        assert first.attempt == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
+        lint_errors = [
+            ValidationResult(
+                check_name="ruff_lint",
+                passed=False,
+                summary="ruff_lint failed",
+                details="hello.py:1:1: F401 unused import",
+            )
+        ]
+        _reset_p8_state(
+            transitions=[
+                TransitionSignal.FAILURE_RETRYABLE.value,
+                TransitionSignal.SUCCESS.value,
+            ],
+            validate_responses=[
+                lint_errors,
+                [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")],
+            ],
+        )
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_P8_MOCK_ACTIVITIES,
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=_TASK,
+                    repo_root="/tmp/repo",
+                    max_attempts=2,
+                    max_exploration_rounds=0,
+                ),
+                id="test-p8-retry-errors",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+        assert result.status == TransitionSignal.SUCCESS
+        assert len(_P8_ASSEMBLE_CONTEXT_INPUTS) == 2
+
+        # First attempt: no prior errors
+        first = _P8_ASSEMBLE_CONTEXT_INPUTS[0]
+        assert first.prior_errors == []
+        assert first.attempt == 1
+
+        # Second attempt: prior errors from first attempt
+        second = _P8_ASSEMBLE_CONTEXT_INPUTS[1]
+        assert len(second.prior_errors) == 1
+        assert second.prior_errors[0].check_name == "ruff_lint"
+        assert second.attempt == 2
+        assert second.max_attempts == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Planned step error-aware retry
+# ---------------------------------------------------------------------------
+
+_P8_STEP_CALL_LOG: list[str] = []
+_P8_STEP_TRANSITION_SEQUENCE: list[str] = []
+_P8_STEP_CONTEXT_INPUTS: list[AssembleStepContextInput] = []
+_P8_STEP_VALIDATE_RESPONSES: list[list[ValidationResult]] = []
+
+
+def _reset_p8_step_state(
+    transitions: list[str] | None = None,
+    validate_responses: list[list[ValidationResult]] | None = None,
+) -> None:
+    _P8_STEP_CALL_LOG.clear()
+    _P8_STEP_TRANSITION_SEQUENCE.clear()
+    _P8_STEP_CONTEXT_INPUTS.clear()
+    _P8_STEP_VALIDATE_RESPONSES.clear()
+    if transitions:
+        _P8_STEP_TRANSITION_SEQUENCE.extend(transitions)
+    if validate_responses:
+        _P8_STEP_VALIDATE_RESPONSES.extend(validate_responses)
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_p8s_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _P8_STEP_CALL_LOG.append("create_worktree")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="assemble_planner_context")
+async def mock_p8s_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
+    _P8_STEP_CALL_LOG.append("assemble_planner_context")
+    return PlannerInput(
+        task_id=input.task.task_id,
+        system_prompt="planner prompt",
+        user_prompt="planner user",
+    )
+
+
+@activity.defn(name="call_planner")
+async def mock_p8s_call_planner(input: PlannerInput) -> PlanCallResult:
+    _P8_STEP_CALL_LOG.append("call_planner")
+    plan = Plan(
+        task_id=input.task_id,
+        steps=[PlanStep(step_id="step-1", description="Create.", target_files=["a.py"])],
+        explanation="One step.",
+    )
+    return PlanCallResult(
+        task_id=input.task_id,
+        plan=plan,
+        model_name="mock-planner",
+        input_tokens=300,
+        output_tokens=150,
+        latency_ms=500.0,
+    )
+
+
+@activity.defn(name="assemble_step_context")
+async def mock_p8s_assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
+    _P8_STEP_CALL_LOG.append(f"assemble_step_context:{input.step.step_id}")
+    _P8_STEP_CONTEXT_INPUTS.append(input)
+    return AssembledContext(
+        task_id=input.task.task_id,
+        system_prompt=f"step prompt for {input.step.step_id}",
+        user_prompt=f"step user for {input.step.step_id}",
+    )
+
+
+@activity.defn(name="call_llm")
+async def mock_p8s_call_llm(context: AssembledContext) -> LLMCallResult:
+    _P8_STEP_CALL_LOG.append("call_llm")
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=LLMResponse(
+            files=[FileOutput(file_path="a.py", content="# code\n")],
+            explanation="step output",
+        ),
+        model_name="mock-model",
+        input_tokens=100,
+        output_tokens=50,
+        latency_ms=200.0,
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_p8s_write_output(input: WriteOutputInput) -> WriteResult:
+    _P8_STEP_CALL_LOG.append("write_output")
+    return WriteResult(task_id=input.llm_result.task_id, files_written=["a.py"])
+
+
+@activity.defn(name="validate_output")
+async def mock_p8s_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+    _P8_STEP_CALL_LOG.append("validate_output")
+    if _P8_STEP_VALIDATE_RESPONSES:
+        return _P8_STEP_VALIDATE_RESPONSES.pop(0)
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_p8s_evaluate_transition(input: TransitionInput) -> str:
+    _P8_STEP_CALL_LOG.append("evaluate_transition")
+    if _P8_STEP_TRANSITION_SEQUENCE:
+        return _P8_STEP_TRANSITION_SEQUENCE.pop(0)
+    return TransitionSignal.SUCCESS.value
+
+
+@activity.defn(name="commit_changes_activity")
+async def mock_p8s_commit(input: CommitChangesInput) -> CommitChangesOutput:
+    _P8_STEP_CALL_LOG.append(f"commit:{input.status}")
+    return CommitChangesOutput(commit_sha="e" * 40)
+
+
+@activity.defn(name="reset_worktree_activity")
+async def mock_p8s_reset_worktree(input: ResetWorktreeInput) -> None:
+    _P8_STEP_CALL_LOG.append("reset_worktree")
+
+
+_P8_STEP_MOCK_ACTIVITIES = [
+    mock_p8s_create_worktree,
+    mock_p8s_assemble_planner_context,
+    mock_p8s_call_planner,
+    mock_p8s_assemble_step_context,
+    mock_p8s_call_llm,
+    mock_p8s_write_output,
+    mock_p8s_validate_output,
+    mock_p8s_evaluate_transition,
+    mock_p8s_commit,
+    mock_p8s_reset_worktree,
+]
+
+
+class TestPlannedStepErrorAwareRetry:
+    """Phase 8: prior_errors are passed through planned step retry loop."""
+
+    @pytest.mark.asyncio
+    async def test_step_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
+        lint_errors = [
+            ValidationResult(
+                check_name="ruff_format",
+                passed=False,
+                summary="ruff_format failed",
+                details="a.py:10:1: formatting error",
+            )
+        ]
+        _reset_p8_step_state(
+            transitions=[
+                TransitionSignal.FAILURE_RETRYABLE.value,
+                TransitionSignal.SUCCESS.value,
+            ],
+            validate_responses=[
+                lint_errors,
+                [ValidationResult(check_name="ruff_format", passed=True, summary="passed")],
+            ],
+        )
+        task = TaskDefinition(task_id="p8-step-task", description="Build.")
+        input_data = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_step_attempts=2,
+            max_exploration_rounds=0,
+        )
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_P8_STEP_MOCK_ACTIVITIES,
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                input_data,
+                id="test-p8-step-retry",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+        assert result.status == TransitionSignal.SUCCESS
+        assert len(_P8_STEP_CONTEXT_INPUTS) == 2
+
+        # First attempt: no prior errors
+        first = _P8_STEP_CONTEXT_INPUTS[0]
+        assert first.prior_errors == []
+        assert first.attempt == 1
+
+        # Second attempt: errors from first
+        second = _P8_STEP_CONTEXT_INPUTS[1]
+        assert len(second.prior_errors) == 1
+        assert second.prior_errors[0].check_name == "ruff_format"
+        assert second.attempt == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Sub-task error-aware retry
+# ---------------------------------------------------------------------------
+
+_P8_ST_CALL_LOG: list[str] = []
+_P8_ST_TRANSITION_SEQUENCE: list[str] = []
+_P8_ST_CONTEXT_INPUTS: list[AssembleSubTaskContextInput] = []
+_P8_ST_VALIDATE_RESPONSES: list[list[ValidationResult]] = []
+
+
+def _reset_p8_st_state(
+    transitions: list[str] | None = None,
+    validate_responses: list[list[ValidationResult]] | None = None,
+) -> None:
+    _P8_ST_CALL_LOG.clear()
+    _P8_ST_TRANSITION_SEQUENCE.clear()
+    _P8_ST_CONTEXT_INPUTS.clear()
+    _P8_ST_VALIDATE_RESPONSES.clear()
+    if transitions:
+        _P8_ST_TRANSITION_SEQUENCE.extend(transitions)
+    if validate_responses:
+        _P8_ST_VALIDATE_RESPONSES.extend(validate_responses)
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_p8st_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _P8_ST_CALL_LOG.append(f"create_worktree:{input.task_id}")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="remove_worktree_activity")
+async def mock_p8st_remove_worktree(input: RemoveWorktreeInput) -> None:
+    _P8_ST_CALL_LOG.append(f"remove_worktree:{input.task_id}")
+
+
+@activity.defn(name="assemble_sub_task_context")
+async def mock_p8st_assemble_sub_task_context(
+    input: AssembleSubTaskContextInput,
+) -> AssembledContext:
+    _P8_ST_CALL_LOG.append(f"assemble_sub_task_context:{input.sub_task.sub_task_id}")
+    _P8_ST_CONTEXT_INPUTS.append(input)
+    return AssembledContext(
+        task_id=input.parent_task_id,
+        system_prompt=f"sub-task prompt for {input.sub_task.sub_task_id}",
+        user_prompt=f"sub-task user for {input.sub_task.sub_task_id}",
+    )
+
+
+@activity.defn(name="call_llm")
+async def mock_p8st_call_llm(context: AssembledContext) -> LLMCallResult:
+    _P8_ST_CALL_LOG.append("call_llm")
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=LLMResponse(
+            files=[FileOutput(file_path="schema.py", content="# schema\n")],
+            explanation="sub-task output",
+        ),
+        model_name="mock-model",
+        input_tokens=50,
+        output_tokens=25,
+        latency_ms=100.0,
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_p8st_write_output(input: WriteOutputInput) -> WriteResult:
+    _P8_ST_CALL_LOG.append("write_output")
+    return WriteResult(task_id=input.llm_result.task_id, files_written=["schema.py"])
+
+
+@activity.defn(name="validate_output")
+async def mock_p8st_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+    _P8_ST_CALL_LOG.append("validate_output")
+    if _P8_ST_VALIDATE_RESPONSES:
+        return _P8_ST_VALIDATE_RESPONSES.pop(0)
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_p8st_evaluate_transition(input: TransitionInput) -> str:
+    _P8_ST_CALL_LOG.append("evaluate_transition")
+    if _P8_ST_TRANSITION_SEQUENCE:
+        return _P8_ST_TRANSITION_SEQUENCE.pop(0)
+    return TransitionSignal.SUCCESS.value
+
+
+_P8_ST_MOCK_ACTIVITIES = [
+    mock_p8st_create_worktree,
+    mock_p8st_remove_worktree,
+    mock_p8st_assemble_sub_task_context,
+    mock_p8st_call_llm,
+    mock_p8st_write_output,
+    mock_p8st_validate_output,
+    mock_p8st_evaluate_transition,
+]
+
+
+class TestSubTaskErrorAwareRetry:
+    """Phase 8: prior_errors are passed through sub-task retry loop."""
+
+    @pytest.mark.asyncio
+    async def test_subtask_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
+        test_errors = [
+            ValidationResult(
+                check_name="tests",
+                passed=False,
+                summary="tests failed",
+                details="FAILED test_schema.py::test_parse - AssertionError",
+            )
+        ]
+        _reset_p8_st_state(
+            transitions=[
+                TransitionSignal.FAILURE_RETRYABLE.value,
+                TransitionSignal.SUCCESS.value,
+            ],
+            validate_responses=[
+                test_errors,
+                [ValidationResult(check_name="tests", passed=True, summary="passed")],
+            ],
+        )
+        st_input = SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Create schema.",
+                target_files=["schema.py"],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=2,
+        )
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeSubTaskWorkflow],
+            activities=_P8_ST_MOCK_ACTIVITIES,
+        ):
+            result = await env.client.execute_workflow(
+                ForgeSubTaskWorkflow.run,
+                st_input,
+                id="test-p8-subtask-retry",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+        assert result.status == TransitionSignal.SUCCESS
+        assert len(_P8_ST_CONTEXT_INPUTS) == 2
+
+        # First attempt: no prior errors
+        first = _P8_ST_CONTEXT_INPUTS[0]
+        assert first.prior_errors == []
+        assert first.attempt == 1
+
+        # Second attempt: errors from first
+        second = _P8_ST_CONTEXT_INPUTS[1]
+        assert len(second.prior_errors) == 1
+        assert second.prior_errors[0].check_name == "tests"
+        assert second.attempt == 2
+        assert second.max_attempts == 2

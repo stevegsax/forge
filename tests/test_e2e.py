@@ -194,6 +194,7 @@ async def _run_e2e_workflow(
         task=task,
         repo_root=str(git_repo),
         max_attempts=max_attempts,
+        max_exploration_rounds=0,
     )
 
     async with Worker(
@@ -502,6 +503,7 @@ async def _run_planned_e2e(
         repo_root=str(git_repo),
         plan=True,
         max_step_attempts=max_step_attempts,
+        max_exploration_rounds=0,
     )
 
     async with Worker(
@@ -816,6 +818,7 @@ async def _run_fanout_e2e(
         repo_root=str(git_repo),
         plan=True,
         max_sub_task_attempts=max_sub_task_attempts,
+        max_exploration_rounds=0,
     )
 
     async with Worker(

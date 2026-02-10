@@ -397,6 +397,9 @@ class AssembleContextInput(BaseModel):
     task: TaskDefinition
     repo_root: str
     worktree_path: str
+    prior_errors: list[ValidationResult] = Field(default_factory=list)
+    attempt: int = Field(default=1)
+    max_attempts: int = Field(default=2)
 
 
 class WriteOutputInput(BaseModel):
@@ -535,6 +538,9 @@ class AssembleSubTaskContextInput(BaseModel):
     parent_description: str
     sub_task: SubTask
     worktree_path: str = Field(description="Parent worktree (for reading context files).")
+    prior_errors: list[ValidationResult] = Field(default_factory=list)
+    attempt: int = Field(default=1)
+    max_attempts: int = Field(default=2)
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +577,9 @@ class AssembleStepContextInput(BaseModel):
     completed_steps: list[StepResult] = Field(default_factory=list)
     repo_root: str
     worktree_path: str
+    prior_errors: list[ValidationResult] = Field(default_factory=list)
+    attempt: int = Field(default=1)
+    max_attempts: int = Field(default=2)
 
 
 # ---------------------------------------------------------------------------

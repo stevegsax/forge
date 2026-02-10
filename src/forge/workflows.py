@@ -178,6 +178,7 @@ class ForgeTaskWorkflow:
     async def _run_single_step(self, input: ForgeTaskInput) -> TaskResult:
         task = input.task
         max_attempts = input.max_attempts
+        prior_errors: list[ValidationResult] = []
 
         for attempt in range(1, max_attempts + 1):
             # --- Create worktree ---
@@ -199,6 +200,9 @@ class ForgeTaskWorkflow:
                     task=task,
                     repo_root=input.repo_root,
                     worktree_path=wt_output.worktree_path,
+                    prior_errors=prior_errors,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
                 result_type=AssembledContext,
@@ -295,6 +299,7 @@ class ForgeTaskWorkflow:
                 )
 
             if signal == TransitionSignal.FAILURE_RETRYABLE:
+                prior_errors = validation_results
                 await workflow.execute_activity(
                     "remove_worktree_activity",
                     RemoveWorktreeInput(
@@ -417,6 +422,7 @@ class ForgeTaskWorkflow:
                 continue
 
             step_succeeded = False
+            prior_errors: list[ValidationResult] = []
 
             for attempt in range(1, max_step_attempts + 1):
                 # --- Assemble step context ---
@@ -430,6 +436,9 @@ class ForgeTaskWorkflow:
                         completed_steps=step_results,
                         repo_root=input.repo_root,
                         worktree_path=wt_output.worktree_path,
+                        prior_errors=prior_errors,
+                        attempt=attempt,
+                        max_attempts=max_step_attempts,
                     ),
                     start_to_close_timeout=_CONTEXT_TIMEOUT,
                     result_type=AssembledContext,
@@ -511,6 +520,7 @@ class ForgeTaskWorkflow:
                     break
 
                 if signal == TransitionSignal.FAILURE_RETRYABLE:
+                    prior_errors = validation_results
                     # Reset worktree (discard uncommitted changes) and retry
                     await workflow.execute_activity(
                         "reset_worktree_activity",
@@ -747,6 +757,7 @@ class ForgeSubTaskWorkflow:
     @workflow.run
     async def run(self, input: SubTaskInput) -> SubTaskResult:
         compound_id = f"{input.parent_task_id}.sub.{input.sub_task.sub_task_id}"
+        prior_errors: list[ValidationResult] = []
 
         for attempt in range(1, input.max_attempts + 1):
             # --- Create worktree ---
@@ -769,6 +780,9 @@ class ForgeSubTaskWorkflow:
                     parent_description=input.parent_description,
                     sub_task=input.sub_task,
                     worktree_path=wt_output.worktree_path,
+                    prior_errors=prior_errors,
+                    attempt=attempt,
+                    max_attempts=input.max_attempts,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
                 result_type=AssembledContext,
@@ -856,6 +870,7 @@ class ForgeSubTaskWorkflow:
                 )
 
             # FAILURE_RETRYABLE — worktree already removed, loop will recreate
+            prior_errors = validation_results
 
         # Should not be reachable, but satisfy the type checker.
         msg = f"Sub-task {input.sub_task.sub_task_id} exhausted all attempts"

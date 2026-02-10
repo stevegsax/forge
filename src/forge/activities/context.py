@@ -5,13 +5,17 @@ Builds the system and user prompts from a task definition and context files.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_system_prompt, build_user_prompt,
   build_step_system_prompt, build_step_user_prompt,
-  build_system_prompt_with_context
-- Imperative shell: _read_context_files, assemble_context, assemble_step_context
+  build_system_prompt_with_context, parse_ruff_error_lines,
+  find_enclosing_scope
+- Imperative shell: _read_context_files, build_error_section,
+  assemble_context, assemble_step_context
 """
 
 from __future__ import annotations
 
+import ast
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +31,7 @@ from forge.models import (
     StepResult,
     SubTask,
     TaskDefinition,
+    ValidationResult,
 )
 
 if TYPE_CHECKING:
@@ -34,13 +39,160 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ERROR_DETAIL_LIMIT = 2000
+
 
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
 
 
-def build_system_prompt(task: TaskDefinition, context_file_contents: dict[str, str]) -> str:
+def parse_ruff_error_lines(error_output: str) -> list[tuple[str, int, str]]:
+    """Parse ruff output into (file_path, line_number, error_message) tuples.
+
+    Ruff format: ``path:line:col: code message``
+    Best-effort: unparseable lines are skipped.
+    """
+    results: list[tuple[str, int, str]] = []
+    for line in error_output.splitlines():
+        m = re.match(r"^(.+?):(\d+):\d+:\s+(.+)$", line)
+        if m:
+            results.append((m.group(1), int(m.group(2)), m.group(3)))
+    return results
+
+
+def find_enclosing_scope(source: str, line_number: int) -> str | None:
+    """Find the enclosing function/class for a line and return a context snippet.
+
+    Uses ``ast.parse`` to find the innermost ``FunctionDef``, ``AsyncFunctionDef``,
+    or ``ClassDef`` containing *line_number*. Returns a snippet showing the
+    scope header and the error line marked with ``# <-- ERROR``.
+
+    Returns ``None`` if parsing fails or no enclosing scope is found.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+
+    source_lines = source.splitlines()
+    if line_number < 1 or line_number > len(source_lines):
+        return None
+
+    # Walk the AST to find the innermost enclosing scope
+    best: ast.AST | None = None
+    best_start = 0
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            node_start = node.lineno
+            node_end = node.end_lineno or node.lineno
+            if node_start <= line_number <= node_end and (best is None or node_start > best_start):
+                best = node
+                best_start = node_start
+
+    if best is None:
+        return None
+
+    # Build snippet: scope header line + a few lines around the error
+    scope_start = best_start
+    context_start = max(scope_start, line_number - 3)
+    context_end = min(len(source_lines), line_number + 3)
+
+    snippet_lines: list[str] = []
+    if context_start > scope_start:
+        # Include the scope header
+        snippet_lines.append(source_lines[scope_start - 1])
+        if context_start > scope_start + 1:
+            snippet_lines.append("    ...")
+
+    for i in range(context_start, context_end + 1):
+        src_line = source_lines[i - 1]
+        if i == line_number:
+            snippet_lines.append(f"{src_line}  # <-- ERROR")
+        else:
+            snippet_lines.append(src_line)
+
+    return "\n".join(snippet_lines)
+
+
+def build_error_section(
+    prior_errors: list[ValidationResult],
+    attempt: int,
+    max_attempts: int,
+    worktree_path: str,
+) -> str:
+    """Render a 'Previous Attempt Errors' prompt section.
+
+    For ``ruff_lint``/``ruff_format`` errors: parses line numbers and enriches
+    with AST context from files in *worktree_path*.
+    For ``tests`` errors: includes output verbatim.
+    Truncates individual error details to ``_ERROR_DETAIL_LIMIT`` chars.
+
+    Returns an empty string when *prior_errors* is empty.
+    """
+    if not prior_errors:
+        return ""
+
+    failed = [e for e in prior_errors if not e.passed]
+    if not failed:
+        return ""
+
+    parts: list[str] = []
+    parts.append(f"## Previous Attempt Errors (Attempt {attempt} of {max_attempts})")
+    parts.append("")
+    parts.append("Your previous attempt failed validation. Fix these errors:")
+
+    wt = Path(worktree_path)
+
+    for error in failed:
+        parts.append("")
+        parts.append(f"### {error.check_name} failed")
+
+        details = error.details or error.summary
+        if len(details) > _ERROR_DETAIL_LIMIT:
+            details = details[:_ERROR_DETAIL_LIMIT] + "\n... (truncated)"
+
+        parts.append("```")
+        parts.append(details)
+        parts.append("```")
+
+        # AST enrichment for ruff errors
+        if error.check_name in ("ruff_lint", "ruff_format") and error.details:
+            parsed = parse_ruff_error_lines(error.details)
+            # Deduplicate by (file, line) to avoid redundant snippets
+            seen: set[tuple[str, int]] = set()
+            for file_path, line_num, _msg in parsed:
+                if (file_path, line_num) in seen:
+                    continue
+                seen.add((file_path, line_num))
+                full_path = wt / file_path
+                if not full_path.is_file():
+                    continue
+                try:
+                    source = full_path.read_text()
+                except OSError:
+                    continue
+                snippet = find_enclosing_scope(source, line_num)
+                if snippet:
+                    fname = Path(file_path).name
+                    parts.append("")
+                    parts.append(f"#### Context around error ({fname}, line {line_num})")
+                    parts.append("```python")
+                    parts.append(snippet)
+                    parts.append("```")
+
+    parts.append("")
+    parts.append("Do NOT repeat the same mistakes. Address each error listed above.")
+
+    return "\n".join(parts)
+
+
+def build_system_prompt(
+    task: TaskDefinition,
+    context_file_contents: dict[str, str],
+    error_section: str = "",
+) -> str:
     """Build the system prompt from a task definition and context file contents.
 
     Includes the task description, target files list, and any context files
@@ -67,6 +219,10 @@ def build_system_prompt(task: TaskDefinition, context_file_contents: dict[str, s
             parts.append(content)
             parts.append("```")
 
+    if error_section:
+        parts.append("")
+        parts.append(error_section)
+
     return "\n".join(parts)
 
 
@@ -82,7 +238,11 @@ def build_user_prompt() -> str:
     )
 
 
-def build_system_prompt_with_context(task: TaskDefinition, packed: PackedContext) -> str:
+def build_system_prompt_with_context(
+    task: TaskDefinition,
+    packed: PackedContext,
+    error_section: str = "",
+) -> str:
     """Build the system prompt using auto-discovered packed context.
 
     Organizes context items by priority tier with labeled sections.
@@ -149,6 +309,10 @@ def build_system_prompt_with_context(task: TaskDefinition, packed: PackedContext
         packed,
         priority=6,
     )
+
+    if error_section:
+        parts.append("")
+        parts.append(error_section)
 
     # Defensive reminder to produce structured output
     parts.append("")
@@ -347,6 +511,10 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
     task = input.task
     repo_root = Path(input.repo_root)
 
+    error_section = build_error_section(
+        input.prior_errors, input.attempt, input.max_attempts, input.worktree_path
+    )
+
     if task.context.auto_discover and task.target_files:
         from forge.code_intel import discover_context
         from forge.code_intel.budget import pack_context
@@ -373,11 +541,11 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
             all_items = packed.items + playbook_items
             packed = pack_context(all_items, task.context.token_budget)
 
-        system_prompt = build_system_prompt_with_context(task, packed)
+        system_prompt = build_system_prompt_with_context(task, packed, error_section)
         context_stats = _build_context_stats(packed)
     else:
         context_contents = _read_context_files(repo_root, task.context_files)
-        system_prompt = build_system_prompt(task, context_contents)
+        system_prompt = build_system_prompt(task, context_contents, error_section)
         context_stats = None
 
     user_prompt = build_user_prompt()
@@ -417,6 +585,7 @@ def build_step_system_prompt(
     completed_steps: list[StepResult],
     context_file_contents: dict[str, str],
     target_file_contents: dict[str, str] | None = None,
+    error_section: str = "",
 ) -> str:
     """Build the system prompt for a single step execution.
 
@@ -469,6 +638,10 @@ def build_step_system_prompt(
             parts.append(content)
             parts.append("```")
 
+    if error_section:
+        parts.append("")
+        parts.append(error_section)
+
     parts.append("")
     parts.append("### Output Requirements")
     parts.append(
@@ -508,6 +681,10 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
     context_contents = _read_context_files(worktree, input.step.context_files)
     target_contents = _read_context_files(worktree, input.step.target_files)
 
+    error_section = build_error_section(
+        input.prior_errors, input.attempt, input.max_attempts, input.worktree_path
+    )
+
     system_prompt = build_step_system_prompt(
         task=input.task,
         step=input.step,
@@ -516,6 +693,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         completed_steps=input.completed_steps,
         context_file_contents=context_contents,
         target_file_contents=target_contents,
+        error_section=error_section,
     )
     user_prompt = build_step_user_prompt(input.step)
 
@@ -538,6 +716,7 @@ def build_sub_task_system_prompt(
     sub_task: SubTask,
     context_file_contents: dict[str, str],
     target_file_contents: dict[str, str] | None = None,
+    error_section: str = "",
 ) -> str:
     """Build the system prompt for a sub-task execution.
 
@@ -580,6 +759,10 @@ def build_sub_task_system_prompt(
             parts.append(content)
             parts.append("```")
 
+    if error_section:
+        parts.append("")
+        parts.append(error_section)
+
     parts.append("")
     parts.append("### Output Requirements")
     parts.append(
@@ -621,12 +804,17 @@ async def assemble_sub_task_context(
     context_contents = _read_context_files(parent_worktree, input.sub_task.context_files)
     target_contents = _read_context_files(parent_worktree, input.sub_task.target_files)
 
+    error_section = build_error_section(
+        input.prior_errors, input.attempt, input.max_attempts, input.worktree_path
+    )
+
     system_prompt = build_sub_task_system_prompt(
         parent_task_id=input.parent_task_id,
         parent_description=input.parent_description,
         sub_task=input.sub_task,
         context_file_contents=context_contents,
         target_file_contents=target_contents,
+        error_section=error_section,
     )
     user_prompt = build_sub_task_user_prompt(input.sub_task)
 

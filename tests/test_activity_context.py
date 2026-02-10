@@ -13,6 +13,7 @@ from forge.activities.context import (
     assemble_context,
     assemble_step_context,
     assemble_sub_task_context,
+    build_error_section,
     build_step_system_prompt,
     build_step_user_prompt,
     build_sub_task_system_prompt,
@@ -20,6 +21,8 @@ from forge.activities.context import (
     build_system_prompt,
     build_system_prompt_with_context,
     build_user_prompt,
+    find_enclosing_scope,
+    parse_ruff_error_lines,
 )
 from forge.models import (
     AssembleContextInput,
@@ -31,6 +34,7 @@ from forge.models import (
     SubTask,
     TaskDefinition,
     TransitionSignal,
+    ValidationResult,
 )
 
 if TYPE_CHECKING:
@@ -748,3 +752,215 @@ class TestOutputRequirementsInPrompts:
         assert "files" in prompt
         assert "search" in prompt
         assert "replace" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: parse_ruff_error_lines (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestParseRuffErrorLines:
+    def test_standard_format(self) -> None:
+        output = "src/foo.py:42:1: F401 `os` imported but unused\n"
+        result = parse_ruff_error_lines(output)
+        assert result == [("src/foo.py", 42, "F401 `os` imported but unused")]
+
+    def test_multiple_lines(self) -> None:
+        output = (
+            "src/a.py:10:5: E501 line too long\nsrc/b.py:20:1: F811 redefinition of unused `x`\n"
+        )
+        result = parse_ruff_error_lines(output)
+        assert len(result) == 2
+        assert result[0] == ("src/a.py", 10, "E501 line too long")
+        assert result[1] == ("src/b.py", 20, "F811 redefinition of unused `x`")
+
+    def test_unparseable_lines_skipped(self) -> None:
+        output = "Found 3 errors.\nsome random text\nsrc/a.py:5:1: W001 warning\n"
+        result = parse_ruff_error_lines(output)
+        assert len(result) == 1
+        assert result[0][0] == "src/a.py"
+
+    def test_empty_input(self) -> None:
+        assert parse_ruff_error_lines("") == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: find_enclosing_scope (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestFindEnclosingScope:
+    def test_line_inside_function(self) -> None:
+        source = "import os\n\ndef hello():\n    x = 1\n    y = 2\n    return x + y\n"
+        result = find_enclosing_scope(source, 5)
+        assert result is not None
+        assert "def hello():" in result
+        assert "# <-- ERROR" in result
+
+    def test_line_inside_class_method(self) -> None:
+        source = "class Foo:\n    def bar(self):\n        return 42\n"
+        result = find_enclosing_scope(source, 3)
+        assert result is not None
+        assert "# <-- ERROR" in result
+
+    def test_top_level_line(self) -> None:
+        source = "import os\nprint('hello')\n"
+        result = find_enclosing_scope(source, 1)
+        assert result is None
+
+    def test_invalid_python_source(self) -> None:
+        result = find_enclosing_scope("def (broken:", 1)
+        assert result is None
+
+    def test_line_out_of_range(self) -> None:
+        source = "x = 1\n"
+        assert find_enclosing_scope(source, 0) is None
+        assert find_enclosing_scope(source, 99) is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: build_error_section
+# ---------------------------------------------------------------------------
+
+
+class TestBuildErrorSection:
+    def test_empty_errors_returns_empty(self, tmp_path: Path) -> None:
+        assert build_error_section([], 1, 2, str(tmp_path)) == ""
+
+    def test_all_passed_returns_empty(self, tmp_path: Path) -> None:
+        errors = [ValidationResult(check_name="ruff_lint", passed=True, summary="ok")]
+        assert build_error_section(errors, 1, 2, str(tmp_path)) == ""
+
+    def test_ruff_lint_with_ast_enrichment(self, tmp_path: Path) -> None:
+        # Create a file for AST enrichment
+        target = tmp_path / "src" / "foo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("import os\n\ndef greet():\n    unused_var = os\n    return 'hello'\n")
+        errors = [
+            ValidationResult(
+                check_name="ruff_lint",
+                passed=False,
+                summary="ruff_lint failed",
+                details="src/foo.py:4:5: F841 local variable `unused_var` assigned but unused",
+            )
+        ]
+        result = build_error_section(errors, 2, 2, str(tmp_path))
+        assert "## Previous Attempt Errors (Attempt 2 of 2)" in result
+        assert "ruff_lint failed" in result
+        assert "F841" in result
+        assert "Context around error" in result
+        assert "# <-- ERROR" in result
+        assert "Do NOT repeat the same mistakes" in result
+
+    def test_test_failure_verbatim(self, tmp_path: Path) -> None:
+        errors = [
+            ValidationResult(
+                check_name="tests",
+                passed=False,
+                summary="tests failed",
+                details="FAILED tests/test_foo.py::test_bar - AssertionError: expected 1, got 2",
+            )
+        ]
+        result = build_error_section(errors, 2, 2, str(tmp_path))
+        assert "tests failed" in result
+        assert "FAILED tests/test_foo.py::test_bar" in result
+        # No AST enrichment for test errors
+        assert "Context around error" not in result
+
+    def test_mixed_error_types(self, tmp_path: Path) -> None:
+        errors = [
+            ValidationResult(
+                check_name="ruff_lint",
+                passed=False,
+                summary="ruff_lint failed",
+                details="src/a.py:1:1: F401 unused import",
+            ),
+            ValidationResult(
+                check_name="tests",
+                passed=False,
+                summary="tests failed",
+                details="FAILED test_x.py::test_y",
+            ),
+        ]
+        result = build_error_section(errors, 2, 3, str(tmp_path))
+        assert "### ruff_lint failed" in result
+        assert "### tests failed" in result
+        assert "Attempt 2 of 3" in result
+
+    def test_truncation_at_limit(self, tmp_path: Path) -> None:
+        long_details = "x" * 3000
+        errors = [
+            ValidationResult(
+                check_name="ruff_lint",
+                passed=False,
+                summary="ruff_lint failed",
+                details=long_details,
+            )
+        ]
+        result = build_error_section(errors, 2, 2, str(tmp_path))
+        assert "... (truncated)" in result
+
+    def test_attempt_header(self, tmp_path: Path) -> None:
+        errors = [ValidationResult(check_name="ruff_lint", passed=False, summary="failed")]
+        result = build_error_section(errors, 3, 5, str(tmp_path))
+        assert "Attempt 3 of 5" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Error section in prompt builders
+# ---------------------------------------------------------------------------
+
+
+class TestErrorSectionInPrompts:
+    def test_build_system_prompt_includes_error_section(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        error_section = "## Previous Attempt Errors\nSome error"
+        prompt = build_system_prompt(task, {}, error_section=error_section)
+        assert "## Previous Attempt Errors" in prompt
+        assert "Some error" in prompt
+
+    def test_build_system_prompt_no_error_on_first_attempt(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        prompt = build_system_prompt(task, {})
+        assert "Previous Attempt Errors" not in prompt
+
+    def test_build_system_prompt_with_context_includes_error_section(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="a.py",
+                    content="# code",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        error_section = "## Previous Attempt Errors\nLint error"
+        prompt = build_system_prompt_with_context(task, packed, error_section=error_section)
+        # Error section should appear before Output Requirements
+        error_pos = prompt.index("Previous Attempt Errors")
+        output_pos = prompt.index("## Output Requirements")
+        assert error_pos < output_pos
+
+    def test_build_step_system_prompt_includes_error_section(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        step = PlanStep(step_id="s1", description="step", target_files=["a.py"])
+        error_section = "## Previous Attempt Errors\nStep error"
+        prompt = build_step_system_prompt(task, step, 0, 1, [], {}, error_section=error_section)
+        error_pos = prompt.index("Previous Attempt Errors")
+        output_pos = prompt.index("### Output Requirements")
+        assert error_pos < output_pos
+
+    def test_build_sub_task_system_prompt_includes_error_section(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        error_section = "## Previous Attempt Errors\nSub-task error"
+        prompt = build_sub_task_system_prompt("t1", "desc", st, {}, error_section=error_section)
+        error_pos = prompt.index("Previous Attempt Errors")
+        output_pos = prompt.index("### Output Requirements")
+        assert error_pos < output_pos
