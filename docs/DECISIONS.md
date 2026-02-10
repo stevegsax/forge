@@ -301,3 +301,105 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** The LLM produces diffs (search/replace blocks) rather than complete file contents. The `write_output` activity applies diffs to existing files instead of overwriting them. New files still use full content.
 
 **Rationale:** Full file replacement has two compounding problems. First, the LLM must reproduce every line of an existing file to change a few — a 370-line file modified with a 10-line addition requires outputting all 380 lines, wasting output tokens and inviting errors. Second, and more critically, if the LLM doesn't receive the full file content (as happened in planned mode's step-level execution, which assembled only 1333 input tokens for a 370-line target file), it writes the file from scratch, silently destroying all existing code. Diff-based output eliminates both problems: the LLM specifies only what changes, and the system applies those changes to the existing file. This is the standard approach used by Claude Code, Aider, and other production AI coding tools.
+
+## D51: Error Feedback in Retry Context
+
+**Decision:** Include validation errors from the previous attempt in the retry prompt as a dedicated section, with optional AST-derived code context around error locations.
+
+**Rationale:** Blind retries waste tokens repeating the same mistakes. Both Aider and Claude Code feed error output back to the LLM. The error section is placed before Output Requirements to ensure the LLM sees it before generating. AST-based context enrichment (showing the enclosing function around an error line) helps the LLM understand errors without requiring it to re-read the entire file. Test failure output is included verbatim since it typically already contains sufficient context.
+
+## D52: Backward-Compatible Retry Fields
+
+**Decision:** All retry-related fields (`prior_errors`, `attempt`, `max_attempts`) use defaults (`[]`, `1`, `2`), so existing serialized payloads and callers work unchanged.
+
+**Rationale:** Temporal workflows may have in-flight executions when this change deploys. Default values ensure old payloads deserialize correctly. The first attempt always has `prior_errors=[]`, so the prompt is unchanged for non-retry calls.
+
+## D53: Stable-First Prompt Ordering
+
+**Decision:** Reorder prompt sections so the most stable content (role, output requirements, repo map) comes before volatile content (target file contents, exploration results, retry errors).
+
+**Rationale:** Anthropic's prompt caching computes cache keys cumulatively — the hash for each block depends on all preceding content. Changes at any point invalidate that point and everything after it. By placing stable content first, the longest possible prefix remains cached across retries, exploration rounds, and (partially) across steps. This is the same pattern Aider and Claude Code use.
+
+## D54: Automatic Cache Control via pydantic-ai
+
+**Decision:** Use pydantic-ai's Anthropic model settings to enable prompt caching rather than manually constructing Anthropic API messages.
+
+**Rationale:** pydantic-ai abstracts the Anthropic API. Bypassing it to inject `cache_control` headers would couple Forge to Anthropic's wire format and break the model abstraction. If pydantic-ai's automatic placement is suboptimal, manual breakpoints can be added as a refinement.
+
+## D55: Fallback Chain Over Single Strategy
+
+**Decision:** Use an ordered fallback chain (exact → whitespace → indentation → fuzzy) rather than jumping directly to fuzzy matching for all edits.
+
+**Rationale:** Exact matching should remain the fast path — it's O(n) and unambiguous. Fuzzy matching is O(n*m) and introduces a confidence threshold. The fallback chain preserves the performance and correctness guarantees of exact matching for the common case while recovering gracefully when minor discrepancies occur. Each level is more expensive and less certain than the previous, so trying them in order minimizes cost and maximizes confidence. Logging which level matched enables monitoring match quality degradation over time.
+
+## D56: Similarity Threshold at 0.6
+
+**Decision:** Default fuzzy matching threshold is 0.6 (configurable).
+
+**Rationale:** Aider uses 0.6 as its default and reports good results — it catches most whitespace and minor content differences while avoiding false matches. A threshold below 0.5 risks matching unrelated code blocks. The threshold is configurable per-task if needed, but the default should be conservative enough to avoid incorrect matches.
+
+## D57: Uniqueness Required at All Levels
+
+**Decision:** Even fuzzy matching requires a unique best match. If two blocks score within 0.05 of each other above the threshold, the edit fails as ambiguous.
+
+**Rationale:** A non-unique match means the system cannot confidently determine which code block the LLM intended to modify. Applying the edit to the wrong block would silently corrupt the file — worse than failing and retrying. The 0.05 gap requirement ensures the best match is clearly distinguishable from alternatives.
+
+## D58: Capability Tiers Over Direct Model Names
+
+**Decision:** Route LLM calls via abstract capability tiers (REASONING, GENERATION, SUMMARIZATION, CLASSIFICATION) rather than passing concrete model names through the system.
+
+**Rationale:** This follows D10 from the design document. Abstract tiers decouple the "what capability is needed" question from the "which model provides it" question. When a cheaper model improves enough to handle GENERATION tasks, a single config change upgrades the entire system. When a new provider is added, it slots into the tier mapping without changing any workflow code. The planner specifies capability requirements, not provider-specific model IDs.
+
+## D59: Planner Gets Premium Model
+
+**Decision:** Default the planner to the REASONING tier (Opus-class model).
+
+**Rationale:** D11 states "Planning is the hard part" and "invest the most expensive models in planning." Plan quality bounds everything downstream — a better decomposition reduces conflicts, improves context_files accuracy, and produces fewer retries. The planner is called once per task, so the incremental cost is bounded. Moving from Sonnet to Opus for planning is the single highest-value model routing change.
+
+## D60: Backward-Compatible Defaults
+
+**Decision:** All `ModelConfig` fields have defaults, and `ForgeTaskInput.model_config_` defaults to `ModelConfig()`. Existing callers and serialized payloads work unchanged.
+
+**Rationale:** Temporal workflows may have in-flight executions when this change deploys. Default values ensure old payloads deserialize correctly. The field alias avoids collision with Pydantic's reserved `model_config` attribute.
+
+## D61: Thinking for Planning Only
+
+**Decision:** Enable extended thinking for planner calls only, not for code generation or exploration.
+
+**Rationale:** Planning is the highest-leverage use of extended thinking. The planner must reason about task decomposition, dependencies, and ordering — a complex multi-step reasoning task where thinking mode shows the most improvement. Code generation benefits less: the LLM already sees the target file contents and context, and produces edits in a relatively straightforward way. Exploration is classification (what context to request), which thinking mode can actually slow down. Enabling thinking selectively keeps costs bounded while maximizing quality impact.
+
+## D62: Adaptive Thinking for Opus, Budget for Sonnet
+
+**Decision:** Use adaptive thinking (`{'type': 'adaptive'}`) for Opus 4.6+ and budget-based thinking (`{'type': 'enabled', 'budget_tokens': N}`) for Sonnet.
+
+**Rationale:** Opus 4.6 supports adaptive thinking where the model dynamically decides how much to think based on problem complexity. This is more efficient than a fixed budget — simple tasks get less thinking, complex tasks get more. Sonnet requires explicit budget-based thinking. The implementation detects the model and applies the appropriate configuration, so upgrading the planner model (Phase 11) automatically gets the right thinking mode.
+
+## D63: Silent Degradation for Non-Anthropic Models
+
+**Decision:** Thinking configuration is silently ignored for non-Anthropic models (no error, no warning).
+
+**Rationale:** Forge's model abstraction (via pydantic-ai) supports multiple providers. If the planner is configured to use an OpenAI model, thinking configuration simply doesn't apply. This matches D54's approach to caching — provider-specific features degrade gracefully.
+
+## D64: Tree-Sitter Over Language-Specific Parsers
+
+**Decision:** Use tree-sitter as the universal parsing backend for all languages, replacing Python's `ast` for Python and providing new support for other languages.
+
+**Rationale:** D30 deferred tree-sitter because Phase 4 targeted Python only and `ast` was simpler. Phase 13 extends to multiple languages where `ast` is not an option. Rather than maintaining two parsing backends (ast for Python, tree-sitter for everything else), a single tree-sitter backend reduces maintenance and ensures consistent behavior across languages. tree-sitter's error-tolerant parsing also handles malformed code that `ast.parse()` rejects.
+
+## D65: Tag Query Pattern (Following Aider)
+
+**Decision:** Use language-specific `.scm` tag query files to define which AST nodes represent definitions, following Aider's proven pattern.
+
+**Rationale:** Aider has battle-tested tag queries for 20+ languages. The pattern separates language-specific knowledge (what constitutes a "function definition" in Go vs TypeScript) from the extraction logic (walk the tree, extract matching nodes, format signatures). Adding a new language requires only writing a `.scm` file, not modifying Python code.
+
+## D66: Stable Output Interface
+
+**Decision:** Retain the existing `SymbolSummary` and `ExtractedSymbol` output models. Only the extraction backend changes.
+
+**Rationale:** The output interface is consumed by repo map generation, budget packing, and context assembly. Changing the interface would cascade into many modules. The existing models are language-agnostic — `SymbolKind` (function, class, type_alias, constant) covers the common definition types across languages. Language-specific refinements (e.g., Go interfaces, Rust traits) map to the closest existing kind.
+
+## D67: Graceful Degradation for Unsupported Languages
+
+**Decision:** Files with unrecognized extensions produce an empty `SymbolSummary` (path only, no symbols). No error.
+
+**Rationale:** Multi-language codebases often include configuration files, data files, or files in niche languages. The system should not fail on encountering them. File-path-only entries in the repo map still provide structural orientation. New languages can be added incrementally by writing a tag query file.
