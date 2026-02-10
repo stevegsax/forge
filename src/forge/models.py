@@ -199,6 +199,8 @@ class LLMStats(BaseModel):
     input_tokens: int
     output_tokens: int
     latency_ms: float
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 def build_llm_stats(llm_result: LLMCallResult) -> LLMStats:
@@ -208,6 +210,8 @@ def build_llm_stats(llm_result: LLMCallResult) -> LLMStats:
         input_tokens=llm_result.input_tokens,
         output_tokens=llm_result.output_tokens,
         latency_ms=llm_result.latency_ms,
+        cache_creation_input_tokens=llm_result.cache_creation_input_tokens,
+        cache_read_input_tokens=llm_result.cache_read_input_tokens,
     )
 
 
@@ -218,6 +222,8 @@ def build_planner_stats(planner_result: PlanCallResult) -> LLMStats:
         input_tokens=planner_result.input_tokens,
         output_tokens=planner_result.output_tokens,
         latency_ms=planner_result.latency_ms,
+        cache_creation_input_tokens=planner_result.cache_creation_input_tokens,
+        cache_read_input_tokens=planner_result.cache_read_input_tokens,
     )
 
 
@@ -373,6 +379,8 @@ class LLMCallResult(BaseModel):
     input_tokens: int
     output_tokens: int
     latency_ms: float
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class WriteResult(BaseModel):
@@ -565,6 +573,8 @@ class PlanCallResult(BaseModel):
     input_tokens: int
     output_tokens: int
     latency_ms: float
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class AssembleStepContextInput(BaseModel):
@@ -613,6 +623,8 @@ class ExtractionCallResult(BaseModel):
     input_tokens: int
     output_tokens: int
     latency_ms: float
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class SaveExtractionInput(BaseModel):

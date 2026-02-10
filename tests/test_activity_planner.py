@@ -247,3 +247,43 @@ class TestAssemblePlannerContextAutoDiscover:
         )
         result = await assemble_planner_context(input_data)
         assert "## Repository Structure" not in result.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: cache stats + model settings
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerCacheStats:
+    @pytest.mark.asyncio
+    async def test_extracts_cache_tokens(self) -> None:
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 200
+        mock_usage.output_tokens = 100
+        mock_usage.cache_creation_input_tokens = 500
+        mock_usage.cache_read_input_tokens = 1000
+
+        mock_result = MagicMock()
+        mock_result.output = _TEST_PLAN
+        mock_result.usage.return_value = mock_usage
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_agent.model = "mock-model"
+
+        planner_input = PlannerInput(
+            task_id="t1",
+            system_prompt="sys",
+            user_prompt="usr",
+        )
+        result = await execute_planner_call(planner_input, mock_agent)
+        assert result.cache_creation_input_tokens == 500
+        assert result.cache_read_input_tokens == 1000
+
+
+class TestCreatePlannerAgentModelSettings:
+    def test_has_cache_settings(self) -> None:
+        agent = create_planner_agent("test")
+        settings = agent.model_settings
+        assert settings.get("anthropic_cache_instructions") is True
+        assert settings.get("anthropic_cache_tool_definitions") is True

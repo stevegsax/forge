@@ -156,6 +156,46 @@ class TestBuildInteractionDict:
         assert data["context_stats_json"] is not None
         assert "files_discovered" in data["context_stats_json"]
 
+    def test_includes_cache_fields(self) -> None:
+        context = _make_context()
+        result = LLMCallResult(
+            task_id="test-task",
+            response=LLMResponse(
+                files=[FileOutput(file_path="a.py", content="pass")],
+                explanation="Created file.",
+            ),
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=250.0,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=1000,
+        )
+        data = build_interaction_dict(
+            task_id="test-task",
+            step_id=None,
+            sub_task_id=None,
+            role="llm",
+            context=context,
+            llm_result=result,
+        )
+        assert data["cache_creation_input_tokens"] == 500
+        assert data["cache_read_input_tokens"] == 1000
+
+    def test_cache_fields_default_zero(self) -> None:
+        context = _make_context()
+        result = _make_llm_result()
+        data = build_interaction_dict(
+            task_id="test-task",
+            step_id=None,
+            sub_task_id=None,
+            role="llm",
+            context=context,
+            llm_result=result,
+        )
+        assert data["cache_creation_input_tokens"] == 0
+        assert data["cache_read_input_tokens"] == 0
+
     def test_with_planner_result(self) -> None:
         from forge.models import Plan, PlanStep
 
@@ -577,3 +617,66 @@ class TestMigration002:
         results = list_recent_playbooks(engine, limit=10)
         assert len(results) == 1
         assert results[0]["title"] == "Lesson"
+
+
+# ---------------------------------------------------------------------------
+# 003 migration — cache token columns
+# ---------------------------------------------------------------------------
+
+
+class TestMigration003:
+    def test_cache_columns_exist(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        context = _make_context()
+        result = LLMCallResult(
+            task_id="test-task",
+            response=LLMResponse(
+                files=[FileOutput(file_path="a.py", content="pass")],
+                explanation="Created.",
+            ),
+            model_name="test-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=250.0,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=1000,
+        )
+        data = build_interaction_dict(
+            task_id="test-task",
+            step_id=None,
+            sub_task_id=None,
+            role="llm",
+            context=context,
+            llm_result=result,
+        )
+        save_interaction(engine, **data)
+
+        rows = get_interactions(engine, "test-task")
+        assert len(rows) == 1
+        assert rows[0]["cache_creation_input_tokens"] == 500
+        assert rows[0]["cache_read_input_tokens"] == 1000
+
+    def test_cache_columns_default_zero(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        context = _make_context()
+        result = _make_llm_result()
+        data = build_interaction_dict(
+            task_id="test-task",
+            step_id=None,
+            sub_task_id=None,
+            role="llm",
+            context=context,
+            llm_result=result,
+        )
+        save_interaction(engine, **data)
+
+        rows = get_interactions(engine, "test-task")
+        assert len(rows) == 1
+        assert rows[0]["cache_creation_input_tokens"] == 0
+        assert rows[0]["cache_read_input_tokens"] == 0

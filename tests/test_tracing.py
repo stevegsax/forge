@@ -136,6 +136,35 @@ class TestLlmCallAttributes:
         attrs = llm_call_attributes("claude-3", 100, 200, 1500.5)
         assert "forge.task_id" not in attrs
 
+    def test_cache_tokens_included_when_nonzero(self) -> None:
+        attrs = llm_call_attributes(
+            "claude-3",
+            100,
+            200,
+            1500.5,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=1000,
+        )
+        assert attrs["forge.llm.cache_creation_input_tokens"] == 500
+        assert attrs["forge.llm.cache_read_input_tokens"] == 1000
+
+    def test_cache_tokens_omitted_when_zero(self) -> None:
+        attrs = llm_call_attributes("claude-3", 100, 200, 1500.5)
+        assert "forge.llm.cache_creation_input_tokens" not in attrs
+        assert "forge.llm.cache_read_input_tokens" not in attrs
+
+    def test_cache_tokens_partial(self) -> None:
+        attrs = llm_call_attributes(
+            "claude-3",
+            100,
+            200,
+            1500.5,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=0,
+        )
+        assert attrs["forge.llm.cache_creation_input_tokens"] == 500
+        assert "forge.llm.cache_read_input_tokens" not in attrs
+
 
 # ---------------------------------------------------------------------------
 # validation_attributes

@@ -104,6 +104,8 @@ def llm_call_attributes(
     output_tokens: int,
     latency_ms: float,
     task_id: str | None = None,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
 ) -> dict[str, str | int | float]:
     """Build ``forge.llm.*`` span attributes for an LLM call."""
     attrs: dict[str, str | int | float] = {
@@ -114,6 +116,10 @@ def llm_call_attributes(
     }
     if task_id is not None:
         attrs["forge.task_id"] = task_id
+    if cache_creation_input_tokens:
+        attrs["forge.llm.cache_creation_input_tokens"] = cache_creation_input_tokens
+    if cache_read_input_tokens:
+        attrs["forge.llm.cache_read_input_tokens"] = cache_read_input_tokens
     return attrs
 
 

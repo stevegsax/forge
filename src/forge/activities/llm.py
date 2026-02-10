@@ -56,6 +56,8 @@ async def execute_llm_call(
         input_tokens=usage.input_tokens or 0,
         output_tokens=usage.output_tokens or 0,
         latency_ms=elapsed_ms,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
+        cache_read_input_tokens=usage.cache_read_input_tokens or 0,
     )
 
 
@@ -99,6 +101,10 @@ def create_agent(model_name: str = DEFAULT_MODEL) -> Agent[None, LLMResponse]:
     return Agent(
         model_name,
         output_type=LLMResponse,
+        model_settings={
+            "anthropic_cache_instructions": True,
+            "anthropic_cache_tool_definitions": True,
+        },
     )
 
 
@@ -119,6 +125,8 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
                 output_tokens=result.output_tokens,
                 latency_ms=result.latency_ms,
                 task_id=context.task_id,
+                cache_creation_input_tokens=result.cache_creation_input_tokens,
+                cache_read_input_tokens=result.cache_read_input_tokens,
             )
         )
 

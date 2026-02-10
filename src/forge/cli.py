@@ -115,11 +115,16 @@ def format_task_result(result: TaskResult) -> str:
 
 def format_llm_stats(stats: LLMStats) -> str:
     """Format LLMStats as a compact human-readable string."""
-    return (
-        f"model={stats.model_name} "
-        f"tokens={stats.input_tokens}in/{stats.output_tokens}out "
-        f"latency={stats.latency_ms:.0f}ms"
-    )
+    parts = [
+        f"model={stats.model_name}",
+        f"tokens={stats.input_tokens}in/{stats.output_tokens}out",
+        f"latency={stats.latency_ms:.0f}ms",
+    ]
+    if stats.cache_creation_input_tokens or stats.cache_read_input_tokens:
+        parts.append(
+            f"cache={stats.cache_creation_input_tokens}write/{stats.cache_read_input_tokens}read"
+        )
+    return " ".join(parts)
 
 
 def format_verbose_result(result: TaskResult) -> str:
@@ -171,7 +176,12 @@ def format_verbose_result(result: TaskResult) -> str:
                         step_info = f" step={ix['step_id']}"
                     if ix.get("sub_task_id"):
                         step_info += f" sub_task={ix['sub_task_id']}"
-                    lines.append(f"  [{role}]{step_info} {model} {tokens} {latency}")
+                    cache_info = ""
+                    cache_write = ix.get("cache_creation_input_tokens", 0)
+                    cache_read = ix.get("cache_read_input_tokens", 0)
+                    if cache_write or cache_read:
+                        cache_info = f" cache={cache_write}write/{cache_read}read"
+                    lines.append(f"  [{role}]{step_info} {model} {tokens} {latency}{cache_info}")
     except Exception:
         pass
 

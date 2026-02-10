@@ -182,6 +182,10 @@ def create_exploration_agent(
     return Agent(
         model_name,
         output_type=ExplorationResponse,
+        model_settings={
+            "anthropic_cache_instructions": True,
+            "anthropic_cache_tool_definitions": True,
+        },
     )
 
 

@@ -59,6 +59,8 @@ class Interaction(Base):
     latency_ms: Mapped[float] = mapped_column(sa.Float, nullable=False)
     explanation: Mapped[str] = mapped_column(sa.Text, default="")
     context_stats_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    cache_creation_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    cache_read_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime,
         default=lambda: datetime.now(UTC),
@@ -147,6 +149,9 @@ def build_interaction_dict(
     if context.context_stats is not None:
         context_stats_json = context.context_stats.model_dump_json()
 
+    cache_creation = getattr(llm_result, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(llm_result, "cache_read_input_tokens", 0) or 0
+
     return {
         "task_id": task_id,
         "step_id": step_id,
@@ -160,6 +165,8 @@ def build_interaction_dict(
         "latency_ms": llm_result.latency_ms,
         "explanation": explanation,
         "context_stats_json": context_stats_json,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
     }
 
 

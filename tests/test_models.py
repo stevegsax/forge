@@ -11,6 +11,7 @@ from forge.models import (
     CommitChangesInput,
     ContextConfig,
     ContextStats,
+    ExtractionCallResult,
     FileEdit,
     FileOutput,
     ForgeTaskInput,
@@ -669,3 +670,155 @@ class TestWriteResultOutputFiles:
         data = '{"task_id": "t", "files_written": ["a.py"]}'
         wr = WriteResult.model_validate_json(data)
         assert wr.output_files == {}
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Prompt caching — cache token fields
+# ---------------------------------------------------------------------------
+
+
+class TestCacheTokenFields:
+    def test_llm_call_result_defaults(self) -> None:
+        result = LLMCallResult(
+            task_id="t",
+            response=LLMResponse(
+                files=[FileOutput(file_path="a.py", content="pass")],
+                explanation="Done.",
+            ),
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+        )
+        assert result.cache_creation_input_tokens == 0
+        assert result.cache_read_input_tokens == 0
+
+    def test_llm_call_result_with_cache(self) -> None:
+        result = LLMCallResult(
+            task_id="t",
+            response=LLMResponse(explanation="Done."),
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=1000,
+        )
+        assert result.cache_creation_input_tokens == 500
+        assert result.cache_read_input_tokens == 1000
+
+    def test_llm_stats_defaults(self) -> None:
+        stats = LLMStats(
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+        )
+        assert stats.cache_creation_input_tokens == 0
+        assert stats.cache_read_input_tokens == 0
+
+    def test_llm_stats_with_cache(self) -> None:
+        stats = LLMStats(
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=1000,
+        )
+        assert stats.cache_creation_input_tokens == 500
+        assert stats.cache_read_input_tokens == 1000
+
+    def test_plan_call_result_defaults(self) -> None:
+        plan = Plan(
+            task_id="t",
+            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"])],
+            explanation="test",
+        )
+        result = PlanCallResult(
+            task_id="t",
+            plan=plan,
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+        )
+        assert result.cache_creation_input_tokens == 0
+        assert result.cache_read_input_tokens == 0
+
+    def test_extraction_call_result_defaults(self) -> None:
+        from forge.models import ExtractionResult
+
+        result = ExtractionCallResult(
+            result=ExtractionResult(entries=[], summary="Nothing."),
+            source_workflow_ids=["wf-1"],
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+        )
+        assert result.cache_creation_input_tokens == 0
+        assert result.cache_read_input_tokens == 0
+
+    def test_backward_compat_without_cache_fields(self) -> None:
+        """Old JSON without cache fields still deserializes."""
+        data = (
+            '{"task_id": "t", "response": {"files": [], "edits": [], '
+            '"explanation": "test"}, "model_name": "m", "input_tokens": 1, '
+            '"output_tokens": 2, "latency_ms": 3.0}'
+        )
+        result = LLMCallResult.model_validate_json(data)
+        assert result.cache_creation_input_tokens == 0
+        assert result.cache_read_input_tokens == 0
+
+
+class TestBuildLlmStatsCache:
+    def test_propagates_cache_fields(self) -> None:
+        result = LLMCallResult(
+            task_id="t",
+            response=LLMResponse(explanation="Done."),
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=1000,
+        )
+        stats = build_llm_stats(result)
+        assert stats.cache_creation_input_tokens == 500
+        assert stats.cache_read_input_tokens == 1000
+
+    def test_zero_cache_by_default(self) -> None:
+        result = LLMCallResult(
+            task_id="t",
+            response=LLMResponse(explanation="Done."),
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+        )
+        stats = build_llm_stats(result)
+        assert stats.cache_creation_input_tokens == 0
+        assert stats.cache_read_input_tokens == 0
+
+
+class TestBuildPlannerStatsCache:
+    def test_propagates_cache_fields(self) -> None:
+        plan = Plan(
+            task_id="t",
+            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"])],
+            explanation="test",
+        )
+        result = PlanCallResult(
+            task_id="t",
+            plan=plan,
+            model_name="test",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+            cache_creation_input_tokens=300,
+            cache_read_input_tokens=700,
+        )
+        stats = build_planner_stats(result)
+        assert stats.cache_creation_input_tokens == 300
+        assert stats.cache_read_input_tokens == 700

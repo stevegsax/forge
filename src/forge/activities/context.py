@@ -41,6 +41,18 @@ logger = logging.getLogger(__name__)
 
 _ERROR_DETAIL_LIMIT = 2000
 
+_OUTPUT_REQUIREMENTS = (
+    "You MUST respond with a valid LLMResponse containing an `explanation` string "
+    "and either `files`, `edits`, or both.\n\n"
+    "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
+    "`file_path` and `content` (complete file content).\n"
+    "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
+    "`file_path` and a list of `edits`, where each edit has `search` (exact text "
+    "to find, must match exactly once) and `replace` (replacement text).\n\n"
+    "A file path must NOT appear in both `files` and `edits`. "
+    "Do NOT return an empty object."
+)
+
 
 # ---------------------------------------------------------------------------
 # Pure functions
@@ -196,11 +208,15 @@ def build_system_prompt(
     """Build the system prompt from a task definition and context file contents.
 
     Includes the task description, target files list, and any context files
-    with delimiters.
+    with delimiters. Sections are ordered for prompt caching efficiency:
+    stable content first, volatile content (errors) last.
     """
     parts: list[str] = []
 
     parts.append("You are a code generation assistant.")
+    parts.append("")
+    parts.append("## Output Requirements")
+    parts.append(_OUTPUT_REQUIREMENTS)
     parts.append("")
     parts.append("## Task")
     parts.append(task.description)
@@ -246,11 +262,44 @@ def build_system_prompt_with_context(
     """Build the system prompt using auto-discovered packed context.
 
     Organizes context items by priority tier with labeled sections.
+    Sections are ordered for prompt caching efficiency: stable content
+    (role, output requirements, repo structure, playbooks) first,
+    volatile content (errors) last.
     """
 
     parts: list[str] = []
 
+    # --- Stable across ALL calls ---
     parts.append("You are a code generation assistant.")
+    parts.append("")
+    parts.append("## Output Requirements")
+    parts.append(_OUTPUT_REQUIREMENTS)
+
+    # Repo map (priority 5, REPO_MAP representation) — stable per repo
+    from forge.code_intel.budget import Representation
+
+    repo_map_items = [i for i in packed.items if i.representation == Representation.REPO_MAP]
+    if repo_map_items:
+        parts.append("")
+        parts.append("## Repository Structure")
+        parts.append("```")
+        parts.append(repo_map_items[0].content)
+        parts.append("```")
+
+    # Playbooks (priority 5, PLAYBOOK representation) — stable per tag set
+    playbook_items = [i for i in packed.items if i.representation == Representation.PLAYBOOK]
+    if playbook_items:
+        parts.append("")
+        parts.append("## Relevant Playbooks")
+        parts.append(
+            "The following are lessons learned from previous tasks. "
+            "Consider these when generating code."
+        )
+        for item in playbook_items:
+            parts.append("")
+            parts.append(item.content)
+
+    # --- Task-specific content ---
     parts.append("")
     parts.append("## Task")
     parts.append(task.description)
@@ -279,30 +328,6 @@ def build_system_prompt_with_context(
         priority=4,
     )
 
-    # Repo map (priority 5, REPO_MAP representation)
-    from forge.code_intel.budget import Representation
-
-    repo_map_items = [i for i in packed.items if i.representation == Representation.REPO_MAP]
-    if repo_map_items:
-        parts.append("")
-        parts.append("## Repository Structure")
-        parts.append("```")
-        parts.append(repo_map_items[0].content)
-        parts.append("```")
-
-    # Playbooks (priority 5, PLAYBOOK representation)
-    playbook_items = [i for i in packed.items if i.representation == Representation.PLAYBOOK]
-    if playbook_items:
-        parts.append("")
-        parts.append("## Relevant Playbooks")
-        parts.append(
-            "The following are lessons learned from previous tasks. "
-            "Consider these when generating code."
-        )
-        for item in playbook_items:
-            parts.append("")
-            parts.append(item.content)
-
     _append_context_section(
         parts,
         "Additional Context",
@@ -310,24 +335,10 @@ def build_system_prompt_with_context(
         priority=6,
     )
 
+    # --- Most volatile — only on retry ---
     if error_section:
         parts.append("")
         parts.append(error_section)
-
-    # Defensive reminder to produce structured output
-    parts.append("")
-    parts.append("## Output Requirements")
-    parts.append(
-        "You MUST respond with a valid LLMResponse containing an `explanation` string "
-        "and either `files`, `edits`, or both.\n\n"
-        "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
-        "`file_path` and `content` (complete file content).\n"
-        "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
-        "`file_path` and a list of `edits`, where each edit has `search` (exact text "
-        "to find, must match exactly once) and `replace` (replacement text).\n\n"
-        "A file path must NOT appear in both `files` and `edits`. "
-        "Do NOT return an empty object."
-    )
 
     return "\n".join(parts)
 
@@ -591,10 +602,15 @@ def build_step_system_prompt(
 
     Includes the overall task summary, plan progress, current step details,
     context files, and current target file contents from the worktree.
+    Sections are ordered for prompt caching efficiency: stable content first,
+    volatile content (errors) last.
     """
     parts: list[str] = []
 
     parts.append("You are a code generation assistant.")
+    parts.append("")
+    parts.append("### Output Requirements")
+    parts.append(_OUTPUT_REQUIREMENTS)
     parts.append("")
     parts.append("## Overall Task")
     parts.append(task.description)
@@ -641,20 +657,6 @@ def build_step_system_prompt(
     if error_section:
         parts.append("")
         parts.append(error_section)
-
-    parts.append("")
-    parts.append("### Output Requirements")
-    parts.append(
-        "You MUST respond with a valid LLMResponse containing an `explanation` string "
-        "and either `files`, `edits`, or both.\n\n"
-        "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
-        "`file_path` and `content` (complete file content).\n"
-        "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
-        "`file_path` and a list of `edits`, where each edit has `search` (exact text "
-        "to find, must match exactly once) and `replace` (replacement text).\n\n"
-        "A file path must NOT appear in both `files` and `edits`. "
-        "Do NOT return an empty object."
-    )
 
     return "\n".join(parts)
 
@@ -722,10 +724,15 @@ def build_sub_task_system_prompt(
 
     Includes parent task context, sub-task description, target files,
     current target file contents, and context files read from the parent worktree.
+    Sections are ordered for prompt caching efficiency: stable content first,
+    volatile content (errors) last.
     """
     parts: list[str] = []
 
     parts.append("You are a code generation assistant.")
+    parts.append("")
+    parts.append("### Output Requirements")
+    parts.append(_OUTPUT_REQUIREMENTS)
     parts.append("")
     parts.append("## Parent Task")
     parts.append(f"**Task ID:** {parent_task_id}")
@@ -762,20 +769,6 @@ def build_sub_task_system_prompt(
     if error_section:
         parts.append("")
         parts.append(error_section)
-
-    parts.append("")
-    parts.append("### Output Requirements")
-    parts.append(
-        "You MUST respond with a valid LLMResponse containing an `explanation` string "
-        "and either `files`, `edits`, or both.\n\n"
-        "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
-        "`file_path` and `content` (complete file content).\n"
-        "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
-        "`file_path` and a list of `edits`, where each edit has `search` (exact text "
-        "to find, must match exactly once) and `replace` (replacement text).\n\n"
-        "A file path must NOT appear in both `files` and `edits`. "
-        "Do NOT return an empty object."
-    )
 
     return "\n".join(parts)
 

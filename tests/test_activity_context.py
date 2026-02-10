@@ -435,6 +435,28 @@ class TestBuildSystemPromptWithContext:
         assert "files" in prompt
         assert "Do NOT return an empty object" in prompt
 
+    def test_output_requirements_before_task(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="Build a module.", target_files=["out.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="out.py",
+                    content="# existing",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        prompt = build_system_prompt_with_context(task, packed)
+        output_pos = prompt.index("## Output Requirements")
+        task_pos = prompt.index("## Task")
+        assert output_pos < task_pos
+
     def test_sections_by_priority(self) -> None:
         from forge.code_intel.budget import ContextItem, PackedContext, Representation
 
@@ -918,11 +940,21 @@ class TestErrorSectionInPrompts:
         prompt = build_system_prompt(task, {}, error_section=error_section)
         assert "## Previous Attempt Errors" in prompt
         assert "Some error" in prompt
+        # Output Requirements precedes error section (stable content first)
+        output_pos = prompt.index("## Output Requirements")
+        error_pos = prompt.index("Previous Attempt Errors")
+        assert output_pos < error_pos
 
     def test_build_system_prompt_no_error_on_first_attempt(self) -> None:
         task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
         prompt = build_system_prompt(task, {})
         assert "Previous Attempt Errors" not in prompt
+
+    def test_build_system_prompt_includes_output_requirements(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        prompt = build_system_prompt(task, {})
+        assert "## Output Requirements" in prompt
+        assert "LLMResponse" in prompt
 
     def test_build_system_prompt_with_context_includes_error_section(self) -> None:
         from forge.code_intel.budget import ContextItem, PackedContext, Representation
@@ -943,24 +975,26 @@ class TestErrorSectionInPrompts:
         )
         error_section = "## Previous Attempt Errors\nLint error"
         prompt = build_system_prompt_with_context(task, packed, error_section=error_section)
-        # Error section should appear before Output Requirements
+        # Output Requirements now precedes error section (stable content first)
         error_pos = prompt.index("Previous Attempt Errors")
         output_pos = prompt.index("## Output Requirements")
-        assert error_pos < output_pos
+        assert output_pos < error_pos
 
     def test_build_step_system_prompt_includes_error_section(self) -> None:
         task = TaskDefinition(task_id="t1", description="desc")
         step = PlanStep(step_id="s1", description="step", target_files=["a.py"])
         error_section = "## Previous Attempt Errors\nStep error"
         prompt = build_step_system_prompt(task, step, 0, 1, [], {}, error_section=error_section)
+        # Output Requirements now precedes error section (stable content first)
         error_pos = prompt.index("Previous Attempt Errors")
         output_pos = prompt.index("### Output Requirements")
-        assert error_pos < output_pos
+        assert output_pos < error_pos
 
     def test_build_sub_task_system_prompt_includes_error_section(self) -> None:
         st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
         error_section = "## Previous Attempt Errors\nSub-task error"
         prompt = build_sub_task_system_prompt("t1", "desc", st, {}, error_section=error_section)
+        # Output Requirements now precedes error section (stable content first)
         error_pos = prompt.index("Previous Attempt Errors")
         output_pos = prompt.index("### Output Requirements")
-        assert error_pos < output_pos
+        assert output_pos < error_pos
