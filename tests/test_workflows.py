@@ -138,9 +138,11 @@ async def mock_call_llm(context: AssembledContext) -> LLMCallResult:
 @activity.defn(name="write_output")
 async def mock_write_output(input: WriteOutputInput) -> WriteResult:
     _call_log.append("write_output")
+    files = input.llm_result.response.files
     return WriteResult(
         task_id=input.llm_result.task_id,
-        files_written=["hello.py"],
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
     )
 
 
@@ -442,9 +444,11 @@ async def mock_plan_call_llm(context: AssembledContext) -> LLMCallResult:
 @activity.defn(name="write_output")
 async def mock_plan_write_output(input: WriteOutputInput) -> WriteResult:
     _PLAN_CALL_LOG.append("write_output")
+    files = input.llm_result.response.files
     return WriteResult(
         task_id=input.llm_result.task_id,
-        files_written=[f.file_path for f in input.llm_result.response.files],
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
     )
 
 
@@ -778,9 +782,11 @@ async def mock_subtask_call_llm(context: AssembledContext) -> LLMCallResult:
 @activity.defn(name="write_output")
 async def mock_subtask_write_output(input: WriteOutputInput) -> WriteResult:
     _SUBTASK_CALL_LOG.append("write_output")
+    files = input.llm_result.response.files
     return WriteResult(
         task_id=input.llm_result.task_id,
-        files_written=[f.file_path for f in input.llm_result.response.files],
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
     )
 
 
@@ -1026,9 +1032,11 @@ async def mock_fanout_call_llm(context: AssembledContext) -> LLMCallResult:
 @activity.defn(name="write_output")
 async def mock_fanout_write_output(input: WriteOutputInput) -> WriteResult:
     _FANOUT_CALL_LOG.append("write_output")
+    files = input.llm_result.response.files
     return WriteResult(
         task_id=input.llm_result.task_id,
-        files_written=[f.file_path for f in input.llm_result.response.files],
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
     )
 
 
@@ -1465,7 +1473,12 @@ async def mock_p8_call_llm(context: AssembledContext) -> LLMCallResult:
 @activity.defn(name="write_output")
 async def mock_p8_write_output(input: WriteOutputInput) -> WriteResult:
     _P8_CALL_LOG.append("write_output")
-    return WriteResult(task_id=input.llm_result.task_id, files_written=["hello.py"])
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
 
 
 @activity.defn(name="validate_output")
@@ -1668,7 +1681,12 @@ async def mock_p8s_call_llm(context: AssembledContext) -> LLMCallResult:
 @activity.defn(name="write_output")
 async def mock_p8s_write_output(input: WriteOutputInput) -> WriteResult:
     _P8_STEP_CALL_LOG.append("write_output")
-    return WriteResult(task_id=input.llm_result.task_id, files_written=["a.py"])
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
 
 
 @activity.defn(name="validate_output")
@@ -1840,7 +1858,12 @@ async def mock_p8st_call_llm(context: AssembledContext) -> LLMCallResult:
 @activity.defn(name="write_output")
 async def mock_p8st_write_output(input: WriteOutputInput) -> WriteResult:
     _P8_ST_CALL_LOG.append("write_output")
-    return WriteResult(task_id=input.llm_result.task_id, files_written=["schema.py"])
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
 
 
 @activity.defn(name="validate_output")
