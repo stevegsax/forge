@@ -306,6 +306,7 @@ def handle_discover_context(params: dict[str, str], repo_root: str, worktree_pat
             project_root=worktree_path,
             package_name="forge",
             src_root="src",
+            include_dependencies=True,
         )
     except Exception as e:
         return f"Error running context discovery: {e}"

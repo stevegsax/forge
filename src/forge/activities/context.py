@@ -146,6 +146,15 @@ def build_system_prompt_with_context(task: TaskDefinition, packed: PackedContext
         priority=6,
     )
 
+    # Defensive reminder to produce structured output
+    parts.append("")
+    parts.append("## Output Requirements")
+    parts.append(
+        "You MUST respond with a valid LLMResponse containing a `files` list and "
+        "an `explanation` string. Each file entry needs `file_path` and `content`. "
+        "Do NOT return an empty object."
+    )
+
     return "\n".join(parts)
 
 
@@ -344,6 +353,7 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
             max_import_depth=task.context.max_import_depth,
             include_repo_map=task.context.include_repo_map,
             repo_map_tokens=task.context.repo_map_tokens,
+            include_dependencies=task.context.include_dependencies,
         )
 
         # Inject playbooks (best-effort, D42)

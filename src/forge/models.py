@@ -34,6 +34,14 @@ class ContextConfig(BaseModel):
     """Configuration for automatic context discovery."""
 
     auto_discover: bool = True
+    include_dependencies: bool = Field(
+        default=False,
+        description=(
+            "Include direct import contents and transitive symbol signatures. "
+            "When False (default), only target files and repo map are assembled "
+            "upfront; the LLM can pull dependencies on demand via exploration."
+        ),
+    )
     token_budget: int = Field(default=100_000, description="Token budget for context.")
     output_reserve: int = Field(default=16_000, description="Tokens reserved for LLM output.")
     max_import_depth: int = Field(default=2, description="How deep to trace imports.")

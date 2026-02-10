@@ -191,9 +191,13 @@ def build_task_definition(
     no_auto_discover: bool = False,
     token_budget: int | None = None,
     max_import_depth: int | None = None,
+    include_deps: bool = False,
 ) -> TaskDefinition:
     """Build a TaskDefinition from CLI arguments."""
-    context_config = ContextConfig(auto_discover=not no_auto_discover)
+    context_config = ContextConfig(
+        auto_discover=not no_auto_discover,
+        include_dependencies=include_deps,
+    )
     if token_budget is not None:
         context_config = context_config.model_copy(update={"token_budget": token_budget})
     if max_import_depth is not None:
@@ -394,6 +398,11 @@ def main() -> None:
     show_default=True,
     help="Max rounds of LLM-guided context exploration (0 disables).",
 )
+@click.option(
+    "--include-deps",
+    is_flag=True,
+    help="Include dependency file contents in upfront context (default: off).",
+)
 @click.option("--no-explore", is_flag=True, help="Disable LLM-guided context exploration.")
 @click.option(
     "--temporal-address",
@@ -423,6 +432,7 @@ def run(
     no_auto_discover: bool,
     token_budget: int | None,
     max_import_depth: int | None,
+    include_deps: bool,
     max_exploration_rounds: int,
     no_explore: bool,
     temporal_address: str,
@@ -465,6 +475,7 @@ def run(
             no_auto_discover=no_auto_discover,
             token_budget=token_budget,
             max_import_depth=max_import_depth,
+            include_deps=include_deps,
         )
 
     # --- Discover repo root ---

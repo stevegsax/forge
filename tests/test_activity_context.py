@@ -408,6 +408,29 @@ class TestBuildSystemPromptWithContext:
         assert "- out.py" in prompt
         assert "# existing" in prompt
 
+    def test_includes_output_requirements(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="Build a module.", target_files=["out.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="out.py",
+                    content="# existing",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        prompt = build_system_prompt_with_context(task, packed)
+        assert "## Output Requirements" in prompt
+        assert "LLMResponse" in prompt
+        assert "files" in prompt
+        assert "Do NOT return an empty object" in prompt
+
     def test_sections_by_priority(self) -> None:
         from forge.code_intel.budget import ContextItem, PackedContext, Representation
 

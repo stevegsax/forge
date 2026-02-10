@@ -116,6 +116,7 @@ def discover_context(
     max_import_depth: int = 2,
     include_repo_map: bool = True,
     repo_map_tokens: int = 2048,
+    include_dependencies: bool = False,
 ) -> PackedContext:
     """Discover and pack context automatically.
 
@@ -158,19 +159,25 @@ def discover_context(
     # Step 3: Read target file contents (existing files only)
     target_contents = _read_file_contents(project_root, target_files)
 
-    # Step 4: Read direct import contents
+    # Step 4: Read direct import contents (only when dependencies requested)
     direct_files = [
         f.file_path for f in ranked_set.ranked_files if f.relationship == Relationship.DIRECT_IMPORT
     ]
-    direct_contents = _read_file_contents(project_root, direct_files)
+    direct_contents = (
+        _read_file_contents(project_root, direct_files) if include_dependencies else {}
+    )
 
-    # Step 5: Extract symbols for transitive imports
+    # Step 5: Extract symbols for transitive imports (only when dependencies requested)
     transitive_files = [
         f.file_path
         for f in ranked_set.ranked_files
         if f.relationship == Relationship.TRANSITIVE_IMPORT
     ]
-    transitive_sigs = _extract_symbols_for_files(project_root, transitive_files, src_root)
+    transitive_sigs = (
+        _extract_symbols_for_files(project_root, transitive_files, src_root)
+        if include_dependencies
+        else {}
+    )
 
     # Step 6: Generate repo map
     repo_map: RepoMap | None = None
@@ -195,7 +202,11 @@ def discover_context(
 
     # Step 7: Build context items
     # Also create signature fallbacks for direct imports (for graceful degradation)
-    direct_sigs = _extract_symbols_for_files(project_root, direct_files, src_root)
+    direct_sigs = (
+        _extract_symbols_for_files(project_root, direct_files, src_root)
+        if include_dependencies
+        else {}
+    )
 
     items = build_context_items(
         target_file_contents=target_contents,

@@ -796,6 +796,16 @@ class TestBuildTaskDefinitionContextConfig:
         )
         assert td.context.max_import_depth == 3
 
+    def test_include_deps_default_false(self) -> None:
+        td = build_task_definition(task_id="t", description="d", target_files=["a.py"])
+        assert td.context.include_dependencies is False
+
+    def test_include_deps_true(self) -> None:
+        td = build_task_definition(
+            task_id="t", description="d", target_files=["a.py"], include_deps=True
+        )
+        assert td.context.include_dependencies is True
+
     def test_none_values_keep_defaults(self) -> None:
         td = build_task_definition(
             task_id="t",
@@ -814,6 +824,7 @@ class TestContextDiscoveryFlags:
         assert "--no-auto-discover" in result.output
         assert "--token-budget" in result.output
         assert "--max-import-depth" in result.output
+        assert "--include-deps" in result.output
 
     @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
     @patch("forge.cli.discover_repo_root")
@@ -869,6 +880,33 @@ class TestContextDiscoveryFlags:
         call_args = mock_submit.call_args
         task_def = call_args[0][0]
         assert task_def.context.token_budget == 50_000
+
+    @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
+    @patch("forge.cli.discover_repo_root")
+    def test_include_deps_flag(
+        self,
+        mock_discover: object,
+        mock_submit: AsyncMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.return_value = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--include-deps",
+            ],
+        )
+        call_args = mock_submit.call_args
+        task_def = call_args[0][0]
+        assert task_def.context.include_dependencies is True
 
     @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
     @patch("forge.cli.discover_repo_root")
