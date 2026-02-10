@@ -341,3 +341,30 @@ def worktree_exists(repo_root: Path, task_id: str) -> bool:
         return False
 
     return str(wt_path) in result.stdout
+
+
+def list_worktrees(repo_root: Path) -> list[str]:
+    """Return existing forge worktree task IDs.
+
+    Args:
+        repo_root: Path to the repository root.
+
+    Returns:
+        List of task IDs for existing forge worktrees.
+    """
+    result = _run_git("worktree", "list", "--porcelain", cwd=repo_root)
+    if not result.ok:
+        return []
+
+    task_ids: list[str] = []
+    worktree_prefix = str(repo_root / _WORKTREE_DIR) + "/"
+
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+            if path.startswith(worktree_prefix):
+                task_id = path[len(worktree_prefix) :]
+                if task_id:
+                    task_ids.append(task_id)
+
+    return task_ids
