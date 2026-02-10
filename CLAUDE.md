@@ -4,7 +4,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phases 1–7 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, knowledge extraction with playbook generation and injection into future task contexts, and LLM-guided context exploration where the LLM requests context from providers before generating code. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
+Phases 1–8 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, knowledge extraction with playbook generation and injection into future task contexts, LLM-guided context exploration where the LLM requests context from providers before generating code, and error-aware retries that feed validation errors back to the LLM on retry. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
 
 ## Key Documents
 
@@ -17,6 +17,8 @@ Phases 1–7 are implemented. The system supports single-step execution, planned
 - `docs/PHASE5.md` — Detailed specification for Phase 5 (observability store).
 - `docs/PHASE6.md` — Detailed specification for Phase 6 (knowledge extraction).
 - `docs/PHASE7.md` — Detailed specification for Phase 7 (LLM-guided context exploration).
+- `docs/PHASE8.md` — Detailed specification for Phase 8 (error-aware retries).
+- `docs/PHASE9.md` through `docs/PHASE13.md` — Specifications for future phases.
 
 ## Development Conventions
 
@@ -68,6 +70,8 @@ All modes support LLM-guided context exploration (Phase 7) by default: the LLM r
 
 All modes use diff-based output (D50): the LLM produces search/replace edits (`edits` list) for existing files and full content (`files` list) for new files. Step and sub-task contexts always include current target file contents from the worktree so the LLM can produce precise diffs. The `write_output` activity applies edits sequentially, requiring each search string to match exactly once.
 
-## Next Phase: Phase 8+
+All modes use error-aware retries (Phase 8): when a step fails validation and retries, the retry prompt includes the validation error output with AST-derived code context around error locations, so the LLM knows what went wrong and can fix it instead of retrying blind.
 
-See the Phase 8+ section in `docs/DESIGN.md` for future work.
+## Next Phase: Phase 9+
+
+See the Phase 9+ section in `docs/DESIGN.md` for future work.

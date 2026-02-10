@@ -400,7 +400,7 @@ class TestRunCommandExecution:
             ],
         )
         assert result.exit_code == 0
-        parsed = json.loads(result.output)
+        parsed = json.loads(result.stdout)
         assert parsed["task_id"] == "test-task"
         assert parsed["status"] == "success"
 
@@ -479,7 +479,7 @@ class TestRunCommandExecution:
             ],
         )
         assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
-        assert "Connection refused" in result.output
+        assert "Connection refused" in result.stderr
 
     @patch("forge.cli._submit_and_wait", new_callable=AsyncMock)
     @patch("forge.cli.discover_repo_root")
@@ -1046,7 +1046,7 @@ class TestEvalPlannerCommand:
         )
         # If there are results, they should be valid JSON
         if result.exit_code == 0:
-            parsed = json.loads(result.output)
+            parsed = json.loads(result.stdout)
             assert isinstance(parsed, list)
 
     def test_save_results(self, cli_runner: CliRunner, tmp_path: Path) -> None:
@@ -1191,7 +1191,7 @@ class TestStatusCommand:
         monkeypatch.setenv("FORGE_DB_PATH", "")
         result = cli_runner.invoke(main, ["status"])
         assert result.exit_code == EXIT_FAILURE
-        assert "No store available" in result.output
+        assert "No store available" in result.stderr
 
     def test_list_runs(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1252,7 +1252,7 @@ class TestStatusCommand:
 
         result = cli_runner.invoke(main, ["status", "--json"])
         assert result.exit_code == 0
-        parsed = json.loads(result.output)
+        parsed = json.loads(result.stdout)
         assert isinstance(parsed, list)
 
 
@@ -1272,7 +1272,7 @@ class TestExtractCommand:
         monkeypatch.setenv("FORGE_DB_PATH", "")
         result = cli_runner.invoke(main, ["extract", "--dry-run"])
         assert result.exit_code == EXIT_FAILURE
-        assert "No store available" in result.output
+        assert "No store available" in result.stderr
 
     def test_dry_run_with_runs(
         self,
@@ -1327,7 +1327,7 @@ class TestPlaybooksCommand:
         monkeypatch.setenv("FORGE_DB_PATH", "")
         result = cli_runner.invoke(main, ["playbooks"])
         assert result.exit_code == EXIT_FAILURE
-        assert "No store available" in result.output
+        assert "No store available" in result.stderr
 
     def test_list_playbooks(
         self,
@@ -1430,7 +1430,7 @@ class TestPlaybooksCommand:
 
         result = cli_runner.invoke(main, ["playbooks", "--json"])
         assert result.exit_code == 0
-        parsed = json.loads(result.output)
+        parsed = json.loads(result.stdout)
         assert isinstance(parsed, list)
         assert parsed[0]["title"] == "Test lesson"
 

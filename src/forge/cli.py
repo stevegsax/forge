@@ -869,11 +869,8 @@ async def _run_eval(
     *,
     run_judge: bool,
     judge_model: str | None,
-) -> tuple[list[PlanEvalResult], list[str]]:
-    """Load corpus, discover plans, and run evaluation.
-
-    Returns (results, skipped_case_ids).
-    """
+) -> list[PlanEvalResult]:
+    """Load corpus, discover plans, and run evaluation."""
     from forge.eval.corpus import discover_eval_cases, list_repo_files
     from forge.eval.deterministic import run_deterministic_checks
     from forge.eval.runner import build_eval_result
@@ -881,11 +878,10 @@ async def _run_eval(
 
     cases = discover_eval_cases(Path(corpus_dir))
     if not cases:
-        return [], []
+        return []
 
     # Load plans from plans_dir if provided, otherwise use reference plans from cases
     plans: dict[str, Plan] = {}
-    skipped_plans: list[str] = []
     if plans_dir:
         plans_path = Path(plans_dir)
         if plans_path.is_dir():
@@ -895,15 +891,14 @@ async def _run_eval(
                     plan = Plan.model_validate_json(content)
                     plans[plan.task_id] = plan
                 except Exception:
-                    skipped_plans.append(str(json_file))
+                    click.echo(f"Warning: failed to parse {json_file.name}, skipping.", err=True)
 
     results: list[PlanEvalResult] = []
-    skipped_cases: list[str] = []
     for case in cases:
         # Try to find a plan: by task_id from plans_dir, or reference_plan from case
         plan = plans.get(case.task.task_id) or case.reference_plan
         if plan is None:
-            skipped_cases.append(case.case_id)
+            click.echo(f"Warning: no plan for case {case.case_id}, skipping.", err=True)
             continue
 
         repo_root = Path(case.repo_root)
@@ -920,7 +915,7 @@ async def _run_eval(
         result = build_eval_result(case.case_id, plan, det, verdict)
         results.append(result)
 
-    return results, skipped_plans + skipped_cases
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -979,7 +974,7 @@ def eval_planner(
             click.echo(f"  {case.case_id}: {case.task.description}{tags}")
         return
 
-    results, skipped = asyncio.run(
+    results = asyncio.run(
         _run_eval(corpus_dir, plans_dir, run_judge=judge, judge_model=judge_model)
     )
 
@@ -993,8 +988,6 @@ def eval_planner(
         data = [r.model_dump(mode="json") for r in results]
         click.echo(json.dumps(data, indent=2, default=str))
     else:
-        for name in skipped:
-            click.echo(f"Warning: no plan for case {name}, skipping.", err=True)
         for result in results:
             click.echo(format_eval_result(result))
             click.echo("")

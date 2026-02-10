@@ -316,7 +316,15 @@ Proves out: LLM-directed context gathering, provider registry pattern, explorati
 
 Deliverable: Run `forge run` with exploration enabled and observe the LLM requesting context before generating code.
 
-### Phase 8+ (Future)
+### Phase 8: Error-Aware Retries
+
+Feed validation errors back to the LLM on retry so it knows what went wrong. When a step fails validation and retries, the retry prompt includes the validation error output with AST-derived code context around error locations. See `docs/PHASE8.md` for the full specification.
+
+Proves out: error feedback in retry prompts, AST-based context enrichment around error locations, backward-compatible retry fields.
+
+Deliverable: Run `forge run` with a task that fails validation and observe the retry prompt including the previous failure's error output.
+
+### Phase 9+ (Future)
 
 - Recursive fan-out (sub-tasks can fan out further).
 - Model routing (capability tiers mapped to concrete models).

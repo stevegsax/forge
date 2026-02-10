@@ -403,3 +403,9 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Files with unrecognized extensions produce an empty `SymbolSummary` (path only, no symbols). No error.
 
 **Rationale:** Multi-language codebases often include configuration files, data files, or files in niche languages. The system should not fail on encountering them. File-path-only entries in the repo map still provide structural orientation. New languages can be added incrementally by writing a tag query file.
+
+## D68: CLI Test Output Stream Assertions
+
+**Decision:** CLI tests use `result.stdout` for structured data assertions (JSON parsing), `result.stderr` for error/warning message assertions, and `result.output` for general "user sees this" assertions where the stream doesn't matter.
+
+**Rationale:** Click 8.2+ provides separate `result.stdout` and `result.stderr` properties alongside the mixed `result.output`. Using `result.stdout` for JSON-parsing tests ensures they cannot be broken by warnings or errors written to stderr via `click.echo(..., err=True)`. Using `result.stderr` for error assertions verifies messages go to the correct stream. This makes output separation robust by construction rather than relying on print ordering. The CLI's use of `click.echo()` for stdout and `click.echo(..., err=True)` for stderr follows standard Unix convention.
