@@ -34,6 +34,17 @@ Every operation in Forge follows the same pattern:
 
 The differentiation between "types" of work lives entirely in the prompt and context, not in the workflow machinery.
 
+### LLM Output Format
+
+The LLM response supports two output modes within a single `LLMResponse`:
+
+- **`files`**: Full file content for new files that don't exist yet.
+- **`edits`**: Search/replace edit sequences for existing files. Each edit specifies an exact search string (must match exactly once) and its replacement.
+
+A file path must not appear in both lists. The `write_output` activity writes new files directly and applies edits sequentially to existing files. This avoids the failure mode of full-file replacement, where the LLM must reproduce every line of an existing file to change a few — wasting output tokens and silently destroying code when the full file isn't in context (D50).
+
+Step and sub-task contexts always include current target file contents from the worktree so the LLM has the source material needed to produce precise edits.
+
 ### Temporal Orchestration
 
 Temporal provides the workflow engine. The orchestrator owns the task DAG, assigns tasks to agents, and manages state transitions.

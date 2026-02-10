@@ -66,6 +66,8 @@ All modes use automatic context discovery (Phase 4) by default: import graph ana
 
 All modes support LLM-guided context exploration (Phase 7) by default: the LLM requests context from providers (file reads, code search, symbols, import graphs, tests, lint, git history, repo maps, past runs, playbooks) before generating code. Disable with `--no-explore` or set `--max-exploration-rounds 0`.
 
+All modes use diff-based output (D50): the LLM produces search/replace edits (`edits` list) for existing files and full content (`files` list) for new files. Step and sub-task contexts always include current target file contents from the worktree so the LLM can produce precise diffs. The `write_output` activity applies edits sequentially, requiring each search string to match exactly once.
+
 ## Next Phase: Phase 8+
 
 See the Phase 8+ section in `docs/DESIGN.md` for future work.
