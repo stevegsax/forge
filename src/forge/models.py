@@ -7,6 +7,15 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 
+class MatchLevel(StrEnum):
+    """Which matching strategy succeeded for a search/replace edit."""
+
+    EXACT = "exact"
+    WHITESPACE = "whitespace"
+    INDENTATION = "indentation"
+    FUZZY = "fuzzy"
+
+
 class TransitionSignal(StrEnum):
     """Outcome signals that the orchestrator acts on."""
 

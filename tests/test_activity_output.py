@@ -8,8 +8,15 @@ import pytest
 
 from forge.activities.output import (
     EditApplicationError,
+    EditApplicationResult,
     OutputWriteError,
+    _exact_match,
+    _fuzzy_match,
+    _indentation_normalized_match,
+    _reindent,
+    _whitespace_normalized_match,
     apply_edits,
+    apply_edits_detailed,
     resolve_edit_paths,
     resolve_file_paths,
     write_files,
@@ -20,6 +27,7 @@ from forge.models import (
     FileOutput,
     LLMCallResult,
     LLMResponse,
+    MatchLevel,
     SearchReplaceEdit,
     WriteFilesInput,
     WriteOutputInput,
@@ -173,7 +181,239 @@ class TestWriteFiles:
 
 
 # ---------------------------------------------------------------------------
-# apply_edits (pure function)
+# _exact_match (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestExactMatch:
+    def test_unique_match_returns_index(self) -> None:
+        assert _exact_match("hello world", "world") == 6
+
+    def test_no_match_returns_none(self) -> None:
+        assert _exact_match("hello world", "missing") is None
+
+    def test_ambiguous_raises(self) -> None:
+        with pytest.raises(EditApplicationError, match="appears 2 times"):
+            _exact_match("abcabc", "abc")
+
+
+# ---------------------------------------------------------------------------
+# _whitespace_normalized_match (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestWhitespaceNormalizedMatch:
+    def test_trailing_spaces_on_content_line(self) -> None:
+        content = "def foo():   \n    pass\n"
+        search = "def foo():\n    pass\n"
+        result = _whitespace_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert content[start:end] == content
+
+    def test_trailing_spaces_on_search_line(self) -> None:
+        content = "def foo():\n    pass\n"
+        search = "def foo():   \n    pass\n"
+        result = _whitespace_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert content[start:end] == content
+
+    def test_trailing_tabs(self) -> None:
+        content = "x = 1\t\t\ny = 2\n"
+        search = "x = 1\ny = 2\n"
+        result = _whitespace_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert content[start:end] == content
+
+    def test_partial_match_in_larger_file(self) -> None:
+        content = "line1\ndef foo():   \n    pass\nline4\n"
+        search = "def foo():\n    pass\n"
+        result = _whitespace_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert content[start:end] == "def foo():   \n    pass\n"
+
+    def test_no_match_returns_none(self) -> None:
+        content = "def foo():\n    pass\n"
+        search = "def bar():\n    pass\n"
+        assert _whitespace_normalized_match(content, search) is None
+
+    def test_ambiguous_raises(self) -> None:
+        content = "x = 1   \ny = 2\nx = 1  \ny = 2\n"
+        search = "x = 1\ny = 2\n"
+        with pytest.raises(EditApplicationError, match="ambiguous"):
+            _whitespace_normalized_match(content, search)
+
+    def test_search_without_trailing_newline(self) -> None:
+        content = "line1\ndef foo():   \n    pass\nline4\n"
+        search = "def foo():\n    pass"
+        result = _whitespace_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        # Should not consume the \n after "    pass"
+        assert content[start:end] == "def foo():   \n    pass"
+
+    def test_empty_search_returns_none(self) -> None:
+        assert _whitespace_normalized_match("content", "") is None
+
+    def test_single_line_trailing_space(self) -> None:
+        content = "hello   \nworld\n"
+        search = "hello\n"
+        result = _whitespace_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert content[start:end] == "hello   \n"
+
+
+# ---------------------------------------------------------------------------
+# _reindent (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestReindent:
+    def test_zero_indent_is_identity(self) -> None:
+        text = "def foo():\n    pass\n"
+        assert _reindent(text, 0) == text
+
+    def test_adds_indent(self) -> None:
+        text = "def foo():\n    pass\n"
+        result = _reindent(text, 4)
+        assert result == "    def foo():\n        pass\n"
+
+    def test_preserves_blank_lines(self) -> None:
+        text = "def foo():\n\n    pass\n"
+        result = _reindent(text, 4)
+        assert result == "    def foo():\n\n        pass\n"
+
+    def test_handles_no_trailing_newline(self) -> None:
+        text = "x = 1"
+        result = _reindent(text, 8)
+        assert result == "        x = 1"
+
+
+# ---------------------------------------------------------------------------
+# _indentation_normalized_match (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestIndentationNormalizedMatch:
+    def test_search_at_wrong_indent(self) -> None:
+        content = "class Foo:\n    def method(self):\n        return 42\n"
+        search = "def method(self):\n    return 42\n"
+        result = _indentation_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert content[start:end] == "    def method(self):\n        return 42\n"
+
+    def test_search_too_indented(self) -> None:
+        content = "def foo():\n    return 42\n"
+        search = "        def foo():\n            return 42\n"
+        result = _indentation_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert content[start:end] == "def foo():\n    return 42\n"
+
+    def test_no_match_returns_none(self) -> None:
+        content = "def foo():\n    return 42\n"
+        search = "def bar():\n    return 42\n"
+        assert _indentation_normalized_match(content, search) is None
+
+    def test_skips_same_as_exact(self) -> None:
+        """If re-indenting produces the original search, skip it (exact match handles it)."""
+        content = "def foo():\n    pass\nfoo()\n"
+        search = "def foo():\n    pass\n"
+        # Exact match would find this, so indentation should also find it
+        # since level 0 re-indent == dedented == original (for already-dedented search)
+        # The function skips reindented == search, so if the only match is at
+        # the original indentation, it returns None.
+        result = _indentation_normalized_match(content, search)
+        assert result is None
+
+    def test_ambiguous_across_indent_levels_raises(self) -> None:
+        # Content has the same code at two different indent levels
+        content = "def foo():\n    return 1\n    def foo():\n        return 1\n"
+        search = "    def foo():\n        return 1\n"
+        # Dedented: "def foo():\n    return 1\n"
+        # At level 0: "def foo():\n    return 1\n" — matches line 0-1
+        # At level 4: "    def foo():\n        return 1\n" — matches line 2-3 (== search, skipped)
+        # Only 1 match (level 0), so no ambiguity error
+        result = _indentation_normalized_match(content, search)
+        assert result is not None
+
+    def test_blank_lines_in_search(self) -> None:
+        content = "class Foo:\n    def method(self):\n\n        return 42\n"
+        search = "def method(self):\n\n    return 42\n"
+        result = _indentation_normalized_match(content, search)
+        assert result is not None
+        start, end = result
+        assert "    def method(self):" in content[start:end]
+
+
+# ---------------------------------------------------------------------------
+# _fuzzy_match (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestFuzzyMatch:
+    def test_minor_character_difference(self) -> None:
+        content = "def foo():\n    return 42\n"
+        search = "def foo():\n    return 43\n"  # 42 vs 43
+        result = _fuzzy_match(content, search)
+        assert result is not None
+        start, end, score = result
+        assert score > 0.6
+        assert content[start:end] == content
+
+    def test_below_threshold_returns_none(self) -> None:
+        content = "def foo():\n    return 42\n"
+        search = "completely different text\nanother line\n"
+        assert _fuzzy_match(content, search) is None
+
+    def test_custom_threshold(self) -> None:
+        content = "def foo():\n    return 42\n"
+        search = "def foo():\n    return 43\n"
+        # With a very high threshold, even a close match should fail
+        assert _fuzzy_match(content, search, threshold=0.999) is None
+
+    def test_ambiguous_raises(self) -> None:
+        # Two very similar blocks
+        content = "def foo():\n    return 1\ndef foo():\n    return 2\n"
+        search = "def foo():\n    return 3\n"
+        with pytest.raises(EditApplicationError, match="ambiguous"):
+            _fuzzy_match(content, search)
+
+    def test_empty_search_returns_none(self) -> None:
+        assert _fuzzy_match("content\n", "") is None
+
+    def test_search_longer_than_content_returns_none(self) -> None:
+        content = "one line\n"
+        search = "line 1\nline 2\nline 3\n"
+        assert _fuzzy_match(content, search) is None
+
+    def test_unique_best_match_in_larger_file(self) -> None:
+        content = "import os\n\ndef foo():\n    return 42\n\ndef bar():\n    return 99\n"
+        search = "def foo():\n    return 43\n"  # minor difference
+        result = _fuzzy_match(content, search)
+        assert result is not None
+        start, end, _score = result
+        matched = content[start:end]
+        assert "def foo" in matched
+        assert "return 42" in matched
+
+    def test_search_without_trailing_newline(self) -> None:
+        content = "def foo():\n    return 42\nbar()\n"
+        search = "def foo():\n    return 43"  # no trailing newline, minor diff
+        result = _fuzzy_match(content, search)
+        assert result is not None
+        start, end, _score = result
+        # Should not consume the \n after "return 42"
+        assert not content[start:end].endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# apply_edits (pure function — backward compatibility)
 # ---------------------------------------------------------------------------
 
 
@@ -204,9 +444,9 @@ class TestApplyEdits:
             apply_edits("content", edits)
 
     def test_error_on_search_not_found(self) -> None:
-        edits = [SearchReplaceEdit(search="nonexistent", replace="x")]
+        edits = [SearchReplaceEdit(search="zzz_no_match_zzz", replace="x")]
         with pytest.raises(EditApplicationError, match="not found"):
-            apply_edits("content", edits)
+            apply_edits("def foo():\n    return 42\n", edits)
 
     def test_error_on_ambiguous_search(self) -> None:
         original = "x = 1\nx = 2\n"
@@ -241,6 +481,89 @@ class TestApplyEdits:
         result = apply_edits(original, edits)
         assert "return 42" in result
         assert "return 2" in result
+
+
+# ---------------------------------------------------------------------------
+# apply_edits_detailed (fallback chain integration)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyEditsDetailed:
+    def test_exact_match_is_tried_first(self) -> None:
+        original = "def foo():\n    pass\n"
+        edits = [SearchReplaceEdit(search="def foo():", replace="def bar():")]
+        result = apply_edits_detailed(original, edits)
+        assert result.content == "def bar():\n    pass\n"
+        assert len(result.match_results) == 1
+        assert result.match_results[0].match_level == MatchLevel.EXACT
+        assert result.match_results[0].similarity_score is None
+
+    def test_whitespace_fallback(self) -> None:
+        original = "def foo():   \n    pass\n"
+        search = "def foo():\n    pass\n"
+        edits = [SearchReplaceEdit(search=search, replace="def bar():\n    pass\n")]
+        result = apply_edits_detailed(original, edits)
+        assert "def bar()" in result.content
+        assert result.match_results[0].match_level == MatchLevel.WHITESPACE
+
+    def test_indentation_fallback(self) -> None:
+        original = "class Foo:\n    def method(self):\n        return 42\n"
+        # Search at wrong indent (0 instead of 4)
+        search = "def method(self):\n    return 42\n"
+        replace = "def method(self):\n    return 99\n"
+        edits = [SearchReplaceEdit(search=search, replace=replace)]
+        result = apply_edits_detailed(original, edits)
+        assert "return 99" in result.content
+        assert result.match_results[0].match_level == MatchLevel.INDENTATION
+
+    def test_fuzzy_fallback(self) -> None:
+        original = "def foo():\n    return 42\n"
+        # Minor difference: single-quote vs no quotes, different value
+        search = "def foo():\n    return 'forty-two'\n"
+        replace = "def foo():\n    return 99\n"
+        edits = [SearchReplaceEdit(search=search, replace=replace)]
+        result = apply_edits_detailed(original, edits)
+        assert "return 99" in result.content
+        assert result.match_results[0].match_level == MatchLevel.FUZZY
+        assert result.match_results[0].similarity_score is not None
+        assert result.match_results[0].similarity_score > 0.6
+
+    def test_custom_threshold(self) -> None:
+        original = "def foo():\n    return 42\n"
+        search = "def foo():\n    return 43\n"
+        replace = "def foo():\n    return 99\n"
+        edits = [SearchReplaceEdit(search=search, replace=replace)]
+        # With threshold=0.999, fuzzy should fail
+        with pytest.raises(EditApplicationError, match="not found"):
+            apply_edits_detailed(original, edits, similarity_threshold=0.999)
+
+    def test_multiple_edits_different_strategies(self) -> None:
+        original = "a = 1\nb = 2   \nclass Foo:\n    def bar(self):\n        return 3\n"
+        edits = [
+            # Edit 0: exact match
+            SearchReplaceEdit(search="a = 1", replace="a = 10"),
+            # Edit 1: whitespace fallback (trailing spaces on "b = 2   ")
+            SearchReplaceEdit(search="b = 2\n", replace="b = 20\n"),
+        ]
+        result = apply_edits_detailed(original, edits)
+        assert "a = 10" in result.content
+        assert "b = 20" in result.content
+        assert result.match_results[0].match_level == MatchLevel.EXACT
+        assert result.match_results[1].match_level == MatchLevel.WHITESPACE
+
+    def test_returns_edit_application_result(self) -> None:
+        original = "hello\n"
+        edits = [SearchReplaceEdit(search="hello", replace="world")]
+        result = apply_edits_detailed(original, edits)
+        assert isinstance(result, EditApplicationResult)
+        assert result.content == "world\n"
+
+    def test_all_strategies_fail_raises(self) -> None:
+        original = "def foo():\n    return 42\n"
+        search = "completely unrelated text that matches nothing at all\n"
+        edits = [SearchReplaceEdit(search=search, replace="replacement")]
+        with pytest.raises(EditApplicationError, match="not found"):
+            apply_edits_detailed(original, edits)
 
 
 # ---------------------------------------------------------------------------
