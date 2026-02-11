@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,6 +17,7 @@ from forge.models import (
     ExtractionResult,
     PlaybookEntry,
 )
+from tests.conftest import build_mock_message
 
 # ---------------------------------------------------------------------------
 # build_extraction_system_prompt
@@ -166,7 +167,7 @@ class TestExecuteExtractionCall:
             source_workflow_ids=["wf-1", "wf-2"],
         )
 
-    def _make_mock_agent(self) -> MagicMock:
+    def _make_mock_client(self) -> MagicMock:
         mock_output = ExtractionResult(
             entries=[
                 PlaybookEntry(
@@ -179,27 +180,23 @@ class TestExecuteExtractionCall:
             ],
             summary="Extracted 1 lesson.",
         )
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 500
-        mock_usage.output_tokens = 200
-
-        mock_result = MagicMock()
-        mock_result.output = mock_output
-        mock_result.usage.return_value = mock_usage
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-        mock_agent.model = "test-model"
-        return mock_agent
+        mock_message = build_mock_message(
+            tool_name="extraction_result",
+            tool_input=mock_output.model_dump(),
+            input_tokens=500,
+            output_tokens=200,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
+        return mock_client
 
     @pytest.mark.asyncio
     async def test_returns_extraction_call_result(self) -> None:
         input_data = self._make_input()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_extraction_call(input_data, agent)
+        result = await execute_extraction_call(input_data, client)
 
-        assert result.model_name == "test-model"
         assert len(result.result.entries) == 1
         assert result.result.entries[0].title == "Test lesson"
         assert result.source_workflow_ids == ["wf-1", "wf-2"]
@@ -207,9 +204,9 @@ class TestExecuteExtractionCall:
     @pytest.mark.asyncio
     async def test_extracts_usage(self) -> None:
         input_data = self._make_input()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_extraction_call(input_data, agent)
+        result = await execute_extraction_call(input_data, client)
 
         assert result.input_tokens == 500
         assert result.output_tokens == 200
@@ -217,9 +214,9 @@ class TestExecuteExtractionCall:
     @pytest.mark.asyncio
     async def test_latency_is_positive(self) -> None:
         input_data = self._make_input()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_extraction_call(input_data, agent)
+        result = await execute_extraction_call(input_data, client)
 
         assert result.latency_ms > 0
 
@@ -227,8 +224,6 @@ class TestExecuteExtractionCall:
     async def test_populates_empty_workflow_id(self) -> None:
         """If LLM doesn't populate source_workflow_id, uses first source."""
         input_data = self._make_input()
-        agent = self._make_mock_agent()
-        # Make the entry have empty source_workflow_id
         mock_output = ExtractionResult(
             entries=[
                 PlaybookEntry(
@@ -241,15 +236,16 @@ class TestExecuteExtractionCall:
             ],
             summary="Test.",
         )
-        mock_result = MagicMock()
-        mock_result.output = mock_output
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_result.usage.return_value = mock_usage
-        agent.run = AsyncMock(return_value=mock_result)
+        mock_message = build_mock_message(
+            tool_name="extraction_result",
+            tool_input=mock_output.model_dump(),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
-        result = await execute_extraction_call(input_data, agent)
+        result = await execute_extraction_call(input_data, mock_client)
 
         assert result.result.entries[0].source_workflow_id == "wf-1"
 
@@ -261,34 +257,24 @@ class TestExecuteExtractionCall:
 
 class TestCallExtractionLlmModelNameThreading:
     @pytest.mark.asyncio
-    async def test_threads_model_name_to_create_agent(self) -> None:
-        from unittest.mock import patch
-
+    async def test_threads_model_name_to_client(self) -> None:
         from forge.activities.extraction import call_extraction_llm
 
         mock_output = ExtractionResult(
             entries=[],
             summary="Nothing to extract.",
         )
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.cache_creation_input_tokens = 0
-        mock_usage.cache_read_input_tokens = 0
-
-        mock_result = MagicMock()
-        mock_result.output = mock_output
-        mock_result.usage.return_value = mock_usage
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-        mock_agent.model = "custom:extract"
+        mock_message = build_mock_message(
+            tool_name="extraction_result",
+            tool_input=mock_output.model_dump(),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         with (
-            patch(
-                "forge.activities.extraction.create_extraction_agent",
-                return_value=mock_agent,
-            ) as mock_create,
+            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
             patch("forge.activities.extraction._persist_extraction_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -303,41 +289,33 @@ class TestCallExtractionLlmModelNameThreading:
                 system_prompt="sys",
                 user_prompt="usr",
                 source_workflow_ids=["wf-1"],
-                model_name="custom:extract",
+                model_name="custom-extract",
             )
             await call_extraction_llm(input_data)
 
-            mock_create.assert_called_once_with("custom:extract")
+            call_kwargs = mock_client.messages.create.call_args[1]
+            assert call_kwargs["model"] == "custom-extract"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
-        from unittest.mock import patch
-
         from forge.activities.extraction import call_extraction_llm
+        from forge.activities.llm import DEFAULT_MODEL
 
         mock_output = ExtractionResult(
             entries=[],
             summary="Nothing.",
         )
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.cache_creation_input_tokens = 0
-        mock_usage.cache_read_input_tokens = 0
-
-        mock_result = MagicMock()
-        mock_result.output = mock_output
-        mock_result.usage.return_value = mock_usage
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-        mock_agent.model = "default-model"
+        mock_message = build_mock_message(
+            tool_name="extraction_result",
+            tool_input=mock_output.model_dump(),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         with (
-            patch(
-                "forge.activities.extraction.create_extraction_agent",
-                return_value=mock_agent,
-            ) as mock_create,
+            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
             patch("forge.activities.extraction._persist_extraction_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -355,5 +333,5 @@ class TestCallExtractionLlmModelNameThreading:
             )
             await call_extraction_llm(input_data)
 
-            # Empty string is falsy, so or None gives None
-            mock_create.assert_called_once_with(None)
+            call_kwargs = mock_client.messages.create.call_args[1]
+            assert call_kwargs["model"] == DEFAULT_MODEL

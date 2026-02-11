@@ -6,19 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from forge.activities.llm import _persist_interaction, create_agent, execute_llm_call
+from forge.activities.llm import _persist_interaction, execute_llm_call
 from forge.models import AssembledContext, FileOutput, LLMCallResult, LLMResponse
-
-# ---------------------------------------------------------------------------
-# create_agent
-# ---------------------------------------------------------------------------
-
-
-class TestCreateAgent:
-    def test_returns_agent_with_correct_output_type(self) -> None:
-        agent = create_agent("test")
-        assert agent.output_type is LLMResponse
-
+from tests.conftest import build_mock_message
 
 # ---------------------------------------------------------------------------
 # execute_llm_call
@@ -33,48 +23,44 @@ class TestExecuteLlmCall:
             user_prompt="Generate the code.",
         )
 
-    def _make_mock_agent(
+    def _make_mock_client(
         self,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
     ) -> MagicMock:
-        mock_response = LLMResponse(
-            files=[FileOutput(file_path="out.py", content="print('hi')")],
-            explanation="Created output file.",
+        mock_message = build_mock_message(
+            tool_name="llm_response",
+            tool_input=LLMResponse(
+                files=[FileOutput(file_path="out.py", content="print('hi')")],
+                explanation="Created output file.",
+            ).model_dump(),
+            input_tokens=100,
+            output_tokens=200,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
         )
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 200
-        mock_usage.cache_creation_input_tokens = cache_creation_input_tokens
-        mock_usage.cache_read_input_tokens = cache_read_input_tokens
-
-        mock_result = MagicMock()
-        mock_result.output = mock_response
-        mock_result.usage.return_value = mock_usage
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-        mock_agent.model = "test-model"
-        return mock_agent
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
+        return mock_client
 
     @pytest.mark.asyncio
     async def test_returns_llm_call_result(self) -> None:
         context = self._make_context()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_llm_call(context, agent)
+        result = await execute_llm_call(context, client)
 
         assert result.task_id == "llm-task"
-        assert result.model_name == "test-model"
+        assert result.model_name == "claude-sonnet-4-5-20250929"
         assert len(result.response.files) == 1
         assert result.response.files[0].file_path == "out.py"
 
     @pytest.mark.asyncio
     async def test_extracts_usage(self) -> None:
         context = self._make_context()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_llm_call(context, agent)
+        result = await execute_llm_call(context, client)
 
         assert result.input_tokens == 100
         assert result.output_tokens == 200
@@ -82,44 +68,42 @@ class TestExecuteLlmCall:
     @pytest.mark.asyncio
     async def test_latency_is_positive(self) -> None:
         context = self._make_context()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_llm_call(context, agent)
+        result = await execute_llm_call(context, client)
 
         assert result.latency_ms > 0
 
     @pytest.mark.asyncio
     async def test_propagates_task_id(self) -> None:
-        context = self._make_context()
         context = AssembledContext(
             task_id="custom-id",
             system_prompt="sys",
             user_prompt="usr",
         )
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_llm_call(context, agent)
+        result = await execute_llm_call(context, client)
 
         assert result.task_id == "custom-id"
 
     @pytest.mark.asyncio
-    async def test_passes_prompts_to_agent(self) -> None:
+    async def test_passes_prompts_to_client(self) -> None:
         context = self._make_context()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        await execute_llm_call(context, agent)
+        await execute_llm_call(context, client)
 
-        agent.run.assert_called_once_with(
-            "Generate the code.",
-            instructions="You are a code generator.",
-        )
+        client.messages.create.assert_called_once()
+        call_kwargs = client.messages.create.call_args[1]
+        assert call_kwargs["messages"][0]["content"] == "Generate the code."
 
     @pytest.mark.asyncio
     async def test_explanation_preserved(self) -> None:
         context = self._make_context()
-        agent = self._make_mock_agent()
+        client = self._make_mock_client()
 
-        result = await execute_llm_call(context, agent)
+        result = await execute_llm_call(context, client)
 
         assert result.response.explanation == "Created output file."
 
@@ -192,7 +176,7 @@ class TestPersistInteraction:
 
 
 # ---------------------------------------------------------------------------
-# Phase 9: cache stats extraction + agent model_settings
+# Phase 9: cache stats extraction
 # ---------------------------------------------------------------------------
 
 
@@ -204,68 +188,54 @@ class TestCacheStatsExtraction:
             user_prompt="usr",
         )
 
-    def _make_mock_agent(self, cache_write: int = 500, cache_read: int = 1000) -> MagicMock:
-        mock_response = LLMResponse(
-            files=[FileOutput(file_path="out.py", content="pass")],
-            explanation="Done.",
+    def _make_mock_client(self, cache_write: int = 500, cache_read: int = 1000) -> MagicMock:
+        mock_message = build_mock_message(
+            tool_name="llm_response",
+            tool_input=LLMResponse(
+                files=[FileOutput(file_path="out.py", content="pass")],
+                explanation="Done.",
+            ).model_dump(),
+            input_tokens=100,
+            output_tokens=50,
+            cache_creation_input_tokens=cache_write,
+            cache_read_input_tokens=cache_read,
         )
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.cache_creation_input_tokens = cache_write
-        mock_usage.cache_read_input_tokens = cache_read
-
-        mock_result = MagicMock()
-        mock_result.output = mock_response
-        mock_result.usage.return_value = mock_usage
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-        mock_agent.model = "test-model"
-        return mock_agent
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
+        return mock_client
 
     @pytest.mark.asyncio
     async def test_extracts_cache_tokens(self) -> None:
         context = self._make_context()
-        agent = self._make_mock_agent(cache_write=500, cache_read=1000)
-        result = await execute_llm_call(context, agent)
+        client = self._make_mock_client(cache_write=500, cache_read=1000)
+        result = await execute_llm_call(context, client)
         assert result.cache_creation_input_tokens == 500
         assert result.cache_read_input_tokens == 1000
 
     @pytest.mark.asyncio
     async def test_zero_cache_tokens(self) -> None:
         context = self._make_context()
-        agent = self._make_mock_agent(cache_write=0, cache_read=0)
-        result = await execute_llm_call(context, agent)
+        client = self._make_mock_client(cache_write=0, cache_read=0)
+        result = await execute_llm_call(context, client)
         assert result.cache_creation_input_tokens == 0
         assert result.cache_read_input_tokens == 0
 
     @pytest.mark.asyncio
     async def test_none_cache_tokens_become_zero(self) -> None:
         context = self._make_context()
-        mock_response = LLMResponse(explanation="Done.")
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.cache_creation_input_tokens = None
-        mock_usage.cache_read_input_tokens = None
-        mock_result = MagicMock()
-        mock_result.output = mock_response
-        mock_result.usage.return_value = mock_usage
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-        mock_agent.model = "test-model"
-        result = await execute_llm_call(context, mock_agent)
+        mock_message = build_mock_message(
+            tool_name="llm_response",
+            tool_input=LLMResponse(explanation="Done.").model_dump(),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        mock_message.usage.cache_creation_input_tokens = None
+        mock_message.usage.cache_read_input_tokens = None
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
+        result = await execute_llm_call(context, mock_client)
         assert result.cache_creation_input_tokens == 0
         assert result.cache_read_input_tokens == 0
-
-
-class TestCreateAgentModelSettings:
-    def test_has_cache_settings(self) -> None:
-        agent = create_agent("test")
-        settings = agent.model_settings
-        assert settings.get("anthropic_cache_instructions") is True
-        assert settings.get("anthropic_cache_tool_definitions") is True
 
 
 # ---------------------------------------------------------------------------
@@ -275,21 +245,17 @@ class TestCreateAgentModelSettings:
 
 class TestCallLlmModelNameThreading:
     @pytest.mark.asyncio
-    async def test_threads_model_name_to_create_agent(self) -> None:
+    async def test_threads_model_name_to_client(self) -> None:
         from forge.activities.llm import call_llm
 
-        mock_agent = MagicMock()
-        mock_agent.model = "custom:model"
-        mock_response = LLMResponse(explanation="done")
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 10
-        mock_usage.output_tokens = 20
-        mock_usage.cache_creation_input_tokens = 0
-        mock_usage.cache_read_input_tokens = 0
-        mock_result = MagicMock()
-        mock_result.output = mock_response
-        mock_result.usage.return_value = mock_usage
-        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_message = build_mock_message(
+            tool_name="llm_response",
+            tool_input=LLMResponse(explanation="done").model_dump(),
+            input_tokens=10,
+            output_tokens=20,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         mock_span = MagicMock()
         mock_span.__enter__ = MagicMock(return_value=mock_span)
@@ -298,7 +264,7 @@ class TestCallLlmModelNameThreading:
         mock_tracer.start_as_current_span.return_value = mock_span
 
         with (
-            patch("forge.activities.llm.create_agent", return_value=mock_agent) as mock_create,
+            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
             patch("forge.activities.llm._persist_interaction"),
             patch("forge.tracing.get_tracer", return_value=mock_tracer),
         ):
@@ -306,28 +272,27 @@ class TestCallLlmModelNameThreading:
                 task_id="t1",
                 system_prompt="sys",
                 user_prompt="usr",
-                model_name="custom:model",
+                model_name="custom-model",
             )
-            await call_llm(context)
+            llm_result = await call_llm(context)
 
-            mock_create.assert_called_once_with("custom:model")
+            # Model name should be threaded through
+            call_kwargs = mock_client.messages.create.call_args[1]
+            assert call_kwargs["model"] == "custom-model"
+            assert llm_result.model_name == "custom-model"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
         from forge.activities.llm import DEFAULT_MODEL, call_llm
 
-        mock_agent = MagicMock()
-        mock_agent.model = DEFAULT_MODEL
-        mock_response = LLMResponse(explanation="done")
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 10
-        mock_usage.output_tokens = 20
-        mock_usage.cache_creation_input_tokens = 0
-        mock_usage.cache_read_input_tokens = 0
-        mock_result = MagicMock()
-        mock_result.output = mock_response
-        mock_result.usage.return_value = mock_usage
-        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_message = build_mock_message(
+            tool_name="llm_response",
+            tool_input=LLMResponse(explanation="done").model_dump(),
+            input_tokens=10,
+            output_tokens=20,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         mock_span = MagicMock()
         mock_span.__enter__ = MagicMock(return_value=mock_span)
@@ -336,7 +301,7 @@ class TestCallLlmModelNameThreading:
         mock_tracer.start_as_current_span.return_value = mock_span
 
         with (
-            patch("forge.activities.llm.create_agent", return_value=mock_agent) as mock_create,
+            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
             patch("forge.activities.llm._persist_interaction"),
             patch("forge.tracing.get_tracer", return_value=mock_tracer),
         ):
@@ -347,4 +312,5 @@ class TestCallLlmModelNameThreading:
             )
             await call_llm(context)
 
-            mock_create.assert_called_once_with(DEFAULT_MODEL)
+            call_kwargs = mock_client.messages.create.call_args[1]
+            assert call_kwargs["model"] == DEFAULT_MODEL

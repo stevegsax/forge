@@ -5,9 +5,8 @@ Extracts structured lessons from completed task results via an LLM call.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_extraction_system_prompt, build_extraction_user_prompt,
   infer_tags_from_task
-- Testable function: execute_extraction_call (takes agent as argument)
-- Imperative shell: create_extraction_agent, fetch_extraction_input,
-  call_extraction_llm, save_extraction_results
+- Testable function: execute_extraction_call (takes client as argument)
+- Imperative shell: fetch_extraction_input, call_extraction_llm, save_extraction_results
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.models import (
     ExtractionCallResult,
     ExtractionInput,
@@ -28,9 +28,11 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
+    from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_EXTRACTION_MAX_TOKENS = 4096
 
 
 # ---------------------------------------------------------------------------
@@ -182,65 +184,51 @@ def infer_tags_from_task(
 
 async def execute_extraction_call(
     input: ExtractionInput,
-    agent: Agent[None, ExtractionResult],
+    client: AsyncAnthropic,
 ) -> ExtractionCallResult:
-    """Call the extraction agent and return structured results.
+    """Call the Anthropic API for extraction and return structured results.
 
-    Separated from the imperative shell so tests can inject a mock agent.
-    Pattern: identical to execute_llm_call in activities/llm.py.
+    Separated from the imperative shell so tests can inject a mock client.
     """
+    from forge.activities.llm import DEFAULT_MODEL
+
+    model = input.model_name or DEFAULT_MODEL
     start = time.monotonic()
 
-    result = await agent.run(
-        input.user_prompt,
-        instructions=input.system_prompt,
+    params = build_messages_params(
+        system_prompt=input.system_prompt,
+        user_prompt=input.user_prompt,
+        output_type=ExtractionResult,
+        model=model,
+        max_tokens=DEFAULT_EXTRACTION_MAX_TOKENS,
     )
+    message = await client.messages.create(**params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    usage = result.usage()
+    extraction_result = extract_tool_result(message, ExtractionResult)
+    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
 
-    for entry in result.output.entries:
+    for entry in extraction_result.entries:
         if not entry.source_workflow_id:
             entry.source_workflow_id = (
                 input.source_workflow_ids[0] if input.source_workflow_ids else ""
             )
 
     return ExtractionCallResult(
-        result=result.output,
+        result=extraction_result,
         source_workflow_ids=input.source_workflow_ids,
-        model_name=str(agent.model),
-        input_tokens=usage.input_tokens or 0,
-        output_tokens=usage.output_tokens or 0,
+        model_name=model,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
-        cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+        cache_creation_input_tokens=cache_create,
+        cache_read_input_tokens=cache_read,
     )
 
 
 # ---------------------------------------------------------------------------
 # Imperative shell
 # ---------------------------------------------------------------------------
-
-
-def create_extraction_agent(
-    model_name: str | None = None,
-) -> Agent[None, ExtractionResult]:
-    """Create a pydantic-ai Agent configured for knowledge extraction."""
-    from pydantic_ai import Agent
-
-    from forge.activities.llm import DEFAULT_MODEL
-
-    if model_name is None:
-        model_name = DEFAULT_MODEL
-
-    return Agent(
-        model_name,
-        output_type=ExtractionResult,
-        model_settings={
-            "anthropic_cache_instructions": True,
-            "anthropic_cache_tool_definitions": True,
-        },
-    )
 
 
 @activity.defn
@@ -322,16 +310,14 @@ def _persist_extraction_interaction(
 
 @activity.defn
 async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
-    """Activity wrapper — creates agent and delegates to execute_extraction_call.
-
-    Pattern: identical to call_llm in activities/llm.py.
-    """
+    """Activity wrapper — creates client and delegates to execute_extraction_call."""
+    from forge.llm_client import get_anthropic_client
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_extraction_llm") as span:
-        agent = create_extraction_agent(input.model_name or None)
-        result = await execute_extraction_call(input, agent)
+        client = get_anthropic_client()
+        result = await execute_extraction_call(input, client)
 
         span.set_attributes(
             llm_call_attributes(

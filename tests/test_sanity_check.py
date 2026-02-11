@@ -23,6 +23,7 @@ from forge.models import (
     TaskDefinition,
     TransitionSignal,
 )
+from tests.conftest import build_mock_message
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,19 +164,14 @@ class TestExecuteSanityCheckCall:
             verdict=SanityCheckVerdict.CONTINUE,
             explanation="Plan looks good.",
         )
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.cache_creation_input_tokens = 0
-        mock_usage.cache_read_input_tokens = 0
-
-        mock_run_result = MagicMock()
-        mock_run_result.output = mock_response
-        mock_run_result.usage.return_value = mock_usage
-
-        mock_agent = AsyncMock()
-        mock_agent.run.return_value = mock_run_result
-        mock_agent.model = "mock-model"
+        mock_message = build_mock_message(
+            tool_name="sanity_check_response",
+            tool_input=mock_response.model_dump(),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input_data = SanityCheckInput(
             task_id="test-task",
@@ -183,13 +179,12 @@ class TestExecuteSanityCheckCall:
             user_prompt="user",
         )
 
-        result = await execute_sanity_check_call(input_data, mock_agent)
+        result = await execute_sanity_check_call(input_data, mock_client)
 
         assert isinstance(result, SanityCheckCallResult)
         assert result.task_id == "test-task"
         assert result.response.verdict == SanityCheckVerdict.CONTINUE
         assert result.response.explanation == "Plan looks good."
-        assert result.model_name == "mock-model"
         assert result.input_tokens == 100
         assert result.output_tokens == 50
         assert result.latency_ms > 0
@@ -204,19 +199,14 @@ class TestExecuteSanityCheckCall:
             explanation="Need to adjust.",
             revised_steps=revised,
         )
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 200
-        mock_usage.output_tokens = 100
-        mock_usage.cache_creation_input_tokens = 0
-        mock_usage.cache_read_input_tokens = 0
-
-        mock_run_result = MagicMock()
-        mock_run_result.output = mock_response
-        mock_run_result.usage.return_value = mock_usage
-
-        mock_agent = AsyncMock()
-        mock_agent.run.return_value = mock_run_result
-        mock_agent.model = "mock-model"
+        mock_message = build_mock_message(
+            tool_name="sanity_check_response",
+            tool_input=mock_response.model_dump(),
+            input_tokens=200,
+            output_tokens=100,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input_data = SanityCheckInput(
             task_id="test-task",
@@ -224,7 +214,7 @@ class TestExecuteSanityCheckCall:
             user_prompt="user",
         )
 
-        result = await execute_sanity_check_call(input_data, mock_agent)
+        result = await execute_sanity_check_call(input_data, mock_client)
 
         assert result.response.verdict == SanityCheckVerdict.REVISE
         assert result.response.revised_steps is not None

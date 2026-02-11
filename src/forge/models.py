@@ -60,10 +60,10 @@ class CapabilityTier(StrEnum):
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TIER_MODELS: dict[CapabilityTier, str] = {
-    CapabilityTier.REASONING: "anthropic:claude-opus-4-6",
-    CapabilityTier.GENERATION: "anthropic:claude-sonnet-4-5-20250929",
-    CapabilityTier.SUMMARIZATION: "anthropic:claude-sonnet-4-5-20250929",
-    CapabilityTier.CLASSIFICATION: "anthropic:claude-haiku-4-5-20251001",
+    CapabilityTier.REASONING: "claude-opus-4-6",
+    CapabilityTier.GENERATION: "claude-sonnet-4-5-20250929",
+    CapabilityTier.SUMMARIZATION: "claude-sonnet-4-5-20250929",
+    CapabilityTier.CLASSIFICATION: "claude-haiku-4-5-20251001",
 }
 
 
@@ -351,7 +351,7 @@ class FileEdit(BaseModel):
 
 
 class LLMResponse(BaseModel):
-    """Structured output model for pydantic-ai Agent."""
+    """Structured output from the LLM call."""
 
     files: list[FileOutput] = Field(
         default_factory=list,

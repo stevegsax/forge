@@ -6,7 +6,7 @@ fan-out execution. Uses REASONING-tier LLM to merge competing versions.
 Design follows Function Core / Imperative Shell:
 - Pure functions: detect_file_conflicts, build_conflict_resolution_system_prompt,
   build_conflict_resolution_user_prompt
-- Testable function: execute_conflict_resolution_call (takes agent as argument)
+- Testable function: execute_conflict_resolution_call (takes client as argument)
 - Imperative shell: assemble_conflict_resolution_context, call_conflict_resolution,
   _persist_interaction
 """
@@ -24,6 +24,7 @@ from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
 )
+from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.models import (
     ConflictResolutionCallInput,
     ConflictResolutionCallResult,
@@ -37,9 +38,11 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
+    from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS = 8192
 
 
 # ---------------------------------------------------------------------------
@@ -186,32 +189,40 @@ def build_conflict_resolution_user_prompt(conflict_count: int) -> str:
 
 async def execute_conflict_resolution_call(
     input: ConflictResolutionCallInput,
-    agent: Agent[None, ConflictResolutionResponse],
+    client: AsyncAnthropic,
 ) -> ConflictResolutionCallResult:
-    """Call the conflict resolution agent and extract structured results.
+    """Call the Anthropic API for conflict resolution and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock agent.
+    Separated from the imperative shell so tests can inject a mock client.
     """
+    model = input.model_name or "claude-sonnet-4-5-20250929"
     start = time.monotonic()
 
-    result = await agent.run(
-        input.user_prompt,
-        instructions=input.system_prompt,
+    params = build_messages_params(
+        system_prompt=input.system_prompt,
+        user_prompt=input.user_prompt,
+        output_type=ConflictResolutionResponse,
+        model=model,
+        max_tokens=DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
+        thinking_budget_tokens=input.thinking_budget_tokens,
+        thinking_effort=input.thinking_effort,
     )
+    message = await client.messages.create(**params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    usage = result.usage()
+    response = extract_tool_result(message, ConflictResolutionResponse)
+    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
 
     return ConflictResolutionCallResult(
         task_id=input.task_id,
-        resolved_files={f.file_path: f.content for f in result.output.resolved_files},
-        explanation=result.output.explanation,
-        model_name=str(agent.model),
-        input_tokens=usage.input_tokens or 0,
-        output_tokens=usage.output_tokens or 0,
+        resolved_files={f.file_path: f.content for f in response.resolved_files},
+        explanation=response.explanation,
+        model_name=model,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
-        cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+        cache_creation_input_tokens=cache_create,
+        cache_read_input_tokens=cache_read,
     )
 
 
@@ -254,39 +265,6 @@ def _persist_interaction(
         logger.warning("Failed to persist conflict resolution interaction to store", exc_info=True)
 
 
-def create_conflict_resolution_agent(
-    model_name: str | None = None,
-    *,
-    thinking_budget_tokens: int = 0,
-    thinking_effort: str = "high",
-) -> Agent[None, ConflictResolutionResponse]:
-    """Create a pydantic-ai Agent configured for conflict resolution."""
-    from pydantic_ai import Agent
-
-    from forge.activities.llm import DEFAULT_MODEL
-    from forge.activities.planner import build_thinking_settings
-
-    if model_name is None:
-        model_name = DEFAULT_MODEL
-
-    settings: dict[str, object] = {
-        "anthropic_cache_instructions": True,
-        "anthropic_cache_tool_definitions": True,
-    }
-
-    if thinking_budget_tokens > 0:
-        thinking_settings = build_thinking_settings(
-            model_name, thinking_budget_tokens, thinking_effort
-        )
-        settings.update(thinking_settings)
-
-    return Agent(
-        model_name,
-        output_type=ConflictResolutionResponse,
-        model_settings=settings,
-    )
-
-
 @activity.defn
 async def assemble_conflict_resolution_context(
     input: ConflictResolutionInput,
@@ -320,17 +298,14 @@ async def assemble_conflict_resolution_context(
 async def call_conflict_resolution(
     input: ConflictResolutionCallInput,
 ) -> ConflictResolutionCallResult:
-    """Activity wrapper -- creates an agent and delegates to execute_conflict_resolution_call."""
+    """Activity wrapper -- creates a client and delegates to execute_conflict_resolution_call."""
+    from forge.llm_client import get_anthropic_client
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_conflict_resolution") as span:
-        agent = create_conflict_resolution_agent(
-            input.model_name or None,
-            thinking_budget_tokens=input.thinking_budget_tokens,
-            thinking_effort=input.thinking_effort,
-        )
-        result = await execute_conflict_resolution_call(input, agent)
+        client = get_anthropic_client()
+        result = await execute_conflict_resolution_call(input, client)
 
         span.set_attributes(
             llm_call_attributes(

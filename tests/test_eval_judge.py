@@ -18,6 +18,7 @@ from forge.eval.models import (
     JudgeVerdict,
 )
 from forge.models import Plan, PlanStep, SubTask, TaskDefinition
+from tests.conftest import build_mock_message
 
 _TASK = TaskDefinition(
     task_id="t1",
@@ -128,43 +129,36 @@ class TestExecuteJudgeCall:
             overall_assessment="Solid plan.",
         )
 
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 500
-        mock_usage.output_tokens = 200
+        mock_message = build_mock_message(
+            tool_name="judge_verdict",
+            tool_input=verdict.model_dump(),
+            input_tokens=500,
+            output_tokens=200,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
-        mock_result = MagicMock()
-        mock_result.output = verdict
-        mock_result.usage.return_value = mock_usage
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-
-        result = await execute_judge_call("system prompt", "user prompt", mock_agent)
+        result = await execute_judge_call("system prompt", "user prompt", mock_client)
 
         assert result == verdict
-        mock_agent.run.assert_called_once_with(
-            "user prompt",
-            instructions="system prompt",
-        )
 
     @pytest.mark.asyncio
-    async def test_passes_prompts_to_agent(self) -> None:
+    async def test_passes_prompts_to_client(self) -> None:
         verdict = JudgeVerdict(
             scores=[],
             overall_assessment="OK.",
         )
 
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 0
-        mock_usage.output_tokens = 0
+        mock_message = build_mock_message(
+            tool_name="judge_verdict",
+            tool_input=verdict.model_dump(),
+            input_tokens=0,
+            output_tokens=0,
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
-        mock_result = MagicMock()
-        mock_result.output = verdict
-        mock_result.usage.return_value = mock_usage
+        await execute_judge_call("sys", "usr", mock_client)
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-
-        await execute_judge_call("sys", "usr", mock_agent)
-
-        mock_agent.run.assert_called_once_with("usr", instructions="sys")
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert call_kwargs["messages"][0]["content"] == "usr"

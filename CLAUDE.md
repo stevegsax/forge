@@ -26,7 +26,7 @@ Phases 1–9 are implemented. The system supports single-step execution, planned
 - Python package management: `uv`
 - Linting and formatting: `ruff`
 - Data models: `pydantic`
-- LLM client library: `pydantic-ai`
+- LLM client library: `anthropic`
 - File search: `fd`
 - Content search: `rg` (uses Rust regex syntax)
 - Terminal: `tmux` / `ghostty`

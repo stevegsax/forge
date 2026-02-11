@@ -2,8 +2,8 @@
 
 Follows Function Core / Imperative Shell:
 - Pure functions: build_judge_system_prompt, build_judge_user_prompt
-- Testable function: execute_judge_call (takes injected agent)
-- Imperative shell: create_judge_agent, judge_plan
+- Testable function: execute_judge_call (takes injected client)
+- Imperative shell: judge_plan
 """
 
 from __future__ import annotations
@@ -13,15 +13,17 @@ import time
 from typing import TYPE_CHECKING
 
 from forge.eval.models import EvalCase, JudgeCriterion, JudgeVerdict
+from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
+    from anthropic import AsyncAnthropic
 
     from forge.models import Plan
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_JUDGE_MODEL = "anthropic:claude-sonnet-4-5-20250929"
+DEFAULT_JUDGE_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_JUDGE_MAX_TOKENS = 4096
 
 
 # ---------------------------------------------------------------------------
@@ -130,47 +132,40 @@ def build_judge_user_prompt() -> str:
 async def execute_judge_call(
     system_prompt: str,
     user_prompt: str,
-    agent: Agent[None, JudgeVerdict],
+    client: AsyncAnthropic,
 ) -> JudgeVerdict:
-    """Call the judge agent and return the verdict.
+    """Call the Anthropic API for judging and return the verdict.
 
-    Separated from the imperative shell so tests can inject a mock agent.
+    Separated from the imperative shell so tests can inject a mock client.
     """
     start = time.monotonic()
 
-    result = await agent.run(
-        user_prompt,
-        instructions=system_prompt,
+    params = build_messages_params(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        output_type=JudgeVerdict,
+        model=DEFAULT_JUDGE_MODEL,
+        max_tokens=DEFAULT_JUDGE_MAX_TOKENS,
+        cache_instructions=False,
+        cache_tool_definitions=False,
     )
+    message = await client.messages.create(**params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    usage = result.usage()
+    in_tok, out_tok, _, _ = extract_usage(message)
     logger.info(
         "Judge call completed in %.0fms (input=%d, output=%d)",
         elapsed_ms,
-        usage.input_tokens or 0,
-        usage.output_tokens or 0,
+        in_tok,
+        out_tok,
     )
 
-    return result.output
+    return extract_tool_result(message, JudgeVerdict)
 
 
 # ---------------------------------------------------------------------------
 # Imperative shell
 # ---------------------------------------------------------------------------
-
-
-def create_judge_agent(model_name: str | None = None) -> Agent[None, JudgeVerdict]:
-    """Create a pydantic-ai Agent configured for plan evaluation."""
-    from pydantic_ai import Agent
-
-    if model_name is None:
-        model_name = DEFAULT_JUDGE_MODEL
-
-    return Agent(
-        model_name,
-        output_type=JudgeVerdict,
-    )
 
 
 async def judge_plan(
@@ -182,10 +177,12 @@ async def judge_plan(
 ) -> JudgeVerdict:
     """Evaluate a plan using the LLM judge.
 
-    This is the imperative shell entry point — creates the agent and
+    This is the imperative shell entry point — creates the client and
     delegates to pure/testable functions.
     """
+    from forge.llm_client import get_anthropic_client
+
     system_prompt = build_judge_system_prompt(case, plan, repo_context)
     user_prompt = build_judge_user_prompt()
-    agent = create_judge_agent(model_name)
-    return await execute_judge_call(system_prompt, user_prompt, agent)
+    client = get_anthropic_client()
+    return await execute_judge_call(system_prompt, user_prompt, client)

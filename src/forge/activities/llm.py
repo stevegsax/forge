@@ -1,10 +1,10 @@
 """LLM call activity for Forge.
 
-Sends the assembled context to a pydantic-ai Agent and extracts the structured response.
+Sends the assembled context to the Anthropic API and extracts the structured response.
 
 Design follows Function Core / Imperative Shell:
-- Testable function: execute_llm_call (takes agent as argument)
-- Imperative shell: create_agent, call_llm, _persist_interaction
+- Testable function: execute_llm_call (takes client as argument)
+- Imperative shell: call_llm, _persist_interaction
 """
 
 from __future__ import annotations
@@ -15,12 +15,13 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.models import AssembledContext, LLMCallResult, LLMResponse
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
+    from anthropic import AsyncAnthropic
 
-DEFAULT_MODEL = "anthropic:claude-sonnet-4-5-20250929"
+DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
 DEFAULT_MAX_TOKENS = 4096
 
 logger = logging.getLogger(__name__)
@@ -33,31 +34,37 @@ logger = logging.getLogger(__name__)
 
 async def execute_llm_call(
     context: AssembledContext,
-    agent: Agent[None, LLMResponse],
+    client: AsyncAnthropic,
 ) -> LLMCallResult:
-    """Call the agent and extract structured results.
+    """Call the Anthropic API and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock agent.
+    Separated from the imperative shell so tests can inject a mock client.
     """
+    model = context.model_name or DEFAULT_MODEL
     start = time.monotonic()
 
-    result = await agent.run(
-        context.user_prompt,
-        instructions=context.system_prompt,
+    params = build_messages_params(
+        system_prompt=context.system_prompt,
+        user_prompt=context.user_prompt,
+        output_type=LLMResponse,
+        model=model,
+        max_tokens=DEFAULT_MAX_TOKENS,
     )
+    message = await client.messages.create(**params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    usage = result.usage()
+    response = extract_tool_result(message, LLMResponse)
+    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
 
     return LLMCallResult(
         task_id=context.task_id,
-        response=result.output,
-        model_name=str(agent.model),
-        input_tokens=usage.input_tokens or 0,
-        output_tokens=usage.output_tokens or 0,
+        response=response,
+        model_name=model,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
-        cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+        cache_creation_input_tokens=cache_create,
+        cache_read_input_tokens=cache_read,
     )
 
 
@@ -94,29 +101,16 @@ def _persist_interaction(
         logger.warning("Failed to persist LLM interaction to store", exc_info=True)
 
 
-def create_agent(model_name: str = DEFAULT_MODEL) -> Agent[None, LLMResponse]:
-    """Create a pydantic-ai Agent configured for code generation."""
-    from pydantic_ai import Agent
-
-    return Agent(
-        model_name,
-        output_type=LLMResponse,
-        model_settings={
-            "anthropic_cache_instructions": True,
-            "anthropic_cache_tool_definitions": True,
-        },
-    )
-
-
 @activity.defn
 async def call_llm(context: AssembledContext) -> LLMCallResult:
-    """Activity wrapper — creates an agent and delegates to execute_llm_call."""
+    """Activity wrapper — creates a client and delegates to execute_llm_call."""
+    from forge.llm_client import get_anthropic_client
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_llm") as span:
-        agent = create_agent(context.model_name or DEFAULT_MODEL)
-        result = await execute_llm_call(context, agent)
+        client = get_anthropic_client()
+        result = await execute_llm_call(context, client)
 
         span.set_attributes(
             llm_call_attributes(

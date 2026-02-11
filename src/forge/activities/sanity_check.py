@@ -6,7 +6,7 @@ completed work. Three verdicts: continue, revise, abort.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_sanity_check_system_prompt, build_sanity_check_user_prompt,
   build_step_digest
-- Testable function: execute_sanity_check_call (takes agent as argument)
+- Testable function: execute_sanity_check_call (takes client as argument)
 - Imperative shell: assemble_sanity_check_context, call_sanity_check,
   _persist_interaction
 """
@@ -24,6 +24,7 @@ from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
 )
+from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.models import (
     AssembleSanityCheckContextInput,
     Plan,
@@ -36,9 +37,11 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
+    from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SANITY_CHECK_MAX_TOKENS = 4096
 
 
 # ---------------------------------------------------------------------------
@@ -153,31 +156,39 @@ def build_sanity_check_user_prompt(completed_count: int, total_count: int) -> st
 
 async def execute_sanity_check_call(
     input: SanityCheckInput,
-    agent: Agent[None, SanityCheckResponse],
+    client: AsyncAnthropic,
 ) -> SanityCheckCallResult:
-    """Call the sanity check agent and extract structured results.
+    """Call the Anthropic API for sanity check and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock agent.
+    Separated from the imperative shell so tests can inject a mock client.
     """
+    model = input.model_name or "claude-sonnet-4-5-20250929"
     start = time.monotonic()
 
-    result = await agent.run(
-        input.user_prompt,
-        instructions=input.system_prompt,
+    params = build_messages_params(
+        system_prompt=input.system_prompt,
+        user_prompt=input.user_prompt,
+        output_type=SanityCheckResponse,
+        model=model,
+        max_tokens=DEFAULT_SANITY_CHECK_MAX_TOKENS,
+        thinking_budget_tokens=input.thinking_budget_tokens,
+        thinking_effort=input.thinking_effort,
     )
+    message = await client.messages.create(**params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    usage = result.usage()
+    response = extract_tool_result(message, SanityCheckResponse)
+    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
 
     return SanityCheckCallResult(
         task_id=input.task_id,
-        response=result.output,
-        model_name=str(agent.model),
-        input_tokens=usage.input_tokens or 0,
-        output_tokens=usage.output_tokens or 0,
+        response=response,
+        model_name=model,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
-        cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+        cache_creation_input_tokens=cache_create,
+        cache_read_input_tokens=cache_read,
     )
 
 
@@ -219,48 +230,13 @@ def _persist_interaction(
         logger.warning("Failed to persist sanity check interaction to store", exc_info=True)
 
 
-def create_sanity_check_agent(
-    model_name: str | None = None,
-    *,
-    thinking_budget_tokens: int = 0,
-    thinking_effort: str = "high",
-) -> Agent[None, SanityCheckResponse]:
-    """Create a pydantic-ai Agent configured for plan evaluation."""
-    from pydantic_ai import Agent
-
-    from forge.activities.llm import DEFAULT_MODEL
-    from forge.activities.planner import build_thinking_settings
-
-    if model_name is None:
-        model_name = DEFAULT_MODEL
-
-    settings: dict[str, object] = {
-        "anthropic_cache_instructions": True,
-        "anthropic_cache_tool_definitions": True,
-    }
-
-    if thinking_budget_tokens > 0:
-        thinking_settings = build_thinking_settings(
-            model_name, thinking_budget_tokens, thinking_effort
-        )
-        settings.update(thinking_settings)
-
-    return Agent(
-        model_name,
-        output_type=SanityCheckResponse,
-        model_settings=settings,
-    )
-
-
 @activity.defn
 async def assemble_sanity_check_context(
     input: AssembleSanityCheckContextInput,
 ) -> SanityCheckInput:
     """Read project instructions and assemble prompts for the sanity check."""
     repo_root = Path(input.repo_root)
-    project_instructions = build_project_instructions_section(
-        _read_project_instructions(repo_root)
-    )
+    project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
 
     system_prompt = build_sanity_check_system_prompt(
         task=input.task,
@@ -283,17 +259,14 @@ async def assemble_sanity_check_context(
 
 @activity.defn
 async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
-    """Activity wrapper -- creates an agent and delegates to execute_sanity_check_call."""
+    """Activity wrapper -- creates a client and delegates to execute_sanity_check_call."""
+    from forge.llm_client import get_anthropic_client
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_sanity_check") as span:
-        agent = create_sanity_check_agent(
-            input.model_name or None,
-            thinking_budget_tokens=input.thinking_budget_tokens,
-            thinking_effort=input.thinking_effort,
-        )
-        result = await execute_sanity_check_call(input, agent)
+        client = get_anthropic_client()
+        result = await execute_sanity_check_call(input, client)
 
         span.set_attributes(
             llm_call_attributes(

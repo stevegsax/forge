@@ -1,7 +1,7 @@
 """Exploration activities for LLM-guided context discovery (Phase 7).
 
 Two activities:
-1. call_exploration_llm — Calls pydantic-ai with ExplorationResponse output type.
+1. call_exploration_llm — Calls Anthropic API with ExplorationResponse output type.
 2. fulfill_context_requests — Dispatches requests to the provider registry.
 
 Design follows Function Core / Imperative Shell:
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from forge.domains import get_domain_config
+from forge.llm_client import build_messages_params, extract_tool_result
 from forge.models import (
     ContextResult,
     ExplorationInput,
@@ -27,11 +28,12 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
+    from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EXPLORATION_MODEL = "anthropic:claude-sonnet-4-5-20250929"
+DEFAULT_EXPLORATION_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_EXPLORATION_MAX_TOKENS = 4096
 
 
 # ---------------------------------------------------------------------------
@@ -163,42 +165,31 @@ def fulfill_requests(
 
 async def execute_exploration_call(
     input: ExplorationInput,
-    agent: Agent[None, ExplorationResponse],
+    client: AsyncAnthropic,
     project_instructions: str = "",
 ) -> ExplorationResponse:
-    """Call the exploration agent and return the structured response.
+    """Call the Anthropic API for exploration and return the structured response.
 
-    Separated from the imperative shell so tests can inject a mock agent.
+    Separated from the imperative shell so tests can inject a mock client.
     """
     system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
+    model = input.model_name or DEFAULT_EXPLORATION_MODEL
 
-    result = await agent.run(
-        user_prompt,
-        instructions=system_prompt,
+    params = build_messages_params(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        output_type=ExplorationResponse,
+        model=model,
+        max_tokens=DEFAULT_EXPLORATION_MAX_TOKENS,
     )
+    message = await client.messages.create(**params)
 
-    return result.output
+    return extract_tool_result(message, ExplorationResponse)
 
 
 # ---------------------------------------------------------------------------
 # Imperative shell
 # ---------------------------------------------------------------------------
-
-
-def create_exploration_agent(
-    model_name: str = DEFAULT_EXPLORATION_MODEL,
-) -> Agent[None, ExplorationResponse]:
-    """Create a pydantic-ai Agent configured for context exploration."""
-    from pydantic_ai import Agent
-
-    return Agent(
-        model_name,
-        output_type=ExplorationResponse,
-        model_settings={
-            "anthropic_cache_instructions": True,
-            "anthropic_cache_tool_definitions": True,
-        },
-    )
 
 
 @activity.defn
@@ -210,6 +201,7 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
         _read_project_instructions,
         build_project_instructions_section,
     )
+    from forge.llm_client import get_anthropic_client
     from forge.tracing import get_tracer
 
     tracer = get_tracer()
@@ -220,9 +212,9 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
                 _read_project_instructions(Path(input.repo_root))
             )
 
-        agent = create_exploration_agent(input.model_name or DEFAULT_EXPLORATION_MODEL)
+        client = get_anthropic_client()
         start = time.monotonic()
-        response = await execute_exploration_call(input, agent, project_instructions)
+        response = await execute_exploration_call(input, client, project_instructions)
         elapsed_ms = (time.monotonic() - start) * 1000
 
         span.set_attributes(
