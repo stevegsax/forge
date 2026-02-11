@@ -329,6 +329,7 @@ class ExplorationInput(BaseModel):
     accumulated_context: list[ContextResult] = Field(default_factory=list)
     round_number: int
     max_rounds: int
+    repo_root: str = Field(default="", description="Repo root for reading project instructions.")
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +556,7 @@ class AssembleSubTaskContextInput(BaseModel):
     parent_description: str
     sub_task: SubTask
     worktree_path: str = Field(description="Parent worktree (for reading context files).")
+    repo_root: str = Field(default="", description="Repo root for reading project instructions.")
     prior_errors: list[ValidationResult] = Field(default_factory=list)
     attempt: int = Field(default=1)
     max_attempts: int = Field(default=2)

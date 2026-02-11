@@ -10,10 +10,12 @@ from forge.activities.context import (
     _build_context_stats,
     _detect_package_name,
     _read_context_files,
+    _read_project_instructions,
     assemble_context,
     assemble_step_context,
     assemble_sub_task_context,
     build_error_section,
+    build_project_instructions_section,
     build_step_system_prompt,
     build_step_user_prompt,
     build_sub_task_system_prompt,
@@ -998,3 +1000,255 @@ class TestErrorSectionInPrompts:
         error_pos = prompt.index("Previous Attempt Errors")
         output_pos = prompt.index("### Output Requirements")
         assert output_pos < error_pos
+
+
+# ---------------------------------------------------------------------------
+# build_project_instructions_section (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildProjectInstructionsSection:
+    def test_formats_content(self) -> None:
+        result = build_project_instructions_section("Use SOLID principles.")
+        assert result == "## Project Instructions\n\nUse SOLID principles."
+
+    def test_strips_whitespace(self) -> None:
+        result = build_project_instructions_section("  \n  Use SOLID.  \n  ")
+        assert result == "## Project Instructions\n\nUse SOLID."
+
+    def test_empty_content_returns_empty(self) -> None:
+        assert build_project_instructions_section("") == ""
+
+    def test_whitespace_only_returns_empty(self) -> None:
+        assert build_project_instructions_section("   \n\n  ") == ""
+
+
+# ---------------------------------------------------------------------------
+# _read_project_instructions (imperative shell)
+# ---------------------------------------------------------------------------
+
+
+class TestReadProjectInstructions:
+    def test_reads_claude_md(self, tmp_path: Path) -> None:
+        (tmp_path / "CLAUDE.md").write_text("# Project Rules\nUse ruff.")
+        result = _read_project_instructions(tmp_path)
+        assert result == "# Project Rules\nUse ruff."
+
+    def test_returns_empty_when_missing(self, tmp_path: Path) -> None:
+        result = _read_project_instructions(tmp_path)
+        assert result == ""
+
+    def test_returns_empty_on_read_error(self, tmp_path: Path) -> None:
+        # Create a directory named CLAUDE.md — reading it will fail
+        (tmp_path / "CLAUDE.md").mkdir()
+        result = _read_project_instructions(tmp_path)
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Project instructions in prompt builders
+# ---------------------------------------------------------------------------
+
+
+class TestProjectInstructionsInPrompts:
+    def test_build_system_prompt_includes_instructions(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        instructions = "## Project Instructions\n\nUse SOLID."
+        prompt = build_system_prompt(task, {}, project_instructions=instructions)
+        assert "## Project Instructions" in prompt
+        assert "Use SOLID." in prompt
+
+    def test_build_system_prompt_omits_when_empty(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        prompt = build_system_prompt(task, {}, project_instructions="")
+        assert "## Project Instructions" not in prompt
+
+    def test_build_system_prompt_instructions_after_output_requirements(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        instructions = "## Project Instructions\n\nUse SOLID."
+        prompt = build_system_prompt(task, {}, project_instructions=instructions)
+        output_pos = prompt.index("## Output Requirements")
+        instr_pos = prompt.index("## Project Instructions")
+        task_pos = prompt.index("## Task")
+        assert output_pos < instr_pos < task_pos
+
+    def test_build_system_prompt_with_context_includes_instructions(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="a.py",
+                    content="# code",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        instructions = "## Project Instructions\n\nFollow conventions."
+        prompt = build_system_prompt_with_context(
+            task, packed, project_instructions=instructions
+        )
+        assert "## Project Instructions" in prompt
+        output_pos = prompt.index("## Output Requirements")
+        instr_pos = prompt.index("## Project Instructions")
+        task_pos = prompt.index("## Task")
+        assert output_pos < instr_pos < task_pos
+
+    def test_build_system_prompt_with_context_omits_when_empty(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(task_id="t1", description="desc", target_files=["a.py"])
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="a.py",
+                    content="# code",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        prompt = build_system_prompt_with_context(task, packed, project_instructions="")
+        assert "## Project Instructions" not in prompt
+
+    def test_build_step_system_prompt_includes_instructions(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        step = PlanStep(step_id="s1", description="step", target_files=["a.py"])
+        instructions = "## Project Instructions\n\nUse type hints."
+        prompt = build_step_system_prompt(
+            task, step, 0, 1, [], {}, project_instructions=instructions
+        )
+        assert "## Project Instructions" in prompt
+        output_pos = prompt.index("### Output Requirements")
+        instr_pos = prompt.index("## Project Instructions")
+        task_pos = prompt.index("## Overall Task")
+        assert output_pos < instr_pos < task_pos
+
+    def test_build_step_system_prompt_omits_when_empty(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        step = PlanStep(step_id="s1", description="step", target_files=["a.py"])
+        prompt = build_step_system_prompt(task, step, 0, 1, [], {}, project_instructions="")
+        assert "## Project Instructions" not in prompt
+
+    def test_build_sub_task_system_prompt_includes_instructions(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        instructions = "## Project Instructions\n\nFollow patterns."
+        prompt = build_sub_task_system_prompt(
+            "t1", "desc", st, {}, project_instructions=instructions
+        )
+        assert "## Project Instructions" in prompt
+        output_pos = prompt.index("### Output Requirements")
+        instr_pos = prompt.index("## Project Instructions")
+        parent_pos = prompt.index("## Parent Task")
+        assert output_pos < instr_pos < parent_pos
+
+    def test_build_sub_task_system_prompt_omits_when_empty(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        prompt = build_sub_task_system_prompt("t1", "desc", st, {}, project_instructions="")
+        assert "## Project Instructions" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Project instructions in activity functions
+# ---------------------------------------------------------------------------
+
+
+class TestProjectInstructionsInActivities:
+    @pytest.mark.asyncio
+    async def test_assemble_context_includes_claude_md(self, tmp_path: Path) -> None:
+        (tmp_path / "CLAUDE.md").write_text("Use from __future__ import annotations.")
+        task = TaskDefinition(
+            task_id="t1",
+            description="Generate code.",
+            target_files=["out.py"],
+        )
+        input_data = AssembleContextInput(
+            task=task,
+            repo_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+        )
+        result = await assemble_context(input_data)
+        assert "## Project Instructions" in result.system_prompt
+        assert "from __future__ import annotations" in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_assemble_context_without_claude_md(self, tmp_path: Path) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Generate code.",
+            target_files=["out.py"],
+        )
+        input_data = AssembleContextInput(
+            task=task,
+            repo_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+        )
+        result = await assemble_context(input_data)
+        assert "## Project Instructions" not in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_assemble_step_context_includes_claude_md(self, tmp_path: Path) -> None:
+        (tmp_path / "CLAUDE.md").write_text("Apply SOLID principles.")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        task = TaskDefinition(task_id="t1", description="Build API.")
+        step = PlanStep(step_id="s1", description="Create routes.", target_files=["routes.py"])
+        input_data = AssembleStepContextInput(
+            task=task,
+            step=step,
+            step_index=0,
+            total_steps=1,
+            repo_root=str(tmp_path),
+            worktree_path=str(worktree),
+        )
+        result = await assemble_step_context(input_data)
+        assert "## Project Instructions" in result.system_prompt
+        assert "SOLID principles" in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_assemble_sub_task_context_includes_claude_md(self, tmp_path: Path) -> None:
+        (tmp_path / "CLAUDE.md").write_text("Function Core / Imperative Shell.")
+        parent_wt = tmp_path / "parent-wt"
+        parent_wt.mkdir()
+
+        st = SubTask(sub_task_id="st1", description="Analyze.", target_files=["schema.py"])
+        input_data = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="Build API.",
+            sub_task=st,
+            worktree_path=str(parent_wt),
+            repo_root=str(tmp_path),
+        )
+        result = await assemble_sub_task_context(input_data)
+        assert "## Project Instructions" in result.system_prompt
+        assert "Function Core / Imperative Shell" in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_assemble_sub_task_context_falls_back_to_worktree(
+        self, tmp_path: Path
+    ) -> None:
+        """When repo_root is empty, falls back to worktree_path."""
+        parent_wt = tmp_path / "parent-wt"
+        parent_wt.mkdir()
+        (parent_wt / "CLAUDE.md").write_text("Worktree instructions.")
+
+        st = SubTask(sub_task_id="st1", description="Analyze.", target_files=["schema.py"])
+        input_data = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="Build API.",
+            sub_task=st,
+            worktree_path=str(parent_wt),
+            repo_root="",
+        )
+        result = await assemble_sub_task_context(input_data)
+        assert "## Project Instructions" in result.system_prompt
+        assert "Worktree instructions" in result.system_prompt

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ERROR_DETAIL_LIMIT = 2000
+_PROJECT_INSTRUCTIONS_FILENAME = "CLAUDE.md"
 
 _OUTPUT_REQUIREMENTS = (
     "You MUST respond with a valid LLMResponse containing an `explanation` string "
@@ -57,6 +58,17 @@ _OUTPUT_REQUIREMENTS = (
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
+
+
+def build_project_instructions_section(content: str) -> str:
+    """Format CLAUDE.md content as a Project Instructions prompt section.
+
+    Returns an empty string if *content* is blank.
+    """
+    stripped = content.strip()
+    if not stripped:
+        return ""
+    return f"## Project Instructions\n\n{stripped}"
 
 
 def parse_ruff_error_lines(error_output: str) -> list[tuple[str, int, str]]:
@@ -204,6 +216,7 @@ def build_system_prompt(
     task: TaskDefinition,
     context_file_contents: dict[str, str],
     error_section: str = "",
+    project_instructions: str = "",
 ) -> str:
     """Build the system prompt from a task definition and context file contents.
 
@@ -217,6 +230,11 @@ def build_system_prompt(
     parts.append("")
     parts.append("## Output Requirements")
     parts.append(_OUTPUT_REQUIREMENTS)
+
+    if project_instructions:
+        parts.append("")
+        parts.append(project_instructions)
+
     parts.append("")
     parts.append("## Task")
     parts.append(task.description)
@@ -258,6 +276,7 @@ def build_system_prompt_with_context(
     task: TaskDefinition,
     packed: PackedContext,
     error_section: str = "",
+    project_instructions: str = "",
 ) -> str:
     """Build the system prompt using auto-discovered packed context.
 
@@ -274,6 +293,10 @@ def build_system_prompt_with_context(
     parts.append("")
     parts.append("## Output Requirements")
     parts.append(_OUTPUT_REQUIREMENTS)
+
+    if project_instructions:
+        parts.append("")
+        parts.append(project_instructions)
 
     # Repo map (priority 5, REPO_MAP representation) — stable per repo
     from forge.code_intel.budget import Representation
@@ -485,6 +508,21 @@ def _load_playbooks_for_task(task: TaskDefinition) -> list[dict]:
         return []
 
 
+def _read_project_instructions(repo_root: Path) -> str:
+    """Read CLAUDE.md from the repository root.
+
+    Returns the file content, or an empty string if the file is missing
+    or unreadable.  Best-effort — never raises.
+    """
+    try:
+        instructions_path = repo_root / _PROJECT_INSTRUCTIONS_FILENAME
+        if instructions_path.is_file():
+            return instructions_path.read_text()
+    except Exception:
+        logger.warning("Failed to read %s", _PROJECT_INSTRUCTIONS_FILENAME, exc_info=True)
+    return ""
+
+
 def _read_context_files(base_path: Path, file_paths: list[str]) -> dict[str, str]:
     """Read context files from disk.
 
@@ -526,6 +564,8 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
         input.prior_errors, input.attempt, input.max_attempts, input.worktree_path
     )
 
+    project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
+
     if task.context.auto_discover and task.target_files:
         from forge.code_intel import discover_context
         from forge.code_intel.budget import pack_context
@@ -552,11 +592,15 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
             all_items = packed.items + playbook_items
             packed = pack_context(all_items, task.context.token_budget)
 
-        system_prompt = build_system_prompt_with_context(task, packed, error_section)
+        system_prompt = build_system_prompt_with_context(
+            task, packed, error_section, project_instructions=project_instructions
+        )
         context_stats = _build_context_stats(packed)
     else:
         context_contents = _read_context_files(repo_root, task.context_files)
-        system_prompt = build_system_prompt(task, context_contents, error_section)
+        system_prompt = build_system_prompt(
+            task, context_contents, error_section, project_instructions=project_instructions
+        )
         context_stats = None
 
     user_prompt = build_user_prompt()
@@ -597,6 +641,7 @@ def build_step_system_prompt(
     context_file_contents: dict[str, str],
     target_file_contents: dict[str, str] | None = None,
     error_section: str = "",
+    project_instructions: str = "",
 ) -> str:
     """Build the system prompt for a single step execution.
 
@@ -611,6 +656,11 @@ def build_step_system_prompt(
     parts.append("")
     parts.append("### Output Requirements")
     parts.append(_OUTPUT_REQUIREMENTS)
+
+    if project_instructions:
+        parts.append("")
+        parts.append(project_instructions)
+
     parts.append("")
     parts.append("## Overall Task")
     parts.append(task.description)
@@ -687,6 +737,10 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         input.prior_errors, input.attempt, input.max_attempts, input.worktree_path
     )
 
+    project_instructions = build_project_instructions_section(
+        _read_project_instructions(Path(input.repo_root))
+    )
+
     system_prompt = build_step_system_prompt(
         task=input.task,
         step=input.step,
@@ -696,6 +750,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         context_file_contents=context_contents,
         target_file_contents=target_contents,
         error_section=error_section,
+        project_instructions=project_instructions,
     )
     user_prompt = build_step_user_prompt(input.step)
 
@@ -719,6 +774,7 @@ def build_sub_task_system_prompt(
     context_file_contents: dict[str, str],
     target_file_contents: dict[str, str] | None = None,
     error_section: str = "",
+    project_instructions: str = "",
 ) -> str:
     """Build the system prompt for a sub-task execution.
 
@@ -733,6 +789,11 @@ def build_sub_task_system_prompt(
     parts.append("")
     parts.append("### Output Requirements")
     parts.append(_OUTPUT_REQUIREMENTS)
+
+    if project_instructions:
+        parts.append("")
+        parts.append(project_instructions)
+
     parts.append("")
     parts.append("## Parent Task")
     parts.append(f"**Task ID:** {parent_task_id}")
@@ -801,6 +862,9 @@ async def assemble_sub_task_context(
         input.prior_errors, input.attempt, input.max_attempts, input.worktree_path
     )
 
+    repo_root = Path(input.repo_root) if input.repo_root else parent_worktree
+    project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
+
     system_prompt = build_sub_task_system_prompt(
         parent_task_id=input.parent_task_id,
         parent_description=input.parent_description,
@@ -808,6 +872,7 @@ async def assemble_sub_task_context(
         context_file_contents=context_contents,
         target_file_contents=target_contents,
         error_section=error_section,
+        project_instructions=project_instructions,
     )
     user_prompt = build_sub_task_user_prompt(input.sub_task)
 

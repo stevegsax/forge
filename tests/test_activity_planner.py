@@ -287,3 +287,67 @@ class TestCreatePlannerAgentModelSettings:
         settings = agent.model_settings
         assert settings.get("anthropic_cache_instructions") is True
         assert settings.get("anthropic_cache_tool_definitions") is True
+
+
+# ---------------------------------------------------------------------------
+# Project instructions in planner
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPlannerSystemPromptProjectInstructions:
+    def test_includes_project_instructions(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Build an API.")
+        instructions = "## Project Instructions\n\nUse SOLID principles."
+        prompt = build_planner_system_prompt(
+            task, {}, project_instructions=instructions
+        )
+        assert "## Project Instructions" in prompt
+        assert "Use SOLID principles." in prompt
+
+    def test_instructions_after_role_before_task(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Build an API.")
+        instructions = "## Project Instructions\n\nUse SOLID."
+        prompt = build_planner_system_prompt(
+            task, {}, project_instructions=instructions
+        )
+        role_pos = prompt.index("task decomposition assistant")
+        instr_pos = prompt.index("## Project Instructions")
+        task_pos = prompt.index("## Task")
+        assert role_pos < instr_pos < task_pos
+
+    def test_omits_when_empty(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
+        prompt = build_planner_system_prompt(task, {}, project_instructions="")
+        assert "## Project Instructions" not in prompt
+
+
+class TestAssemblePlannerContextProjectInstructions:
+    @pytest.mark.asyncio
+    async def test_includes_claude_md(self, tmp_path: Path) -> None:
+        (tmp_path / "CLAUDE.md").write_text("Apply Function Core / Imperative Shell.")
+        task = TaskDefinition(
+            task_id="plan-instr",
+            description="Build something.",
+        )
+        input_data = AssembleContextInput(
+            task=task,
+            repo_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+        )
+        result = await assemble_planner_context(input_data)
+        assert "## Project Instructions" in result.system_prompt
+        assert "Function Core / Imperative Shell" in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_no_claude_md_omits_section(self, tmp_path: Path) -> None:
+        task = TaskDefinition(
+            task_id="plan-no-instr",
+            description="Build something.",
+        )
+        input_data = AssembleContextInput(
+            task=task,
+            repo_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+        )
+        result = await assemble_planner_context(input_data)
+        assert "## Project Instructions" not in result.system_prompt

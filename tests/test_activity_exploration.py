@@ -252,3 +252,45 @@ class TestFulfillRequests:
 
         assert len(results) == 1
         assert "Error" in results[0].content
+
+
+# ---------------------------------------------------------------------------
+# Project instructions in exploration
+# ---------------------------------------------------------------------------
+
+
+class TestBuildExplorationPromptProjectInstructions:
+    def test_includes_project_instructions(self) -> None:
+        input = ExplorationInput(
+            task=_make_task(),
+            available_providers=_make_providers(),
+            round_number=1,
+            max_rounds=5,
+        )
+        instructions = "## Project Instructions\n\nUse type hints."
+        system, _ = build_exploration_prompt(input, project_instructions=instructions)
+        assert "## Project Instructions" in system
+        assert "Use type hints." in system
+
+    def test_instructions_before_round_info(self) -> None:
+        input = ExplorationInput(
+            task=_make_task(),
+            available_providers=_make_providers(),
+            round_number=1,
+            max_rounds=5,
+        )
+        instructions = "## Project Instructions\n\nUse type hints."
+        system, _ = build_exploration_prompt(input, project_instructions=instructions)
+        instr_pos = system.index("## Project Instructions")
+        round_pos = system.index("## Round 1")
+        assert instr_pos < round_pos
+
+    def test_omits_when_empty(self) -> None:
+        input = ExplorationInput(
+            task=_make_task(),
+            available_providers=_make_providers(),
+            round_number=1,
+            max_rounds=5,
+        )
+        system, _ = build_exploration_prompt(input, project_instructions="")
+        assert "## Project Instructions" not in system

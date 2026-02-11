@@ -38,7 +38,10 @@ DEFAULT_EXPLORATION_MODEL = "anthropic:claude-sonnet-4-5-20250929"
 # ---------------------------------------------------------------------------
 
 
-def build_exploration_prompt(input: ExplorationInput) -> tuple[str, str]:
+def build_exploration_prompt(
+    input: ExplorationInput,
+    project_instructions: str = "",
+) -> tuple[str, str]:
     """Build system and user prompts for the exploration LLM call.
 
     Returns (system_prompt, user_prompt).
@@ -54,6 +57,11 @@ def build_exploration_prompt(input: ExplorationInput) -> tuple[str, str]:
     parts.append("")
     parts.append("When you have enough context, return an EMPTY requests list to signal")
     parts.append("that you are ready for the code generation phase.")
+
+    if project_instructions:
+        parts.append("")
+        parts.append(project_instructions)
+
     parts.append("")
     parts.append(f"## Round {input.round_number} of {input.max_rounds}")
     parts.append("")
@@ -153,12 +161,13 @@ def fulfill_requests(
 async def execute_exploration_call(
     input: ExplorationInput,
     agent: Agent[None, ExplorationResponse],
+    project_instructions: str = "",
 ) -> ExplorationResponse:
     """Call the exploration agent and return the structured response.
 
     Separated from the imperative shell so tests can inject a mock agent.
     """
-    system_prompt, user_prompt = build_exploration_prompt(input)
+    system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
 
     result = await agent.run(
         user_prompt,
@@ -192,13 +201,25 @@ def create_exploration_agent(
 @activity.defn
 async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
     """Activity: call the exploration LLM to decide what context to request."""
+    from pathlib import Path
+
+    from forge.activities.context import (
+        _read_project_instructions,
+        build_project_instructions_section,
+    )
     from forge.tracing import get_tracer
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_exploration_llm") as span:
+        project_instructions = ""
+        if input.repo_root:
+            project_instructions = build_project_instructions_section(
+                _read_project_instructions(Path(input.repo_root))
+            )
+
         agent = create_exploration_agent()
         start = time.monotonic()
-        response = await execute_exploration_call(input, agent)
+        response = await execute_exploration_call(input, agent, project_instructions)
         elapsed_ms = (time.monotonic() - start) * 1000
 
         span.set_attributes(

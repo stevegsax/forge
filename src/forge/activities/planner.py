@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
-from forge.activities.context import _read_context_files
+from forge.activities.context import (
+    _read_context_files,
+    _read_project_instructions,
+    build_project_instructions_section,
+)
 from forge.models import (
     AssembleContextInput,
     Plan,
@@ -43,6 +47,7 @@ def build_planner_system_prompt(
     context_file_contents: dict[str, str],
     *,
     repo_map: str | None = None,
+    project_instructions: str = "",
 ) -> str:
     """Build the system prompt for the planning LLM call.
 
@@ -52,6 +57,11 @@ def build_planner_system_prompt(
     parts: list[str] = []
 
     parts.append("You are a task decomposition assistant.")
+
+    if project_instructions:
+        parts.append("")
+        parts.append(project_instructions)
+
     parts.append("")
     parts.append("## Task")
     parts.append(task.description)
@@ -281,8 +291,13 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
         except Exception:
             logger.warning("Failed to build repo map for planner", exc_info=True)
 
+    project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
+
     system_prompt = build_planner_system_prompt(
-        input.task, context_contents, repo_map=repo_map_text
+        input.task,
+        context_contents,
+        repo_map=repo_map_text,
+        project_instructions=project_instructions,
     )
     user_prompt = build_planner_user_prompt(input.task)
 
