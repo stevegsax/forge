@@ -19,6 +19,7 @@ Phases 1–9 are implemented. The system supports single-step execution, planned
 - `docs/PHASE7.md` — Detailed specification for Phase 7 (LLM-guided context exploration).
 - `docs/PHASE8.md` — Detailed specification for Phase 8 (error-aware retries).
 - `docs/PHASE9.md` through `docs/PHASE13.md` — Specifications for future phases.
+- `docs/PHASE14.md` — Detailed specification for Phase 14 (batch processing).
 
 ## Development Conventions
 

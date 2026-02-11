@@ -445,3 +445,51 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Parallel task execution with optimistic concurrency (Phase B) is deferred to a future phase. Fan-out conflict resolution (Phase A) proves the conflict resolution primitive first.
 
 **Rationale:** Fan-out conflicts are simpler — competing file versions are already in memory, and the workflow engine handles orchestration. Parallel task execution adds git merge conflict detection, `depends_on` scheduling, and concurrent step management. Building Phase A first validates the LLM resolution approach before adding that complexity.
+
+## D75: Remove pydantic-ai, Use Anthropic SDK + Plain Pydantic
+
+**Decision:** Remove the pydantic-ai dependency. Replace `pydantic_ai.Agent` with direct Anthropic SDK calls (`client.messages.create`) for synchronous LLM calls and `client.messages.batches.create` for batch calls. Use plain Pydantic models for structured output via tool definitions (`Model.model_json_schema()`) and response validation (`Model.model_validate_json()`).
+
+**Rationale:** pydantic-ai bundles request construction, API call, and response parsing into a single `agent.run()` call. Batch mode requires splitting this into submit (construct + send) and resume (receive + parse), which pydantic-ai does not support. Beyond the batch requirement, Forge does not use pydantic-ai's main features (dependency injection, conversation management, tool orchestration) — Temporal provides the workflow orchestration and retry logic. pydantic-ai adds a layer of abstraction over the Anthropic SDK that provides no value and prevents direct access to SDK features like batch submission. Plain Pydantic provides the same structured output capability (schema generation, validation) without the wrapper.
+
+## D76: Batch Mode as Default Execution Path
+
+**Decision:** All LLM calls use the Anthropic Message Batches API by default. Synchronous execution via the Messages API is available via `--sync` flag.
+
+**Rationale:** Batch mode provides a 50% cost reduction on all token usage. For a system that processes many LLM calls per task (planner, exploration rounds, generation, validation), this halves the marginal cost of every operation. The latency tradeoff (polling interval vs. immediate response) is acceptable for an automated system that does not require interactive response times. The `--sync` flag provides an escape hatch for time-sensitive operations or Batch API outages.
+
+## D77: Signal-Based Wait Over Terminate-and-Restart
+
+**Decision:** Workflows wait for batch results via Temporal signals (`workflow.wait_condition`), keeping the workflow alive and all state in Temporal's durable execution. The alternative — terminating the workflow after submission and starting a new one when results arrive — was rejected.
+
+**Rationale:** Temporal's durable execution model is designed for exactly this pattern: a workflow that does work, waits for an external event, then continues. Signal-based waiting preserves all workflow state (plan steps, retry counts, worktree paths, exploration context) without serializing it to an external database. If the worker crashes, Temporal replays the workflow history and resumes waiting. The terminate-and-restart alternative would require serializing the full continuation context to a batch job database, reconstructing it in a new workflow, and managing the handoff — duplicating what Temporal already provides.
+
+## D78: Temporal Search Attributes for Batch Result Routing
+
+**Decision:** Workflows set a custom search attribute (`forge_batch_id`) when waiting for a batch result. The batch poller queries Temporal's visibility API to find workflows waiting for a specific batch, then sends signals directly.
+
+**Rationale:** Search attributes let the poller route results to workflows without maintaining a separate routing table. Temporal's visibility API supports efficient queries by indexed attributes. This eliminates the batch jobs table as a coordination mechanism — it becomes purely an audit log. For Release 1 (single-request batches), `forge_batch_id` uniquely identifies both the batch and the waiting workflow. Release 2 (multi-request batches) will add `forge_batch_request_id` for per-request routing within a batch.
+
+## D79: Single-Request Batches for Release 1
+
+**Decision:** Each LLM call is submitted as its own single-request batch. Multi-request batching (grouping calls into a single batch) is deferred to Release 2.
+
+**Rationale:** Single-request batches are the simplest implementation: one batch per LLM call, one result per batch, one-to-one mapping between batch_id and workflow. This avoids the complexity of accumulation windows, batch formation strategies, and per-request routing within a batch. The 50% cost savings apply regardless of batch size. Multi-request batching adds throughput optimization but not cost optimization.
+
+## D80: Batch Jobs Table as Audit Log
+
+**Decision:** The `batch_jobs` SQLite table records all batch submissions and outcomes for observability and anomaly detection. It is not used for coordination — all coordination uses Temporal signals and search attributes.
+
+**Rationale:** Consistent with D39 (SQLite store as observability layer) and D42 (best-effort store writes). The table provides a persistent record of batch lifecycle events for debugging, cost analysis, and anomaly detection (missing jobs, status regressions). Separating the audit function from coordination prevents the store from becoming a single point of failure.
+
+## D81: Temporal Schedules for Batch Polling and Knowledge Extraction
+
+**Decision:** Use Temporal Schedules for the batch poller (configurable interval, default 60s) and for knowledge extraction (configurable interval, default 4 hours). These replace the need for custom cron jobs or polling loops.
+
+**Rationale:** Temporal Schedules provide durable, managed scheduling with visibility, pause/resume, and automatic retry. The batch poller must run reliably regardless of worker restarts — a Schedule guarantees this. Knowledge extraction (currently manual CLI invocation) is a natural fit for periodic scheduling: check for unextracted runs and process them. Using Temporal's built-in scheduling avoids duplicating functionality.
+
+## D82: All LLM Call Sites Through Batch
+
+**Decision:** All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) go through the batch path by default. No call site is exempted for Release 1.
+
+**Rationale:** Consistency simplifies the implementation — one code path for all LLM calls, switchable between batch and sync via a single flag. The latency cost for sequential call sites (exploration rounds, planner) is bounded by the poll interval (default 60s per round). For a 10-round exploration at 60s polling, the worst case adds ~10 minutes — acceptable for an automated system saving 50% on token costs. Release 2 can introduce per-call routing for latency-sensitive call sites if needed.
