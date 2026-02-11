@@ -409,3 +409,9 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** CLI tests use `result.stdout` for structured data assertions (JSON parsing), `result.stderr` for error/warning message assertions, and `result.output` for general "user sees this" assertions where the stream doesn't matter.
 
 **Rationale:** Click 8.2+ provides separate `result.stdout` and `result.stderr` properties alongside the mixed `result.output`. Using `result.stdout` for JSON-parsing tests ensures they cannot be broken by warnings or errors written to stderr via `click.echo(..., err=True)`. Using `result.stderr` for error assertions verifies messages go to the correct stream. This makes output separation robust by construction rather than relying on print ordering. The CLI's use of `click.echo()` for stdout and `click.echo(..., err=True)` for stderr follows standard Unix convention.
+
+## D69: Recursive Fan-Out With Depth Budget
+
+**Decision:** `ForgeSubTaskWorkflow` can recursively fan out into child workflows when nested `sub_tasks` are present and `depth < max_depth`. A configurable `max_fan_out_depth` (default 1) bounds recursion. This supersedes D29's restriction of single-level fan-out.
+
+**Rationale:** Single-level fan-out (Phase 3) is proven stable. Some decomposition patterns naturally require hierarchy — e.g. a sub-task for "implement all API endpoints" that itself decomposes into independent endpoint sub-tasks. The depth budget (D17) prevents unbounded recursion. Default `max_fan_out_depth=1` preserves existing behavior; users opt in to recursive fan-out with `--max-fan-out-depth N`. Child workflow timeouts scale with remaining depth to allow orchestration overhead at each nesting level.

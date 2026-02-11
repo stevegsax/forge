@@ -186,6 +186,10 @@ class SubTask(BaseModel):
         default_factory=list,
         description="Files to include as context (read from parent worktree).",
     )
+    sub_tasks: list[SubTask] | None = Field(
+        default=None,
+        description="Optional nested sub-tasks for recursive fan-out.",
+    )
 
 
 class PlanStep(BaseModel):
@@ -226,6 +230,7 @@ class SubTaskResult(BaseModel):
     digest: str = Field(default="", description="From LLMResponse.explanation (D18).")
     error: str | None = None
     llm_stats: LLMStats | None = None
+    sub_task_results: list[SubTaskResult] = Field(default_factory=list)
 
 
 class StepResult(BaseModel):
@@ -538,6 +543,10 @@ class ForgeTaskInput(BaseModel):
         default=10,
         description="Max rounds of LLM-guided context exploration (0 disables).",
     )
+    max_fan_out_depth: int = Field(
+        default=1,
+        description="Maximum recursive fan-out depth. 1 = flat fan-out only (default).",
+    )
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
 
@@ -613,6 +622,8 @@ class SubTaskInput(BaseModel):
     max_attempts: int = 2
     model_name: str = ""
     domain: TaskDomain = Field(default=TaskDomain.CODE_GENERATION)
+    depth: int = Field(default=0, description="Current fan-out depth.")
+    max_depth: int = Field(default=1, description="Maximum allowed fan-out depth.")
 
 
 class WriteFilesInput(BaseModel):

@@ -69,9 +69,20 @@ _LLM_TIMEOUT = timedelta(minutes=5)
 _WRITE_TIMEOUT = timedelta(seconds=30)
 _VALIDATE_TIMEOUT = timedelta(minutes=2)
 _TRANSITION_TIMEOUT = timedelta(seconds=10)
-_CHILD_WORKFLOW_TIMEOUT = timedelta(minutes=15)
 _EXPLORATION_LLM_TIMEOUT = timedelta(minutes=5)
 _EXPLORATION_FULFILL_TIMEOUT = timedelta(minutes=2)
+
+_CHILD_BASE_MINUTES = 15
+_CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
+
+
+def _child_timeout(depth: int, max_depth: int) -> timedelta:
+    """Scale child workflow timeout by remaining depth.
+
+    Base 15 min for leaves, +5 min per nesting level for orchestration overhead.
+    """
+    remaining = max_depth - depth
+    return timedelta(minutes=_CHILD_BASE_MINUTES + _CHILD_OVERHEAD_MINUTES_PER_LEVEL * remaining)
 
 
 @workflow.defn
@@ -648,6 +659,7 @@ class ForgeTaskWorkflow:
             )
 
         # --- Start child workflows in parallel ---
+        child_timeout = _child_timeout(0, input.max_fan_out_depth)
         handles = []
         for st in sub_tasks:
             child_input = SubTaskInput(
@@ -660,6 +672,8 @@ class ForgeTaskWorkflow:
                 max_attempts=input.max_sub_task_attempts,
                 model_name=step_model,
                 domain=task.domain,
+                depth=0,
+                max_depth=input.max_fan_out_depth,
             )
             compound_id = f"{task.task_id}.sub.{st.sub_task_id}"
             handle = await workflow.start_child_workflow(
@@ -667,7 +681,7 @@ class ForgeTaskWorkflow:
                 child_input,
                 id=f"forge-subtask-{compound_id}",
                 task_queue=FORGE_TASK_QUEUE,
-                execution_timeout=_CHILD_WORKFLOW_TIMEOUT,
+                execution_timeout=child_timeout,
             )
             handles.append(handle)
 
@@ -786,17 +800,34 @@ class ForgeTaskWorkflow:
 class ForgeSubTaskWorkflow:
     """Execute a single sub-task within a fan-out step.
 
-    Single-step execution without commit:
-    1. Create worktree (compound ID, branched from parent branch)
-    2. Retry loop:
-       - assemble_sub_task_context → call_llm → write_output → validate → transition
-       - SUCCESS: collect output_files, remove worktree, return SubTaskResult
-       - FAILURE_RETRYABLE: remove worktree, recreate on next iteration
-       - FAILURE_TERMINAL: remove worktree, return failure SubTaskResult
+    Routes between two execution paths:
+
+    Single-step (leaf or depth >= max_depth):
+        1. Create worktree (compound ID, branched from parent branch)
+        2. Retry loop:
+           - assemble_sub_task_context → call_llm → write_output → validate → transition
+           - SUCCESS: collect output_files, remove worktree, return SubTaskResult
+           - FAILURE_RETRYABLE: remove worktree, recreate on next iteration
+           - FAILURE_TERMINAL: remove worktree, return failure SubTaskResult
+
+    Nested fan-out (has sub_tasks and depth < max_depth):
+        1. Create worktree (compound ID, branched from parent branch)
+        2. Validate nested sub-task ID uniqueness
+        3. Start child ForgeSubTaskWorkflow instances in parallel (depth+1)
+        4. Await all children, check failures / file conflicts
+        5. Write merged files to worktree, validate merged output
+        6. Remove worktree (sub-tasks never commit, D16)
+        7. Return SubTaskResult with merged output_files and nested sub_task_results
     """
 
     @workflow.run
     async def run(self, input: SubTaskInput) -> SubTaskResult:
+        if input.sub_task.sub_tasks and input.depth < input.max_depth:
+            return await self._run_nested_fan_out(input)
+        return await self._run_single_step(input)
+
+    async def _run_single_step(self, input: SubTaskInput) -> SubTaskResult:
+        """Execute a leaf sub-task: LLM call with retry loop."""
         compound_id = f"{input.parent_task_id}.sub.{input.sub_task.sub_task_id}"
         prior_errors: list[ValidationResult] = []
 
@@ -922,3 +953,196 @@ class ForgeSubTaskWorkflow:
         # Should not be reachable, but satisfy the type checker.
         msg = f"Sub-task {input.sub_task.sub_task_id} exhausted all attempts"
         raise RuntimeError(msg)
+
+    async def _run_nested_fan_out(self, input: SubTaskInput) -> SubTaskResult:
+        """Execute a sub-task that itself contains nested sub-tasks."""
+        compound_id = f"{input.parent_task_id}.sub.{input.sub_task.sub_task_id}"
+        nested_sub_tasks = input.sub_task.sub_tasks
+        assert nested_sub_tasks  # Caller guarantees this
+
+        # --- Create worktree ---
+        wt_output = await workflow.execute_activity(
+            "create_worktree_activity",
+            CreateWorktreeInput(
+                repo_root=input.repo_root,
+                task_id=compound_id,
+                base_branch=input.parent_branch,
+            ),
+            start_to_close_timeout=_GIT_TIMEOUT,
+            result_type=CreateWorktreeOutput,
+        )
+
+        # --- Validate unique sub-task IDs ---
+        nested_ids = [st.sub_task_id for st in nested_sub_tasks]
+        if len(nested_ids) != len(set(nested_ids)):
+            await workflow.execute_activity(
+                "remove_worktree_activity",
+                RemoveWorktreeInput(
+                    repo_root=input.repo_root,
+                    task_id=compound_id,
+                    force=True,
+                ),
+                start_to_close_timeout=_GIT_TIMEOUT,
+                result_type=type(None),
+            )
+            return SubTaskResult(
+                sub_task_id=input.sub_task.sub_task_id,
+                status=TransitionSignal.FAILURE_TERMINAL,
+                error="Duplicate nested sub-task IDs detected",
+            )
+
+        # --- Start child workflows in parallel ---
+        child_timeout = _child_timeout(input.depth + 1, input.max_depth)
+        handles = []
+        for st in nested_sub_tasks:
+            child_input = SubTaskInput(
+                parent_task_id=compound_id,
+                parent_description=input.parent_description,
+                sub_task=st,
+                repo_root=input.repo_root,
+                parent_branch=wt_output.branch_name,
+                validation=input.validation,
+                max_attempts=input.max_attempts,
+                model_name=input.model_name,
+                domain=input.domain,
+                depth=input.depth + 1,
+                max_depth=input.max_depth,
+            )
+            child_compound_id = f"{compound_id}.sub.{st.sub_task_id}"
+            handle = await workflow.start_child_workflow(
+                ForgeSubTaskWorkflow.run,
+                child_input,
+                id=f"forge-subtask-{child_compound_id}",
+                task_queue=FORGE_TASK_QUEUE,
+                execution_timeout=child_timeout,
+            )
+            handles.append(handle)
+
+        # --- Await all children ---
+        sub_task_results: list[SubTaskResult] = []
+        for handle in handles:
+            result: SubTaskResult = await handle
+            sub_task_results.append(result)
+
+        # --- Check for failures ---
+        failures = [r for r in sub_task_results if r.status != TransitionSignal.SUCCESS]
+        if failures:
+            await workflow.execute_activity(
+                "remove_worktree_activity",
+                RemoveWorktreeInput(
+                    repo_root=input.repo_root,
+                    task_id=compound_id,
+                    force=True,
+                ),
+                start_to_close_timeout=_GIT_TIMEOUT,
+                result_type=type(None),
+            )
+            error_parts = [f"{r.sub_task_id}: {r.error}" for r in failures]
+            return SubTaskResult(
+                sub_task_id=input.sub_task.sub_task_id,
+                status=TransitionSignal.FAILURE_TERMINAL,
+                sub_task_results=sub_task_results,
+                error="; ".join(error_parts),
+            )
+
+        # --- Check for file conflicts ---
+        merged_files: dict[str, str] = {}
+        for result in sub_task_results:
+            for file_path, content in result.output_files.items():
+                if file_path in merged_files:
+                    await workflow.execute_activity(
+                        "remove_worktree_activity",
+                        RemoveWorktreeInput(
+                            repo_root=input.repo_root,
+                            task_id=compound_id,
+                            force=True,
+                        ),
+                        start_to_close_timeout=_GIT_TIMEOUT,
+                        result_type=type(None),
+                    )
+                    return SubTaskResult(
+                        sub_task_id=input.sub_task.sub_task_id,
+                        status=TransitionSignal.FAILURE_TERMINAL,
+                        sub_task_results=sub_task_results,
+                        error=f"File conflict: {file_path} produced by multiple sub-tasks",
+                    )
+                merged_files[file_path] = content
+
+        # --- Write merged files to worktree and validate ---
+        validation_results: list[ValidationResult] = []
+        if merged_files:
+            write_result = await workflow.execute_activity(
+                "write_files",
+                WriteFilesInput(
+                    task_id=compound_id,
+                    worktree_path=wt_output.worktree_path,
+                    files=merged_files,
+                ),
+                start_to_close_timeout=_WRITE_TIMEOUT,
+                result_type=WriteResult,
+            )
+
+            validation_results = await workflow.execute_activity(
+                "validate_output",
+                ValidateOutputInput(
+                    task_id=compound_id,
+                    worktree_path=wt_output.worktree_path,
+                    files=write_result.files_written,
+                    validation=input.validation,
+                ),
+                start_to_close_timeout=_VALIDATE_TIMEOUT,
+                result_type=list[ValidationResult],
+            )
+
+            signal_value = await workflow.execute_activity(
+                "evaluate_transition",
+                TransitionInput(
+                    validation_results=validation_results,
+                    attempt=1,
+                    max_attempts=1,
+                ),
+                start_to_close_timeout=_TRANSITION_TIMEOUT,
+                result_type=str,
+            )
+            signal = TransitionSignal(signal_value)
+
+            if signal != TransitionSignal.SUCCESS:
+                await workflow.execute_activity(
+                    "remove_worktree_activity",
+                    RemoveWorktreeInput(
+                        repo_root=input.repo_root,
+                        task_id=compound_id,
+                        force=True,
+                    ),
+                    start_to_close_timeout=_GIT_TIMEOUT,
+                    result_type=type(None),
+                )
+                error = "; ".join(r.summary for r in validation_results if not r.passed)
+                return SubTaskResult(
+                    sub_task_id=input.sub_task.sub_task_id,
+                    status=TransitionSignal.FAILURE_TERMINAL,
+                    output_files=merged_files,
+                    validation_results=validation_results,
+                    sub_task_results=sub_task_results,
+                    error=f"Merged output validation failed: {error}",
+                )
+
+        # --- Remove worktree (sub-tasks never commit, D16) ---
+        await workflow.execute_activity(
+            "remove_worktree_activity",
+            RemoveWorktreeInput(
+                repo_root=input.repo_root,
+                task_id=compound_id,
+                force=True,
+            ),
+            start_to_close_timeout=_GIT_TIMEOUT,
+            result_type=type(None),
+        )
+
+        return SubTaskResult(
+            sub_task_id=input.sub_task.sub_task_id,
+            status=TransitionSignal.SUCCESS,
+            output_files=merged_files,
+            validation_results=validation_results,
+            sub_task_results=sub_task_results,
+        )

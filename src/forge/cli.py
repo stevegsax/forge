@@ -67,10 +67,14 @@ def format_validation_results(results: list[ValidationResult]) -> str:
     return "\n".join(lines)
 
 
-def format_sub_task_result(sub_task: SubTaskResult) -> str:
-    """Format a single SubTaskResult as a compact line."""
+def format_sub_task_result(sub_task: SubTaskResult, indent: int = 4) -> str:
+    """Format a single SubTaskResult as a compact line, with nested sub-tasks if present."""
+    prefix = " " * indent
     tag = "PASS" if sub_task.status == TransitionSignal.SUCCESS else "FAIL"
-    return f"    [{tag}] {sub_task.sub_task_id}: {sub_task.status.value}"
+    lines = [f"{prefix}[{tag}] {sub_task.sub_task_id}: {sub_task.status.value}"]
+    for nested in sub_task.sub_task_results:
+        lines.append(format_sub_task_result(nested, indent=indent + 2))
+    return "\n".join(lines)
 
 
 def format_step_result(step: StepResult) -> str:
@@ -152,12 +156,18 @@ def format_verbose_result(result: TaskResult) -> str:
         lines.append(f"  Estimated tokens: {cs.total_estimated_tokens}")
         lines.append(f"  Budget utilization: {cs.budget_utilization:.1%}")
 
+    def _append_sub_task_stats(st: SubTaskResult, indent: int = 4) -> None:
+        prefix = " " * indent
+        if st.llm_stats:
+            lines.append(f"{prefix}Sub-task {st.sub_task_id}: {format_llm_stats(st.llm_stats)}")
+        for nested in st.sub_task_results:
+            _append_sub_task_stats(nested, indent=indent + 2)
+
     for sr in result.step_results:
         if sr.llm_stats:
             lines.append(f"  Step {sr.step_id}: {format_llm_stats(sr.llm_stats)}")
         for st in sr.sub_task_results:
-            if st.llm_stats:
-                lines.append(f"    Sub-task {st.sub_task_id}: {format_llm_stats(st.llm_stats)}")
+            _append_sub_task_stats(st)
 
     # Query store for interaction details
     try:
@@ -275,6 +285,7 @@ async def _submit_and_wait(
     plan: bool = False,
     max_step_attempts: int = 2,
     max_sub_task_attempts: int = 2,
+    max_fan_out_depth: int = 1,
     max_exploration_rounds: int = 10,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
@@ -296,6 +307,7 @@ async def _submit_and_wait(
             plan=plan,
             max_step_attempts=max_step_attempts,
             max_sub_task_attempts=max_sub_task_attempts,
+            max_fan_out_depth=max_fan_out_depth,
             max_exploration_rounds=max_exploration_rounds,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
@@ -315,6 +327,7 @@ async def _submit_no_wait(
     plan: bool = False,
     max_step_attempts: int = 2,
     max_sub_task_attempts: int = 2,
+    max_fan_out_depth: int = 1,
     max_exploration_rounds: int = 10,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
@@ -336,6 +349,7 @@ async def _submit_no_wait(
             plan=plan,
             max_step_attempts=max_step_attempts,
             max_sub_task_attempts=max_sub_task_attempts,
+            max_fan_out_depth=max_fan_out_depth,
             max_exploration_rounds=max_exploration_rounds,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
@@ -407,6 +421,13 @@ def main() -> None:
     show_default=True,
     type=int,
     help="Retry limit per sub-task in fan-out steps.",
+)
+@click.option(
+    "--max-fan-out-depth",
+    default=1,
+    show_default=True,
+    type=int,
+    help="Maximum recursive fan-out depth. 1 = flat fan-out only.",
 )
 @click.option("--verbose", is_flag=True, help="Show detailed LLM stats and interactions.")
 @click.option("--no-auto-discover", is_flag=True, help="Disable automatic context discovery.")
@@ -494,6 +515,7 @@ def run(
     use_plan: bool,
     max_step_attempts: int,
     max_sub_task_attempts: int,
+    max_fan_out_depth: int,
     verbose: bool,
     no_auto_discover: bool,
     token_budget: int | None,
@@ -592,6 +614,7 @@ def run(
                     plan=use_plan,
                     max_step_attempts=max_step_attempts,
                     max_sub_task_attempts=max_sub_task_attempts,
+                    max_fan_out_depth=max_fan_out_depth,
                     max_exploration_rounds=effective_exploration_rounds,
                     model_routing=model_routing,
                     thinking=thinking,
@@ -608,6 +631,7 @@ def run(
                     plan=use_plan,
                     max_step_attempts=max_step_attempts,
                     max_sub_task_attempts=max_sub_task_attempts,
+                    max_fan_out_depth=max_fan_out_depth,
                     max_exploration_rounds=effective_exploration_rounds,
                     model_routing=model_routing,
                     thinking=thinking,

@@ -1954,3 +1954,454 @@ class TestSubTaskErrorAwareRetry:
         assert second.prior_errors[0].check_name == "tests"
         assert second.attempt == 2
         assert second.max_attempts == 2
+
+
+# ===========================================================================
+# Recursive fan-out tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Mock activities for recursive fan-out tests
+# ---------------------------------------------------------------------------
+
+_RECURSIVE_CALL_LOG: list[str] = []
+_RECURSIVE_TRANSITION_SEQUENCE: list[str] = []
+_RECURSIVE_LLM_RESPONSES: list[LLMResponse] = []
+
+
+def _reset_recursive_mock_state(
+    transitions: list[str] | None = None,
+    llm_responses: list[LLMResponse] | None = None,
+) -> None:
+    _RECURSIVE_CALL_LOG.clear()
+    _RECURSIVE_TRANSITION_SEQUENCE.clear()
+    _RECURSIVE_LLM_RESPONSES.clear()
+    if transitions:
+        _RECURSIVE_TRANSITION_SEQUENCE.extend(transitions)
+    if llm_responses:
+        _RECURSIVE_LLM_RESPONSES.extend(llm_responses)
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_recursive_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _RECURSIVE_CALL_LOG.append(f"create_worktree:{input.task_id}")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="remove_worktree_activity")
+async def mock_recursive_remove_worktree(input: RemoveWorktreeInput) -> None:
+    _RECURSIVE_CALL_LOG.append(f"remove_worktree:{input.task_id}")
+
+
+@activity.defn(name="assemble_sub_task_context")
+async def mock_recursive_assemble_sub_task_context(
+    input: AssembleSubTaskContextInput,
+) -> AssembledContext:
+    _RECURSIVE_CALL_LOG.append(f"assemble_sub_task_context:{input.sub_task.sub_task_id}")
+    return AssembledContext(
+        task_id=input.parent_task_id,
+        system_prompt=f"sub-task prompt for {input.sub_task.sub_task_id}",
+        user_prompt=f"execute {input.sub_task.sub_task_id}",
+    )
+
+
+@activity.defn(name="call_llm")
+async def mock_recursive_call_llm(context: AssembledContext) -> LLMCallResult:
+    _RECURSIVE_CALL_LOG.append("call_llm")
+    if _RECURSIVE_LLM_RESPONSES:
+        response = _RECURSIVE_LLM_RESPONSES.pop(0)
+    elif "gc1" in context.system_prompt:
+        response = LLMResponse(
+            files=[FileOutput(file_path="gc1.py", content="# gc1\n")],
+            explanation="Grandchild 1 output.",
+        )
+    elif "gc2" in context.system_prompt:
+        response = LLMResponse(
+            files=[FileOutput(file_path="gc2.py", content="# gc2\n")],
+            explanation="Grandchild 2 output.",
+        )
+    else:
+        response = LLMResponse(
+            files=[FileOutput(file_path="leaf.py", content="# leaf\n")],
+            explanation="Leaf output.",
+        )
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=response,
+        model_name="mock-model",
+        input_tokens=50,
+        output_tokens=25,
+        latency_ms=100.0,
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_recursive_write_output(input: WriteOutputInput) -> WriteResult:
+    _RECURSIVE_CALL_LOG.append("write_output")
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
+
+
+@activity.defn(name="write_files")
+async def mock_recursive_write_files(input: WriteFilesInput) -> WriteResult:
+    _RECURSIVE_CALL_LOG.append(f"write_files:{len(input.files)}")
+    return WriteResult(
+        task_id=input.task_id,
+        files_written=list(input.files.keys()),
+    )
+
+
+@activity.defn(name="validate_output")
+async def mock_recursive_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+    _RECURSIVE_CALL_LOG.append("validate_output")
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_recursive_evaluate_transition(input: TransitionInput) -> str:
+    _RECURSIVE_CALL_LOG.append("evaluate_transition")
+    if _RECURSIVE_TRANSITION_SEQUENCE:
+        return _RECURSIVE_TRANSITION_SEQUENCE.pop(0)
+    return TransitionSignal.SUCCESS.value
+
+
+_RECURSIVE_MOCK_ACTIVITIES = [
+    mock_recursive_create_worktree,
+    mock_recursive_remove_worktree,
+    mock_recursive_assemble_sub_task_context,
+    mock_recursive_call_llm,
+    mock_recursive_write_output,
+    mock_recursive_write_files,
+    mock_recursive_validate_output,
+    mock_recursive_evaluate_transition,
+]
+
+
+async def _run_recursive_subtask_workflow(
+    env: WorkflowEnvironment,
+    input: SubTaskInput,
+) -> SubTaskResult:
+    """Helper to run the sub-task workflow with recursive mock activities."""
+    async with Worker(
+        env.client,
+        task_queue=FORGE_TASK_QUEUE,
+        workflows=[ForgeSubTaskWorkflow],
+        activities=_RECURSIVE_MOCK_ACTIVITIES,
+    ):
+        return await env.client.execute_workflow(
+            ForgeSubTaskWorkflow.run,
+            input,
+            id=f"test-recursive-{input.sub_task.sub_task_id}",
+            task_queue=FORGE_TASK_QUEUE,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests — recursive fan-out success (2-level)
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveFanOut:
+    """2-level fan-out success. Sub-task has nested sub-tasks, all succeed."""
+
+    @pytest.fixture
+    def recursive_input(self) -> SubTaskInput:
+        return SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Create schema components.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(
+                        sub_task_id="gc1",
+                        description="Create models.",
+                        target_files=["gc1.py"],
+                    ),
+                    SubTask(
+                        sub_task_id="gc2",
+                        description="Create validators.",
+                        target_files=["gc2.py"],
+                    ),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=2,
+            depth=0,
+            max_depth=2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_recursive_success(
+        self, env: WorkflowEnvironment, recursive_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state()
+        result = await _run_recursive_subtask_workflow(env, recursive_input)
+        assert result.status == TransitionSignal.SUCCESS
+        assert result.sub_task_id == "st1"
+
+    @pytest.mark.asyncio
+    async def test_merged_output_files_propagate(
+        self, env: WorkflowEnvironment, recursive_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state()
+        result = await _run_recursive_subtask_workflow(env, recursive_input)
+        assert "gc1.py" in result.output_files
+        assert "gc2.py" in result.output_files
+
+    @pytest.mark.asyncio
+    async def test_nested_sub_task_results_populated(
+        self, env: WorkflowEnvironment, recursive_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state()
+        result = await _run_recursive_subtask_workflow(env, recursive_input)
+        assert len(result.sub_task_results) == 2
+        ids = {r.sub_task_id for r in result.sub_task_results}
+        assert ids == {"gc1", "gc2"}
+
+    @pytest.mark.asyncio
+    async def test_worktrees_created_and_removed(
+        self, env: WorkflowEnvironment, recursive_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state()
+        await _run_recursive_subtask_workflow(env, recursive_input)
+        # Parent sub-task worktree + 2 grandchild worktrees
+        create_count = sum(1 for e in _RECURSIVE_CALL_LOG if e.startswith("create_worktree:"))
+        remove_count = sum(1 for e in _RECURSIVE_CALL_LOG if e.startswith("remove_worktree:"))
+        assert create_count == 3
+        assert remove_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests — recursive fan-out depth limit
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveFanOutDepthLimit:
+    """max_depth=1, depth=1 with nested sub-tasks.
+
+    The sub-task has nested sub_tasks but depth >= max_depth, so it
+    runs single-step (ignores its sub_tasks).
+    """
+
+    @pytest.fixture
+    def depth_limited_input(self) -> SubTaskInput:
+        return SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Create schema.",
+                target_files=["leaf.py"],
+                sub_tasks=[
+                    SubTask(
+                        sub_task_id="gc1",
+                        description="Nested child (should be ignored).",
+                        target_files=["gc1.py"],
+                    ),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=2,
+            depth=1,
+            max_depth=1,
+        )
+
+    @pytest.mark.asyncio
+    async def test_runs_single_step(
+        self, env: WorkflowEnvironment, depth_limited_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state()
+        result = await _run_recursive_subtask_workflow(env, depth_limited_input)
+        assert result.status == TransitionSignal.SUCCESS
+        # Should have run single-step: LLM was called, not nested fan-out
+        assert "call_llm" in _RECURSIVE_CALL_LOG
+        # Only one worktree created (leaf, not grandchild)
+        create_count = sum(1 for e in _RECURSIVE_CALL_LOG if e.startswith("create_worktree:"))
+        assert create_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_nested_sub_task_results(
+        self, env: WorkflowEnvironment, depth_limited_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state()
+        result = await _run_recursive_subtask_workflow(env, depth_limited_input)
+        assert result.sub_task_results == []
+
+
+# ---------------------------------------------------------------------------
+# Tests — recursive fan-out nested failure
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveFanOutNestedFailure:
+    """Grandchild fails terminal. Verify failure propagates up through all levels."""
+
+    @pytest.fixture
+    def nested_failure_input(self) -> SubTaskInput:
+        return SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Create schema components.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(
+                        sub_task_id="gc1",
+                        description="Create models.",
+                        target_files=["gc1.py"],
+                    ),
+                    SubTask(
+                        sub_task_id="gc2",
+                        description="Create validators.",
+                        target_files=["gc2.py"],
+                    ),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=1,
+            depth=0,
+            max_depth=2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_propagates(
+        self, env: WorkflowEnvironment, nested_failure_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state(
+            transitions=[
+                TransitionSignal.SUCCESS.value,  # gc1
+                TransitionSignal.FAILURE_TERMINAL.value,  # gc2
+            ]
+        )
+        result = await _run_recursive_subtask_workflow(env, nested_failure_input)
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.error is not None
+        assert "gc2" in result.error
+
+    @pytest.mark.asyncio
+    async def test_worktrees_cleaned_up(
+        self, env: WorkflowEnvironment, nested_failure_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state(
+            transitions=[
+                TransitionSignal.SUCCESS.value,
+                TransitionSignal.FAILURE_TERMINAL.value,
+            ]
+        )
+        await _run_recursive_subtask_workflow(env, nested_failure_input)
+        # All worktrees should be removed even on failure
+        remove_count = sum(1 for e in _RECURSIVE_CALL_LOG if e.startswith("remove_worktree:"))
+        assert remove_count >= 3  # parent + 2 grandchildren
+
+
+# ---------------------------------------------------------------------------
+# Tests — recursive fan-out nested file conflict
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveFanOutNestedFileConflict:
+    """Two grandchildren produce the same file → conflict at sub-task level."""
+
+    @pytest.fixture
+    def conflict_input(self) -> SubTaskInput:
+        return SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Create components.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(
+                        sub_task_id="gc1",
+                        description="Create module.",
+                        target_files=["conflict.py"],
+                    ),
+                    SubTask(
+                        sub_task_id="gc2",
+                        description="Create module.",
+                        target_files=["conflict.py"],
+                    ),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=1,
+            depth=0,
+            max_depth=2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_conflict_detected_at_subtask_level(
+        self, env: WorkflowEnvironment, conflict_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state(
+            llm_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc1\n")],
+                    explanation="gc1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc2\n")],
+                    explanation="gc2 output",
+                ),
+            ]
+        )
+        result = await _run_recursive_subtask_workflow(env, conflict_input)
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.error is not None
+        assert "File conflict" in result.error
+        assert "conflict.py" in result.error
+
+
+# ---------------------------------------------------------------------------
+# Tests — backward compat: flat fan-out with default max_fan_out_depth
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveBackwardCompat:
+    """Existing flat fan-out works unchanged with default max_fan_out_depth=1."""
+
+    @pytest.mark.asyncio
+    async def test_flat_fanout_still_works(self, env: WorkflowEnvironment) -> None:
+        _reset_fanout_mock_state()
+        result = await _run_fanout_workflow(env)
+        assert result.status == TransitionSignal.SUCCESS
+        assert len(result.step_results) == 1
+        sr = result.step_results[0]
+        assert len(sr.sub_task_results) == 2
+
+    @pytest.mark.asyncio
+    async def test_default_max_fan_out_depth(self) -> None:
+        """ForgeTaskInput defaults to max_fan_out_depth=1."""
+        task_input = ForgeTaskInput(
+            task=TaskDefinition(task_id="t", description="d"),
+            repo_root="/tmp/repo",
+        )
+        assert task_input.max_fan_out_depth == 1
+
+    @pytest.mark.asyncio
+    async def test_subtask_input_default_depth(self) -> None:
+        """SubTaskInput defaults to depth=0, max_depth=1."""
+        st_input = SubTaskInput(
+            parent_task_id="p",
+            parent_description="d",
+            sub_task=SubTask(sub_task_id="s", description="d", target_files=["f.py"]),
+            repo_root="/tmp/repo",
+            parent_branch="main",
+        )
+        assert st_input.depth == 0
+        assert st_input.max_depth == 1

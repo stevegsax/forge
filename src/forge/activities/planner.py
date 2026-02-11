@@ -153,6 +153,14 @@ def build_planner_system_prompt(
     parts.append("- description: What the sub-task should produce")
     parts.append("- target_files: Files to create or modify")
     parts.append("- context_files: Files from the parent worktree to include as context")
+    parts.append("")
+    parts.append("## Recursive Sub-Tasks")
+    parts.append(
+        "Sub-tasks can themselves contain nested `sub_tasks` for recursive fan-out. "
+        "The maximum nesting depth is configurable (default: 1, meaning flat fan-out only). "
+        "Prefer flat fan-out unless the decomposition clearly requires hierarchy — "
+        "e.g. a sub-task that itself contains genuinely independent work items."
+    )
 
     domain_config = get_domain_config(task.domain)
     parts.append("")
