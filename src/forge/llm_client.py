@@ -12,6 +12,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING
 
@@ -172,6 +173,74 @@ def extract_usage(message: Message) -> tuple[int, int, int, int]:
         getattr(usage, "cache_creation_input_tokens", 0) or 0,
         getattr(usage, "cache_read_input_tokens", 0) or 0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch processing helpers (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+def build_batch_request(custom_id: str, params: dict) -> dict:
+    """Wrap messages.create params into a batch request item.
+
+    Returns the dict expected by client.messages.batches.create(requests=[...]).
+    """
+    return {"custom_id": custom_id, "params": params}
+
+
+def get_output_type_registry() -> dict[str, type[BaseModel]]:
+    """Return a mapping of type names to Pydantic model classes.
+
+    Lazy imports avoid circular dependencies between llm_client and models.
+    """
+    from forge.eval.models import JudgeVerdict
+    from forge.models import (
+        ConflictResolutionResponse,
+        ExplorationResponse,
+        ExtractionResult,
+        LLMResponse,
+        Plan,
+        SanityCheckResponse,
+    )
+
+    return {
+        "LLMResponse": LLMResponse,
+        "Plan": Plan,
+        "ExplorationResponse": ExplorationResponse,
+        "SanityCheckResponse": SanityCheckResponse,
+        "ConflictResolutionResponse": ConflictResolutionResponse,
+        "ExtractionResult": ExtractionResult,
+        "JudgeVerdict": JudgeVerdict,
+    }
+
+
+def parse_batch_response_json(
+    raw_json: str,
+    output_type_name: str,
+) -> tuple:
+    """Deserialize a raw Anthropic Message JSON from a batch response.
+
+    Returns (parsed_model, model_name, input_tokens, output_tokens,
+             cache_creation_input_tokens, cache_read_input_tokens).
+
+    Raises KeyError if output_type_name is not in the registry.
+    Raises ValueError if no tool_use block is found in the message.
+    """
+    from anthropic.types import Message as AnthropicMessage
+
+    registry = get_output_type_registry()
+    if output_type_name not in registry:
+        msg = f"Unknown output type: {output_type_name!r}"
+        raise KeyError(msg)
+
+    output_type = registry[output_type_name]
+    data = json.loads(raw_json)
+    message = AnthropicMessage.model_validate(data)
+
+    parsed = extract_tool_result(message, output_type)
+    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
+
+    return (parsed, message.model, in_tok, out_tok, cache_create, cache_read)
 
 
 # ---------------------------------------------------------------------------

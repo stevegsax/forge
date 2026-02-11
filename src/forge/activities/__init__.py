@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from forge.activities.batch_submit import submit_batch_request
 from forge.activities.conflict_resolution import (
     assemble_conflict_resolution_context,
     call_conflict_resolution,
@@ -54,6 +55,7 @@ __all__ = [
     "remove_worktree_activity",
     "reset_worktree_activity",
     "save_extraction_results",
+    "submit_batch_request",
     "validate_output",
     "write_files",
     "write_output",

@@ -81,6 +81,24 @@ class Run(Base):
     )
 
 
+class BatchJob(Base):
+    __tablename__ = "batch_jobs"
+
+    id: Mapped[str] = mapped_column(sa.String, primary_key=True)
+    batch_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
+    workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(sa.String, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime,
+        default=lambda: datetime.now(UTC),
+    )
+
+
 class Playbook(Base):
     __tablename__ = "playbooks"
 
@@ -352,3 +370,70 @@ def get_unextracted_runs(engine: Engine, limit: int = 50) -> list[dict]:
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
         return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Batch job functions (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+def record_batch_submission(
+    engine: Engine,
+    *,
+    request_id: str,
+    batch_id: str,
+    workflow_id: str,
+) -> None:
+    """Insert a new batch job record with status 'submitted'."""
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(BatchJob.__table__).values(
+                id=request_id,
+                batch_id=batch_id,
+                workflow_id=workflow_id,
+                status="submitted",
+            )
+        )
+
+
+def update_batch_status(
+    engine: Engine,
+    *,
+    request_id: str,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+    """Update batch job status and timestamp."""
+    t = BatchJob.__table__
+    with engine.begin() as conn:
+        conn.execute(
+            sa.update(t)
+            .where(t.c.id == request_id)
+            .values(
+                status=status,
+                error_message=error_message,
+                updated_at=datetime.now(UTC),
+            )
+        )
+
+
+def get_pending_batch_jobs(engine: Engine) -> list[dict]:
+    """Query batch jobs with status 'submitted', ordered by created_at."""
+    t = BatchJob.__table__
+    stmt = t.select().where(t.c.status == "submitted").order_by(t.c.created_at)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def get_batch_job(engine: Engine, request_id: str) -> dict | None:
+    """Look up a single batch job by request ID."""
+    t = BatchJob.__table__
+    stmt = t.select().where(t.c.id == request_id)
+
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)

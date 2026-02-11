@@ -902,3 +902,64 @@ class ExtractionWorkflowResult(BaseModel):
 
     entries_created: int
     source_workflow_ids: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Batch processing models (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+class BatchJobStatus(StrEnum):
+    """Status of a batch job in the Anthropic Message Batches API."""
+
+    SUBMITTED = "submitted"
+    SUCCEEDED = "succeeded"
+    ERRORED = "errored"
+    EXPIRED = "expired"
+    CANCELED = "canceled"
+    MISSING = "missing"
+
+
+class BatchSubmitInput(BaseModel):
+    """Input to the submit_batch_request activity."""
+
+    context: AssembledContext
+    output_type_name: str = Field(description="Key in get_output_type_registry().")
+    workflow_id: str = Field(description="Temporal workflow ID for audit linkage.")
+
+
+class BatchSubmitResult(BaseModel):
+    """Output of submit_batch_request activity."""
+
+    request_id: str = Field(description="UUID used as Anthropic custom_id.")
+    batch_id: str = Field(description="Anthropic batch ID (msgbatch_...).")
+
+
+class BatchResult(BaseModel):
+    """Signal payload for delivering a batch result to a waiting workflow (14b)."""
+
+    request_id: str
+    batch_id: str
+    raw_response_json: str | None = None
+    error: str | None = None
+    result_type: str = Field(description="Output type name for deserialization.")
+
+
+class ParseResponseInput(BaseModel):
+    """Input to a parse activity that deserializes a batch response (14b)."""
+
+    raw_response_json: str
+    output_type_name: str
+    task_id: str
+
+
+class BatchPollerInput(BaseModel):
+    """Input to the batch poller workflow (14c)."""
+
+
+class BatchPollerResult(BaseModel):
+    """Output of the batch poller workflow (14c)."""
+
+    batches_checked: int = 0
+    signals_sent: int = 0
+    errors_found: int = 0
