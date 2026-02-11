@@ -12,12 +12,14 @@ from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
     from forge.models import (
+        CapabilityTier,
         ExtractionCallResult,
         ExtractionInput,
         ExtractionWorkflowInput,
         ExtractionWorkflowResult,
         FetchExtractionInput,
         SaveExtractionInput,
+        resolve_model,
     )
 
 _FETCH_TIMEOUT = timedelta(seconds=30)
@@ -51,6 +53,12 @@ class ForgeExtractionWorkflow:
                 entries_created=0,
                 source_workflow_ids=[],
             )
+
+        # Resolve model for extraction
+        summarization_model = resolve_model(CapabilityTier.SUMMARIZATION, input.model_routing)
+        extraction_input = extraction_input.model_copy(
+            update={"model_name": summarization_model},
+        )
 
         call_result = await workflow.execute_activity(
             "call_extraction_llm",

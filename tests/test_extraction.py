@@ -252,3 +252,108 @@ class TestExecuteExtractionCall:
         result = await execute_extraction_call(input_data, agent)
 
         assert result.result.entries[0].source_workflow_id == "wf-1"
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: model_name threading via call_extraction_llm activity
+# ---------------------------------------------------------------------------
+
+
+class TestCallExtractionLlmModelNameThreading:
+    @pytest.mark.asyncio
+    async def test_threads_model_name_to_create_agent(self) -> None:
+        from unittest.mock import patch
+
+        from forge.activities.extraction import call_extraction_llm
+
+        mock_output = ExtractionResult(
+            entries=[],
+            summary="Nothing to extract.",
+        )
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
+        mock_usage.cache_creation_input_tokens = 0
+        mock_usage.cache_read_input_tokens = 0
+
+        mock_result = MagicMock()
+        mock_result.output = mock_output
+        mock_result.usage.return_value = mock_usage
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_agent.model = "custom:extract"
+
+        with (
+            patch(
+                "forge.activities.extraction.create_extraction_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("forge.activities.extraction._persist_extraction_interaction"),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            input_data = ExtractionInput(
+                system_prompt="sys",
+                user_prompt="usr",
+                source_workflow_ids=["wf-1"],
+                model_name="custom:extract",
+            )
+            await call_extraction_llm(input_data)
+
+            mock_create.assert_called_once_with("custom:extract")
+
+    @pytest.mark.asyncio
+    async def test_uses_default_when_model_name_empty(self) -> None:
+        from unittest.mock import patch
+
+        from forge.activities.extraction import call_extraction_llm
+
+        mock_output = ExtractionResult(
+            entries=[],
+            summary="Nothing.",
+        )
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
+        mock_usage.cache_creation_input_tokens = 0
+        mock_usage.cache_read_input_tokens = 0
+
+        mock_result = MagicMock()
+        mock_result.output = mock_output
+        mock_result.usage.return_value = mock_usage
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_agent.model = "default-model"
+
+        with (
+            patch(
+                "forge.activities.extraction.create_extraction_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("forge.activities.extraction._persist_extraction_interaction"),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            input_data = ExtractionInput(
+                system_prompt="sys",
+                user_prompt="usr",
+                source_workflow_ids=["wf-1"],
+            )
+            await call_extraction_llm(input_data)
+
+            # Empty string is falsy, so or None gives None
+            mock_create.assert_called_once_with(None)

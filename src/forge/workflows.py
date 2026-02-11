@@ -22,6 +22,7 @@ with workflow.unsafe.imports_passed_through():
         AssembledContext,
         AssembleStepContextInput,
         AssembleSubTaskContextInput,
+        CapabilityTier,
         CommitChangesInput,
         CommitChangesOutput,
         ContextResult,
@@ -52,6 +53,7 @@ with workflow.unsafe.imports_passed_through():
         WriteResult,
         build_llm_stats,
         build_planner_stats,
+        resolve_model,
     )
     from forge.providers import PROVIDER_SPECS
 
@@ -115,6 +117,7 @@ class ForgeTaskWorkflow:
         repo_root: str,
         worktree_path: str,
         max_rounds: int,
+        model_name: str = "",
     ) -> list[ContextResult]:
         """LLM-guided context exploration loop.
 
@@ -133,6 +136,7 @@ class ForgeTaskWorkflow:
                     round_number=round_num,
                     max_rounds=max_rounds,
                     repo_root=repo_root,
+                    model_name=model_name,
                 ),
                 start_to_close_timeout=_EXPLORATION_LLM_TIMEOUT,
                 result_type=ExplorationResponse,
@@ -181,6 +185,10 @@ class ForgeTaskWorkflow:
         max_attempts = input.max_attempts
         prior_errors: list[ValidationResult] = []
 
+        # Resolve models for this workflow
+        generation_model = resolve_model(CapabilityTier.GENERATION, input.model_routing)
+        exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
+
         for attempt in range(1, max_attempts + 1):
             # --- Create worktree ---
             wt_output = await workflow.execute_activity(
@@ -216,6 +224,7 @@ class ForgeTaskWorkflow:
                     repo_root=input.repo_root,
                     worktree_path=wt_output.worktree_path,
                     max_rounds=input.max_exploration_rounds,
+                    model_name=exploration_model,
                 )
                 exploration_section = self._format_exploration_context(exploration_results)
                 if exploration_section:
@@ -227,6 +236,9 @@ class ForgeTaskWorkflow:
                         step_id=context.step_id,
                         sub_task_id=context.sub_task_id,
                     )
+
+            # --- Set model_name on context ---
+            context = context.model_copy(update={"model_name": generation_model})
 
             # --- Call LLM ---
             llm_result = await workflow.execute_activity(
@@ -349,6 +361,10 @@ class ForgeTaskWorkflow:
         task = input.task
         max_step_attempts = input.max_step_attempts
 
+        # Resolve models for this workflow
+        planner_model = resolve_model(CapabilityTier.REASONING, input.model_routing)
+        exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
+
         # --- Create worktree (once) ---
         wt_output = await workflow.execute_activity(
             "create_worktree_activity",
@@ -380,6 +396,7 @@ class ForgeTaskWorkflow:
                 repo_root=input.repo_root,
                 worktree_path=wt_output.worktree_path,
                 max_rounds=input.max_exploration_rounds,
+                model_name=exploration_model,
             )
             exploration_section = self._format_exploration_context(exploration_results)
             if exploration_section:
@@ -388,6 +405,9 @@ class ForgeTaskWorkflow:
                     system_prompt=planner_input.system_prompt + exploration_section,
                     user_prompt=planner_input.user_prompt,
                 )
+
+        # --- Set model_name on planner input ---
+        planner_input = planner_input.model_copy(update={"model_name": planner_model})
 
         # --- Call planner ---
         planner_result = await workflow.execute_activity(
@@ -403,9 +423,19 @@ class ForgeTaskWorkflow:
 
         # --- Execute steps sequentially ---
         for step_index, step in enumerate(plan.steps):
+            # Resolve model for this step (per-step tier override or default)
+            step_tier = step.capability_tier or CapabilityTier.GENERATION
+            step_model = resolve_model(step_tier, input.model_routing)
+
             if step.sub_tasks:
                 # Phase 3: fan-out step
-                step_result = await self._run_fan_out_step(input, step, wt_output, step_results)
+                step_result = await self._run_fan_out_step(
+                    input,
+                    step,
+                    wt_output,
+                    step_results,
+                    step_model=step_model,
+                )
                 step_results.append(step_result)
                 if step_result.status != TransitionSignal.SUCCESS:
                     return TaskResult(
@@ -444,6 +474,9 @@ class ForgeTaskWorkflow:
                     start_to_close_timeout=_CONTEXT_TIMEOUT,
                     result_type=AssembledContext,
                 )
+
+                # --- Set model_name on context ---
+                context = context.model_copy(update={"model_name": step_model})
 
                 # --- Call LLM ---
                 llm_result = await workflow.execute_activity(
@@ -586,6 +619,7 @@ class ForgeTaskWorkflow:
         step: PlanStep,
         wt_output: CreateWorktreeOutput,
         prior_step_results: list[StepResult],
+        step_model: str = "",
     ) -> StepResult:
         """Execute a fan-out step by spawning child workflows in parallel.
 
@@ -620,6 +654,7 @@ class ForgeTaskWorkflow:
                 parent_branch=wt_output.branch_name,
                 validation=task.validation,
                 max_attempts=input.max_sub_task_attempts,
+                model_name=step_model,
             )
             compound_id = f"{task.task_id}.sub.{st.sub_task_id}"
             handle = await workflow.start_child_workflow(
@@ -789,6 +824,10 @@ class ForgeSubTaskWorkflow:
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
                 result_type=AssembledContext,
             )
+
+            # --- Set model_name from parent ---
+            if input.model_name:
+                context = context.model_copy(update={"model_name": input.model_name})
 
             # --- Call LLM ---
             llm_result = await workflow.execute_activity(

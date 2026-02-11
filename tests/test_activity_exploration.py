@@ -294,3 +294,90 @@ class TestBuildExplorationPromptProjectInstructions:
         )
         system, _ = build_exploration_prompt(input, project_instructions="")
         assert "## Project Instructions" not in system
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: model_name threading via call_exploration_llm activity
+# ---------------------------------------------------------------------------
+
+
+class TestCallExplorationLlmModelNameThreading:
+    @pytest.mark.asyncio
+    async def test_threads_model_name_to_create_agent(self) -> None:
+        from unittest.mock import patch
+
+        from forge.activities.exploration import call_exploration_llm
+
+        response = ExplorationResponse(requests=[])
+
+        mock_result = MagicMock()
+        mock_result.output = response
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+
+        with (
+            patch(
+                "forge.activities.exploration.create_exploration_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            input_data = ExplorationInput(
+                task=_make_task(),
+                available_providers=_make_providers(),
+                round_number=1,
+                max_rounds=5,
+                model_name="custom:explore",
+            )
+            await call_exploration_llm(input_data)
+
+            mock_create.assert_called_once_with("custom:explore")
+
+    @pytest.mark.asyncio
+    async def test_uses_default_when_model_name_empty(self) -> None:
+        from unittest.mock import patch
+
+        from forge.activities.exploration import (
+            DEFAULT_EXPLORATION_MODEL,
+            call_exploration_llm,
+        )
+
+        response = ExplorationResponse(requests=[])
+
+        mock_result = MagicMock()
+        mock_result.output = response
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+
+        with (
+            patch(
+                "forge.activities.exploration.create_exploration_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            input_data = ExplorationInput(
+                task=_make_task(),
+                available_providers=_make_providers(),
+                round_number=1,
+                max_rounds=5,
+            )
+            await call_exploration_llm(input_data)
+
+            mock_create.assert_called_once_with(DEFAULT_EXPLORATION_MODEL)

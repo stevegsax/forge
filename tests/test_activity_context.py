@@ -1090,9 +1090,7 @@ class TestProjectInstructionsInPrompts:
             items_included=1,
         )
         instructions = "## Project Instructions\n\nFollow conventions."
-        prompt = build_system_prompt_with_context(
-            task, packed, project_instructions=instructions
-        )
+        prompt = build_system_prompt_with_context(task, packed, project_instructions=instructions)
         assert "## Project Instructions" in prompt
         output_pos = prompt.index("## Output Requirements")
         instr_pos = prompt.index("## Project Instructions")
@@ -1233,9 +1231,7 @@ class TestProjectInstructionsInActivities:
         assert "Function Core / Imperative Shell" in result.system_prompt
 
     @pytest.mark.asyncio
-    async def test_assemble_sub_task_context_falls_back_to_worktree(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_assemble_sub_task_context_falls_back_to_worktree(self, tmp_path: Path) -> None:
         """When repo_root is empty, falls back to worktree_path."""
         parent_wt = tmp_path / "parent-wt"
         parent_wt.mkdir()

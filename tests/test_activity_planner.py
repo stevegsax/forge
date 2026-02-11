@@ -298,18 +298,14 @@ class TestBuildPlannerSystemPromptProjectInstructions:
     def test_includes_project_instructions(self) -> None:
         task = TaskDefinition(task_id="t1", description="Build an API.")
         instructions = "## Project Instructions\n\nUse SOLID principles."
-        prompt = build_planner_system_prompt(
-            task, {}, project_instructions=instructions
-        )
+        prompt = build_planner_system_prompt(task, {}, project_instructions=instructions)
         assert "## Project Instructions" in prompt
         assert "Use SOLID principles." in prompt
 
     def test_instructions_after_role_before_task(self) -> None:
         task = TaskDefinition(task_id="t1", description="Build an API.")
         instructions = "## Project Instructions\n\nUse SOLID."
-        prompt = build_planner_system_prompt(
-            task, {}, project_instructions=instructions
-        )
+        prompt = build_planner_system_prompt(task, {}, project_instructions=instructions)
         role_pos = prompt.index("task decomposition assistant")
         instr_pos = prompt.index("## Project Instructions")
         task_pos = prompt.index("## Task")
@@ -351,3 +347,127 @@ class TestAssemblePlannerContextProjectInstructions:
         )
         result = await assemble_planner_context(input_data)
         assert "## Project Instructions" not in result.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: Capability tier docs in planner prompt
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPlannerSystemPromptCapabilityTier:
+    def test_includes_capability_tier_section(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Build an API.")
+        prompt = build_planner_system_prompt(task, {})
+        assert "## Capability Tier" in prompt
+
+    def test_includes_tier_names(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Build an API.")
+        prompt = build_planner_system_prompt(task, {})
+        assert "REASONING" in prompt
+        assert "GENERATION" in prompt
+        assert "SUMMARIZATION" in prompt
+        assert "CLASSIFICATION" in prompt
+
+    def test_tier_section_before_fan_out(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Build an API.")
+        prompt = build_planner_system_prompt(task, {})
+        tier_pos = prompt.index("## Capability Tier")
+        fan_out_pos = prompt.index("## Fan-Out Sub-Tasks")
+        assert tier_pos < fan_out_pos
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: model_name threading via call_planner activity
+# ---------------------------------------------------------------------------
+
+
+class TestCallPlannerModelNameThreading:
+    @pytest.mark.asyncio
+    async def test_threads_model_name_to_create_planner_agent(self) -> None:
+        from unittest.mock import patch
+
+        from forge.activities.planner import call_planner
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
+        mock_usage.cache_creation_input_tokens = 0
+        mock_usage.cache_read_input_tokens = 0
+
+        mock_result = MagicMock()
+        mock_result.output = _TEST_PLAN
+        mock_result.usage.return_value = mock_usage
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_agent.model = "custom:planner"
+
+        with (
+            patch(
+                "forge.activities.planner.create_planner_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("forge.activities.planner._persist_interaction"),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            planner_input = PlannerInput(
+                task_id="t1",
+                system_prompt="sys",
+                user_prompt="usr",
+                model_name="custom:planner",
+            )
+            await call_planner(planner_input)
+
+            mock_create.assert_called_once_with("custom:planner")
+
+    @pytest.mark.asyncio
+    async def test_uses_default_when_model_name_empty(self) -> None:
+        from unittest.mock import patch
+
+        from forge.activities.planner import call_planner
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
+        mock_usage.cache_creation_input_tokens = 0
+        mock_usage.cache_read_input_tokens = 0
+
+        mock_result = MagicMock()
+        mock_result.output = _TEST_PLAN
+        mock_result.usage.return_value = mock_usage
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_agent.model = "default-model"
+
+        with (
+            patch(
+                "forge.activities.planner.create_planner_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("forge.activities.planner._persist_interaction"),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            planner_input = PlannerInput(
+                task_id="t1",
+                system_prompt="sys",
+                user_prompt="usr",
+            )
+            await call_planner(planner_input)
+
+            # Empty string is falsy, so or None gives None
+            mock_create.assert_called_once_with(None)

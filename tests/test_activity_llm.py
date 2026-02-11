@@ -266,3 +266,85 @@ class TestCreateAgentModelSettings:
         settings = agent.model_settings
         assert settings.get("anthropic_cache_instructions") is True
         assert settings.get("anthropic_cache_tool_definitions") is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: model_name threading via call_llm activity
+# ---------------------------------------------------------------------------
+
+
+class TestCallLlmModelNameThreading:
+    @pytest.mark.asyncio
+    async def test_threads_model_name_to_create_agent(self) -> None:
+        from forge.activities.llm import call_llm
+
+        mock_agent = MagicMock()
+        mock_agent.model = "custom:model"
+        mock_response = LLMResponse(explanation="done")
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 10
+        mock_usage.output_tokens = 20
+        mock_usage.cache_creation_input_tokens = 0
+        mock_usage.cache_read_input_tokens = 0
+        mock_result = MagicMock()
+        mock_result.output = mock_response
+        mock_result.usage.return_value = mock_usage
+        mock_agent.run = AsyncMock(return_value=mock_result)
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value = mock_span
+
+        with (
+            patch("forge.activities.llm.create_agent", return_value=mock_agent) as mock_create,
+            patch("forge.activities.llm._persist_interaction"),
+            patch("forge.tracing.get_tracer", return_value=mock_tracer),
+        ):
+            context = AssembledContext(
+                task_id="t1",
+                system_prompt="sys",
+                user_prompt="usr",
+                model_name="custom:model",
+            )
+            await call_llm(context)
+
+            mock_create.assert_called_once_with("custom:model")
+
+    @pytest.mark.asyncio
+    async def test_uses_default_when_model_name_empty(self) -> None:
+        from forge.activities.llm import DEFAULT_MODEL, call_llm
+
+        mock_agent = MagicMock()
+        mock_agent.model = DEFAULT_MODEL
+        mock_response = LLMResponse(explanation="done")
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 10
+        mock_usage.output_tokens = 20
+        mock_usage.cache_creation_input_tokens = 0
+        mock_usage.cache_read_input_tokens = 0
+        mock_result = MagicMock()
+        mock_result.output = mock_response
+        mock_result.usage.return_value = mock_usage
+        mock_agent.run = AsyncMock(return_value=mock_result)
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value = mock_span
+
+        with (
+            patch("forge.activities.llm.create_agent", return_value=mock_agent) as mock_create,
+            patch("forge.activities.llm._persist_interaction"),
+            patch("forge.tracing.get_tracer", return_value=mock_tracer),
+        ):
+            context = AssembledContext(
+                task_id="t1",
+                system_prompt="sys",
+                user_prompt="usr",
+            )
+            await call_llm(context)
+
+            mock_create.assert_called_once_with(DEFAULT_MODEL)

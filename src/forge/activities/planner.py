@@ -119,6 +119,19 @@ def build_planner_system_prompt(
         )
 
     parts.append("")
+    parts.append("## Capability Tier")
+    parts.append(
+        "Each step can optionally specify a `capability_tier` to control which "
+        "model class handles it. When omitted, the step uses the GENERATION tier."
+    )
+    parts.append("")
+    parts.append("Available tiers:")
+    parts.append("- REASONING — for complex analysis, planning, or architectural decisions")
+    parts.append("- GENERATION — for standard code generation (default)")
+    parts.append("- SUMMARIZATION — for summarization and extraction tasks")
+    parts.append("- CLASSIFICATION — for lightweight classification or triage tasks")
+
+    parts.append("")
     parts.append("## Fan-Out Sub-Tasks")
     parts.append(
         "Steps can optionally include `sub_tasks` for independent parallel work. "
@@ -325,7 +338,7 @@ async def call_planner(input: PlannerInput) -> PlanCallResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_planner") as span:
-        agent = create_planner_agent()
+        agent = create_planner_agent(input.model_name or None)
         result = await execute_planner_call(input, agent)
 
         span.set_attributes(

@@ -115,7 +115,7 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_llm") as span:
-        agent = create_agent()
+        agent = create_agent(context.model_name or DEFAULT_MODEL)
         result = await execute_llm_call(context, agent)
 
         span.set_attributes(

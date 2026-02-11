@@ -330,7 +330,7 @@ async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_extraction_llm") as span:
-        agent = create_extraction_agent()
+        agent = create_extraction_agent(input.model_name or None)
         result = await execute_extraction_call(input, agent)
 
         span.set_attributes(

@@ -24,6 +24,7 @@ from forge.git import RepoDiscoveryError, discover_repo_root
 from forge.models import (
     ContextConfig,
     ForgeTaskInput,
+    ModelConfig,
     TaskDefinition,
     TaskResult,
     TransitionSignal,
@@ -263,6 +264,7 @@ async def _submit_and_wait(
     max_step_attempts: int = 2,
     max_sub_task_attempts: int = 2,
     max_exploration_rounds: int = 10,
+    model_routing: ModelConfig | None = None,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
@@ -282,6 +284,7 @@ async def _submit_and_wait(
             max_step_attempts=max_step_attempts,
             max_sub_task_attempts=max_sub_task_attempts,
             max_exploration_rounds=max_exploration_rounds,
+            model_routing=model_routing or ModelConfig(),
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -299,6 +302,7 @@ async def _submit_no_wait(
     max_step_attempts: int = 2,
     max_sub_task_attempts: int = 2,
     max_exploration_rounds: int = 10,
+    model_routing: ModelConfig | None = None,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
@@ -318,6 +322,7 @@ async def _submit_no_wait(
             max_step_attempts=max_step_attempts,
             max_sub_task_attempts=max_sub_task_attempts,
             max_exploration_rounds=max_exploration_rounds,
+            model_routing=model_routing or ModelConfig(),
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -415,6 +420,26 @@ def main() -> None:
 )
 @click.option("--no-explore", is_flag=True, help="Disable LLM-guided context exploration.")
 @click.option(
+    "--reasoning-model",
+    default=None,
+    help="Override the model used for REASONING tier (planning).",
+)
+@click.option(
+    "--generation-model",
+    default=None,
+    help="Override the model used for GENERATION tier (code gen).",
+)
+@click.option(
+    "--summarization-model",
+    default=None,
+    help="Override the model used for SUMMARIZATION tier (extraction).",
+)
+@click.option(
+    "--classification-model",
+    default=None,
+    help="Override the model used for CLASSIFICATION tier (exploration).",
+)
+@click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
     default=DEFAULT_TEMPORAL_ADDRESS,
@@ -445,6 +470,10 @@ def run(
     include_deps: bool,
     max_exploration_rounds: int,
     no_explore: bool,
+    reasoning_model: str | None,
+    generation_model: str | None,
+    summarization_model: str | None,
+    classification_model: str | None,
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -498,6 +527,18 @@ def run(
     # --- Compute exploration rounds ---
     effective_exploration_rounds = 0 if no_explore else max_exploration_rounds
 
+    # --- Build model routing config ---
+    model_overrides: dict[str, str] = {}
+    if reasoning_model:
+        model_overrides["reasoning"] = reasoning_model
+    if generation_model:
+        model_overrides["generation"] = generation_model
+    if summarization_model:
+        model_overrides["summarization"] = summarization_model
+    if classification_model:
+        model_overrides["classification"] = classification_model
+    model_routing = ModelConfig(**model_overrides) if model_overrides else None
+
     # --- Submit ---
     try:
         if no_wait:
@@ -511,6 +552,7 @@ def run(
                     max_step_attempts=max_step_attempts,
                     max_sub_task_attempts=max_sub_task_attempts,
                     max_exploration_rounds=effective_exploration_rounds,
+                    model_routing=model_routing,
                 )
             )
             click.echo(workflow_id)
@@ -525,6 +567,7 @@ def run(
                     max_step_attempts=max_step_attempts,
                     max_sub_task_attempts=max_sub_task_attempts,
                     max_exploration_rounds=effective_exploration_rounds,
+                    model_routing=model_routing,
                 )
             )
 

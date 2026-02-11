@@ -217,7 +217,7 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
                 _read_project_instructions(Path(input.repo_root))
             )
 
-        agent = create_exploration_agent()
+        agent = create_exploration_agent(input.model_name or DEFAULT_EXPLORATION_MODEL)
         start = time.monotonic()
         response = await execute_exploration_call(input, agent, project_instructions)
         elapsed_ms = (time.monotonic() - start) * 1000

@@ -29,6 +29,46 @@ class TransitionSignal(StrEnum):
     # BLOCKED_ON_SIBLING = "blocked_on_sibling"
 
 
+class CapabilityTier(StrEnum):
+    """Capability tier for model routing (Phase 11)."""
+
+    REASONING = "reasoning"
+    GENERATION = "generation"
+    SUMMARIZATION = "summarization"
+    CLASSIFICATION = "classification"
+
+
+# ---------------------------------------------------------------------------
+# Model routing (Phase 11)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TIER_MODELS: dict[CapabilityTier, str] = {
+    CapabilityTier.REASONING: "anthropic:claude-opus-4-6",
+    CapabilityTier.GENERATION: "anthropic:claude-sonnet-4-5-20250929",
+    CapabilityTier.SUMMARIZATION: "anthropic:claude-sonnet-4-5-20250929",
+    CapabilityTier.CLASSIFICATION: "anthropic:claude-haiku-4-5-20251001",
+}
+
+
+class ModelConfig(BaseModel):
+    """Maps capability tiers to concrete model names."""
+
+    reasoning: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.REASONING])
+    generation: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.GENERATION])
+    summarization: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.SUMMARIZATION])
+    classification: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.CLASSIFICATION])
+
+
+def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
+    """Resolve a capability tier to a concrete model name."""
+    return {
+        CapabilityTier.REASONING: config.reasoning,
+        CapabilityTier.GENERATION: config.generation,
+        CapabilityTier.SUMMARIZATION: config.summarization,
+        CapabilityTier.CLASSIFICATION: config.classification,
+    }[tier]
+
+
 class ValidationConfig(BaseModel):
     """Configuration for deterministic validation checks."""
 
@@ -137,6 +177,10 @@ class PlanStep(BaseModel):
     sub_tasks: list[SubTask] | None = Field(
         default=None,
         description="Optional sub-tasks for fan-out parallel execution.",
+    )
+    capability_tier: CapabilityTier | None = Field(
+        default=None,
+        description="Optional capability tier override for this step's LLM call.",
     )
 
 
@@ -330,6 +374,7 @@ class ExplorationInput(BaseModel):
     round_number: int
     max_rounds: int
     repo_root: str = Field(default="", description="Repo root for reading project instructions.")
+    model_name: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +423,7 @@ class AssembledContext(BaseModel):
     context_stats: ContextStats | None = None
     step_id: str | None = None
     sub_task_id: str | None = None
+    model_name: str = ""
 
 
 class LLMCallResult(BaseModel):
@@ -468,6 +514,7 @@ class ForgeTaskInput(BaseModel):
         default=10,
         description="Max rounds of LLM-guided context exploration (0 disables).",
     )
+    model_routing: ModelConfig = Field(default_factory=ModelConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +586,7 @@ class SubTaskInput(BaseModel):
     parent_branch: str = Field(description="e.g. 'forge/my-task'")
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     max_attempts: int = 2
+    model_name: str = ""
 
 
 class WriteFilesInput(BaseModel):
@@ -573,6 +621,7 @@ class PlannerInput(BaseModel):
     task_id: str
     system_prompt: str
     user_prompt: str
+    model_name: str = ""
 
 
 class PlanCallResult(BaseModel):
@@ -623,6 +672,7 @@ class ExtractionInput(BaseModel):
     source_workflow_ids: list[str] = Field(
         description="Workflow IDs being processed.",
     )
+    model_name: str = ""
 
 
 class ExtractionCallResult(BaseModel):
@@ -651,6 +701,7 @@ class ExtractionWorkflowInput(BaseModel):
 
     limit: int = Field(default=10, description="Max runs to extract from.")
     since_hours: int = Field(default=24, description="Look-back window in hours.")
+    model_routing: ModelConfig = Field(default_factory=ModelConfig)
 
 
 class ExtractionWorkflowResult(BaseModel):
