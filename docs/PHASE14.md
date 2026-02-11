@@ -401,24 +401,49 @@ Decisions D75–D82 are recorded in `DECISIONS.md`.
 - **D80**: Batch jobs table as audit log (not coordination).
 - **D81**: Temporal Schedules for batch polling and knowledge extraction.
 - **D82**: All LLM call sites go through batch.
+- **D83**: Decompose Phase 14 into sub-phases 14a/14b/14c.
 
 ## Implementation Order
 
-1. **(Prerequisite)** Remove pydantic-ai. Replace with direct Anthropic SDK + Pydantic. All existing tests must pass.
-2. Add `batch.py` with `build_anthropic_request`, `extract_tool_result`, and `OUTPUT_TYPE_REGISTRY`.
-3. Add `BatchJob` table to `store.py` with Alembic migration.
-4. Add `BatchSubmitInput`, `BatchSubmitResult`, `BatchResult`, `ParseResponseInput` to `models.py`.
-5. Add `submit_batch_request` activity in `activities/batch_submit.py`.
-6. Add `parse_llm_response` activity (and per-call-type variants) in the respective activity modules.
+Phase 14 is decomposed into three sub-phases (D83), each independently deliverable with all tests passing.
+
+### Prerequisite (complete)
+
+Remove pydantic-ai. Replace with direct Anthropic SDK + Pydantic. All existing tests pass.
+
+### Phase 14a — Batch Infrastructure
+
+Foundation layer. No workflow changes — everything testable in isolation.
+
+1. Add `BatchSubmitInput`, `BatchSubmitResult`, `BatchResult`, `ParseResponseInput` to `models.py`.
+2. Add `BatchJob` table to `store.py` with Alembic migration.
+3. Add `batch.py` with `build_anthropic_request`, `extract_tool_result`, and `OUTPUT_TYPE_REGISTRY`.
+4. Add `submit_batch_request` activity in `activities/batch_submit.py`.
+5. Add `parse_llm_response` activity (and per-call-type variants) in the respective activity modules.
+6. Tests for all of the above.
+
+### Phase 14b — Workflow Batch Integration
+
+Signal plumbing and call site wiring. Defaults to sync mode until the poller exists in 14c.
+
 7. Add signal handler and `_call_llm` helper to `ForgeTaskWorkflow` and `ForgeSubTaskWorkflow`.
-8. Update all five call sites (generation, planner, exploration, sanity check, conflict resolution) to use `_call_llm`.
-9. Add `poll_batch_results` activity in `activities/batch_poll.py`.
-10. Add `BatchPollerWorkflow` in `batch_poller_workflow.py`.
-11. Register the Temporal Schedule for batch polling in `worker.py`.
-12. Add `--sync` and `--batch-poll-interval` CLI flags.
-13. Register `forge_batch_id` custom search attribute on Temporal namespace.
-14. Migrate knowledge extraction to Temporal Schedule.
-15. Tests for each step.
+8. Register `forge_batch_id` custom search attribute on Temporal namespace.
+9. Add `--sync` CLI flag (default: sync enabled, batch opt-in until 14c).
+10. Update all five call sites (generation, planner, exploration, sanity check, conflict resolution) to use `_call_llm`.
+11. Workflow and E2E tests.
+
+### Phase 14c — Batch Poller + Scheduling
+
+Completes the loop. Flips default to batch mode.
+
+12. Add `poll_batch_results` activity in `activities/batch_poll.py`.
+13. Add `BatchPollerWorkflow` in `batch_poller_workflow.py`.
+14. Register the Temporal Schedule for batch polling in `worker.py`.
+15. Add `--batch-poll-interval` CLI flag.
+16. Anomaly detection (missing/unknown/expired batches).
+17. Migrate knowledge extraction to Temporal Schedule with `--extraction-interval` flag.
+18. Flip default from sync to batch mode.
+19. Tests for poller, scheduling, and anomaly detection.
 
 ## Edge Cases
 

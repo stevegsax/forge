@@ -493,3 +493,15 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) go through the batch path by default. No call site is exempted for Release 1.
 
 **Rationale:** Consistency simplifies the implementation — one code path for all LLM calls, switchable between batch and sync via a single flag. The latency cost for sequential call sites (exploration rounds, planner) is bounded by the poll interval (default 60s per round). For a 10-round exploration at 60s polling, the worst case adds ~10 minutes — acceptable for an automated system saving 50% on token costs. Release 2 can introduce per-call routing for latency-sensitive call sites if needed.
+
+## D83: Decompose Phase 14 into Sub-Phases (14a/14b/14c)
+
+**Decision:** Split Phase 14 (batch processing) into three independently deliverable sub-phases rather than implementing it as a single phase.
+
+**Rationale:** Phase 14 touches models, activities, workflows, scheduling, and CLI — too many concerns for a single deliverable. Decomposing into sub-phases provides incremental testability and reduces risk:
+
+- **Phase 14a — Batch infrastructure**: Data models, `batch_jobs` audit table, `submit_batch_request` activity, `parse_llm_response` activities. No workflow changes. Everything testable in isolation.
+- **Phase 14b — Workflow batch integration**: Signal handler, `_call_llm` helper, `forge_batch_id` search attribute, `--sync` flag, wire up all 5 call sites. Defaults to sync mode until the poller exists.
+- **Phase 14c — Batch poller + scheduling**: `poll_batch_results` activity, `BatchPollerWorkflow`, Temporal Schedule registration, anomaly detection, knowledge extraction schedule migration, flip default to batch mode.
+
+Each sub-phase is independently committable with all tests passing. 14a is pure plumbing with no behavior change. 14b adds workflow wiring but defaults to sync. 14c completes the loop and enables batch as default.
