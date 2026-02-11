@@ -3659,19 +3659,19 @@ class TestBatchPlanned:
 
 
 # ---------------------------------------------------------------------------
-# Tests — existing sync_mode=True backward compatibility
+# Tests — sync_mode defaults to False (batch mode)
 # ---------------------------------------------------------------------------
 
 
-class TestSyncModeDefaultBackwardCompat:
-    """Verify that sync_mode defaults to True and existing tests still pass."""
+class TestSyncModeDefaultBatchMode:
+    """Verify that sync_mode defaults to False (batch mode is default)."""
 
-    def test_default_sync_mode_is_true(self) -> None:
+    def test_default_sync_mode_is_false(self) -> None:
         task = TaskDefinition(task_id="t1", description="Test.")
         input = ForgeTaskInput(task=task, repo_root="/repo")
-        assert input.sync_mode is True
+        assert input.sync_mode is False
 
-    def test_subtask_default_sync_mode_is_true(self) -> None:
+    def test_subtask_default_sync_mode_is_false(self) -> None:
         input = SubTaskInput(
             parent_task_id="p",
             parent_description="Parent.",
@@ -3679,4 +3679,4 @@ class TestSyncModeDefaultBackwardCompat:
             repo_root="/repo",
             parent_branch="main",
         )
-        assert input.sync_mode is True
+        assert input.sync_mode is False

@@ -8,9 +8,20 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import timedelta
 
-from temporalio.client import Client
+from temporalio.client import (
+    Client,
+    Schedule,
+    ScheduleActionStartWorkflow,
+    ScheduleIntervalSpec,
+    ScheduleSpec,
+    ScheduleState,
+    ScheduleUpdate,
+    ScheduleUpdateInput,
+)
 from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.service import RPCError
 from temporalio.worker import Worker
 
 from forge.activities import (
@@ -33,6 +44,7 @@ from forge.activities import (
     fetch_extraction_input,
     fulfill_context_requests,
     parse_llm_response,
+    poll_batch_results,
     remove_worktree_activity,
     reset_worktree_activity,
     save_extraction_results,
@@ -41,7 +53,10 @@ from forge.activities import (
     write_files,
     write_output,
 )
+from forge.activities.batch_poll import set_temporal_client
+from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
+from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
@@ -65,7 +80,55 @@ def _init_store() -> None:
         logger.warning("Failed to run database migrations", exc_info=True)
 
 
-async def run_worker(address: str | None = None) -> None:
+async def _ensure_schedule(
+    client: Client,
+    schedule_id: str,
+    workflow_name: str,
+    workflow_arg: object,
+    interval: timedelta,
+) -> None:
+    """Create or update a Temporal schedule (idempotent).
+
+    On first run, creates the schedule. On subsequent runs, updates the interval
+    if it has changed. Handles the "already exists" case gracefully.
+    """
+    schedule = Schedule(
+        action=ScheduleActionStartWorkflow(
+            workflow_name,
+            workflow_arg,
+            id=f"{schedule_id}-run",
+            task_queue=FORGE_TASK_QUEUE,
+        ),
+        spec=ScheduleSpec(
+            intervals=[ScheduleIntervalSpec(every=interval)],
+        ),
+        state=ScheduleState(
+            note=f"Forge schedule: {schedule_id}",
+        ),
+    )
+
+    try:
+        await client.create_schedule(schedule_id, schedule)
+        logger.info("Created schedule %s (interval=%s)", schedule_id, interval)
+    except RPCError as e:
+        if "already exists" in str(e).lower():
+            # Update the existing schedule with the new interval
+            handle = client.get_schedule_handle(schedule_id)
+            async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
+                input.description.schedule.spec = schedule.spec
+                return ScheduleUpdate(schedule=input.description.schedule)
+            await handle.update(_updater)
+            logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
+        else:
+            raise
+
+
+async def run_worker(
+    address: str | None = None,
+    *,
+    batch_poll_interval: int = 60,
+    extraction_interval: int = 14400,
+) -> None:
     """Connect to Temporal and run the Forge worker."""
     from forge.tracing import init_tracing, shutdown_tracing
 
@@ -80,10 +143,41 @@ async def run_worker(address: str | None = None) -> None:
         data_converter=pydantic_data_converter,
     )
 
+    # Inject Temporal client for poll activity signal delivery
+    set_temporal_client(client)
+
+    # Create/update schedules (best-effort)
+    try:
+        await _ensure_schedule(
+            client,
+            schedule_id="forge-batch-poller",
+            workflow_name="BatchPollerWorkflow",
+            workflow_arg=BatchPollerInput(),
+            interval=timedelta(seconds=batch_poll_interval),
+        )
+    except Exception:
+        logger.warning("Failed to create batch poller schedule", exc_info=True)
+
+    try:
+        await _ensure_schedule(
+            client,
+            schedule_id="forge-extraction-schedule",
+            workflow_name="ForgeExtractionWorkflow",
+            workflow_arg=ExtractionWorkflowInput(),
+            interval=timedelta(seconds=extraction_interval),
+        )
+    except Exception:
+        logger.warning("Failed to create extraction schedule", exc_info=True)
+
     worker = Worker(
         client,
         task_queue=FORGE_TASK_QUEUE,
-        workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow, ForgeExtractionWorkflow],
+        workflows=[
+            ForgeTaskWorkflow,
+            ForgeSubTaskWorkflow,
+            ForgeExtractionWorkflow,
+            BatchPollerWorkflow,
+        ],
         activities=[
             assemble_conflict_resolution_context,
             assemble_context,
@@ -104,6 +198,7 @@ async def run_worker(address: str | None = None) -> None:
             fetch_extraction_input,
             fulfill_context_requests,
             parse_llm_response,
+            poll_batch_results,
             remove_worktree_activity,
             reset_worktree_activity,
             save_extraction_results,

@@ -179,15 +179,15 @@ class TestExplorationInput:
 
 
 class TestForgeTaskInputSyncMode:
-    def test_default_sync_mode_true(self) -> None:
+    def test_default_sync_mode_false(self) -> None:
         task = TaskDefinition(task_id="t1", description="Test.")
         inp = ForgeTaskInput(task=task, repo_root="/repo")
-        assert inp.sync_mode is True
-
-    def test_sync_mode_false(self) -> None:
-        task = TaskDefinition(task_id="t1", description="Test.")
-        inp = ForgeTaskInput(task=task, repo_root="/repo", sync_mode=False)
         assert inp.sync_mode is False
+
+    def test_sync_mode_true(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Test.")
+        inp = ForgeTaskInput(task=task, repo_root="/repo", sync_mode=True)
+        assert inp.sync_mode is True
 
 
 class TestForgeTaskInputExploration:

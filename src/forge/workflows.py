@@ -1225,10 +1225,8 @@ class ForgeSubTaskWorkflow:
             start_to_close_timeout=_SUBMIT_TIMEOUT,
             result_type=BatchSubmitResult,
         )
-        await workflow.wait_condition(lambda: self._batch_result is not None)
-        result = self._batch_result
-        self._batch_result = None
-        assert result is not None
+        await workflow.wait_condition(lambda: len(self._batch_results) > 0)
+        result = self._batch_results.pop(0)
         if result.error:
             raise ApplicationError(f"Batch error: {result.error}")
         assert result.raw_response_json is not None

@@ -514,9 +514,9 @@ def main() -> None:
 @click.option(
     "--sync/--no-sync",
     "sync_mode",
-    default=True,
+    default=False,
     show_default=True,
-    help="Use synchronous Messages API. --no-sync enables batch mode.",
+    help="Use synchronous Messages API. --no-sync enables batch mode (default).",
 )
 @click.option(
     "--domain",
@@ -707,11 +707,31 @@ def run(
     show_default=True,
     help="Temporal server address.",
 )
-def worker(temporal_address: str) -> None:
+@click.option(
+    "--batch-poll-interval",
+    type=int,
+    default=60,
+    show_default=True,
+    help="Seconds between batch polling runs.",
+)
+@click.option(
+    "--extraction-interval",
+    type=int,
+    default=14400,
+    show_default=True,
+    help="Seconds between knowledge extraction schedule runs (default 4 hours).",
+)
+def worker(temporal_address: str, batch_poll_interval: int, extraction_interval: int) -> None:
     """Start the Temporal worker."""
     from forge.worker import run_worker
 
-    asyncio.run(run_worker(address=temporal_address))
+    asyncio.run(
+        run_worker(
+            address=temporal_address,
+            batch_poll_interval=batch_poll_interval,
+            extraction_interval=extraction_interval,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

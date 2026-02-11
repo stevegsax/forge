@@ -652,8 +652,8 @@ class ForgeTaskInput(BaseModel):
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     sync_mode: bool = Field(
-        default=True,
-        description="Use synchronous Messages API. False enables batch mode (requires 14c poller).",
+        default=False,
+        description="Use synchronous Messages API. False enables batch mode (default).",
     )
 
 
@@ -731,7 +731,7 @@ class SubTaskInput(BaseModel):
     depth: int = Field(default=0, description="Current fan-out depth.")
     max_depth: int = Field(default=1, description="Maximum allowed fan-out depth.")
     sync_mode: bool = Field(
-        default=True,
+        default=False,
         description="Use synchronous Messages API. Inherited from parent workflow.",
     )
 
