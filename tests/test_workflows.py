@@ -12,6 +12,7 @@ from temporalio.worker import Worker
 from forge.models import (
     AssembleContextInput,
     AssembledContext,
+    AssembleSanityCheckContextInput,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
     CommitChangesInput,
@@ -28,6 +29,10 @@ from forge.models import (
     PlanStep,
     RemoveWorktreeInput,
     ResetWorktreeInput,
+    SanityCheckCallResult,
+    SanityCheckInput,
+    SanityCheckResponse,
+    SanityCheckVerdict,
     SubTask,
     SubTaskInput,
     SubTaskResult,
@@ -2405,3 +2410,504 @@ class TestRecursiveBackwardCompat:
         )
         assert st_input.depth == 0
         assert st_input.max_depth == 1
+
+
+# ===========================================================================
+# Sanity check workflow tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Mock activities for sanity check tests
+# ---------------------------------------------------------------------------
+
+_SC_CALL_LOG: list[str] = []
+_SC_TRANSITION_SEQUENCE: list[str] = []
+_SC_LLM_CALL_COUNT: int = 0
+_SC_SANITY_RESPONSES: list[SanityCheckCallResult] = []
+
+_SC_PLAN = Plan(
+    task_id="sc-task",
+    steps=[
+        PlanStep(step_id="step-1", description="Create models.", target_files=["models.py"]),
+        PlanStep(step_id="step-2", description="Create API.", target_files=["api.py"]),
+        PlanStep(step_id="step-3", description="Add tests.", target_files=["test_api.py"]),
+        PlanStep(step_id="step-4", description="Add docs.", target_files=["docs.py"]),
+    ],
+    explanation="Four-step plan.",
+)
+
+
+def _reset_sc_mock_state(
+    transitions: list[str] | None = None,
+    sanity_responses: list[SanityCheckCallResult] | None = None,
+    plan: Plan | None = None,
+) -> None:
+    global _SC_LLM_CALL_COUNT, _SC_PLAN
+    _SC_CALL_LOG.clear()
+    _SC_TRANSITION_SEQUENCE.clear()
+    _SC_LLM_CALL_COUNT = 0
+    _SC_SANITY_RESPONSES.clear()
+    if transitions:
+        _SC_TRANSITION_SEQUENCE.extend(transitions)
+    if sanity_responses:
+        _SC_SANITY_RESPONSES.extend(sanity_responses)
+    if plan is not None:
+        _SC_PLAN = plan
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_sc_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _SC_CALL_LOG.append("create_worktree")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="assemble_planner_context")
+async def mock_sc_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
+    _SC_CALL_LOG.append("assemble_planner_context")
+    return PlannerInput(
+        task_id=input.task.task_id,
+        system_prompt="planner system prompt",
+        user_prompt="planner user prompt",
+    )
+
+
+@activity.defn(name="call_planner")
+async def mock_sc_call_planner(input: PlannerInput) -> PlanCallResult:
+    _SC_CALL_LOG.append("call_planner")
+    return PlanCallResult(
+        task_id=input.task_id,
+        plan=_SC_PLAN,
+        model_name="mock-planner",
+        input_tokens=300,
+        output_tokens=150,
+        latency_ms=500.0,
+    )
+
+
+@activity.defn(name="assemble_step_context")
+async def mock_sc_assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
+    _SC_CALL_LOG.append(f"assemble_step_context:{input.step.step_id}")
+    return AssembledContext(
+        task_id=input.task.task_id,
+        system_prompt=f"step system prompt for {input.step.step_id}",
+        user_prompt=f"step user prompt for {input.step.step_id}",
+    )
+
+
+@activity.defn(name="call_llm")
+async def mock_sc_call_llm(context: AssembledContext) -> LLMCallResult:
+    global _SC_LLM_CALL_COUNT
+    _SC_LLM_CALL_COUNT += 1
+    _SC_CALL_LOG.append(f"call_llm:{_SC_LLM_CALL_COUNT}")
+    files = [FileOutput(file_path=f"file{_SC_LLM_CALL_COUNT}.py", content="# code\n")]
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=LLMResponse(files=files, explanation=f"LLM call #{_SC_LLM_CALL_COUNT}"),
+        model_name="mock-model",
+        input_tokens=100,
+        output_tokens=50,
+        latency_ms=200.0,
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_sc_write_output(input: WriteOutputInput) -> WriteResult:
+    _SC_CALL_LOG.append("write_output")
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
+
+
+@activity.defn(name="validate_output")
+async def mock_sc_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+    _SC_CALL_LOG.append("validate_output")
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_sc_evaluate_transition(input: TransitionInput) -> str:
+    _SC_CALL_LOG.append("evaluate_transition")
+    if _SC_TRANSITION_SEQUENCE:
+        return _SC_TRANSITION_SEQUENCE.pop(0)
+    return TransitionSignal.SUCCESS.value
+
+
+@activity.defn(name="commit_changes_activity")
+async def mock_sc_commit_changes(input: CommitChangesInput) -> CommitChangesOutput:
+    msg = input.message or input.status
+    _SC_CALL_LOG.append(f"commit:{msg}")
+    return CommitChangesOutput(commit_sha="c" * 40)
+
+
+@activity.defn(name="reset_worktree_activity")
+async def mock_sc_reset_worktree(input: ResetWorktreeInput) -> None:
+    _SC_CALL_LOG.append("reset_worktree")
+
+
+@activity.defn(name="assemble_sanity_check_context")
+async def mock_assemble_sanity_check_context(
+    input: AssembleSanityCheckContextInput,
+) -> SanityCheckInput:
+    _SC_CALL_LOG.append("assemble_sanity_check_context")
+    return SanityCheckInput(
+        task_id=input.task.task_id,
+        system_prompt="sanity check system prompt",
+        user_prompt="sanity check user prompt",
+    )
+
+
+@activity.defn(name="call_sanity_check")
+async def mock_call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
+    _SC_CALL_LOG.append("call_sanity_check")
+    if _SC_SANITY_RESPONSES:
+        return _SC_SANITY_RESPONSES.pop(0)
+    return SanityCheckCallResult(
+        task_id=input.task_id,
+        response=SanityCheckResponse(
+            verdict=SanityCheckVerdict.CONTINUE,
+            explanation="Plan looks good.",
+        ),
+        model_name="mock-reasoning",
+        input_tokens=200,
+        output_tokens=100,
+        latency_ms=300.0,
+    )
+
+
+_SC_MOCK_ACTIVITIES = [
+    mock_sc_create_worktree,
+    mock_sc_assemble_planner_context,
+    mock_sc_call_planner,
+    mock_sc_assemble_step_context,
+    mock_sc_call_llm,
+    mock_sc_write_output,
+    mock_sc_validate_output,
+    mock_sc_evaluate_transition,
+    mock_sc_commit_changes,
+    mock_sc_reset_worktree,
+    mock_assemble_sanity_check_context,
+    mock_call_sanity_check,
+]
+
+_SC_TASK = TaskDefinition(
+    task_id="sc-task",
+    description="Build a full API.",
+)
+
+
+async def _run_sc_workflow(
+    env: WorkflowEnvironment,
+    input: ForgeTaskInput | None = None,
+) -> TaskResult:
+    """Helper to run the planned workflow with sanity check mock activities."""
+    if input is None:
+        input = ForgeTaskInput(
+            task=_SC_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_step_attempts=2,
+            max_exploration_rounds=0,
+            sanity_check_interval=2,
+        )
+    async with Worker(
+        env.client,
+        task_queue=FORGE_TASK_QUEUE,
+        workflows=[ForgeTaskWorkflow],
+        activities=_SC_MOCK_ACTIVITIES,
+    ):
+        return await env.client.execute_workflow(
+            ForgeTaskWorkflow.run,
+            input,
+            id=f"test-sc-{input.task.task_id}",
+            task_queue=FORGE_TASK_QUEUE,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests — sanity check continue
+# ---------------------------------------------------------------------------
+
+
+class TestSanityCheckContinue:
+    """interval=2, 4 steps, sanity check fires after step 2, returns 'continue'."""
+
+    @pytest.mark.asyncio
+    async def test_all_steps_complete(self, env: WorkflowEnvironment) -> None:
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value] * 4,
+        )
+        result = await _run_sc_workflow(env)
+        assert result.status == TransitionSignal.SUCCESS
+        assert len(result.step_results) == 4
+
+    @pytest.mark.asyncio
+    async def test_sanity_check_count(self, env: WorkflowEnvironment) -> None:
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value] * 4,
+        )
+        result = await _run_sc_workflow(env)
+        # Fires after step 2 (2 % 2 == 0, not last step)
+        # Does NOT fire after step 4 (last step)
+        assert result.sanity_check_count == 1
+
+    @pytest.mark.asyncio
+    async def test_sanity_check_activities_called(self, env: WorkflowEnvironment) -> None:
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value] * 4,
+        )
+        await _run_sc_workflow(env)
+        assert "assemble_sanity_check_context" in _SC_CALL_LOG
+        assert "call_sanity_check" in _SC_CALL_LOG
+
+
+# ---------------------------------------------------------------------------
+# Tests — sanity check abort
+# ---------------------------------------------------------------------------
+
+
+class TestSanityCheckAbort:
+    """interval=1, 3 steps, sanity check fires after step 1, returns 'abort'."""
+
+    @pytest.mark.asyncio
+    async def test_abort_returns_failure(self, env: WorkflowEnvironment) -> None:
+        abort_response = SanityCheckCallResult(
+            task_id="sc-task",
+            response=SanityCheckResponse(
+                verdict=SanityCheckVerdict.ABORT,
+                explanation="Fundamental issue found.",
+            ),
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+        three_step_plan = Plan(
+            task_id="sc-task",
+            steps=[
+                PlanStep(step_id="s1", description="Step 1.", target_files=["a.py"]),
+                PlanStep(step_id="s2", description="Step 2.", target_files=["b.py"]),
+                PlanStep(step_id="s3", description="Step 3.", target_files=["c.py"]),
+            ],
+            explanation="Three steps.",
+        )
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value],
+            sanity_responses=[abort_response],
+            plan=three_step_plan,
+        )
+        input = ForgeTaskInput(
+            task=_SC_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_exploration_rounds=0,
+            sanity_check_interval=1,
+        )
+        result = await _run_sc_workflow(env, input)
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert "Sanity check aborted" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_abort_only_one_step_result(self, env: WorkflowEnvironment) -> None:
+        abort_response = SanityCheckCallResult(
+            task_id="sc-task",
+            response=SanityCheckResponse(
+                verdict=SanityCheckVerdict.ABORT,
+                explanation="Stop now.",
+            ),
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+        three_step_plan = Plan(
+            task_id="sc-task",
+            steps=[
+                PlanStep(step_id="s1", description="Step 1.", target_files=["a.py"]),
+                PlanStep(step_id="s2", description="Step 2.", target_files=["b.py"]),
+                PlanStep(step_id="s3", description="Step 3.", target_files=["c.py"]),
+            ],
+            explanation="Three steps.",
+        )
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value],
+            sanity_responses=[abort_response],
+            plan=three_step_plan,
+        )
+        input = ForgeTaskInput(
+            task=_SC_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_exploration_rounds=0,
+            sanity_check_interval=1,
+        )
+        result = await _run_sc_workflow(env, input)
+        assert len(result.step_results) == 1
+        assert result.sanity_check_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests — sanity check revise
+# ---------------------------------------------------------------------------
+
+
+class TestSanityCheckRevise:
+    """interval=1, 3 steps, sanity check fires after step 1, returns 'revise' with 1 step."""
+
+    @pytest.mark.asyncio
+    async def test_revise_replaces_remaining_steps(self, env: WorkflowEnvironment) -> None:
+        revised_step = PlanStep(
+            step_id="revised-1", description="Revised step.", target_files=["revised.py"]
+        )
+        revise_response = SanityCheckCallResult(
+            task_id="sc-task",
+            response=SanityCheckResponse(
+                verdict=SanityCheckVerdict.REVISE,
+                explanation="Need to adjust approach.",
+                revised_steps=[revised_step],
+            ),
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+        three_step_plan = Plan(
+            task_id="sc-task",
+            steps=[
+                PlanStep(step_id="s1", description="Step 1.", target_files=["a.py"]),
+                PlanStep(step_id="s2", description="Step 2.", target_files=["b.py"]),
+                PlanStep(step_id="s3", description="Step 3.", target_files=["c.py"]),
+            ],
+            explanation="Three steps.",
+        )
+        _reset_sc_mock_state(
+            # step 1 succeeds, then sanity check revises.
+            # revised-1 succeeds (no more sanity check since it's the last step).
+            transitions=[TransitionSignal.SUCCESS.value, TransitionSignal.SUCCESS.value],
+            sanity_responses=[revise_response],
+            plan=three_step_plan,
+        )
+        input = ForgeTaskInput(
+            task=_SC_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_exploration_rounds=0,
+            sanity_check_interval=1,
+        )
+        result = await _run_sc_workflow(env, input)
+        assert result.status == TransitionSignal.SUCCESS
+        assert len(result.step_results) == 2
+        assert result.step_results[0].step_id == "s1"
+        assert result.step_results[1].step_id == "revised-1"
+
+    @pytest.mark.asyncio
+    async def test_revise_updates_plan_in_result(self, env: WorkflowEnvironment) -> None:
+        revised_step = PlanStep(
+            step_id="revised-1", description="Revised step.", target_files=["revised.py"]
+        )
+        revise_response = SanityCheckCallResult(
+            task_id="sc-task",
+            response=SanityCheckResponse(
+                verdict=SanityCheckVerdict.REVISE,
+                explanation="Need to adjust.",
+                revised_steps=[revised_step],
+            ),
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+        three_step_plan = Plan(
+            task_id="sc-task",
+            steps=[
+                PlanStep(step_id="s1", description="Step 1.", target_files=["a.py"]),
+                PlanStep(step_id="s2", description="Step 2.", target_files=["b.py"]),
+                PlanStep(step_id="s3", description="Step 3.", target_files=["c.py"]),
+            ],
+            explanation="Three steps.",
+        )
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value, TransitionSignal.SUCCESS.value],
+            sanity_responses=[revise_response],
+            plan=three_step_plan,
+        )
+        input = ForgeTaskInput(
+            task=_SC_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_exploration_rounds=0,
+            sanity_check_interval=1,
+        )
+        result = await _run_sc_workflow(env, input)
+        assert result.plan is not None
+        # Plan should have 2 steps: original s1 + revised-1
+        assert len(result.plan.steps) == 2
+        assert result.plan.steps[1].step_id == "revised-1"
+
+
+# ---------------------------------------------------------------------------
+# Tests — sanity check disabled
+# ---------------------------------------------------------------------------
+
+
+class TestSanityCheckDisabled:
+    """interval=0 (default), verify no sanity check activities called."""
+
+    @pytest.mark.asyncio
+    async def test_no_sanity_check_when_disabled(self, env: WorkflowEnvironment) -> None:
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value] * 4,
+        )
+        input = ForgeTaskInput(
+            task=_SC_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_exploration_rounds=0,
+            sanity_check_interval=0,
+        )
+        result = await _run_sc_workflow(env, input)
+        assert result.status == TransitionSignal.SUCCESS
+        assert result.sanity_check_count == 0
+        assert "assemble_sanity_check_context" not in _SC_CALL_LOG
+        assert "call_sanity_check" not in _SC_CALL_LOG
+
+
+# ---------------------------------------------------------------------------
+# Tests — sanity check skips last step
+# ---------------------------------------------------------------------------
+
+
+class TestSanityCheckSkipsLastStep:
+    """interval=1, 2 steps, verify sanity check fires after step 1 but not after step 2."""
+
+    @pytest.mark.asyncio
+    async def test_fires_after_first_not_last(self, env: WorkflowEnvironment) -> None:
+        two_step_plan = Plan(
+            task_id="sc-task",
+            steps=[
+                PlanStep(step_id="s1", description="Step 1.", target_files=["a.py"]),
+                PlanStep(step_id="s2", description="Step 2.", target_files=["b.py"]),
+            ],
+            explanation="Two steps.",
+        )
+        _reset_sc_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value, TransitionSignal.SUCCESS.value],
+            plan=two_step_plan,
+        )
+        input = ForgeTaskInput(
+            task=_SC_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_exploration_rounds=0,
+            sanity_check_interval=1,
+        )
+        result = await _run_sc_workflow(env, input)
+        assert result.status == TransitionSignal.SUCCESS
+        assert result.sanity_check_count == 1
+        # Only one sanity check call, not two
+        assert _SC_CALL_LOG.count("call_sanity_check") == 1

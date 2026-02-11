@@ -146,6 +146,9 @@ def format_verbose_result(result: TaskResult) -> str:
     if result.planner_stats:
         lines.append(f"Planner: {format_llm_stats(result.planner_stats)}")
 
+    if result.sanity_check_count > 0:
+        lines.append(f"Sanity checks: {result.sanity_check_count}")
+
     if result.context_stats:
         cs = result.context_stats
         lines.append("")
@@ -287,6 +290,7 @@ async def _submit_and_wait(
     max_sub_task_attempts: int = 2,
     max_fan_out_depth: int = 1,
     max_exploration_rounds: int = 10,
+    sanity_check_interval: int = 0,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
 ) -> TaskResult:
@@ -309,6 +313,7 @@ async def _submit_and_wait(
             max_sub_task_attempts=max_sub_task_attempts,
             max_fan_out_depth=max_fan_out_depth,
             max_exploration_rounds=max_exploration_rounds,
+            sanity_check_interval=sanity_check_interval,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
         ),
@@ -329,6 +334,7 @@ async def _submit_no_wait(
     max_sub_task_attempts: int = 2,
     max_fan_out_depth: int = 1,
     max_exploration_rounds: int = 10,
+    sanity_check_interval: int = 0,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
 ) -> str:
@@ -351,6 +357,7 @@ async def _submit_no_wait(
             max_sub_task_attempts=max_sub_task_attempts,
             max_fan_out_depth=max_fan_out_depth,
             max_exploration_rounds=max_exploration_rounds,
+            sanity_check_interval=sanity_check_interval,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
         ),
@@ -485,6 +492,13 @@ def main() -> None:
 )
 @click.option("--no-thinking", is_flag=True, help="Disable extended thinking for planner.")
 @click.option(
+    "--sanity-check-interval",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Run sanity check every N steps in planning mode (0 = disabled).",
+)
+@click.option(
     "--domain",
     type=click.Choice(["code_generation", "research", "code_review", "documentation"]),
     default="code_generation",
@@ -529,6 +543,7 @@ def run(
     classification_model: str | None,
     thinking_budget: int,
     no_thinking: bool,
+    sanity_check_interval: int,
     domain: str,
     temporal_address: str,
 ) -> None:
@@ -616,6 +631,7 @@ def run(
                     max_sub_task_attempts=max_sub_task_attempts,
                     max_fan_out_depth=max_fan_out_depth,
                     max_exploration_rounds=effective_exploration_rounds,
+                    sanity_check_interval=sanity_check_interval,
                     model_routing=model_routing,
                     thinking=thinking,
                 )
@@ -633,6 +649,7 @@ def run(
                     max_sub_task_attempts=max_sub_task_attempts,
                     max_fan_out_depth=max_fan_out_depth,
                     max_exploration_rounds=effective_exploration_rounds,
+                    sanity_check_interval=sanity_check_interval,
                     model_routing=model_routing,
                     thinking=thinking,
                 )

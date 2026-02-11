@@ -20,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
     from forge.models import (
         AssembleContextInput,
         AssembledContext,
+        AssembleSanityCheckContextInput,
         AssembleStepContextInput,
         AssembleSubTaskContextInput,
         CapabilityTier,
@@ -39,6 +40,9 @@ with workflow.unsafe.imports_passed_through():
         PlanStep,
         RemoveWorktreeInput,
         ResetWorktreeInput,
+        SanityCheckCallResult,
+        SanityCheckInput,
+        SanityCheckVerdict,
         StepResult,
         SubTaskInput,
         SubTaskResult,
@@ -71,6 +75,7 @@ _VALIDATE_TIMEOUT = timedelta(minutes=2)
 _TRANSITION_TIMEOUT = timedelta(seconds=10)
 _EXPLORATION_LLM_TIMEOUT = timedelta(minutes=5)
 _EXPLORATION_FULFILL_TIMEOUT = timedelta(minutes=2)
+_SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
 
 _CHILD_BASE_MINUTES = 15
 _CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
@@ -435,9 +440,13 @@ class ForgeTaskWorkflow:
         p_stats = build_planner_stats(planner_result)
         step_results: list[StepResult] = []
         all_output_files: dict[str, str] = {}
+        sanity_check_count = 0
 
-        # --- Execute steps sequentially ---
-        for step_index, step in enumerate(plan.steps):
+        # --- Execute steps sequentially (while loop enables plan mutation on revise) ---
+        step_index = 0
+        while step_index < len(plan.steps):
+            step = plan.steps[step_index]
+
             # Resolve model for this step (per-step tier override or default)
             step_tier = step.capability_tier or CapabilityTier.GENERATION
             step_model = resolve_model(step_tier, input.model_routing)
@@ -463,8 +472,10 @@ class ForgeTaskWorkflow:
                         step_results=step_results,
                         plan=plan,
                         planner_stats=p_stats,
+                        sanity_check_count=sanity_check_count,
                     )
                 all_output_files.update(step_result.output_files)
+                step_index += 1
                 continue
 
             step_succeeded = False
@@ -605,12 +616,48 @@ class ForgeTaskWorkflow:
                     step_results=step_results,
                     plan=plan,
                     planner_stats=p_stats,
+                    sanity_check_count=sanity_check_count,
                 )
 
             if not step_succeeded:
                 # Exhausted retries for this step — should have hit TERMINAL above
                 msg = f"Step {step.step_id} exhausted all attempts without a terminal transition"
                 raise RuntimeError(msg)
+
+            # --- Sanity check trigger ---
+            if (
+                input.sanity_check_interval > 0
+                and len(step_results) % input.sanity_check_interval == 0
+                and step_index < len(plan.steps) - 1  # skip after last step
+            ):
+                sanity_result = await self._run_sanity_check(
+                    input, plan, step_results, plan.steps[step_index + 1 :], wt_output
+                )
+                sanity_check_count += 1
+
+                if sanity_result.response.verdict == SanityCheckVerdict.ABORT:
+                    return TaskResult(
+                        task_id=task.task_id,
+                        status=TransitionSignal.FAILURE_TERMINAL,
+                        output_files=all_output_files,
+                        error=f"Sanity check aborted: {sanity_result.response.explanation}",
+                        worktree_path=wt_output.worktree_path,
+                        worktree_branch=wt_output.branch_name,
+                        step_results=step_results,
+                        plan=plan,
+                        planner_stats=p_stats,
+                        sanity_check_count=sanity_check_count,
+                    )
+
+                if sanity_result.response.verdict == SanityCheckVerdict.REVISE:
+                    revised = sanity_result.response.revised_steps or []
+                    plan = Plan(
+                        task_id=plan.task_id,
+                        steps=plan.steps[: step_index + 1] + revised,
+                        explanation=plan.explanation,
+                    )
+
+            step_index += 1
 
         # --- All steps succeeded ---
         return TaskResult(
@@ -622,6 +669,50 @@ class ForgeTaskWorkflow:
             step_results=step_results,
             plan=plan,
             planner_stats=p_stats,
+            sanity_check_count=sanity_check_count,
+        )
+
+    # ------------------------------------------------------------------
+    # Sanity check helper
+    # ------------------------------------------------------------------
+
+    async def _run_sanity_check(
+        self,
+        input: ForgeTaskInput,
+        plan: Plan,
+        step_results: list[StepResult],
+        remaining_steps: list[PlanStep],
+        wt_output: CreateWorktreeOutput,
+    ) -> SanityCheckCallResult:
+        """Run a sanity check: assemble context, call LLM, return result."""
+        reasoning_model = resolve_model(CapabilityTier.REASONING, input.model_routing)
+
+        sanity_input = await workflow.execute_activity(
+            "assemble_sanity_check_context",
+            AssembleSanityCheckContextInput(
+                task=input.task,
+                plan=plan,
+                completed_steps=step_results,
+                remaining_steps=remaining_steps,
+                repo_root=input.repo_root,
+                worktree_path=wt_output.worktree_path,
+            ),
+            start_to_close_timeout=_CONTEXT_TIMEOUT,
+            result_type=SanityCheckInput,
+        )
+
+        # Set model and thinking config
+        update: dict[str, object] = {"model_name": reasoning_model}
+        if input.thinking.enabled:
+            update["thinking_budget_tokens"] = input.thinking.budget_tokens
+            update["thinking_effort"] = input.thinking.effort
+        sanity_input = sanity_input.model_copy(update=update)
+
+        return await workflow.execute_activity(
+            "call_sanity_check",
+            sanity_input,
+            start_to_close_timeout=_SANITY_CHECK_TIMEOUT,
+            result_type=SanityCheckCallResult,
         )
 
     # ------------------------------------------------------------------

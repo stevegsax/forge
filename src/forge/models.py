@@ -38,6 +38,14 @@ class TaskDomain(StrEnum):
     DOCUMENTATION = "documentation"
 
 
+class SanityCheckVerdict(StrEnum):
+    """Verdict from a plan-level sanity check."""
+
+    CONTINUE = "continue"
+    REVISE = "revise"
+    ABORT = "abort"
+
+
 class CapabilityTier(StrEnum):
     """Capability tier for model routing (Phase 11)."""
 
@@ -244,6 +252,10 @@ class StepResult(BaseModel):
     error: str | None = None
     sub_task_results: list[SubTaskResult] = Field(default_factory=list)
     llm_stats: LLMStats | None = None
+    digest: str = Field(
+        default="",
+        description="Compact summary of step outcome for sanity check consumption.",
+    )
 
 
 class TaskResult(BaseModel):
@@ -267,6 +279,7 @@ class TaskResult(BaseModel):
     llm_stats: LLMStats | None = None
     planner_stats: LLMStats | None = None
     context_stats: ContextStats | None = None
+    sanity_check_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +560,10 @@ class ForgeTaskInput(BaseModel):
         default=1,
         description="Maximum recursive fan-out depth. 1 = flat fan-out only (default).",
     )
+    sanity_check_interval: int = Field(
+        default=0,
+        description="Run sanity check every N steps (0 = disabled).",
+    )
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
 
@@ -690,6 +707,57 @@ class AssembleStepContextInput(BaseModel):
     prior_errors: list[ValidationResult] = Field(default_factory=list)
     attempt: int = Field(default=1)
     max_attempts: int = Field(default=2)
+
+
+# ---------------------------------------------------------------------------
+# Sanity check activity I/O models
+# ---------------------------------------------------------------------------
+
+
+class SanityCheckResponse(BaseModel):
+    """LLM structured output from the sanity check."""
+
+    verdict: SanityCheckVerdict
+    explanation: str
+    revised_steps: list[PlanStep] | None = Field(
+        default=None,
+        description="Replacement steps when verdict is 'revise'.",
+    )
+
+
+class SanityCheckInput(BaseModel):
+    """Input to the call_sanity_check activity."""
+
+    task_id: str
+    system_prompt: str
+    user_prompt: str
+    model_name: str = ""
+    thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
+    thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
+
+
+class SanityCheckCallResult(BaseModel):
+    """Output of call_sanity_check."""
+
+    task_id: str
+    response: SanityCheckResponse
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+class AssembleSanityCheckContextInput(BaseModel):
+    """Input to assemble_sanity_check_context activity."""
+
+    task: TaskDefinition
+    plan: Plan
+    completed_steps: list[StepResult]
+    remaining_steps: list[PlanStep]
+    repo_root: str
+    worktree_path: str
 
 
 # ---------------------------------------------------------------------------

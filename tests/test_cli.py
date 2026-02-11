@@ -1560,3 +1560,88 @@ class TestPlaybooksCommand:
         result = cli_runner.invoke(main, ["playbooks"])
         assert result.exit_code == 0
         assert "No playbooks found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Sanity check CLI tests
+# ---------------------------------------------------------------------------
+
+
+class TestSanityCheckIntervalFlag:
+    def test_flag_in_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "--sanity-check-interval" in result.output
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_flag_passed_to_submit(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--plan",
+                "--sanity-check-interval",
+                "3",
+            ],
+        )
+        call_kwargs = mock_submit.call_args
+        assert call_kwargs[1]["sanity_check_interval"] == 3
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_default_is_zero(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--plan",
+            ],
+        )
+        call_kwargs = mock_submit.call_args
+        assert call_kwargs[1]["sanity_check_interval"] == 0
+
+
+class TestFormatVerboseResultSanityCheckCount:
+    def test_shows_sanity_check_count(self) -> None:
+        result = TaskResult(
+            task_id="t",
+            status=TransitionSignal.SUCCESS,
+            sanity_check_count=3,
+        )
+        output = format_verbose_result(result)
+        assert "Sanity checks: 3" in output
+
+    def test_hides_when_zero(self) -> None:
+        result = TaskResult(
+            task_id="t",
+            status=TransitionSignal.SUCCESS,
+            sanity_check_count=0,
+        )
+        output = format_verbose_result(result)
+        assert "Sanity checks" not in output

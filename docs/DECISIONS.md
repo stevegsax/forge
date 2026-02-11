@@ -415,3 +415,9 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** `ForgeSubTaskWorkflow` can recursively fan out into child workflows when nested `sub_tasks` are present and `depth < max_depth`. A configurable `max_fan_out_depth` (default 1) bounds recursion. This supersedes D29's restriction of single-level fan-out.
 
 **Rationale:** Single-level fan-out (Phase 3) is proven stable. Some decomposition patterns naturally require hierarchy — e.g. a sub-task for "implement all API endpoints" that itself decomposes into independent endpoint sub-tasks. The depth budget (D17) prevents unbounded recursion. Default `max_fan_out_depth=1` preserves existing behavior; users opt in to recursive fan-out with `--max-fan-out-depth N`. Child workflow timeouts scale with remaining depth to allow orchestration overhead at each nesting level.
+
+## D70: Plan-Level Sanity Check With Step Interval Trigger
+
+**Decision:** Opt-in sanity check runs after every N completed steps during planned execution. Uses REASONING tier with extended thinking. Three verdicts: continue, revise (replace remaining steps), abort.
+
+**Rationale:** Plans can become stale as work reveals new information (D19). Periodic re-evaluation allows self-correction without waiting for failure. Step-interval trigger is simple and predictable. Revision replaces only remaining steps, preserving committed work. Disabled by default (interval=0) to avoid overhead for simple tasks.
