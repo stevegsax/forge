@@ -156,6 +156,41 @@ def build_planner_system_prompt(
     return "\n".join(parts)
 
 
+def build_thinking_settings(
+    model_name: str,
+    budget_tokens: int,
+    effort: str,
+) -> dict[str, object]:
+    """Build model_settings dict entries for extended thinking.
+
+    Returns an empty dict for non-Anthropic models or zero budget.
+    - Opus 4.6+: adaptive thinking with effort level
+    - Other Anthropic models: budget-based thinking
+    - Non-Anthropic: empty dict (silent degradation per D63)
+    """
+    if budget_tokens <= 0:
+        return {}
+
+    if not model_name.startswith("anthropic:"):
+        return {}
+
+    # Haiku — too lightweight for thinking
+    if "haiku" in model_name:
+        return {}
+
+    settings: dict[str, object] = {}
+
+    # Opus 4.6+ gets adaptive thinking
+    if "opus" in model_name:
+        settings["anthropic_thinking"] = {"type": "adaptive"}
+        settings["anthropic_effort"] = effort
+    else:
+        # Sonnet and other Anthropic models get budget-based thinking
+        settings["anthropic_thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
+
+    return settings
+
+
 def build_planner_user_prompt(task: TaskDefinition) -> str:
     """Build the user prompt for the planning LLM call."""
     return (
@@ -238,7 +273,12 @@ def _persist_interaction(
         logger.warning("Failed to persist planner interaction to store", exc_info=True)
 
 
-def create_planner_agent(model_name: str | None = None) -> Agent[None, Plan]:
+def create_planner_agent(
+    model_name: str | None = None,
+    *,
+    thinking_budget_tokens: int = 0,
+    thinking_effort: str = "high",
+) -> Agent[None, Plan]:
     """Create a pydantic-ai Agent configured for task decomposition."""
     from pydantic_ai import Agent
 
@@ -247,13 +287,21 @@ def create_planner_agent(model_name: str | None = None) -> Agent[None, Plan]:
     if model_name is None:
         model_name = DEFAULT_MODEL
 
+    settings: dict[str, object] = {
+        "anthropic_cache_instructions": True,
+        "anthropic_cache_tool_definitions": True,
+    }
+
+    if thinking_budget_tokens > 0:
+        thinking_settings = build_thinking_settings(
+            model_name, thinking_budget_tokens, thinking_effort
+        )
+        settings.update(thinking_settings)
+
     return Agent(
         model_name,
         output_type=Plan,
-        model_settings={
-            "anthropic_cache_instructions": True,
-            "anthropic_cache_tool_definitions": True,
-        },
+        model_settings=settings,
     )
 
 
@@ -338,7 +386,11 @@ async def call_planner(input: PlannerInput) -> PlanCallResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_planner") as span:
-        agent = create_planner_agent(input.model_name or None)
+        agent = create_planner_agent(
+            input.model_name or None,
+            thinking_budget_tokens=input.thinking_budget_tokens,
+            thinking_effort=input.thinking_effort,
+        )
         result = await execute_planner_call(input, agent)
 
         span.set_attributes(

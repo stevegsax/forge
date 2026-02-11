@@ -69,6 +69,17 @@ def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
     }[tier]
 
 
+class ThinkingConfig(BaseModel):
+    """Extended thinking configuration for planner calls (Phase 12)."""
+
+    enabled: bool = Field(default=True, description="Enable extended thinking for planner.")
+    budget_tokens: int = Field(default=10_000, description="Token budget for thinking (Sonnet).")
+    effort: str = Field(
+        default="high",
+        description="Effort level for adaptive thinking (Opus 4.6+): low, medium, high, max.",
+    )
+
+
 class ValidationConfig(BaseModel):
     """Configuration for deterministic validation checks."""
 
@@ -515,6 +526,7 @@ class ForgeTaskInput(BaseModel):
         description="Max rounds of LLM-guided context exploration (0 disables).",
     )
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +634,8 @@ class PlannerInput(BaseModel):
     system_prompt: str
     user_prompt: str
     model_name: str = ""
+    thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
+    thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
 
 
 class PlanCallResult(BaseModel):

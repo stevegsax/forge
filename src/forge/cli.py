@@ -27,6 +27,7 @@ from forge.models import (
     ModelConfig,
     TaskDefinition,
     TaskResult,
+    ThinkingConfig,
     TransitionSignal,
     ValidationConfig,
 )
@@ -265,6 +266,7 @@ async def _submit_and_wait(
     max_sub_task_attempts: int = 2,
     max_exploration_rounds: int = 10,
     model_routing: ModelConfig | None = None,
+    thinking: ThinkingConfig | None = None,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
@@ -285,6 +287,7 @@ async def _submit_and_wait(
             max_sub_task_attempts=max_sub_task_attempts,
             max_exploration_rounds=max_exploration_rounds,
             model_routing=model_routing or ModelConfig(),
+            thinking=thinking or ThinkingConfig(),
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -303,6 +306,7 @@ async def _submit_no_wait(
     max_sub_task_attempts: int = 2,
     max_exploration_rounds: int = 10,
     model_routing: ModelConfig | None = None,
+    thinking: ThinkingConfig | None = None,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
@@ -323,6 +327,7 @@ async def _submit_no_wait(
             max_sub_task_attempts=max_sub_task_attempts,
             max_exploration_rounds=max_exploration_rounds,
             model_routing=model_routing or ModelConfig(),
+            thinking=thinking or ThinkingConfig(),
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -440,6 +445,14 @@ def main() -> None:
     help="Override the model used for CLASSIFICATION tier (exploration).",
 )
 @click.option(
+    "--thinking-budget",
+    type=int,
+    default=10000,
+    show_default=True,
+    help="Token budget for extended thinking in planner (Sonnet). Opus uses adaptive.",
+)
+@click.option("--no-thinking", is_flag=True, help="Disable extended thinking for planner.")
+@click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
     default=DEFAULT_TEMPORAL_ADDRESS,
@@ -474,6 +487,8 @@ def run(
     generation_model: str | None,
     summarization_model: str | None,
     classification_model: str | None,
+    thinking_budget: int,
+    no_thinking: bool,
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -539,6 +554,12 @@ def run(
         model_overrides["classification"] = classification_model
     model_routing = ModelConfig(**model_overrides) if model_overrides else None
 
+    # --- Build thinking config ---
+    thinking = ThinkingConfig(
+        enabled=not no_thinking,
+        budget_tokens=thinking_budget,
+    )
+
     # --- Submit ---
     try:
         if no_wait:
@@ -553,6 +574,7 @@ def run(
                     max_sub_task_attempts=max_sub_task_attempts,
                     max_exploration_rounds=effective_exploration_rounds,
                     model_routing=model_routing,
+                    thinking=thinking,
                 )
             )
             click.echo(workflow_id)
@@ -568,6 +590,7 @@ def run(
                     max_sub_task_attempts=max_sub_task_attempts,
                     max_exploration_rounds=effective_exploration_rounds,
                     model_routing=model_routing,
+                    thinking=thinking,
                 )
             )
 

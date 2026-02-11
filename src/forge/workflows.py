@@ -406,8 +406,12 @@ class ForgeTaskWorkflow:
                     user_prompt=planner_input.user_prompt,
                 )
 
-        # --- Set model_name on planner input ---
-        planner_input = planner_input.model_copy(update={"model_name": planner_model})
+        # --- Set model_name and thinking config on planner input ---
+        planner_update: dict[str, object] = {"model_name": planner_model}
+        if input.thinking.enabled:
+            planner_update["thinking_budget_tokens"] = input.thinking.budget_tokens
+            planner_update["thinking_effort"] = input.thinking.effort
+        planner_input = planner_input.model_copy(update=planner_update)
 
         # --- Call planner ---
         planner_result = await workflow.execute_activity(

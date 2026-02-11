@@ -11,6 +11,7 @@ from forge.activities.planner import (
     assemble_planner_context,
     build_planner_system_prompt,
     build_planner_user_prompt,
+    build_thinking_settings,
     create_planner_agent,
     execute_planner_call,
 )
@@ -425,7 +426,11 @@ class TestCallPlannerModelNameThreading:
             )
             await call_planner(planner_input)
 
-            mock_create.assert_called_once_with("custom:planner")
+            mock_create.assert_called_once_with(
+                "custom:planner",
+                thinking_budget_tokens=0,
+                thinking_effort="high",
+            )
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
@@ -470,4 +475,119 @@ class TestCallPlannerModelNameThreading:
             await call_planner(planner_input)
 
             # Empty string is falsy, so or None gives None
-            mock_create.assert_called_once_with(None)
+            mock_create.assert_called_once_with(
+                None, thinking_budget_tokens=0, thinking_effort="high"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Phase 12: Extended thinking for planning
+# ---------------------------------------------------------------------------
+
+
+class TestBuildThinkingSettings:
+    def test_opus_gets_adaptive(self) -> None:
+        result = build_thinking_settings("anthropic:claude-opus-4-6", 10_000, "high")
+        assert result["anthropic_thinking"] == {"type": "adaptive"}
+        assert result["anthropic_effort"] == "high"
+
+    def test_sonnet_gets_budget(self) -> None:
+        result = build_thinking_settings(
+            "anthropic:claude-sonnet-4-5-20250929", 10_000, "high"
+        )
+        assert result["anthropic_thinking"] == {"type": "enabled", "budget_tokens": 10_000}
+        assert "anthropic_effort" not in result
+
+    def test_haiku_returns_empty(self) -> None:
+        result = build_thinking_settings("anthropic:claude-haiku-4-5-20251001", 10_000, "high")
+        assert result == {}
+
+    def test_non_anthropic_returns_empty(self) -> None:
+        result = build_thinking_settings("openai:gpt-4o", 10_000, "high")
+        assert result == {}
+
+    def test_zero_budget_returns_empty(self) -> None:
+        result = build_thinking_settings("anthropic:claude-opus-4-6", 0, "high")
+        assert result == {}
+
+
+class TestCreatePlannerAgentThinking:
+    def test_thinking_settings_merged_with_cache(self) -> None:
+        agent = create_planner_agent(
+            "anthropic:claude-opus-4-6",
+            thinking_budget_tokens=10_000,
+            thinking_effort="high",
+        )
+        settings = agent.model_settings
+        # Cache settings preserved
+        assert settings.get("anthropic_cache_instructions") is True
+        assert settings.get("anthropic_cache_tool_definitions") is True
+        # Thinking settings added
+        assert settings.get("anthropic_thinking") == {"type": "adaptive"}
+        assert settings.get("anthropic_effort") == "high"
+
+    def test_no_thinking_when_budget_zero(self) -> None:
+        agent = create_planner_agent(
+            "anthropic:claude-opus-4-6",
+            thinking_budget_tokens=0,
+        )
+        settings = agent.model_settings
+        # Cache settings preserved
+        assert settings.get("anthropic_cache_instructions") is True
+        assert settings.get("anthropic_cache_tool_definitions") is True
+        # No thinking settings
+        assert "anthropic_thinking" not in settings
+        assert "anthropic_effort" not in settings
+
+
+class TestCallPlannerThinkingThreading:
+    @pytest.mark.asyncio
+    async def test_threads_thinking_config_to_agent(self) -> None:
+        from unittest.mock import patch
+
+        from forge.activities.planner import call_planner
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
+        mock_usage.cache_creation_input_tokens = 0
+        mock_usage.cache_read_input_tokens = 0
+
+        mock_result = MagicMock()
+        mock_result.output = _TEST_PLAN
+        mock_result.usage.return_value = mock_usage
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+        mock_agent.model = "anthropic:claude-opus-4-6"
+
+        with (
+            patch(
+                "forge.activities.planner.create_planner_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("forge.activities.planner._persist_interaction"),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            planner_input = PlannerInput(
+                task_id="t1",
+                system_prompt="sys",
+                user_prompt="usr",
+                model_name="anthropic:claude-opus-4-6",
+                thinking_budget_tokens=10_000,
+                thinking_effort="high",
+            )
+            await call_planner(planner_input)
+
+            mock_create.assert_called_once_with(
+                "anthropic:claude-opus-4-6",
+                thinking_budget_tokens=10_000,
+                thinking_effort="high",
+            )
