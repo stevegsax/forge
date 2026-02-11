@@ -23,6 +23,7 @@ from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
 )
+from forge.domains import get_domain_config
 from forge.models import (
     AssembleContextInput,
     Plan,
@@ -152,6 +153,11 @@ def build_planner_system_prompt(
     parts.append("- description: What the sub-task should produce")
     parts.append("- target_files: Files to create or modify")
     parts.append("- context_files: Files from the parent worktree to include as context")
+
+    domain_config = get_domain_config(task.domain)
+    parts.append("")
+    parts.append("## Task Domain")
+    parts.append(domain_config.planner_domain_instruction)
 
     return "\n".join(parts)
 

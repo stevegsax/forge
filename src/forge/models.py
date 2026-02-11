@@ -29,6 +29,15 @@ class TransitionSignal(StrEnum):
     # BLOCKED_ON_SIBLING = "blocked_on_sibling"
 
 
+class TaskDomain(StrEnum):
+    """The kind of task being performed."""
+
+    CODE_GENERATION = "code_generation"
+    RESEARCH = "research"
+    CODE_REVIEW = "code_review"
+    DOCUMENTATION = "documentation"
+
+
 class CapabilityTier(StrEnum):
     """Capability tier for model routing (Phase 11)."""
 
@@ -130,6 +139,10 @@ class TaskDefinition(BaseModel):
 
     task_id: str
     description: str = Field(description="What the task should produce.")
+    domain: TaskDomain = Field(
+        default=TaskDomain.CODE_GENERATION,
+        description="The kind of task: code generation, research, review, documentation.",
+    )
     target_files: list[str] = Field(
         default_factory=list,
         description="Files to create or modify. Optional when planning.",
@@ -599,6 +612,7 @@ class SubTaskInput(BaseModel):
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     max_attempts: int = 2
     model_name: str = ""
+    domain: TaskDomain = Field(default=TaskDomain.CODE_GENERATION)
 
 
 class WriteFilesInput(BaseModel):
@@ -620,6 +634,7 @@ class AssembleSubTaskContextInput(BaseModel):
     prior_errors: list[ValidationResult] = Field(default_factory=list)
     attempt: int = Field(default=1)
     max_attempts: int = Field(default=2)
+    domain: TaskDomain = Field(default=TaskDomain.CODE_GENERATION)
 
 
 # ---------------------------------------------------------------------------

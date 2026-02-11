@@ -29,6 +29,7 @@ from forge.models import (
     SubTaskInput,
     SubTaskResult,
     TaskDefinition,
+    TaskDomain,
     TaskResult,
     TransitionSignal,
     WriteFilesInput,
@@ -89,6 +90,91 @@ class TestStepResult:
         )
         rebuilt = StepResult.model_validate_json(sr.model_dump_json())
         assert rebuilt == sr
+
+
+# ---------------------------------------------------------------------------
+# TaskDomain enum
+# ---------------------------------------------------------------------------
+
+
+class TestTaskDomain:
+    def test_enum_values(self) -> None:
+        assert TaskDomain.CODE_GENERATION == "code_generation"
+        assert TaskDomain.RESEARCH == "research"
+        assert TaskDomain.CODE_REVIEW == "code_review"
+        assert TaskDomain.DOCUMENTATION == "documentation"
+
+    def test_four_members(self) -> None:
+        assert len(TaskDomain) == 4
+
+
+class TestTaskDefinitionDomain:
+    def test_default_domain(self) -> None:
+        td = TaskDefinition(task_id="t", description="d")
+        assert td.domain == TaskDomain.CODE_GENERATION
+
+    def test_explicit_domain(self) -> None:
+        td = TaskDefinition(task_id="t", description="d", domain=TaskDomain.RESEARCH)
+        assert td.domain == TaskDomain.RESEARCH
+
+    def test_backward_compat_no_domain(self) -> None:
+        """Old JSON without domain field still deserializes."""
+        data = '{"task_id": "t", "description": "d"}'
+        td = TaskDefinition.model_validate_json(data)
+        assert td.domain == TaskDomain.CODE_GENERATION
+
+    def test_round_trip(self) -> None:
+        td = TaskDefinition(task_id="t", description="d", domain=TaskDomain.DOCUMENTATION)
+        rebuilt = TaskDefinition.model_validate_json(td.model_dump_json())
+        assert rebuilt.domain == TaskDomain.DOCUMENTATION
+
+
+class TestSubTaskInputDomain:
+    def test_default_domain(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        inp = SubTaskInput(
+            parent_task_id="t",
+            parent_description="desc",
+            sub_task=st,
+            repo_root="/repo",
+            parent_branch="forge/t",
+        )
+        assert inp.domain == TaskDomain.CODE_GENERATION
+
+    def test_explicit_domain(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        inp = SubTaskInput(
+            parent_task_id="t",
+            parent_description="desc",
+            sub_task=st,
+            repo_root="/repo",
+            parent_branch="forge/t",
+            domain=TaskDomain.RESEARCH,
+        )
+        assert inp.domain == TaskDomain.RESEARCH
+
+
+class TestAssembleSubTaskContextInputDomain:
+    def test_default_domain(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        inp = AssembleSubTaskContextInput(
+            parent_task_id="t",
+            parent_description="desc",
+            sub_task=st,
+            worktree_path="/wt",
+        )
+        assert inp.domain == TaskDomain.CODE_GENERATION
+
+    def test_explicit_domain(self) -> None:
+        st = SubTask(sub_task_id="st1", description="d", target_files=["a.py"])
+        inp = AssembleSubTaskContextInput(
+            parent_task_id="t",
+            parent_description="desc",
+            sub_task=st,
+            worktree_path="/wt",
+            domain=TaskDomain.RESEARCH,
+        )
+        assert inp.domain == TaskDomain.RESEARCH
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ from forge.models import (
     PlanStep,
     StepResult,
     SubTaskResult,
+    TaskDomain,
     TaskResult,
     TransitionSignal,
     ValidationResult,
@@ -842,6 +843,79 @@ class TestBuildTaskDefinitionContextConfig:
         )
         assert td.context.token_budget == 100_000
         assert td.context.max_import_depth == 2
+
+
+# ---------------------------------------------------------------------------
+# Domain flag
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTaskDefinitionDomain:
+    def test_default_code_generation(self) -> None:
+        td = build_task_definition(task_id="t", description="d", target_files=["a.py"])
+        assert td.domain == TaskDomain.CODE_GENERATION
+
+    def test_explicit_research(self) -> None:
+        td = build_task_definition(
+            task_id="t",
+            description="d",
+            target_files=["report.md"],
+            domain=TaskDomain.RESEARCH,
+        )
+        assert td.domain == TaskDomain.RESEARCH
+
+    def test_research_domain_disables_ruff(self) -> None:
+        td = build_task_definition(
+            task_id="t",
+            description="d",
+            target_files=["report.md"],
+            domain=TaskDomain.RESEARCH,
+        )
+        assert td.validation.run_ruff_lint is False
+        assert td.validation.run_ruff_format is False
+
+    def test_code_generation_enables_ruff(self) -> None:
+        td = build_task_definition(
+            task_id="t",
+            description="d",
+            target_files=["a.py"],
+            domain=TaskDomain.CODE_GENERATION,
+        )
+        assert td.validation.run_ruff_lint is True
+        assert td.validation.run_ruff_format is True
+
+    def test_code_generation_no_lint_override(self) -> None:
+        td = build_task_definition(
+            task_id="t",
+            description="d",
+            target_files=["a.py"],
+            domain=TaskDomain.CODE_GENERATION,
+            no_lint=True,
+        )
+        assert td.validation.run_ruff_lint is False
+        assert td.validation.run_ruff_format is True
+
+    def test_research_run_tests_override(self) -> None:
+        td = build_task_definition(
+            task_id="t",
+            description="d",
+            target_files=["report.md"],
+            domain=TaskDomain.RESEARCH,
+            run_tests=True,
+        )
+        assert td.validation.run_tests is True
+
+
+class TestDomainFlag:
+    def test_domain_in_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "--domain" in result.output
+
+    def test_domain_flag_accepted(self, cli_runner: CliRunner) -> None:
+        """The --domain flag is accepted without error."""
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "code_generation" in result.output
+        assert "research" in result.output
 
 
 class TestContextDiscoveryFlags:

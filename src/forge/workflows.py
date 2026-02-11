@@ -659,6 +659,7 @@ class ForgeTaskWorkflow:
                 validation=task.validation,
                 max_attempts=input.max_sub_task_attempts,
                 model_name=step_model,
+                domain=task.domain,
             )
             compound_id = f"{task.task_id}.sub.{st.sub_task_id}"
             handle = await workflow.start_child_workflow(
@@ -824,6 +825,7 @@ class ForgeSubTaskWorkflow:
                     prior_errors=prior_errors,
                     attempt=attempt,
                     max_attempts=input.max_attempts,
+                    domain=input.domain,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
                 result_type=AssembledContext,

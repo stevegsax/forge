@@ -20,12 +20,14 @@ from typing import TYPE_CHECKING
 
 import click
 
+from forge.domains import get_domain_config
 from forge.git import RepoDiscoveryError, discover_repo_root
 from forge.models import (
     ContextConfig,
     ForgeTaskInput,
     ModelConfig,
     TaskDefinition,
+    TaskDomain,
     TaskResult,
     ThinkingConfig,
     TransitionSignal,
@@ -204,8 +206,15 @@ def build_task_definition(
     token_budget: int | None = None,
     max_import_depth: int | None = None,
     include_deps: bool = False,
+    domain: TaskDomain = TaskDomain.CODE_GENERATION,
 ) -> TaskDefinition:
-    """Build a TaskDefinition from CLI arguments."""
+    """Build a TaskDefinition from CLI arguments.
+
+    Domain provides validation defaults; CLI flags override them.
+    """
+    domain_config = get_domain_config(domain)
+    vd = domain_config.validation_defaults
+
     context_config = ContextConfig(
         auto_discover=not no_auto_discover,
         include_dependencies=include_deps,
@@ -218,14 +227,16 @@ def build_task_definition(
     return TaskDefinition(
         task_id=task_id,
         description=description,
+        domain=domain,
         target_files=target_files,
         context_files=context_files or [],
         base_branch=base_branch,
         validation=ValidationConfig(
-            run_ruff_lint=not no_lint,
-            run_ruff_format=not no_format,
-            run_tests=run_tests,
-            test_command=test_command,
+            auto_fix=vd.auto_fix,
+            run_ruff_lint=vd.run_ruff_lint and not no_lint,
+            run_ruff_format=vd.run_ruff_format and not no_format,
+            run_tests=run_tests or vd.run_tests,
+            test_command=test_command or vd.test_command,
         ),
         context=context_config,
     )
@@ -453,6 +464,13 @@ def main() -> None:
 )
 @click.option("--no-thinking", is_flag=True, help="Disable extended thinking for planner.")
 @click.option(
+    "--domain",
+    type=click.Choice(["code_generation", "research", "code_review", "documentation"]),
+    default="code_generation",
+    show_default=True,
+    help="Task domain: code_generation, research, code_review, documentation.",
+)
+@click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
     default=DEFAULT_TEMPORAL_ADDRESS,
@@ -489,6 +507,7 @@ def run(
     classification_model: str | None,
     thinking_budget: int,
     no_thinking: bool,
+    domain: str,
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -530,6 +549,7 @@ def run(
             token_budget=token_budget,
             max_import_depth=max_import_depth,
             include_deps=include_deps,
+            domain=TaskDomain(domain),
         )
 
     # --- Discover repo root ---

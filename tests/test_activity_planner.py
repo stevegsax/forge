@@ -22,6 +22,7 @@ from forge.models import (
     PlannerInput,
     PlanStep,
     TaskDefinition,
+    TaskDomain,
 )
 
 if TYPE_CHECKING:
@@ -591,3 +592,35 @@ class TestCallPlannerThinkingThreading:
                 thinking_budget_tokens=10_000,
                 thinking_effort="high",
             )
+
+
+# ---------------------------------------------------------------------------
+# Domain-aware planner prompts
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPlannerSystemPromptDomain:
+    def test_includes_task_domain_section(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Build module.")
+        prompt = build_planner_system_prompt(task, {})
+        assert "## Task Domain" in prompt
+
+    def test_code_generation_domain_instruction(self) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Build module.",
+            domain=TaskDomain.CODE_GENERATION,
+        )
+        prompt = build_planner_system_prompt(task, {})
+        assert "code generation" in prompt.lower()
+        assert "## Task Domain" in prompt
+
+    def test_research_domain_instruction(self) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Research topic.",
+            domain=TaskDomain.RESEARCH,
+        )
+        prompt = build_planner_system_prompt(task, {})
+        assert "## Task Domain" in prompt
+        assert "research" in prompt.lower()

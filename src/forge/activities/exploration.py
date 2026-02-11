@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.domains import get_domain_config
 from forge.models import (
     ContextResult,
     ExplorationInput,
@@ -46,17 +47,19 @@ def build_exploration_prompt(
 
     Returns (system_prompt, user_prompt).
     """
+    domain_config = get_domain_config(input.task.domain)
     parts: list[str] = []
 
     parts.append("You are a code exploration assistant.")
     parts.append("")
-    parts.append("Your job is to gather the context needed to complete a coding task.")
+    task_noun = domain_config.exploration_task_noun
+    parts.append(f"Your job is to gather the context needed to complete a {task_noun}.")
     parts.append("You have access to a set of context providers that can retrieve information")
     parts.append("about the codebase. Request context from providers until you have enough")
     parts.append("understanding to complete the task.")
     parts.append("")
     parts.append("When you have enough context, return an EMPTY requests list to signal")
-    parts.append("that you are ready for the code generation phase.")
+    parts.append(f"that you are ready for the {domain_config.exploration_completion_noun} phase.")
 
     if project_instructions:
         parts.append("")
@@ -102,7 +105,7 @@ def build_exploration_prompt(
     user_prompt = (
         "Based on the task and any context already retrieved, decide what additional "
         "context you need. Return a list of provider requests, or an empty list if "
-        "you have enough context to proceed with code generation."
+        f"you have enough context to proceed with {domain_config.exploration_completion_noun}."
     )
 
     return system_prompt, user_prompt

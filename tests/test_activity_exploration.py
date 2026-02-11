@@ -22,6 +22,7 @@ from forge.models import (
     ExplorationInput,
     ExplorationResponse,
     TaskDefinition,
+    TaskDomain,
 )
 
 # ---------------------------------------------------------------------------
@@ -381,3 +382,40 @@ class TestCallExplorationLlmModelNameThreading:
             await call_exploration_llm(input_data)
 
             mock_create.assert_called_once_with(DEFAULT_EXPLORATION_MODEL)
+
+
+# ---------------------------------------------------------------------------
+# Domain-aware exploration prompts
+# ---------------------------------------------------------------------------
+
+
+class TestBuildExplorationPromptDomain:
+    def test_research_domain_uses_research_nouns(self) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Research topic.",
+            target_files=["report.md"],
+            domain=TaskDomain.RESEARCH,
+        )
+        input_data = ExplorationInput(
+            task=task,
+            available_providers=_make_providers(),
+            round_number=1,
+            max_rounds=5,
+        )
+        system, user = build_exploration_prompt(input_data)
+        assert "research task" in system
+        assert "report writing" in system
+        assert "report writing" in user
+
+    def test_code_generation_domain_preserves_current(self) -> None:
+        input_data = ExplorationInput(
+            task=_make_task(),
+            available_providers=_make_providers(),
+            round_number=1,
+            max_rounds=5,
+        )
+        system, user = build_exploration_prompt(input_data)
+        assert "coding task" in system
+        assert "code generation" in system
+        assert "code generation" in user

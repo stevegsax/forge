@@ -35,6 +35,7 @@ from forge.models import (
     StepResult,
     SubTask,
     TaskDefinition,
+    TaskDomain,
     TransitionSignal,
     ValidationResult,
 )
@@ -1248,3 +1249,126 @@ class TestProjectInstructionsInActivities:
         result = await assemble_sub_task_context(input_data)
         assert "## Project Instructions" in result.system_prompt
         assert "Worktree instructions" in result.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Domain-parameterized prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestDomainAwarePrompts:
+    def test_code_generation_preserves_current_behavior(self) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Create module.",
+            target_files=["a.py"],
+            domain=TaskDomain.CODE_GENERATION,
+        )
+        prompt = build_system_prompt(task, {})
+        assert "You are a code generation assistant." in prompt
+        assert "edits" in prompt
+
+    def test_research_domain_uses_research_role(self) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Research topic.",
+            target_files=["report.md"],
+            domain=TaskDomain.RESEARCH,
+        )
+        prompt = build_system_prompt(task, {})
+        assert "You are a research assistant." in prompt
+        assert "code generation assistant" not in prompt
+
+    def test_research_domain_user_prompt(self) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Research topic.",
+            target_files=["report.md"],
+            domain=TaskDomain.RESEARCH,
+        )
+        prompt = build_user_prompt(task)
+        assert "research" in prompt.lower()
+
+    def test_code_generation_user_prompt_backward_compat(self) -> None:
+        """Calling build_user_prompt() with no args still works."""
+        prompt = build_user_prompt()
+        assert "Generate the code" in prompt
+
+    def test_step_prompt_respects_domain(self) -> None:
+        task = TaskDefinition(
+            task_id="t1",
+            description="Research topic.",
+            domain=TaskDomain.RESEARCH,
+        )
+        step = PlanStep(step_id="s1", description="Analyze data.", target_files=["report.md"])
+        sys_prompt = build_step_system_prompt(
+            task=task,
+            step=step,
+            step_index=0,
+            total_steps=1,
+            completed_steps=[],
+            context_file_contents={},
+        )
+        assert "You are a research assistant." in sys_prompt
+
+        user_prompt = build_step_user_prompt(step, domain=TaskDomain.RESEARCH)
+        assert "s1" in user_prompt
+        assert "Analyze data." in user_prompt
+
+    def test_sub_task_prompt_respects_domain(self) -> None:
+        st = SubTask(sub_task_id="st1", description="Review code.", target_files=["review.md"])
+        sys_prompt = build_sub_task_system_prompt(
+            parent_task_id="t1",
+            parent_description="Do review.",
+            sub_task=st,
+            context_file_contents={},
+            domain=TaskDomain.CODE_REVIEW,
+        )
+        assert "You are a code review assistant." in sys_prompt
+
+        user_prompt = build_sub_task_user_prompt(st, domain=TaskDomain.CODE_REVIEW)
+        assert "st1" in user_prompt
+        assert "Review code." in user_prompt
+
+    def test_system_prompt_with_context_uses_domain(self) -> None:
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        task = TaskDefinition(
+            task_id="t1",
+            description="Document the API.",
+            target_files=["docs.md"],
+            domain=TaskDomain.DOCUMENTATION,
+        )
+        packed = PackedContext(
+            items=[
+                ContextItem(
+                    file_path="docs.md",
+                    content="# API Docs",
+                    representation=Representation.FULL,
+                    priority=2,
+                    estimated_tokens=5,
+                ),
+            ],
+            total_estimated_tokens=5,
+            items_included=1,
+        )
+        prompt = build_system_prompt_with_context(task, packed)
+        assert "You are a documentation assistant." in prompt
+        assert "code generation assistant" not in prompt
+
+
+class TestInferTaskTagsDomain:
+    def test_code_generation_fallback(self) -> None:
+        from forge.activities.context import infer_task_tags
+
+        task = TaskDefinition(task_id="t", description="do stuff")
+        tags = infer_task_tags(task)
+        assert "code-generation" in tags
+
+    def test_research_fallback(self) -> None:
+        from forge.activities.context import infer_task_tags
+
+        task = TaskDefinition(task_id="t", description="do stuff", domain=TaskDomain.RESEARCH)
+        tags = infer_task_tags(task)
+        assert "research" in tags
+        assert "code-generation" not in tags

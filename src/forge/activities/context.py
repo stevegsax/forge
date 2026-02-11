@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.domains import get_domain_config
 from forge.models import (
     AssembleContextInput,
     AssembledContext,
@@ -31,6 +32,7 @@ from forge.models import (
     StepResult,
     SubTask,
     TaskDefinition,
+    TaskDomain,
     ValidationResult,
 )
 
@@ -224,12 +226,13 @@ def build_system_prompt(
     with delimiters. Sections are ordered for prompt caching efficiency:
     stable content first, volatile content (errors) last.
     """
+    domain_config = get_domain_config(task.domain)
     parts: list[str] = []
 
-    parts.append("You are a code generation assistant.")
+    parts.append(domain_config.role_prompt)
     parts.append("")
     parts.append("## Output Requirements")
-    parts.append(_OUTPUT_REQUIREMENTS)
+    parts.append(domain_config.output_requirements)
 
     if project_instructions:
         parts.append("")
@@ -260,16 +263,15 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
-def build_user_prompt() -> str:
+def build_user_prompt(task: TaskDefinition | None = None) -> str:
     """Build the user prompt.
 
     Short instruction directing the LLM to produce target files or edits.
+    When *task* is provided, the prompt is domain-aware.
     """
-    return (
-        "Generate the code described above. "
-        "For existing files, use `edits` with search/replace operations. "
-        "For new files, use `files` with complete content."
-    )
+    domain = task.domain if task is not None else TaskDomain.CODE_GENERATION
+    domain_config = get_domain_config(domain)
+    return domain_config.user_prompt_template
 
 
 def build_system_prompt_with_context(
@@ -286,13 +288,14 @@ def build_system_prompt_with_context(
     volatile content (errors) last.
     """
 
+    domain_config = get_domain_config(task.domain)
     parts: list[str] = []
 
     # --- Stable across ALL calls ---
-    parts.append("You are a code generation assistant.")
+    parts.append(domain_config.role_prompt)
     parts.append("")
     parts.append("## Output Requirements")
-    parts.append(_OUTPUT_REQUIREMENTS)
+    parts.append(domain_config.output_requirements)
 
     if project_instructions:
         parts.append("")
@@ -450,7 +453,7 @@ def infer_task_tags(task: TaskDefinition) -> list[str]:
             tags.append(tag)
 
     if not tags:
-        tags.append("code-generation")
+        tags.append(task.domain.value.replace("_", "-"))
 
     return sorted(set(tags))
 
@@ -603,7 +606,7 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
         )
         context_stats = None
 
-    user_prompt = build_user_prompt()
+    user_prompt = build_user_prompt(task)
 
     return AssembledContext(
         task_id=task.task_id,
@@ -650,12 +653,13 @@ def build_step_system_prompt(
     Sections are ordered for prompt caching efficiency: stable content first,
     volatile content (errors) last.
     """
+    domain_config = get_domain_config(task.domain)
     parts: list[str] = []
 
-    parts.append("You are a code generation assistant.")
+    parts.append(domain_config.role_prompt)
     parts.append("")
     parts.append("### Output Requirements")
-    parts.append(_OUTPUT_REQUIREMENTS)
+    parts.append(domain_config.output_requirements)
 
     if project_instructions:
         parts.append("")
@@ -711,12 +715,15 @@ def build_step_system_prompt(
     return "\n".join(parts)
 
 
-def build_step_user_prompt(step: PlanStep) -> str:
+def build_step_user_prompt(
+    step: PlanStep,
+    domain: TaskDomain = TaskDomain.CODE_GENERATION,
+) -> str:
     """Build the user prompt for a single step execution."""
-    return (
-        f"Execute step '{step.step_id}': {step.description}\n\n"
-        "For existing files, use `edits` with search/replace operations. "
-        "For new files, use `files` with complete content."
+    domain_config = get_domain_config(domain)
+    return domain_config.step_user_prompt_template.format(
+        step_id=step.step_id,
+        step_description=step.description,
     )
 
 
@@ -752,7 +759,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         error_section=error_section,
         project_instructions=project_instructions,
     )
-    user_prompt = build_step_user_prompt(input.step)
+    user_prompt = build_step_user_prompt(input.step, domain=input.task.domain)
 
     return AssembledContext(
         task_id=input.task.task_id,
@@ -775,6 +782,7 @@ def build_sub_task_system_prompt(
     target_file_contents: dict[str, str] | None = None,
     error_section: str = "",
     project_instructions: str = "",
+    domain: TaskDomain = TaskDomain.CODE_GENERATION,
 ) -> str:
     """Build the system prompt for a sub-task execution.
 
@@ -783,12 +791,13 @@ def build_sub_task_system_prompt(
     Sections are ordered for prompt caching efficiency: stable content first,
     volatile content (errors) last.
     """
+    domain_config = get_domain_config(domain)
     parts: list[str] = []
 
-    parts.append("You are a code generation assistant.")
+    parts.append(domain_config.role_prompt)
     parts.append("")
     parts.append("### Output Requirements")
-    parts.append(_OUTPUT_REQUIREMENTS)
+    parts.append(domain_config.output_requirements)
 
     if project_instructions:
         parts.append("")
@@ -834,12 +843,15 @@ def build_sub_task_system_prompt(
     return "\n".join(parts)
 
 
-def build_sub_task_user_prompt(sub_task: SubTask) -> str:
+def build_sub_task_user_prompt(
+    sub_task: SubTask,
+    domain: TaskDomain = TaskDomain.CODE_GENERATION,
+) -> str:
     """Build the user prompt for a sub-task execution."""
-    return (
-        f"Execute sub-task '{sub_task.sub_task_id}': {sub_task.description}\n\n"
-        "For existing files, use `edits` with search/replace operations. "
-        "For new files, use `files` with complete content."
+    domain_config = get_domain_config(domain)
+    return domain_config.sub_task_user_prompt_template.format(
+        sub_task_id=sub_task.sub_task_id,
+        sub_task_description=sub_task.description,
     )
 
 
@@ -873,8 +885,9 @@ async def assemble_sub_task_context(
         target_file_contents=target_contents,
         error_section=error_section,
         project_instructions=project_instructions,
+        domain=input.domain,
     )
-    user_prompt = build_sub_task_user_prompt(input.sub_task)
+    user_prompt = build_sub_task_user_prompt(input.sub_task, domain=input.domain)
 
     return AssembledContext(
         task_id=input.parent_task_id,
