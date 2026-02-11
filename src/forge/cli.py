@@ -291,6 +291,7 @@ async def _submit_and_wait(
     max_fan_out_depth: int = 1,
     max_exploration_rounds: int = 10,
     sanity_check_interval: int = 0,
+    resolve_conflicts: bool = True,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
 ) -> TaskResult:
@@ -314,6 +315,7 @@ async def _submit_and_wait(
             max_fan_out_depth=max_fan_out_depth,
             max_exploration_rounds=max_exploration_rounds,
             sanity_check_interval=sanity_check_interval,
+            resolve_conflicts=resolve_conflicts,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
         ),
@@ -335,6 +337,7 @@ async def _submit_no_wait(
     max_fan_out_depth: int = 1,
     max_exploration_rounds: int = 10,
     sanity_check_interval: int = 0,
+    resolve_conflicts: bool = True,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
 ) -> str:
@@ -358,6 +361,7 @@ async def _submit_no_wait(
             max_fan_out_depth=max_fan_out_depth,
             max_exploration_rounds=max_exploration_rounds,
             sanity_check_interval=sanity_check_interval,
+            resolve_conflicts=resolve_conflicts,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
         ),
@@ -499,6 +503,11 @@ def main() -> None:
     help="Run sanity check every N steps in planning mode (0 = disabled).",
 )
 @click.option(
+    "--no-resolve-conflicts",
+    is_flag=True,
+    help="Disable LLM-based conflict resolution for fan-out file conflicts.",
+)
+@click.option(
     "--domain",
     type=click.Choice(["code_generation", "research", "code_review", "documentation"]),
     default="code_generation",
@@ -544,6 +553,7 @@ def run(
     thinking_budget: int,
     no_thinking: bool,
     sanity_check_interval: int,
+    no_resolve_conflicts: bool,
     domain: str,
     temporal_address: str,
 ) -> None:
@@ -632,6 +642,7 @@ def run(
                     max_fan_out_depth=max_fan_out_depth,
                     max_exploration_rounds=effective_exploration_rounds,
                     sanity_check_interval=sanity_check_interval,
+                    resolve_conflicts=not no_resolve_conflicts,
                     model_routing=model_routing,
                     thinking=thinking,
                 )
@@ -650,6 +661,7 @@ def run(
                     max_fan_out_depth=max_fan_out_depth,
                     max_exploration_rounds=effective_exploration_rounds,
                     sanity_check_interval=sanity_check_interval,
+                    resolve_conflicts=not no_resolve_conflicts,
                     model_routing=model_routing,
                     thinking=thinking,
                 )

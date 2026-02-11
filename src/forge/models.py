@@ -239,6 +239,7 @@ class SubTaskResult(BaseModel):
     error: str | None = None
     llm_stats: LLMStats | None = None
     sub_task_results: list[SubTaskResult] = Field(default_factory=list)
+    conflict_resolution: ConflictResolutionCallResult | None = None
 
 
 class StepResult(BaseModel):
@@ -256,6 +257,7 @@ class StepResult(BaseModel):
         default="",
         description="Compact summary of step outcome for sanity check consumption.",
     )
+    conflict_resolution: ConflictResolutionCallResult | None = None
 
 
 class TaskResult(BaseModel):
@@ -452,6 +454,85 @@ class ExtractionResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Conflict resolution models
+# ---------------------------------------------------------------------------
+
+
+class FileConflictVersion(BaseModel):
+    """One competing version of a conflicting file."""
+
+    source_id: str = Field(description="Sub-task ID that produced this version.")
+    content: str = Field(description="Full file content.")
+
+
+class FileConflict(BaseModel):
+    """A file produced by multiple sub-tasks."""
+
+    file_path: str = Field(description="Relative path in worktree.")
+    versions: list[FileConflictVersion] = Field(description="2+ competing versions.")
+    original_content: str | None = Field(
+        default=None,
+        description="Pre-existing content (None = new file).",
+    )
+
+
+class ConflictResolutionInput(BaseModel):
+    """Input to assemble_conflict_resolution_context activity."""
+
+    task_id: str
+    step_id: str
+    conflicts: list[FileConflict]
+    non_conflicting_files: dict[str, str] = Field(
+        description="Already-merged files for context.",
+    )
+    task_description: str
+    step_description: str
+    repo_root: str
+    worktree_path: str
+    domain: TaskDomain
+    model_name: str = ""
+    thinking_budget_tokens: int = 0
+    thinking_effort: str = "high"
+
+
+class ConflictResolutionResponse(BaseModel):
+    """Structured LLM output -- resolved files."""
+
+    resolved_files: list[FileOutput] = Field(
+        description="Resolved file contents for each conflicting path.",
+    )
+    explanation: str = Field(description="How the conflicts were resolved.")
+
+
+class ConflictResolutionCallInput(BaseModel):
+    """Input to call_conflict_resolution activity (assembled prompts)."""
+
+    task_id: str
+    step_id: str
+    system_prompt: str
+    user_prompt: str
+    model_name: str = ""
+    thinking_budget_tokens: int = 0
+    thinking_effort: str = "high"
+
+
+class ConflictResolutionCallResult(BaseModel):
+    """Output of call_conflict_resolution activity."""
+
+    task_id: str
+    resolved_files: dict[str, str] = Field(
+        description="file_path -> merged content.",
+    )
+    explanation: str
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+# ---------------------------------------------------------------------------
 # Inter-activity transport
 # ---------------------------------------------------------------------------
 
@@ -563,6 +644,10 @@ class ForgeTaskInput(BaseModel):
     sanity_check_interval: int = Field(
         default=0,
         description="Run sanity check every N steps (0 = disabled).",
+    )
+    resolve_conflicts: bool = Field(
+        default=True,
+        description="Attempt LLM-based conflict resolution for fan-out file conflicts.",
     )
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)

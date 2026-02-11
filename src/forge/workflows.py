@@ -26,14 +26,19 @@ with workflow.unsafe.imports_passed_through():
         CapabilityTier,
         CommitChangesInput,
         CommitChangesOutput,
+        ConflictResolutionCallInput,
+        ConflictResolutionCallResult,
+        ConflictResolutionInput,
         ContextResult,
         CreateWorktreeInput,
         CreateWorktreeOutput,
         ExplorationInput,
         ExplorationResponse,
+        FileConflict,
         ForgeTaskInput,
         FulfillContextInput,
         LLMCallResult,
+        ModelConfig,
         Plan,
         PlanCallResult,
         PlannerInput,
@@ -47,7 +52,9 @@ with workflow.unsafe.imports_passed_through():
         SubTaskInput,
         SubTaskResult,
         TaskDefinition,
+        TaskDomain,
         TaskResult,
+        ThinkingConfig,
         TransitionInput,
         TransitionSignal,
         ValidateOutputInput,
@@ -76,6 +83,7 @@ _TRANSITION_TIMEOUT = timedelta(seconds=10)
 _EXPLORATION_LLM_TIMEOUT = timedelta(minutes=5)
 _EXPLORATION_FULFILL_TIMEOUT = timedelta(minutes=2)
 _SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
+_CONFLICT_RESOLUTION_TIMEOUT = timedelta(minutes=5)
 
 _CHILD_BASE_MINUTES = 15
 _CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
@@ -88,6 +96,52 @@ def _child_timeout(depth: int, max_depth: int) -> timedelta:
     """
     remaining = max_depth - depth
     return timedelta(minutes=_CHILD_BASE_MINUTES + _CHILD_OVERHEAD_MINUTES_PER_LEVEL * remaining)
+
+
+async def _resolve_file_conflicts(
+    task_id: str,
+    step_id: str,
+    conflicts: list[FileConflict],
+    non_conflicting: dict[str, str],
+    task_description: str,
+    step_description: str,
+    repo_root: str,
+    worktree_path: str,
+    domain: TaskDomain,
+    model_routing: ModelConfig,
+    thinking: ThinkingConfig,
+) -> ConflictResolutionCallResult | None:
+    """Attempt LLM-based conflict resolution. Returns None on failure."""
+    reasoning_model = resolve_model(CapabilityTier.REASONING, model_routing)
+
+    resolution_input = ConflictResolutionInput(
+        task_id=task_id,
+        step_id=step_id,
+        conflicts=conflicts,
+        non_conflicting_files=non_conflicting,
+        task_description=task_description,
+        step_description=step_description,
+        repo_root=repo_root,
+        worktree_path=worktree_path,
+        domain=domain,
+        model_name=reasoning_model,
+        thinking_budget_tokens=thinking.budget_tokens if thinking.enabled else 0,
+        thinking_effort=thinking.effort,
+    )
+
+    call_input: ConflictResolutionCallInput = await workflow.execute_activity(
+        "assemble_conflict_resolution_context",
+        resolution_input,
+        start_to_close_timeout=_CONTEXT_TIMEOUT,
+        result_type=ConflictResolutionCallInput,
+    )
+
+    return await workflow.execute_activity(
+        "call_conflict_resolution",
+        call_input,
+        start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
+        result_type=ConflictResolutionCallResult,
+    )
 
 
 @workflow.defn
@@ -793,18 +847,65 @@ class ForgeTaskWorkflow:
                 error="; ".join(error_parts),
             )
 
-        # --- Check for file conflicts ---
-        merged_files: dict[str, str] = {}
-        for result in sub_task_results:
-            for file_path, content in result.output_files.items():
-                if file_path in merged_files:
-                    return StepResult(
-                        step_id=step.step_id,
-                        status=TransitionSignal.FAILURE_TERMINAL,
-                        sub_task_results=sub_task_results,
-                        error=f"File conflict: {file_path} produced by multiple sub-tasks",
-                    )
-                merged_files[file_path] = content
+        # --- Detect and resolve file conflicts ---
+        from forge.activities.conflict_resolution import detect_file_conflicts
+
+        non_conflicting, conflicts = detect_file_conflicts(
+            sub_task_results, wt_output.worktree_path
+        )
+        conflict_resolution_result: ConflictResolutionCallResult | None = None
+
+        if conflicts and input.resolve_conflicts:
+            conflict_resolution_result = await _resolve_file_conflicts(
+                task_id=task.task_id,
+                step_id=step.step_id,
+                conflicts=conflicts,
+                non_conflicting=non_conflicting,
+                task_description=task.description,
+                step_description=step.description,
+                repo_root=input.repo_root,
+                worktree_path=wt_output.worktree_path,
+                domain=task.domain,
+                model_routing=input.model_routing,
+                thinking=input.thinking,
+            )
+
+            # Validate resolution succeeded and covers all conflict paths
+            if conflict_resolution_result is None:
+                return StepResult(
+                    step_id=step.step_id,
+                    status=TransitionSignal.FAILURE_TERMINAL,
+                    sub_task_results=sub_task_results,
+                    error="Conflict resolution failed",
+                )
+
+            conflict_paths = {c.file_path for c in conflicts}
+            resolved_paths = set(conflict_resolution_result.resolved_files.keys())
+            missing = conflict_paths - resolved_paths
+            if missing:
+                return StepResult(
+                    step_id=step.step_id,
+                    status=TransitionSignal.FAILURE_TERMINAL,
+                    sub_task_results=sub_task_results,
+                    conflict_resolution=conflict_resolution_result,
+                    error=(
+                        f"Conflict resolution incomplete: "
+                        f"missing resolved files: {', '.join(sorted(missing))}"
+                    ),
+                )
+
+            merged_files = {**non_conflicting, **conflict_resolution_result.resolved_files}
+        elif conflicts:
+            # resolve_conflicts=False: fall back to D27 terminal error
+            conflict_paths_str = ", ".join(c.file_path for c in conflicts)
+            return StepResult(
+                step_id=step.step_id,
+                status=TransitionSignal.FAILURE_TERMINAL,
+                sub_task_results=sub_task_results,
+                error=f"File conflict: {conflict_paths_str} produced by multiple sub-tasks",
+            )
+        else:
+            merged_files = non_conflicting
 
         # --- Write merged files to parent worktree ---
         if merged_files:
@@ -879,6 +980,7 @@ class ForgeTaskWorkflow:
             validation_results=validation_results,
             commit_sha=commit_output.commit_sha,
             sub_task_results=sub_task_results,
+            conflict_resolution=conflict_resolution_result,
         )
 
 
@@ -1136,28 +1238,82 @@ class ForgeSubTaskWorkflow:
                 error="; ".join(error_parts),
             )
 
-        # --- Check for file conflicts ---
-        merged_files: dict[str, str] = {}
-        for result in sub_task_results:
-            for file_path, content in result.output_files.items():
-                if file_path in merged_files:
-                    await workflow.execute_activity(
-                        "remove_worktree_activity",
-                        RemoveWorktreeInput(
-                            repo_root=input.repo_root,
-                            task_id=compound_id,
-                            force=True,
-                        ),
-                        start_to_close_timeout=_GIT_TIMEOUT,
-                        result_type=type(None),
-                    )
-                    return SubTaskResult(
-                        sub_task_id=input.sub_task.sub_task_id,
-                        status=TransitionSignal.FAILURE_TERMINAL,
-                        sub_task_results=sub_task_results,
-                        error=f"File conflict: {file_path} produced by multiple sub-tasks",
-                    )
-                merged_files[file_path] = content
+        # --- Detect and resolve file conflicts ---
+        from forge.activities.conflict_resolution import detect_file_conflicts
+
+        non_conflicting, conflicts = detect_file_conflicts(
+            sub_task_results, wt_output.worktree_path
+        )
+        conflict_resolution_result: ConflictResolutionCallResult | None = None
+
+        if conflicts:
+            # Build a ModelConfig that uses the inherited model_name for reasoning
+            resolution_model_routing = ModelConfig()
+            if input.model_name:
+                resolution_model_routing = resolution_model_routing.model_copy(
+                    update={"reasoning": input.model_name}
+                )
+
+            conflict_resolution_result = await _resolve_file_conflicts(
+                task_id=compound_id,
+                step_id=input.sub_task.sub_task_id,
+                conflicts=conflicts,
+                non_conflicting=non_conflicting,
+                task_description=input.parent_description,
+                step_description=input.sub_task.description,
+                repo_root=input.repo_root,
+                worktree_path=wt_output.worktree_path,
+                domain=input.domain,
+                model_routing=resolution_model_routing,
+                thinking=ThinkingConfig(),
+            )
+
+            if conflict_resolution_result is None:
+                await workflow.execute_activity(
+                    "remove_worktree_activity",
+                    RemoveWorktreeInput(
+                        repo_root=input.repo_root,
+                        task_id=compound_id,
+                        force=True,
+                    ),
+                    start_to_close_timeout=_GIT_TIMEOUT,
+                    result_type=type(None),
+                )
+                return SubTaskResult(
+                    sub_task_id=input.sub_task.sub_task_id,
+                    status=TransitionSignal.FAILURE_TERMINAL,
+                    sub_task_results=sub_task_results,
+                    error="Conflict resolution failed",
+                )
+
+            conflict_paths = {c.file_path for c in conflicts}
+            resolved_paths = set(conflict_resolution_result.resolved_files.keys())
+            missing = conflict_paths - resolved_paths
+            if missing:
+                await workflow.execute_activity(
+                    "remove_worktree_activity",
+                    RemoveWorktreeInput(
+                        repo_root=input.repo_root,
+                        task_id=compound_id,
+                        force=True,
+                    ),
+                    start_to_close_timeout=_GIT_TIMEOUT,
+                    result_type=type(None),
+                )
+                return SubTaskResult(
+                    sub_task_id=input.sub_task.sub_task_id,
+                    status=TransitionSignal.FAILURE_TERMINAL,
+                    sub_task_results=sub_task_results,
+                    conflict_resolution=conflict_resolution_result,
+                    error=(
+                        f"Conflict resolution incomplete: "
+                        f"missing resolved files: {', '.join(sorted(missing))}"
+                    ),
+                )
+
+            merged_files = {**non_conflicting, **conflict_resolution_result.resolved_files}
+        else:
+            merged_files = non_conflicting
 
         # --- Write merged files to worktree and validate ---
         validation_results: list[ValidationResult] = []
@@ -1236,4 +1392,5 @@ class ForgeSubTaskWorkflow:
             output_files=merged_files,
             validation_results=validation_results,
             sub_task_results=sub_task_results,
+            conflict_resolution=conflict_resolution_result,
         )

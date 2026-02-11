@@ -421,3 +421,27 @@ This document captures key design decisions and their rationale. Decisions are n
 **Decision:** Opt-in sanity check runs after every N completed steps during planned execution. Uses REASONING tier with extended thinking. Three verdicts: continue, revise (replace remaining steps), abort.
 
 **Rationale:** Plans can become stale as work reveals new information (D19). Periodic re-evaluation allows self-correction without waiting for failure. Step-interval trigger is simple and predictable. Revision replaces only remaining steps, preserving committed work. Disabled by default (interval=0) to avoid overhead for simple tasks.
+
+## D71: LLM-Based Fan-Out Conflict Resolution
+
+**Decision:** Replace D27 terminal error with REASONING-tier LLM resolution when multiple sub-tasks produce the same file. If the merged result fails validation, escalate to FAILURE_TERMINAL with a detailed conflict report. Supersedes D27.
+
+**Rationale:** File conflicts between sub-tasks are not always planning errors — legitimate parallel work can produce overlapping changes to the same file (e.g., two sub-tasks adding different functions to a shared module). LLM-based resolution preserves the intent of all sub-tasks while keeping the workflow alive. The original D27 terminal error remains available via `--no-resolve-conflicts` for cases where conflicts should surface as planning errors.
+
+## D72: Conflict Resolution as Universal Workflow Step
+
+**Decision:** Conflict resolution follows the same construct-send-receive-serialize-transition pattern as all other LLM calls. Uses a specialized output type (`ConflictResolutionResponse`) but reuses the agent infrastructure, thinking settings, and store persistence patterns.
+
+**Rationale:** Consistency with the universal workflow step (D2) reduces cognitive overhead and ensures conflict resolution benefits from the same observability, caching, and thinking infrastructure as other LLM calls.
+
+## D73: REASONING Tier for Conflict Resolution
+
+**Decision:** Always use REASONING tier (per D11 model routing) for conflict resolution. Merging conflicting code requires understanding the intent of multiple sub-tasks and producing correct combined output.
+
+**Rationale:** Conflict resolution is a high-stakes operation — an incorrect merge can silently break functionality. The REASONING tier provides the best chance of producing correct merged output, and the cost is justified since conflicts are infrequent.
+
+## D74: Parallel Task Execution Deferred
+
+**Decision:** Parallel task execution with optimistic concurrency (Phase B) is deferred to a future phase. Fan-out conflict resolution (Phase A) proves the conflict resolution primitive first.
+
+**Rationale:** Fan-out conflicts are simpler — competing file versions are already in memory, and the workflow engine handles orchestration. Parallel task execution adds git merge conflict detection, `depends_on` scheduling, and concurrent step management. Building Phase A first validates the LLM resolution approach before adding that complexity.

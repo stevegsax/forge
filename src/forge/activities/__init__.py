@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from forge.activities.conflict_resolution import (
+    assemble_conflict_resolution_context,
+    call_conflict_resolution,
+)
 from forge.activities.context import (
     assemble_context,
     assemble_step_context,
@@ -30,11 +34,13 @@ from forge.activities.transition import evaluate_transition
 from forge.activities.validate import validate_output
 
 __all__ = [
+    "assemble_conflict_resolution_context",
     "assemble_context",
     "assemble_planner_context",
     "assemble_sanity_check_context",
     "assemble_step_context",
     "assemble_sub_task_context",
+    "call_conflict_resolution",
     "call_exploration_llm",
     "call_extraction_llm",
     "call_llm",

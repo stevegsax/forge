@@ -14,11 +14,13 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
 from forge.activities import (
+    assemble_conflict_resolution_context,
     assemble_context,
     assemble_planner_context,
     assemble_sanity_check_context,
     assemble_step_context,
     assemble_sub_task_context,
+    call_conflict_resolution,
     call_exploration_llm,
     call_extraction_llm,
     call_llm,
@@ -80,11 +82,13 @@ async def run_worker(address: str | None = None) -> None:
         task_queue=FORGE_TASK_QUEUE,
         workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow, ForgeExtractionWorkflow],
         activities=[
+            assemble_conflict_resolution_context,
             assemble_context,
             assemble_planner_context,
             assemble_sanity_check_context,
             assemble_step_context,
             assemble_sub_task_context,
+            call_conflict_resolution,
             call_exploration_llm,
             call_extraction_llm,
             call_llm,

@@ -17,6 +17,9 @@ from forge.models import (
     AssembleSubTaskContextInput,
     CommitChangesInput,
     CommitChangesOutput,
+    ConflictResolutionCallInput,
+    ConflictResolutionCallResult,
+    ConflictResolutionInput,
     CreateWorktreeInput,
     CreateWorktreeOutput,
     FileOutput,
@@ -918,23 +921,28 @@ _FANOUT_CALL_LOG: list[str] = []
 _FANOUT_STEP_TRANSITIONS: list[str] = []
 _FANOUT_SUBTASK_TRANSITIONS: list[str] = []
 _FANOUT_SUBTASK_LLM_RESPONSES: list[LLMResponse] = []
+_FANOUT_CONFLICT_RESOLUTION_RESPONSES: list[ConflictResolutionCallResult] = []
 
 
 def _reset_fanout_mock_state(
     step_transitions: list[str] | None = None,
     subtask_transitions: list[str] | None = None,
     subtask_responses: list[LLMResponse] | None = None,
+    conflict_responses: list[ConflictResolutionCallResult] | None = None,
 ) -> None:
     _FANOUT_CALL_LOG.clear()
     _FANOUT_STEP_TRANSITIONS.clear()
     _FANOUT_SUBTASK_TRANSITIONS.clear()
     _FANOUT_SUBTASK_LLM_RESPONSES.clear()
+    _FANOUT_CONFLICT_RESOLUTION_RESPONSES.clear()
     if step_transitions:
         _FANOUT_STEP_TRANSITIONS.extend(step_transitions)
     if subtask_transitions:
         _FANOUT_SUBTASK_TRANSITIONS.extend(subtask_transitions)
     if subtask_responses:
         _FANOUT_SUBTASK_LLM_RESPONSES.extend(subtask_responses)
+    if conflict_responses:
+        _FANOUT_CONFLICT_RESOLUTION_RESPONSES.extend(conflict_responses)
 
 
 @activity.defn(name="create_worktree_activity")
@@ -1083,6 +1091,37 @@ async def mock_fanout_reset_worktree(input: ResetWorktreeInput) -> None:
     _FANOUT_CALL_LOG.append("reset_worktree")
 
 
+@activity.defn(name="assemble_conflict_resolution_context")
+async def mock_fanout_assemble_cr_context(
+    input: ConflictResolutionInput,
+) -> ConflictResolutionCallInput:
+    _FANOUT_CALL_LOG.append("assemble_conflict_resolution_context")
+    return ConflictResolutionCallInput(
+        task_id=input.task_id,
+        step_id=input.step_id,
+        system_prompt="conflict resolution system prompt",
+        user_prompt="conflict resolution user prompt",
+    )
+
+
+@activity.defn(name="call_conflict_resolution")
+async def mock_fanout_call_conflict_resolution(
+    input: ConflictResolutionCallInput,
+) -> ConflictResolutionCallResult:
+    _FANOUT_CALL_LOG.append("call_conflict_resolution")
+    if _FANOUT_CONFLICT_RESOLUTION_RESPONSES:
+        return _FANOUT_CONFLICT_RESOLUTION_RESPONSES.pop(0)
+    return ConflictResolutionCallResult(
+        task_id=input.task_id,
+        resolved_files={},
+        explanation="No conflicts resolved (default mock).",
+        model_name="mock-reasoning",
+        input_tokens=200,
+        output_tokens=100,
+        latency_ms=300.0,
+    )
+
+
 _FANOUT_MOCK_ACTIVITIES = [
     mock_fanout_create_worktree,
     mock_fanout_remove_worktree,
@@ -1096,6 +1135,8 @@ _FANOUT_MOCK_ACTIVITIES = [
     mock_fanout_evaluate_transition,
     mock_fanout_commit_changes,
     mock_fanout_reset_worktree,
+    mock_fanout_assemble_cr_context,
+    mock_fanout_call_conflict_resolution,
 ]
 
 
@@ -1223,7 +1264,7 @@ class TestFanOutChildFailure:
 
 
 class TestFanOutFileConflict:
-    """Two sub-tasks produce the same file → conflict detected."""
+    """Two sub-tasks produce the same file with resolve_conflicts=False → D27 terminal error."""
 
     @pytest.mark.asyncio
     async def test_file_conflict_detected(self, env: WorkflowEnvironment) -> None:
@@ -1240,10 +1281,207 @@ class TestFanOutFileConflict:
                 ),
             ]
         )
-        result = await _run_fanout_workflow(env)
+        no_resolve_input = ForgeTaskInput(
+            task=_FANOUT_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_sub_task_attempts=2,
+            max_exploration_rounds=0,
+            resolve_conflicts=False,
+        )
+        result = await _run_fanout_workflow(env, no_resolve_input)
         assert result.status == TransitionSignal.FAILURE_TERMINAL
         assert result.error is not None
         assert "File conflict" in result.error
+
+
+# ---------------------------------------------------------------------------
+# Tests — fan-out conflict resolution
+# ---------------------------------------------------------------------------
+
+
+class TestFanOutConflictResolution:
+    """Two sub-tasks produce same file, LLM resolves the conflict."""
+
+    @pytest.mark.asyncio
+    async def test_resolution_succeeds(self, env: WorkflowEnvironment) -> None:
+        """Conflict is resolved, merged output passes validation, step succeeds."""
+        _reset_fanout_mock_state(
+            subtask_responses=[
+                LLMResponse(
+                    files=[
+                        FileOutput(file_path="shared.py", content="# from st1\ndef foo(): pass\n")
+                    ],
+                    explanation="st1 output",
+                ),
+                LLMResponse(
+                    files=[
+                        FileOutput(file_path="shared.py", content="# from st2\ndef bar(): pass\n")
+                    ],
+                    explanation="st2 output",
+                ),
+            ],
+            conflict_responses=[
+                ConflictResolutionCallResult(
+                    task_id="fanout-task",
+                    resolved_files={"shared.py": "# merged\ndef foo(): pass\ndef bar(): pass\n"},
+                    explanation="Combined both functions.",
+                    model_name="mock-reasoning",
+                    input_tokens=200,
+                    output_tokens=100,
+                    latency_ms=300.0,
+                ),
+            ],
+        )
+        result = await _run_fanout_workflow(env)
+        assert result.status == TransitionSignal.SUCCESS
+        assert "assemble_conflict_resolution_context" in _FANOUT_CALL_LOG
+        assert "call_conflict_resolution" in _FANOUT_CALL_LOG
+        sr = result.step_results[0]
+        assert sr.conflict_resolution is not None
+        assert "shared.py" in sr.output_files
+        assert "merged" in sr.output_files["shared.py"]
+
+    @pytest.mark.asyncio
+    async def test_resolution_missing_path_fails(self, env: WorkflowEnvironment) -> None:
+        """Resolution LLM omits a conflict path → step fails terminal."""
+        _reset_fanout_mock_state(
+            subtask_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="shared.py", content="# from st1\n")],
+                    explanation="st1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="shared.py", content="# from st2\n")],
+                    explanation="st2 output",
+                ),
+            ],
+            conflict_responses=[
+                ConflictResolutionCallResult(
+                    task_id="fanout-task",
+                    resolved_files={},  # Missing shared.py!
+                    explanation="Oops, forgot.",
+                    model_name="mock-reasoning",
+                    input_tokens=200,
+                    output_tokens=100,
+                    latency_ms=300.0,
+                ),
+            ],
+        )
+        result = await _run_fanout_workflow(env)
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.error is not None
+        assert "Conflict resolution incomplete" in result.error
+        assert "shared.py" in result.error
+
+    @pytest.mark.asyncio
+    async def test_mixed_conflicting_and_non_conflicting(self, env: WorkflowEnvironment) -> None:
+        """Sub-tasks produce one conflicting and two non-conflicting files."""
+        _reset_fanout_mock_state(
+            subtask_responses=[
+                LLMResponse(
+                    files=[
+                        FileOutput(file_path="shared.py", content="# from st1\n"),
+                        FileOutput(file_path="unique_a.py", content="# unique a\n"),
+                    ],
+                    explanation="st1 output",
+                ),
+                LLMResponse(
+                    files=[
+                        FileOutput(file_path="shared.py", content="# from st2\n"),
+                        FileOutput(file_path="unique_b.py", content="# unique b\n"),
+                    ],
+                    explanation="st2 output",
+                ),
+            ],
+            conflict_responses=[
+                ConflictResolutionCallResult(
+                    task_id="fanout-task",
+                    resolved_files={"shared.py": "# merged shared\n"},
+                    explanation="Merged shared.py.",
+                    model_name="mock-reasoning",
+                    input_tokens=200,
+                    output_tokens=100,
+                    latency_ms=300.0,
+                ),
+            ],
+        )
+        result = await _run_fanout_workflow(env)
+        assert result.status == TransitionSignal.SUCCESS
+        sr = result.step_results[0]
+        assert sr.output_files["shared.py"] == "# merged shared\n"
+        assert sr.output_files["unique_a.py"] == "# unique a\n"
+        assert sr.output_files["unique_b.py"] == "# unique b\n"
+
+    @pytest.mark.asyncio
+    async def test_resolution_disabled_falls_back_to_terminal(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """resolve_conflicts=False, falls back to D27 terminal error."""
+        _reset_fanout_mock_state(
+            subtask_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from st1\n")],
+                    explanation="st1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from st2\n")],
+                    explanation="st2 output",
+                ),
+            ],
+        )
+        no_resolve_input = ForgeTaskInput(
+            task=_FANOUT_TASK,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_sub_task_attempts=2,
+            max_exploration_rounds=0,
+            resolve_conflicts=False,
+        )
+        result = await _run_fanout_workflow(env, no_resolve_input)
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert "File conflict" in (result.error or "")
+        # Conflict resolution activities should NOT be called
+        assert "assemble_conflict_resolution_context" not in _FANOUT_CALL_LOG
+        assert "call_conflict_resolution" not in _FANOUT_CALL_LOG
+
+    @pytest.mark.asyncio
+    async def test_validation_failure_after_resolution(self, env: WorkflowEnvironment) -> None:
+        """Resolution succeeds but merged output fails validation → terminal error."""
+        _reset_fanout_mock_state(
+            subtask_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="shared.py", content="# from st1\n")],
+                    explanation="st1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="shared.py", content="# from st2\n")],
+                    explanation="st2 output",
+                ),
+            ],
+            conflict_responses=[
+                ConflictResolutionCallResult(
+                    task_id="fanout-task",
+                    resolved_files={"shared.py": "# bad merge\n"},
+                    explanation="Merged.",
+                    model_name="mock-reasoning",
+                    input_tokens=200,
+                    output_tokens=100,
+                    latency_ms=300.0,
+                ),
+            ],
+            # Sub-tasks succeed (2 transitions for children), then parent
+            # validation fails (1 transition for merged output).
+            subtask_transitions=[
+                TransitionSignal.SUCCESS.value,
+                TransitionSignal.SUCCESS.value,
+            ],
+            step_transitions=[TransitionSignal.FAILURE_TERMINAL.value],
+        )
+        result = await _run_fanout_workflow(env)
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.error is not None
+        assert "Merged output validation failed" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -1972,19 +2210,24 @@ class TestSubTaskErrorAwareRetry:
 _RECURSIVE_CALL_LOG: list[str] = []
 _RECURSIVE_TRANSITION_SEQUENCE: list[str] = []
 _RECURSIVE_LLM_RESPONSES: list[LLMResponse] = []
+_RECURSIVE_CONFLICT_RESPONSES: list[ConflictResolutionCallResult] = []
 
 
 def _reset_recursive_mock_state(
     transitions: list[str] | None = None,
     llm_responses: list[LLMResponse] | None = None,
+    conflict_responses: list[ConflictResolutionCallResult] | None = None,
 ) -> None:
     _RECURSIVE_CALL_LOG.clear()
     _RECURSIVE_TRANSITION_SEQUENCE.clear()
     _RECURSIVE_LLM_RESPONSES.clear()
+    _RECURSIVE_CONFLICT_RESPONSES.clear()
     if transitions:
         _RECURSIVE_TRANSITION_SEQUENCE.extend(transitions)
     if llm_responses:
         _RECURSIVE_LLM_RESPONSES.extend(llm_responses)
+    if conflict_responses:
+        _RECURSIVE_CONFLICT_RESPONSES.extend(conflict_responses)
 
 
 @activity.defn(name="create_worktree_activity")
@@ -2077,6 +2320,37 @@ async def mock_recursive_evaluate_transition(input: TransitionInput) -> str:
     return TransitionSignal.SUCCESS.value
 
 
+@activity.defn(name="assemble_conflict_resolution_context")
+async def mock_recursive_assemble_cr_context(
+    input: ConflictResolutionInput,
+) -> ConflictResolutionCallInput:
+    _RECURSIVE_CALL_LOG.append("assemble_conflict_resolution_context")
+    return ConflictResolutionCallInput(
+        task_id=input.task_id,
+        step_id=input.step_id,
+        system_prompt="conflict resolution system prompt",
+        user_prompt="conflict resolution user prompt",
+    )
+
+
+@activity.defn(name="call_conflict_resolution")
+async def mock_recursive_call_conflict_resolution(
+    input: ConflictResolutionCallInput,
+) -> ConflictResolutionCallResult:
+    _RECURSIVE_CALL_LOG.append("call_conflict_resolution")
+    if _RECURSIVE_CONFLICT_RESPONSES:
+        return _RECURSIVE_CONFLICT_RESPONSES.pop(0)
+    return ConflictResolutionCallResult(
+        task_id=input.task_id,
+        resolved_files={},
+        explanation="No conflicts resolved (default mock).",
+        model_name="mock-reasoning",
+        input_tokens=200,
+        output_tokens=100,
+        latency_ms=300.0,
+    )
+
+
 _RECURSIVE_MOCK_ACTIVITIES = [
     mock_recursive_create_worktree,
     mock_recursive_remove_worktree,
@@ -2086,6 +2360,8 @@ _RECURSIVE_MOCK_ACTIVITIES = [
     mock_recursive_write_files,
     mock_recursive_validate_output,
     mock_recursive_evaluate_transition,
+    mock_recursive_assemble_cr_context,
+    mock_recursive_call_conflict_resolution,
 ]
 
 
@@ -2318,7 +2594,7 @@ class TestRecursiveFanOutNestedFailure:
 
 
 class TestRecursiveFanOutNestedFileConflict:
-    """Two grandchildren produce the same file → conflict at sub-task level."""
+    """Two grandchildren produce the same file → conflict resolution attempted."""
 
     @pytest.fixture
     def conflict_input(self) -> SubTaskInput:
@@ -2350,9 +2626,10 @@ class TestRecursiveFanOutNestedFileConflict:
         )
 
     @pytest.mark.asyncio
-    async def test_conflict_detected_at_subtask_level(
+    async def test_conflict_resolution_attempted(
         self, env: WorkflowEnvironment, conflict_input: SubTaskInput
     ) -> None:
+        """Nested conflict triggers LLM resolution; incomplete resolution fails."""
         _reset_recursive_mock_state(
             llm_responses=[
                 LLMResponse(
@@ -2364,12 +2641,48 @@ class TestRecursiveFanOutNestedFileConflict:
                     explanation="gc2 output",
                 ),
             ]
+            # Default mock returns empty resolved_files → incomplete
         )
         result = await _run_recursive_subtask_workflow(env, conflict_input)
         assert result.status == TransitionSignal.FAILURE_TERMINAL
         assert result.error is not None
-        assert "File conflict" in result.error
+        assert "Conflict resolution incomplete" in result.error
         assert "conflict.py" in result.error
+        assert "assemble_conflict_resolution_context" in _RECURSIVE_CALL_LOG
+        assert "call_conflict_resolution" in _RECURSIVE_CALL_LOG
+
+    @pytest.mark.asyncio
+    async def test_nested_conflict_resolution_succeeds(
+        self, env: WorkflowEnvironment, conflict_input: SubTaskInput
+    ) -> None:
+        """Nested conflict resolved successfully → sub-task succeeds."""
+        _reset_recursive_mock_state(
+            llm_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc1\n")],
+                    explanation="gc1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc2\n")],
+                    explanation="gc2 output",
+                ),
+            ],
+            conflict_responses=[
+                ConflictResolutionCallResult(
+                    task_id="parent-task.sub.st1",
+                    resolved_files={"conflict.py": "# merged gc1+gc2\n"},
+                    explanation="Combined both.",
+                    model_name="mock-reasoning",
+                    input_tokens=200,
+                    output_tokens=100,
+                    latency_ms=300.0,
+                ),
+            ],
+        )
+        result = await _run_recursive_subtask_workflow(env, conflict_input)
+        assert result.status == TransitionSignal.SUCCESS
+        assert result.output_files["conflict.py"] == "# merged gc1+gc2\n"
+        assert result.conflict_resolution is not None
 
 
 # ---------------------------------------------------------------------------
