@@ -21,6 +21,7 @@ from temporalio import activity
 from forge.domains import get_domain_config
 from forge.llm_client import build_messages_params, extract_tool_result
 from forge.models import (
+    AssembledContext,
     ContextResult,
     ExplorationInput,
     ExplorationResponse,
@@ -251,3 +252,30 @@ async def fulfill_context_requests(input: FulfillContextInput) -> list[ContextRe
         )
 
         return results
+
+
+@activity.defn
+async def assemble_exploration_context(input: ExplorationInput) -> AssembledContext:
+    """Build exploration prompts as AssembledContext for batch path."""
+    from pathlib import Path
+
+    from forge.activities.context import (
+        _read_project_instructions,
+        build_project_instructions_section,
+    )
+
+    project_instructions = ""
+    if input.repo_root:
+        project_instructions = build_project_instructions_section(
+            _read_project_instructions(Path(input.repo_root))
+        )
+
+    system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
+    model = input.model_name or DEFAULT_EXPLORATION_MODEL
+
+    return AssembledContext(
+        task_id=input.task.task_id,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_name=model,
+    )

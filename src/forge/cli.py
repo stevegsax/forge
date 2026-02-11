@@ -294,6 +294,7 @@ async def _submit_and_wait(
     resolve_conflicts: bool = True,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
+    sync_mode: bool = True,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
@@ -318,6 +319,7 @@ async def _submit_and_wait(
             resolve_conflicts=resolve_conflicts,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
+            sync_mode=sync_mode,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -340,6 +342,7 @@ async def _submit_no_wait(
     resolve_conflicts: bool = True,
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
+    sync_mode: bool = True,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
@@ -364,6 +367,7 @@ async def _submit_no_wait(
             resolve_conflicts=resolve_conflicts,
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
+            sync_mode=sync_mode,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -508,6 +512,13 @@ def main() -> None:
     help="Disable LLM-based conflict resolution for fan-out file conflicts.",
 )
 @click.option(
+    "--sync/--no-sync",
+    "sync_mode",
+    default=True,
+    show_default=True,
+    help="Use synchronous Messages API. --no-sync enables batch mode.",
+)
+@click.option(
     "--domain",
     type=click.Choice(["code_generation", "research", "code_review", "documentation"]),
     default="code_generation",
@@ -554,6 +565,7 @@ def run(
     no_thinking: bool,
     sanity_check_interval: int,
     no_resolve_conflicts: bool,
+    sync_mode: bool,
     domain: str,
     temporal_address: str,
 ) -> None:
@@ -645,6 +657,7 @@ def run(
                     resolve_conflicts=not no_resolve_conflicts,
                     model_routing=model_routing,
                     thinking=thinking,
+                    sync_mode=sync_mode,
                 )
             )
             click.echo(workflow_id)
@@ -664,6 +677,7 @@ def run(
                     resolve_conflicts=not no_resolve_conflicts,
                     model_routing=model_routing,
                     thinking=thinking,
+                    sync_mode=sync_mode,
                 )
             )
 

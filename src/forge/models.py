@@ -651,6 +651,10 @@ class ForgeTaskInput(BaseModel):
     )
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    sync_mode: bool = Field(
+        default=True,
+        description="Use synchronous Messages API. False enables batch mode (requires 14c poller).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +730,10 @@ class SubTaskInput(BaseModel):
     domain: TaskDomain = Field(default=TaskDomain.CODE_GENERATION)
     depth: int = Field(default=0, description="Current fan-out depth.")
     max_depth: int = Field(default=1, description="Maximum allowed fan-out depth.")
+    sync_mode: bool = Field(
+        default=True,
+        description="Use synchronous Messages API. Inherited from parent workflow.",
+    )
 
 
 class WriteFilesInput(BaseModel):
@@ -926,6 +934,9 @@ class BatchSubmitInput(BaseModel):
     context: AssembledContext
     output_type_name: str = Field(description="Key in get_output_type_registry().")
     workflow_id: str = Field(description="Temporal workflow ID for audit linkage.")
+    thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
+    thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
+    max_tokens: int = Field(default=4096, description="Max output tokens.")
 
 
 class BatchSubmitResult(BaseModel):
@@ -951,6 +962,18 @@ class ParseResponseInput(BaseModel):
     raw_response_json: str
     output_type_name: str
     task_id: str
+
+
+class ParsedLLMResponse(BaseModel):
+    """Generic parsed LLM response from sync or batch path."""
+
+    parsed_json: str = Field(description="JSON of the parsed Pydantic model (tool_use input).")
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float = 0.0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class BatchPollerInput(BaseModel):

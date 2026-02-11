@@ -24,6 +24,9 @@ def _make_input(
     *,
     model_name: str = "",
     output_type_name: str = "LLMResponse",
+    thinking_budget_tokens: int = 0,
+    thinking_effort: str = "high",
+    max_tokens: int = 4096,
 ) -> BatchSubmitInput:
     """Build a BatchSubmitInput with sensible defaults."""
     context = AssembledContext(
@@ -36,6 +39,9 @@ def _make_input(
         context=context,
         output_type_name=output_type_name,
         workflow_id="wf-test-123",
+        thinking_budget_tokens=thinking_budget_tokens,
+        thinking_effort=thinking_effort,
+        max_tokens=max_tokens,
     )
 
 
@@ -104,3 +110,32 @@ class TestExecuteBatchSubmit:
         parts = result.request_id.split("-")
         assert len(parts) == 5
         assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+    @pytest.mark.asyncio
+    async def test_passes_thinking_config_through(self) -> None:
+        client = _make_mock_client()
+        input = _make_input(
+            model_name="claude-sonnet-4-5-20250929",
+            thinking_budget_tokens=10_000,
+            thinking_effort="high",
+        )
+
+        await execute_batch_submit(input, client)
+
+        call_kwargs = client.messages.batches.create.call_args
+        requests = call_kwargs.kwargs.get("requests") or call_kwargs[1].get("requests")
+        params = requests[0]["params"]
+        assert "thinking" in params
+        assert params["thinking"]["budget_tokens"] >= 10_000
+
+    @pytest.mark.asyncio
+    async def test_passes_max_tokens_through(self) -> None:
+        client = _make_mock_client()
+        input = _make_input(max_tokens=8192)
+
+        await execute_batch_submit(input, client)
+
+        call_kwargs = client.messages.batches.create.call_args
+        requests = call_kwargs.kwargs.get("requests") or call_kwargs[1].get("requests")
+        params = requests[0]["params"]
+        assert params["max_tokens"] == 8192

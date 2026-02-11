@@ -15,6 +15,9 @@ from forge.models import (
     AssembleSanityCheckContextInput,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
+    BatchResult,
+    BatchSubmitInput,
+    BatchSubmitResult,
     CommitChangesInput,
     CommitChangesOutput,
     ConflictResolutionCallInput,
@@ -26,6 +29,8 @@ from forge.models import (
     ForgeTaskInput,
     LLMCallResult,
     LLMResponse,
+    ParsedLLMResponse,
+    ParseResponseInput,
     Plan,
     PlanCallResult,
     PlannerInput,
@@ -3224,3 +3229,454 @@ class TestSanityCheckSkipsLastStep:
         assert result.sanity_check_count == 1
         # Only one sanity check call, not two
         assert _SC_CALL_LOG.count("call_sanity_check") == 1
+
+
+# ===========================================================================
+# Phase 14b: Batch path tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Mock activities for batch path
+# ---------------------------------------------------------------------------
+
+_BATCH_CALL_LOG: list[str] = []
+_BATCH_TRANSITION_SEQUENCE: list[str] = []
+_BATCH_PARSE_RESPONSES: list[ParsedLLMResponse] = []
+
+
+def _reset_batch_mock_state(
+    transitions: list[str] | None = None,
+    parse_responses: list[ParsedLLMResponse] | None = None,
+) -> None:
+    _BATCH_CALL_LOG.clear()
+    _BATCH_TRANSITION_SEQUENCE.clear()
+    _BATCH_PARSE_RESPONSES.clear()
+    if transitions:
+        _BATCH_TRANSITION_SEQUENCE.extend(transitions)
+    if parse_responses:
+        _BATCH_PARSE_RESPONSES.extend(parse_responses)
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_batch_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _BATCH_CALL_LOG.append("create_worktree")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="remove_worktree_activity")
+async def mock_batch_remove_worktree(input: RemoveWorktreeInput) -> None:
+    _BATCH_CALL_LOG.append("remove_worktree")
+
+
+@activity.defn(name="commit_changes_activity")
+async def mock_batch_commit_changes(input: CommitChangesInput) -> CommitChangesOutput:
+    _BATCH_CALL_LOG.append(f"commit:{input.status}")
+    return CommitChangesOutput(commit_sha="d" * 40)
+
+
+@activity.defn(name="assemble_context")
+async def mock_batch_assemble_context(input: AssembleContextInput) -> AssembledContext:
+    _BATCH_CALL_LOG.append("assemble_context")
+    return AssembledContext(
+        task_id=input.task.task_id,
+        system_prompt="system prompt",
+        user_prompt="user prompt",
+    )
+
+
+@activity.defn(name="submit_batch_request")
+async def mock_batch_submit(input: BatchSubmitInput) -> BatchSubmitResult:
+    _BATCH_CALL_LOG.append("submit_batch_request")
+    return BatchSubmitResult(
+        request_id="req-test-123",
+        batch_id="msgbatch_test123",
+    )
+
+
+@activity.defn(name="parse_llm_response")
+async def mock_batch_parse(input: ParseResponseInput) -> ParsedLLMResponse:
+    _BATCH_CALL_LOG.append(f"parse_llm_response:{input.output_type_name}")
+    if _BATCH_PARSE_RESPONSES:
+        return _BATCH_PARSE_RESPONSES.pop(0)
+    # Default: return a valid LLMResponse
+    llm_resp = LLMResponse(
+        files=[FileOutput(file_path="hello.py", content="print('hello')\n")],
+        explanation="Created hello module.",
+    )
+    return ParsedLLMResponse(
+        parsed_json=llm_resp.model_dump_json(),
+        model_name="mock-batch-model",
+        input_tokens=100,
+        output_tokens=50,
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_batch_write_output(input: WriteOutputInput) -> WriteResult:
+    _BATCH_CALL_LOG.append("write_output")
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
+
+
+@activity.defn(name="validate_output")
+async def mock_batch_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+    _BATCH_CALL_LOG.append("validate_output")
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_batch_evaluate_transition(input: TransitionInput) -> str:
+    _BATCH_CALL_LOG.append("evaluate_transition")
+    if _BATCH_TRANSITION_SEQUENCE:
+        return _BATCH_TRANSITION_SEQUENCE.pop(0)
+    return TransitionSignal.SUCCESS.value
+
+
+_BATCH_MOCK_ACTIVITIES = [
+    mock_batch_create_worktree,
+    mock_batch_remove_worktree,
+    mock_batch_commit_changes,
+    mock_batch_assemble_context,
+    mock_batch_submit,
+    mock_batch_parse,
+    mock_batch_write_output,
+    mock_batch_validate_output,
+    mock_batch_evaluate_transition,
+]
+
+
+# ---------------------------------------------------------------------------
+# Tests — batch single step
+# ---------------------------------------------------------------------------
+
+
+class TestBatchSingleStep:
+    """Single-step workflow with sync_mode=False uses batch path."""
+
+    @pytest.mark.asyncio
+    async def test_batch_generation_success(self, env: WorkflowEnvironment) -> None:
+        _reset_batch_mock_state(transitions=[TransitionSignal.SUCCESS.value])
+
+        task = TaskDefinition(
+            task_id="batch-test",
+            description="Write a hello module.",
+            target_files=["hello.py"],
+        )
+        input = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            max_attempts=2,
+            max_exploration_rounds=0,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_BATCH_MOCK_ACTIVITIES,
+        ):
+            handle = await env.client.start_workflow(
+                ForgeTaskWorkflow.run,
+                input,
+                id="test-batch-single",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            # Send signal with batch result
+            batch_result = BatchResult(
+                request_id="req-test-123",
+                batch_id="msgbatch_test123",
+                raw_response_json='{"dummy": "json"}',
+                result_type="LLMResponse",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, batch_result)
+
+            result = await handle.result()
+
+        assert result.status == TransitionSignal.SUCCESS
+        assert "submit_batch_request" in _BATCH_CALL_LOG
+        assert "parse_llm_response:LLMResponse" in _BATCH_CALL_LOG
+        # Verify sync path was NOT called
+        assert "call_llm" not in _BATCH_CALL_LOG
+        assert result.output_files == {"hello.py": "print('hello')\n"}
+
+    @pytest.mark.asyncio
+    async def test_batch_error_in_signal_raises(self, env: WorkflowEnvironment) -> None:
+        _reset_batch_mock_state()
+
+        task = TaskDefinition(
+            task_id="batch-err",
+            description="Error test.",
+            target_files=["x.py"],
+        )
+        input = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            max_attempts=1,
+            max_exploration_rounds=0,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_BATCH_MOCK_ACTIVITIES,
+        ):
+            handle = await env.client.start_workflow(
+                ForgeTaskWorkflow.run,
+                input,
+                id="test-batch-error",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            # Send signal with error
+            batch_result = BatchResult(
+                request_id="req-test-123",
+                batch_id="msgbatch_test123",
+                error="Batch expired",
+                result_type="LLMResponse",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, batch_result)
+
+            from temporalio.client import WorkflowFailureError
+
+            with pytest.raises(WorkflowFailureError):
+                await handle.result()
+
+
+# ---------------------------------------------------------------------------
+# Tests — batch planned workflow
+# ---------------------------------------------------------------------------
+
+# Additional mock activities needed for planned batch tests
+
+_BATCH_PLAN_CALL_LOG: list[str] = []
+_BATCH_PLAN_TRANSITION_SEQUENCE: list[str] = []
+_BATCH_PLAN_PARSE_QUEUE: list[ParsedLLMResponse] = []
+
+
+def _reset_batch_plan_mock_state(
+    transitions: list[str] | None = None,
+    parse_queue: list[ParsedLLMResponse] | None = None,
+) -> None:
+    _BATCH_PLAN_CALL_LOG.clear()
+    _BATCH_PLAN_TRANSITION_SEQUENCE.clear()
+    _BATCH_PLAN_PARSE_QUEUE.clear()
+    if transitions:
+        _BATCH_PLAN_TRANSITION_SEQUENCE.extend(transitions)
+    if parse_queue:
+        _BATCH_PLAN_PARSE_QUEUE.extend(parse_queue)
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_bp_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _BATCH_PLAN_CALL_LOG.append("create_worktree")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="assemble_planner_context")
+async def mock_bp_assemble_planner(input: AssembleContextInput) -> PlannerInput:
+    _BATCH_PLAN_CALL_LOG.append("assemble_planner_context")
+    return PlannerInput(
+        task_id=input.task.task_id,
+        system_prompt="planner system",
+        user_prompt="planner user",
+    )
+
+
+@activity.defn(name="submit_batch_request")
+async def mock_bp_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
+    _BATCH_PLAN_CALL_LOG.append(f"submit_batch:{input.output_type_name}")
+    return BatchSubmitResult(request_id="req-bp-123", batch_id="msgbatch_bp123")
+
+
+@activity.defn(name="parse_llm_response")
+async def mock_bp_parse(input: ParseResponseInput) -> ParsedLLMResponse:
+    _BATCH_PLAN_CALL_LOG.append(f"parse:{input.output_type_name}")
+    if _BATCH_PLAN_PARSE_QUEUE:
+        return _BATCH_PLAN_PARSE_QUEUE.pop(0)
+    msg = "No parse response queued"
+    raise RuntimeError(msg)
+
+
+@activity.defn(name="assemble_step_context")
+async def mock_bp_assemble_step(input: AssembleStepContextInput) -> AssembledContext:
+    _BATCH_PLAN_CALL_LOG.append(f"assemble_step:{input.step.step_id}")
+    return AssembledContext(
+        task_id=input.task.task_id,
+        system_prompt=f"step system for {input.step.step_id}",
+        user_prompt=f"step user for {input.step.step_id}",
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_bp_write_output(input: WriteOutputInput) -> WriteResult:
+    _BATCH_PLAN_CALL_LOG.append("write_output")
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
+
+
+@activity.defn(name="validate_output")
+async def mock_bp_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+    _BATCH_PLAN_CALL_LOG.append("validate_output")
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_bp_evaluate_transition(input: TransitionInput) -> str:
+    _BATCH_PLAN_CALL_LOG.append("evaluate_transition")
+    if _BATCH_PLAN_TRANSITION_SEQUENCE:
+        return _BATCH_PLAN_TRANSITION_SEQUENCE.pop(0)
+    return TransitionSignal.SUCCESS.value
+
+
+@activity.defn(name="commit_changes_activity")
+async def mock_bp_commit(input: CommitChangesInput) -> CommitChangesOutput:
+    _BATCH_PLAN_CALL_LOG.append(f"commit:{input.status}")
+    return CommitChangesOutput(commit_sha="e" * 40)
+
+
+@activity.defn(name="reset_worktree_activity")
+async def mock_bp_reset_worktree(input: ResetWorktreeInput) -> None:
+    _BATCH_PLAN_CALL_LOG.append("reset_worktree")
+
+
+_BATCH_PLAN_MOCK_ACTIVITIES = [
+    mock_bp_create_worktree,
+    mock_bp_assemble_planner,
+    mock_bp_submit_batch,
+    mock_bp_parse,
+    mock_bp_assemble_step,
+    mock_bp_write_output,
+    mock_bp_validate_output,
+    mock_bp_evaluate_transition,
+    mock_bp_commit,
+    mock_bp_reset_worktree,
+]
+
+
+class TestBatchPlanned:
+    """Planned workflow with sync_mode=False uses batch path for planner + generation."""
+
+    @pytest.mark.asyncio
+    async def test_batch_planner_and_generation(self, env: WorkflowEnvironment) -> None:
+        plan = Plan(
+            task_id="batch-plan-task",
+            steps=[
+                PlanStep(step_id="s1", description="Create it.", target_files=["a.py"]),
+            ],
+            explanation="One step.",
+        )
+        plan_parsed = ParsedLLMResponse(
+            parsed_json=plan.model_dump_json(),
+            model_name="mock-planner",
+            input_tokens=300,
+            output_tokens=150,
+        )
+        gen_resp = LLMResponse(
+            files=[FileOutput(file_path="a.py", content="# step1\n")],
+            explanation="Created a.py.",
+        )
+        gen_parsed = ParsedLLMResponse(
+            parsed_json=gen_resp.model_dump_json(),
+            model_name="mock-gen",
+            input_tokens=100,
+            output_tokens=50,
+        )
+        _reset_batch_plan_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value],
+            parse_queue=[plan_parsed, gen_parsed],
+        )
+
+        task = TaskDefinition(
+            task_id="batch-plan-task",
+            description="Build a thing.",
+        )
+        input = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            plan=True,
+            max_exploration_rounds=0,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_BATCH_PLAN_MOCK_ACTIVITIES,
+        ):
+            handle = await env.client.start_workflow(
+                ForgeTaskWorkflow.run,
+                input,
+                id="test-batch-planned",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            # Signal for planner batch
+            planner_signal = BatchResult(
+                request_id="req-bp-123",
+                batch_id="msgbatch_bp123",
+                raw_response_json='{"dummy": "plan"}',
+                result_type="Plan",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, planner_signal)
+
+            # Signal for generation batch
+            gen_signal = BatchResult(
+                request_id="req-bp-123",
+                batch_id="msgbatch_bp123",
+                raw_response_json='{"dummy": "gen"}',
+                result_type="LLMResponse",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, gen_signal)
+
+            result = await handle.result()
+
+        assert result.status == TransitionSignal.SUCCESS
+        assert "submit_batch:Plan" in _BATCH_PLAN_CALL_LOG
+        assert "submit_batch:LLMResponse" in _BATCH_PLAN_CALL_LOG
+        assert "parse:Plan" in _BATCH_PLAN_CALL_LOG
+        assert "parse:LLMResponse" in _BATCH_PLAN_CALL_LOG
+        assert result.plan is not None
+        assert len(result.step_results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests — existing sync_mode=True backward compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestSyncModeDefaultBackwardCompat:
+    """Verify that sync_mode defaults to True and existing tests still pass."""
+
+    def test_default_sync_mode_is_true(self) -> None:
+        task = TaskDefinition(task_id="t1", description="Test.")
+        input = ForgeTaskInput(task=task, repo_root="/repo")
+        assert input.sync_mode is True
+
+    def test_subtask_default_sync_mode_is_true(self) -> None:
+        input = SubTaskInput(
+            parent_task_id="p",
+            parent_description="Parent.",
+            sub_task=SubTask(sub_task_id="s", description="Sub.", target_files=["x.py"]),
+            repo_root="/repo",
+            parent_branch="main",
+        )
+        assert input.sync_mode is True

@@ -16,6 +16,7 @@ from temporalio.worker import Worker
 from forge.activities import (
     assemble_conflict_resolution_context,
     assemble_context,
+    assemble_exploration_context,
     assemble_planner_context,
     assemble_sanity_check_context,
     assemble_step_context,
@@ -31,6 +32,7 @@ from forge.activities import (
     evaluate_transition,
     fetch_extraction_input,
     fulfill_context_requests,
+    parse_llm_response,
     remove_worktree_activity,
     reset_worktree_activity,
     save_extraction_results,
@@ -85,6 +87,7 @@ async def run_worker(address: str | None = None) -> None:
         activities=[
             assemble_conflict_resolution_context,
             assemble_context,
+            assemble_exploration_context,
             assemble_planner_context,
             assemble_sanity_check_context,
             assemble_step_context,
@@ -100,6 +103,7 @@ async def run_worker(address: str | None = None) -> None:
             evaluate_transition,
             fetch_extraction_input,
             fulfill_context_requests,
+            parse_llm_response,
             remove_worktree_activity,
             reset_worktree_activity,
             save_extraction_results,

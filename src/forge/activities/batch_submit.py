@@ -49,7 +49,9 @@ async def execute_batch_submit(
         user_prompt=input.context.user_prompt,
         output_type=output_type,
         model=model,
-        max_tokens=DEFAULT_MAX_TOKENS,
+        max_tokens=input.max_tokens,
+        thinking_budget_tokens=input.thinking_budget_tokens,
+        thinking_effort=input.thinking_effort,
     )
 
     request_id = str(uuid.uuid4())
