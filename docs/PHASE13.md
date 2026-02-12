@@ -1,5 +1,7 @@
 # Phase 13: Tree-Sitter Multi-Language Support
 
+> **Deferred to Release 2.** This phase will be implemented once Release 1 (Phases 1–14) is stable.
+
 ## Goal
 
 Replace Python's stdlib `ast` with tree-sitter for code analysis, enabling Forge to handle non-Python languages (TypeScript, JavaScript, Go, Rust, Java, etc.) for symbol extraction, repo maps, and error context enrichment. The `ast` module served well for Python-only analysis (D30) but cannot parse other languages.

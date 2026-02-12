@@ -333,3 +333,7 @@ Deliverable: Run `forge run` with a task that fails validation and observe the r
 - Additional task domains (TypeScript code generation, research, analysis).
 
 Each phase uses the previous version to build the next iteration.
+
+### Release 2 (Future)
+
+- **Phase 13: Tree-Sitter Multi-Language Support** — Replace Python `ast` with tree-sitter for symbol extraction, repo maps, and error context enrichment. Enables non-Python codebases. Deferred until Release 1 is stable. See `docs/PHASE13.md`.

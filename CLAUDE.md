@@ -18,8 +18,9 @@ Phases 1–9 are implemented. The system supports single-step execution, planned
 - `docs/PHASE6.md` — Detailed specification for Phase 6 (knowledge extraction).
 - `docs/PHASE7.md` — Detailed specification for Phase 7 (LLM-guided context exploration).
 - `docs/PHASE8.md` — Detailed specification for Phase 8 (error-aware retries).
-- `docs/PHASE9.md` through `docs/PHASE13.md` — Specifications for future phases.
+- `docs/PHASE9.md` through `docs/PHASE12.md` — Specifications for Phases 9–12.
 - `docs/PHASE14.md` — Detailed specification for Phase 14 (batch processing: 14a infrastructure, 14b workflow integration, 14c poller + scheduling).
+- `docs/PHASE13.md` — Phase 13: Tree-Sitter multi-language support (deferred to Release 2).
 
 ## Development Conventions
 
@@ -73,6 +74,7 @@ All modes use diff-based output (D50): the LLM produces search/replace edits (`e
 
 All modes use error-aware retries (Phase 8): when a step fails validation and retries, the retry prompt includes the validation error output with AST-derived code context around error locations, so the LLM knows what went wrong and can fix it instead of retrying blind.
 
-## Next Phase: Phase 9+
+## Release Roadmap
 
-See the Phase 9+ section in `docs/DESIGN.md` for future work.
+- **Release 1** (current): Phases 1–14 — the core orchestrator with batch processing. Focus on hardening and confidence before expanding scope.
+- **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See `docs/PHASE13.md`.
