@@ -35,11 +35,12 @@ Phases 1–9 are implemented. The system supports single-step execution, planned
 
 ## Architecture Principles
 
-1. **Deterministic work should be deterministic.** Never ask the LLM to figure out something you can compute. Pre-calculate facts and include them in context.
-2. **Context isolation is a feature.** Each task gets a tightly constrained definition of "done" and a customized context assembled fresh for each request.
-3. **Planning is the hard part.** Invest the most expensive models and highest token budgets in planning. Everything downstream is bounded by plan quality.
-4. **Halt when confused.** When the orchestrator encounters a situation it cannot classify, it stops and escalates to a human.
-5. **The LLM call is the universal primitive.** Every task is an instance of: construct message, send, receive, serialize, transition.
+1. **Batch-first.** The system is designed to operate in batch mode, with orchestration handled by Temporal workflows. Any proposed change must be evaluated for batch compatibility. If a change requires synchronous, interactive, or low-latency LLM calls that are incompatible with batch mode, flag it early.
+2. **Deterministic work should be deterministic.** Never ask the LLM to figure out something you can compute. Pre-calculate facts and include them in context.
+3. **Context isolation is a feature.** Each task gets a tightly constrained definition of "done" and a customized context assembled fresh for each request.
+4. **Planning is the hard part.** Invest the most expensive models and highest token budgets in planning. Everything downstream is bounded by plan quality.
+5. **Halt when confused.** When the orchestrator encounters a situation it cannot classify, it stops and escalates to a human.
+6. **The LLM call is the universal primitive.** Every task is an instance of: construct message, send, receive, serialize, transition.
 
 ## The Universal Workflow Step
 
@@ -52,6 +53,8 @@ Every operation follows this pattern:
 5. Evaluate transition (success, retry, escalate, new tasks discovered, etc.)
 
 Temporal provides the workflow engine. The LLM call and transition evaluation are separate Temporal activities.
+
+The goal is to provide the same high-level functionality as an agentic loop — LLMs can request follow-up information across rounds, task agents can update plans and leave notes for one another, and tools provide connections to the outside world — but every LLM call is structured as a document completion so it is compatible with batch APIs and local LLM tools. The orchestrator (Temporal) owns the control loop, not the LLM.
 
 ## Git Strategy
 
