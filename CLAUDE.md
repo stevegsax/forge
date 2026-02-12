@@ -54,7 +54,9 @@ Every operation follows this pattern:
 
 Temporal provides the workflow engine. The LLM call and transition evaluation are separate Temporal activities.
 
-The goal is to provide the same high-level functionality as an agentic loop — LLMs can request follow-up information across rounds, task agents can update plans and leave notes for one another, and tools provide connections to the outside world — but every LLM call is structured as a document completion so it is compatible with batch APIs and local LLM tools. The orchestrator (Temporal) owns the control loop, not the LLM.
+The goal is to provide the same high-level functionality as an agentic loop, but every LLM call is structured as a document completion so it is compatible with batch APIs and local LLM tools. The orchestrator (Temporal) owns the control loop, not the LLM. Latency is not a consideration — batch mode is chosen deliberately for cost efficiency, not speed.
+
+Currently implemented: LLMs can request follow-up information across exploration rounds (Phase 7). Aspirational (future release): task agents can update plans and leave notes for one another, enabling cross-step discovery propagation. External tool support (web fetch, API calls, etc.) is under separate discussion.
 
 ## Git Strategy
 
