@@ -19,6 +19,10 @@ from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from forge.models import (
+        ActionRequest,
+        ActionResult,
+        ActionWorkflowInput,
+        ActionWorkflowResult,
         AssembleContextInput,
         AssembledContext,
         AssembleSanityCheckContextInput,
@@ -28,15 +32,21 @@ with workflow.unsafe.imports_passed_through():
         BatchSubmitInput,
         BatchSubmitResult,
         CapabilityTier,
+        CapabilityType,
         CommitChangesInput,
         CommitChangesOutput,
         ConflictResolutionCallInput,
         ConflictResolutionCallResult,
         ConflictResolutionInput,
         ConflictResolutionResponse,
+        ContextProviderSpec,
         ContextResult,
         CreateWorktreeInput,
         CreateWorktreeOutput,
+        ExecuteMCPToolInput,
+        ExecuteMCPToolResult,
+        ExecuteSkillInput,
+        ExecuteSkillResult,
         ExplorationInput,
         ExplorationResponse,
         FileConflict,
@@ -44,6 +54,8 @@ with workflow.unsafe.imports_passed_through():
         FulfillContextInput,
         LLMCallResult,
         LLMResponse,
+        MCPConfig,
+        MCPToolInfo,
         ModelConfig,
         ParsedLLMResponse,
         ParseResponseInput,
@@ -57,6 +69,7 @@ with workflow.unsafe.imports_passed_through():
         SanityCheckInput,
         SanityCheckResponse,
         SanityCheckVerdict,
+        SkillDefinition,
         StepResult,
         SubTaskInput,
         SubTaskResult,
@@ -95,6 +108,10 @@ _SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
 _CONFLICT_RESOLUTION_TIMEOUT = timedelta(minutes=5)
 _SUBMIT_TIMEOUT = timedelta(seconds=60)
 _PARSE_TIMEOUT = timedelta(seconds=30)
+_MCP_TOOL_TIMEOUT = timedelta(minutes=2)
+_SKILL_EXECUTION_TIMEOUT = timedelta(minutes=5)
+_ACTION_WORKFLOW_TIMEOUT = timedelta(minutes=5)
+_CAPABILITY_DISCOVERY_TIMEOUT = timedelta(minutes=2)
 
 _CHILD_BASE_MINUTES = 15
 _CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
@@ -389,18 +406,28 @@ class ForgeTaskWorkflow:
         worktree_path: str,
         max_rounds: int,
         model_name: str = "",
+        capability_specs: list[ContextProviderSpec] | None = None,
+        mcp_config: MCPConfig | None = None,
+        mcp_tools: dict[str, MCPToolInfo] | None = None,
+        skill_definitions: dict[str, SkillDefinition] | None = None,
     ) -> list[ContextResult]:
         """LLM-guided context exploration loop.
 
-        The exploration LLM requests context from providers until it signals
-        readiness (empty requests list) or the round limit is reached.
+        The exploration LLM requests context from providers and actions
+        (MCP tools / Skills) until it signals readiness (empty requests
+        and empty actions) or the round limit is reached.
+
+        Phase 15: When the LLM returns action requests, they are dispatched
+        as ForgeActionWorkflow child workflows in parallel. Results flow
+        back as ContextResult entries for the next exploration round.
         """
+        specs = capability_specs or list(PROVIDER_SPECS)
         accumulated: list[ContextResult] = []
 
         for round_num in range(1, max_rounds + 1):
             exploration_input = ExplorationInput(
                 task=task,
-                available_providers=PROVIDER_SPECS,
+                available_providers=specs,
                 accumulated_context=accumulated,
                 round_number=round_num,
                 max_rounds=max_rounds,
@@ -409,22 +436,104 @@ class ForgeTaskWorkflow:
             )
             exploration_result = await self._call_exploration(exploration_input)
 
-            if not exploration_result.requests:
+            has_requests = bool(exploration_result.requests)
+            has_actions = bool(exploration_result.actions)
+
+            if not has_requests and not has_actions:
                 break  # LLM is ready to generate
 
-            context_results = await workflow.execute_activity(
-                "fulfill_context_requests",
-                FulfillContextInput(
-                    requests=exploration_result.requests,
+            # --- Fulfill context requests (existing path) ---
+            if has_requests:
+                context_results = await workflow.execute_activity(
+                    "fulfill_context_requests",
+                    FulfillContextInput(
+                        requests=exploration_result.requests,
+                        repo_root=repo_root,
+                        worktree_path=worktree_path,
+                    ),
+                    start_to_close_timeout=_EXPLORATION_FULFILL_TIMEOUT,
+                    result_type=list[ContextResult],
+                )
+                accumulated.extend(context_results)
+
+            # --- Dispatch action requests as child workflows (Phase 15) ---
+            if has_actions:
+                action_results = await self._dispatch_actions(
+                    actions=exploration_result.actions,
+                    mcp_config=mcp_config or MCPConfig(),
+                    mcp_tools=mcp_tools or {},
+                    skill_definitions=skill_definitions or {},
                     repo_root=repo_root,
                     worktree_path=worktree_path,
-                ),
-                start_to_close_timeout=_EXPLORATION_FULFILL_TIMEOUT,
-                result_type=list[ContextResult],
-            )
-            accumulated.extend(context_results)
+                    model_name=model_name,
+                )
+                accumulated.extend(action_results)
 
         return accumulated
+
+    async def _dispatch_actions(
+        self,
+        actions: list[ActionRequest],
+        mcp_config: MCPConfig,
+        mcp_tools: dict[str, MCPToolInfo],
+        skill_definitions: dict[str, SkillDefinition],
+        repo_root: str,
+        worktree_path: str,
+        model_name: str = "",
+    ) -> list[ContextResult]:
+        """Dispatch action requests as ForgeActionWorkflow child workflows.
+
+        All actions are launched in parallel and awaited together.
+        Results are converted to ContextResult for inclusion in the
+        accumulated exploration context.
+        """
+        handles = []
+        for action in actions:
+            action_input = ActionWorkflowInput(
+                action=action,
+                mcp_config=mcp_config,
+                mcp_tools=mcp_tools,
+                skill_definitions=skill_definitions,
+                repo_root=repo_root,
+                worktree_path=worktree_path,
+                model_name=model_name,
+                sync_mode=self._sync_mode,
+            )
+            action_id = f"forge-action-{workflow.info().workflow_id}-{action.capability}"
+            handle = await workflow.start_child_workflow(
+                ForgeActionWorkflow.run,
+                action_input,
+                id=action_id,
+                task_queue=FORGE_TASK_QUEUE,
+                execution_timeout=_ACTION_WORKFLOW_TIMEOUT,
+            )
+            handles.append((action, handle))
+
+        results: list[ContextResult] = []
+        for action, handle in handles:
+            try:
+                action_result: ActionWorkflowResult = await handle
+                # Estimate tokens from result content
+                estimated_tokens = len(action_result.result.content) // 4
+                results.append(
+                    ContextResult(
+                        provider=action.capability,
+                        content=action_result.result.content,
+                        estimated_tokens=estimated_tokens,
+                    )
+                )
+            except Exception as e:
+                # Action failure is non-fatal: report error as context
+                error_content = f"Action '{action.capability}' failed: {e}"
+                results.append(
+                    ContextResult(
+                        provider=action.capability,
+                        content=error_content,
+                        estimated_tokens=len(error_content) // 4,
+                    )
+                )
+
+        return results
 
     @staticmethod
     def _format_exploration_context(results: list[ContextResult]) -> str:
@@ -447,6 +556,44 @@ class ForgeTaskWorkflow:
     # Phase 1: Single-step execution (unchanged from Phase 1)
     # ------------------------------------------------------------------
 
+    async def _discover_capabilities(
+        self, input: ForgeTaskInput
+    ) -> tuple[
+        list[ContextProviderSpec],
+        dict[str, MCPToolInfo],
+        dict[str, SkillDefinition],
+    ]:
+        """Discover external capabilities (MCP tools + Skills) if configured.
+
+        Returns (specs, mcp_tools, skill_definitions).
+        If no MCP/Skills are configured, returns the default provider specs.
+        """
+        has_mcp = bool(input.mcp_config.mcp_servers)
+        has_skills = bool(input.mcp_config.skills_dirs or input.skills_dirs)
+
+        if not has_mcp and not has_skills:
+            return list(PROVIDER_SPECS), {}, {}
+
+        # Capability discovery must happen in an activity (D87)
+        discovery_input = {
+            "mcp_config": input.mcp_config.model_dump(),
+            "skills_dirs": list(input.mcp_config.skills_dirs) + list(input.skills_dirs),
+        }
+        catalog_data: dict = await workflow.execute_activity(
+            "discover_capabilities",
+            discovery_input,
+            start_to_close_timeout=_CAPABILITY_DISCOVERY_TIMEOUT,
+            result_type=dict,
+        )
+
+        # Reconstruct typed objects from serialized activity result
+        specs = [ContextProviderSpec(**s) for s in catalog_data.get("specs", [])]
+        mcp_tools = {k: MCPToolInfo(**v) for k, v in catalog_data.get("mcp_tools", {}).items()}
+        skill_defs = {
+            k: SkillDefinition(**v) for k, v in catalog_data.get("skill_definitions", {}).items()
+        }
+        return specs, mcp_tools, skill_defs
+
     async def _run_single_step(self, input: ForgeTaskInput) -> TaskResult:
         task = input.task
         max_attempts = input.max_attempts
@@ -455,6 +602,9 @@ class ForgeTaskWorkflow:
         # Resolve models for this workflow
         generation_model = resolve_model(CapabilityTier.GENERATION, input.model_routing)
         exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
+
+        # --- Discover external capabilities (Phase 15) ---
+        capability_specs, mcp_tools, skill_definitions = await self._discover_capabilities(input)
 
         for attempt in range(1, max_attempts + 1):
             # --- Create worktree ---
@@ -484,7 +634,7 @@ class ForgeTaskWorkflow:
                 result_type=AssembledContext,
             )
 
-            # --- Exploration loop (Phase 7) ---
+            # --- Exploration loop (Phase 7 + Phase 15) ---
             if input.max_exploration_rounds > 0:
                 exploration_results = await self._run_exploration_loop(
                     task=task,
@@ -492,6 +642,10 @@ class ForgeTaskWorkflow:
                     worktree_path=wt_output.worktree_path,
                     max_rounds=input.max_exploration_rounds,
                     model_name=exploration_model,
+                    capability_specs=capability_specs,
+                    mcp_config=input.mcp_config,
+                    mcp_tools=mcp_tools,
+                    skill_definitions=skill_definitions,
                 )
                 exploration_section = self._format_exploration_context(exploration_results)
                 if exploration_section:
@@ -627,6 +781,9 @@ class ForgeTaskWorkflow:
         planner_model = resolve_model(CapabilityTier.REASONING, input.model_routing)
         exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
 
+        # --- Discover external capabilities (Phase 15) ---
+        capability_specs, mcp_tools, skill_definitions = await self._discover_capabilities(input)
+
         # --- Create worktree (once) ---
         wt_output = await workflow.execute_activity(
             "create_worktree_activity",
@@ -651,7 +808,7 @@ class ForgeTaskWorkflow:
             result_type=PlannerInput,
         )
 
-        # --- Exploration loop for planner (Phase 7) ---
+        # --- Exploration loop for planner (Phase 7 + Phase 15) ---
         if input.max_exploration_rounds > 0:
             exploration_results = await self._run_exploration_loop(
                 task=task,
@@ -659,6 +816,10 @@ class ForgeTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
                 max_rounds=input.max_exploration_rounds,
                 model_name=exploration_model,
+                capability_specs=capability_specs,
+                mcp_config=input.mcp_config,
+                mcp_tools=mcp_tools,
+                skill_definitions=skill_definitions,
             )
             exploration_section = self._format_exploration_context(exploration_results)
             if exploration_section:
@@ -1655,4 +1816,126 @@ class ForgeSubTaskWorkflow:
             validation_results=validation_results,
             sub_task_results=sub_task_results,
             conflict_resolution=conflict_resolution_result,
+        )
+
+
+# ===========================================================================
+# Phase 15: Action child workflow
+# ===========================================================================
+
+
+@workflow.defn
+class ForgeActionWorkflow:
+    """Execute a single action (MCP tool call or Skill execution).
+
+    Dispatches to the appropriate activity based on capability_type:
+    - MCP_TOOL: direct dispatch via execute_mcp_tool activity
+    - SKILL: LLM-mediated dispatch via execute_skill activity
+
+    Results are returned as ActionWorkflowResult, which the parent
+    workflow converts to ContextResult for the exploration loop.
+    """
+
+    @workflow.run
+    async def run(self, input: ActionWorkflowInput) -> ActionWorkflowResult:
+        action = input.action
+
+        if action.capability_type == CapabilityType.MCP_TOOL:
+            result = await self._execute_mcp_tool(input)
+        elif action.capability_type == CapabilityType.SKILL:
+            result = await self._execute_skill(input)
+        else:
+            result = ActionResult(
+                capability=action.capability,
+                capability_type=action.capability_type,
+                content=f"Unknown capability type: {action.capability_type}",
+                success=False,
+                estimated_tokens=0,
+            )
+
+        return ActionWorkflowResult(result=result)
+
+    async def _execute_mcp_tool(self, input: ActionWorkflowInput) -> ActionResult:
+        """Dispatch an MCP tool call (D86: direct dispatch)."""
+        action = input.action
+        tool_info = input.mcp_tools.get(action.capability)
+        if tool_info is None:
+            return ActionResult(
+                capability=action.capability,
+                capability_type=CapabilityType.MCP_TOOL,
+                content=f"MCP tool '{action.capability}' not found in catalog",
+                success=False,
+                estimated_tokens=0,
+            )
+
+        # Look up server config
+        server_config = input.mcp_config.mcp_servers.get(tool_info.server_name)
+        if server_config is None:
+            return ActionResult(
+                capability=action.capability,
+                capability_type=CapabilityType.MCP_TOOL,
+                content=f"MCP server '{tool_info.server_name}' not found in config",
+                success=False,
+                estimated_tokens=0,
+            )
+
+        mcp_result: ExecuteMCPToolResult = await workflow.execute_activity(
+            "execute_mcp_tool",
+            ExecuteMCPToolInput(
+                server_config=server_config,
+                server_name=tool_info.server_name,
+                tool_name=tool_info.tool_name,
+                arguments=action.params,
+            ),
+            start_to_close_timeout=_MCP_TOOL_TIMEOUT,
+            result_type=ExecuteMCPToolResult,
+        )
+
+        content = mcp_result.content
+        estimated_tokens = len(content) // 4
+
+        return ActionResult(
+            capability=action.capability,
+            capability_type=CapabilityType.MCP_TOOL,
+            content=content,
+            success=mcp_result.success,
+            estimated_tokens=estimated_tokens,
+        )
+
+    async def _execute_skill(self, input: ActionWorkflowInput) -> ActionResult:
+        """Dispatch a Skill execution (D86: LLM-mediated subagent)."""
+        action = input.action
+        skill_def = input.skill_definitions.get(action.capability)
+        if skill_def is None:
+            return ActionResult(
+                capability=action.capability,
+                capability_type=CapabilityType.SKILL,
+                content=f"Skill '{action.capability}' not found in catalog",
+                success=False,
+                estimated_tokens=0,
+            )
+
+        skill_result: ExecuteSkillResult = await workflow.execute_activity(
+            "execute_skill",
+            ExecuteSkillInput(
+                skill=skill_def,
+                action_params=action.params,
+                reasoning=action.reasoning,
+                repo_root=input.repo_root,
+                worktree_path=input.worktree_path,
+                model_name=input.model_name,
+            ),
+            start_to_close_timeout=_SKILL_EXECUTION_TIMEOUT,
+            result_type=ExecuteSkillResult,
+        )
+
+        content = skill_result.content
+        estimated_tokens = len(content) // 4
+
+        return ActionResult(
+            capability=action.capability,
+            capability_type=CapabilityType.SKILL,
+            content=content,
+            success=skill_result.success,
+            estimated_tokens=estimated_tokens,
         )

@@ -505,3 +505,39 @@ This document captures key design decisions and their rationale. Decisions are n
 - **Phase 14c — Batch poller + scheduling**: `poll_batch_results` activity, `BatchPollerWorkflow`, Temporal Schedule registration, anomaly detection, knowledge extraction schedule migration, flip default to batch mode.
 
 Each sub-phase is independently committable with all tests passing. 14a is pure plumbing with no behavior change. 14b adds workflow wiring but defaults to sync. 14c completes the loop and enables batch as default.
+
+## D84: Unified Capability Catalog (Phase 15)
+
+**Decision:** Present Forge's built-in context providers, MCP tools, and Agent Skills in a single flat list of `ContextProviderSpec` entries shown to the exploration LLM. The LLM requests capabilities by name without knowing the dispatch mechanism.
+
+**Rationale:** A unified catalog keeps the LLM's interface simple — it sees "things I can ask for" without needing to understand the underlying infrastructure. Name prefixes (`mcp_`, `skill_`) provide implicit type discrimination for the orchestrator while remaining readable to the LLM. This reuses the existing `ContextProviderSpec` model and exploration prompt structure with minimal changes.
+
+## D85: Actions as Child Workflows (Phase 15)
+
+**Decision:** When the LLM requests an MCP tool invocation or Skill execution during exploration, the orchestrator dispatches it as a `ForgeActionWorkflow` Temporal child workflow.
+
+**Rationale:** Child workflows provide isolation (each action has its own timeout and retry), batch compatibility (actions are Temporal workflows, not LLM calls), and observability (each action is visible in the Temporal UI). The parent exploration loop waits for all actions to complete before the next round, maintaining the document-completion architecture.
+
+## D86: Hybrid Dispatch — Direct for MCP, LLM-Mediated for Skills (Phase 15)
+
+**Decision:** MCP tools are invoked directly (the activity calls the MCP server and returns the result). Agent Skills are executed via LLM-mediated subagent (a secondary LLM call interprets the SKILL.md instructions).
+
+**Rationale:** MCP tools have well-defined JSON Schema inputs and deterministic execution — no LLM interpretation needed. Skills have free-form markdown instructions that require understanding and judgment. Using a cheaper LLM model for skill interpretation keeps costs manageable while handling the flexibility that Skills require.
+
+## D87: Per-Activity MCP Connections (Phase 15)
+
+**Decision:** MCP server connections are scoped to individual activity executions — start, use, and tear down within a single `execute_mcp_tool` activity call.
+
+**Rationale:** Temporal activities are the I/O boundary. Keeping connections within activities ensures workflows remain deterministic, activities remain idempotent and retryable, and no long-lived process management is needed. For frequently-called MCP servers, connection pooling can be added as a future optimization.
+
+## D88: JSON Config File for MCP Servers (Phase 15)
+
+**Decision:** MCP servers and skills directories are configured via a `forge-mcp.json` file in the project root, following the Claude Desktop convention. CLI flags (`--mcp-config`, `--skills-dir`) provide overrides.
+
+**Rationale:** JSON config follows established conventions (Claude Desktop, VS Code MCP configs), supports environment variable interpolation for secrets (`${API_KEY}`), and separates configuration from code. The CLI override path supports ad-hoc experimentation without modifying the config file.
+
+## D89: ExplorationResponse Extended with Actions (Phase 15)
+
+**Decision:** Add an `actions: list[ActionRequest]` field to `ExplorationResponse` (default empty list) alongside the existing `requests` field. The LLM signals readiness when both lists are empty.
+
+**Rationale:** Separating context requests (read-only information gathering) from action requests (side-effecting tool calls) gives the orchestrator clear dispatch semantics. The `actions` field defaults to empty, maintaining full backwards compatibility with existing workflows that have no MCP/Skills configured.

@@ -49,9 +49,24 @@ def build_exploration_prompt(
     """Build system and user prompts for the exploration LLM call.
 
     Returns (system_prompt, user_prompt).
+
+    Phase 15: When MCP tools or Skills are present in available_providers,
+    the prompt explains the two-track system: context requests (via `requests`)
+    and action requests (via `actions`).
     """
     domain_config = get_domain_config(input.task.domain)
     parts: list[str] = []
+
+    # Separate context providers from action capabilities
+    context_providers = []
+    action_capabilities = []
+    for spec in input.available_providers:
+        if spec.name.startswith("mcp_") or spec.name.startswith("skill_"):
+            action_capabilities.append(spec)
+        else:
+            context_providers.append(spec)
+
+    has_actions = bool(action_capabilities)
 
     parts.append("You are a code exploration assistant.")
     parts.append("")
@@ -60,8 +75,23 @@ def build_exploration_prompt(
     parts.append("You have access to a set of context providers that can retrieve information")
     parts.append("about the codebase. Request context from providers until you have enough")
     parts.append("understanding to complete the task.")
+
+    if has_actions:
+        parts.append("")
+        parts.append("You also have access to **actions** — MCP tools and Agent Skills that")
+        parts.append("can perform operations beyond information retrieval. Use the `actions`")
+        parts.append("field (not `requests`) to invoke these. Each action request needs:")
+        parts.append("  - `capability`: The action name (e.g. mcp_github_search, skill_deploy)")
+        parts.append("  - `capability_type`: Either 'mcp_tool' or 'skill'")
+        parts.append("  - `params`: Arguments for the action")
+        parts.append("  - `reasoning`: Why this action is needed")
+
     parts.append("")
-    parts.append("When you have enough context, return an EMPTY requests list to signal")
+    if has_actions:
+        readiness_signal = "return EMPTY `requests` and `actions` lists"
+    else:
+        readiness_signal = "return an EMPTY requests list"
+    parts.append(f"When you have enough context, {readiness_signal} to signal")
     parts.append(f"that you are ready for the {domain_config.exploration_completion_noun} phase.")
 
     if project_instructions:
@@ -81,8 +111,8 @@ def build_exploration_prompt(
             parts.append(f"- {f}")
 
     parts.append("")
-    parts.append("## Available Providers")
-    for spec in input.available_providers:
+    parts.append("## Available Context Providers")
+    for spec in context_providers:
         parts.append("")
         parts.append(f"### {spec.name}")
         parts.append(spec.description)
@@ -90,6 +120,20 @@ def build_exploration_prompt(
             parts.append("Parameters:")
             for param_name, param_desc in spec.parameters.items():
                 parts.append(f"  - {param_name}: {param_desc}")
+
+    if action_capabilities:
+        parts.append("")
+        parts.append("## Available Actions (MCP Tools & Skills)")
+        parts.append("Use the `actions` field (not `requests`) to invoke these.")
+        for spec in action_capabilities:
+            parts.append("")
+            cap_type = "mcp_tool" if spec.name.startswith("mcp_") else "skill"
+            parts.append(f"### {spec.name} (type: {cap_type})")
+            parts.append(spec.description)
+            if spec.parameters:
+                parts.append("Parameters:")
+                for param_name, param_desc in spec.parameters.items():
+                    parts.append(f"  - {param_name}: {param_desc}")
 
     if input.accumulated_context:
         parts.append("")
@@ -105,11 +149,19 @@ def build_exploration_prompt(
 
     system_prompt = "\n".join(parts)
 
-    user_prompt = (
-        "Based on the task and any context already retrieved, decide what additional "
-        "context you need. Return a list of provider requests, or an empty list if "
-        f"you have enough context to proceed with {domain_config.exploration_completion_noun}."
-    )
+    if has_actions:
+        user_prompt = (
+            "Based on the task and any context already retrieved, decide what additional "
+            "context or actions you need. Return provider requests in `requests` and/or "
+            "action requests in `actions`. Return both empty to proceed with "
+            f"{domain_config.exploration_completion_noun}."
+        )
+    else:
+        user_prompt = (
+            "Based on the task and any context already retrieved, decide what additional "
+            "context you need. Return a list of provider requests, or an empty list if "
+            f"you have enough context to proceed with {domain_config.exploration_completion_noun}."
+        )
 
     return system_prompt, user_prompt
 
@@ -222,6 +274,7 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
             {
                 "forge.exploration.round": input.round_number,
                 "forge.exploration.requests_count": len(response.requests),
+                "forge.exploration.actions_count": len(response.actions),
                 "forge.exploration.latency_ms": elapsed_ms,
             }
         )

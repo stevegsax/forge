@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from forge.activities.actions import execute_mcp_tool, execute_skill
 from forge.activities.batch_parse import parse_llm_response
 from forge.activities.batch_poll import poll_batch_results
 from forge.activities.batch_submit import submit_batch_request
@@ -14,6 +15,7 @@ from forge.activities.context import (
     assemble_step_context,
     assemble_sub_task_context,
 )
+from forge.activities.discovery import discover_capabilities
 from forge.activities.exploration import (
     assemble_exploration_context,
     call_exploration_llm,
@@ -53,7 +55,10 @@ __all__ = [
     "call_sanity_check",
     "commit_changes_activity",
     "create_worktree_activity",
+    "discover_capabilities",
     "evaluate_transition",
+    "execute_mcp_tool",
+    "execute_skill",
     "fetch_extraction_input",
     "fulfill_context_requests",
     "parse_llm_response",

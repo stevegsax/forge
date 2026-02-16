@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -385,11 +386,48 @@ class ContextRequest(BaseModel):
     reasoning: str = Field(description="Why this context is needed.")
 
 
+class CapabilityType(StrEnum):
+    """Type of capability in the unified catalog (Phase 15)."""
+
+    PROVIDER = "provider"
+    MCP_TOOL = "mcp_tool"
+    SKILL = "skill"
+
+
+class ActionRequest(BaseModel):
+    """LLM's request to execute an MCP tool or Agent Skill (Phase 15)."""
+
+    capability: str = Field(description="Name of the MCP tool or Skill to invoke.")
+    capability_type: CapabilityType = Field(description="Whether this is an mcp_tool or skill.")
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Arguments for the tool/skill. Supports non-string values for MCP tools.",
+    )
+    reasoning: str = Field(description="Why this action is needed.")
+
+
+class ActionResult(BaseModel):
+    """Result of executing an MCP tool or Agent Skill (Phase 15)."""
+
+    capability: str
+    capability_type: CapabilityType
+    content: str
+    success: bool
+    estimated_tokens: int
+
+
 class ExplorationResponse(BaseModel):
     """Output from the exploration LLM call."""
 
     requests: list[ContextRequest] = Field(
-        description="Context requests. Empty list signals readiness to generate.",
+        description="Context requests. Empty list (with empty actions) signals readiness.",
+    )
+    actions: list[ActionRequest] = Field(
+        default_factory=list,
+        description=(
+            "Action requests for MCP tools or Skills. "
+            "Empty together with requests signals readiness to generate."
+        ),
     )
 
 
@@ -614,6 +652,130 @@ class TransitionInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# MCP & Skills configuration models (Phase 15)
+# ---------------------------------------------------------------------------
+
+
+class MCPServerConfig(BaseModel):
+    """Configuration for a single MCP server."""
+
+    command: str = Field(description="Command to start the MCP server (e.g. 'npx', 'python').")
+    args: list[str] = Field(
+        default_factory=list,
+        description="Arguments for the command.",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Environment variables. Supports ${VAR} interpolation.",
+    )
+
+
+class MCPConfig(BaseModel):
+    """Top-level external capabilities configuration (Phase 15)."""
+
+    mcp_servers: dict[str, MCPServerConfig] = Field(
+        default_factory=dict,
+        description="Named MCP server configurations.",
+    )
+    skills_dirs: list[str] = Field(
+        default_factory=list,
+        description="Directories to scan for Agent Skills.",
+    )
+
+
+class SkillDefinition(BaseModel):
+    """Parsed Agent Skill from SKILL.md (Phase 15)."""
+
+    name: str = Field(description="Skill name from frontmatter.")
+    description: str = Field(description="What the skill does, from frontmatter.")
+    instructions: str = Field(description="Markdown body with instructions.")
+    skill_path: str = Field(description="Absolute path to the skill directory.")
+    allowed_tools: list[str] = Field(
+        default_factory=list,
+        description="Pre-approved tools the skill may use.",
+    )
+
+
+class MCPToolInfo(BaseModel):
+    """Discovered MCP tool metadata (Phase 15)."""
+
+    server_name: str = Field(description="Name of the MCP server that provides this tool.")
+    tool_name: str = Field(description="Tool name as reported by the MCP server.")
+    description: str = Field(default="", description="Tool description from MCP.")
+    input_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON Schema for tool input parameters.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Action workflow I/O models (Phase 15)
+# ---------------------------------------------------------------------------
+
+
+class ExecuteMCPToolInput(BaseModel):
+    """Input to the execute_mcp_tool activity."""
+
+    server_config: MCPServerConfig
+    server_name: str
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecuteMCPToolResult(BaseModel):
+    """Output of the execute_mcp_tool activity."""
+
+    content: str
+    success: bool
+
+
+class ExecuteSkillInput(BaseModel):
+    """Input to the execute_skill activity (LLM-mediated)."""
+
+    skill: SkillDefinition
+    action_params: dict[str, Any] = Field(default_factory=dict)
+    reasoning: str = Field(default="", description="Why the skill is being invoked.")
+    repo_root: str = ""
+    worktree_path: str = ""
+    model_name: str = ""
+
+
+class ExecuteSkillResult(BaseModel):
+    """Output of the execute_skill activity."""
+
+    content: str
+    success: bool
+    model_name: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class ActionWorkflowInput(BaseModel):
+    """Input to ForgeActionWorkflow (Phase 15)."""
+
+    action: ActionRequest
+    mcp_config: MCPConfig = Field(default_factory=MCPConfig)
+    mcp_tools: dict[str, MCPToolInfo] = Field(
+        default_factory=dict,
+        description="Discovered MCP tool metadata, keyed by capability name.",
+    )
+    skill_definitions: dict[str, SkillDefinition] = Field(
+        default_factory=dict,
+        description="Loaded skill definitions, keyed by capability name.",
+    )
+    repo_root: str = ""
+    worktree_path: str = ""
+    model_name: str = ""
+    sync_mode: bool = False
+
+
+class ActionWorkflowResult(BaseModel):
+    """Output of ForgeActionWorkflow (Phase 15)."""
+
+    result: ActionResult
+
+
+# ---------------------------------------------------------------------------
 # Workflow input model
 # ---------------------------------------------------------------------------
 
@@ -654,6 +816,14 @@ class ForgeTaskInput(BaseModel):
     sync_mode: bool = Field(
         default=False,
         description="Use synchronous Messages API. False enables batch mode (default).",
+    )
+    mcp_config: MCPConfig = Field(
+        default_factory=MCPConfig,
+        description="MCP server and skills configuration (Phase 15).",
+    )
+    skills_dirs: list[str] = Field(
+        default_factory=list,
+        description="Additional directories to scan for Agent Skills (Phase 15).",
     )
 
 

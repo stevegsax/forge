@@ -295,11 +295,14 @@ async def _submit_and_wait(
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
     sync_mode: bool = True,
+    mcp_config: object | None = None,
+    skills_dirs: list[str] | None = None,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
     from temporalio.contrib.pydantic import pydantic_data_converter
 
+    from forge.models import MCPConfig
     from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
 
     client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
@@ -320,6 +323,8 @@ async def _submit_and_wait(
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
             sync_mode=sync_mode,
+            mcp_config=mcp_config or MCPConfig(),
+            skills_dirs=skills_dirs or [],
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -343,11 +348,14 @@ async def _submit_no_wait(
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
     sync_mode: bool = True,
+    mcp_config: object | None = None,
+    skills_dirs: list[str] | None = None,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
     from temporalio.contrib.pydantic import pydantic_data_converter
 
+    from forge.models import MCPConfig
     from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
 
     client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
@@ -368,6 +376,8 @@ async def _submit_no_wait(
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
             sync_mode=sync_mode,
+            mcp_config=mcp_config or MCPConfig(),
+            skills_dirs=skills_dirs or [],
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -526,6 +536,17 @@ def main() -> None:
     help="Task domain: code_generation, research, code_review, documentation.",
 )
 @click.option(
+    "--mcp-config",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to MCP/Skills config file (default: forge-mcp.json in project root).",
+)
+@click.option(
+    "--skills-dir",
+    multiple=True,
+    help="Directory to scan for Agent Skills (repeatable).",
+)
+@click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
     default=DEFAULT_TEMPORAL_ADDRESS,
@@ -567,6 +588,8 @@ def run(
     no_resolve_conflicts: bool,
     sync_mode: bool,
     domain: str,
+    mcp_config: str | None,
+    skills_dir: tuple[str, ...],
     temporal_address: str,
 ) -> None:
     """Submit a task and wait for the result."""
@@ -618,6 +641,13 @@ def run(
         click.echo(f"Error: {e}", err=True)
         sys.exit(EXIT_INFRASTRUCTURE_ERROR)
 
+    # --- Load MCP/Skills config (Phase 15) ---
+    from forge.mcp.config import load_mcp_config
+
+    loaded_mcp_config = load_mcp_config(mcp_config, project_root=repo_root)
+    # Merge CLI --skills-dir into config
+    all_skills_dirs = list(loaded_mcp_config.skills_dirs) + list(skills_dir)
+
     # --- Compute exploration rounds ---
     effective_exploration_rounds = 0 if no_explore else max_exploration_rounds
 
@@ -658,6 +688,8 @@ def run(
                     model_routing=model_routing,
                     thinking=thinking,
                     sync_mode=sync_mode,
+                    mcp_config=loaded_mcp_config,
+                    skills_dirs=all_skills_dirs,
                 )
             )
             click.echo(workflow_id)
@@ -678,6 +710,8 @@ def run(
                     model_routing=model_routing,
                     thinking=thinking,
                     sync_mode=sync_mode,
+                    mcp_config=loaded_mcp_config,
+                    skills_dirs=all_skills_dirs,
                 )
             )
 

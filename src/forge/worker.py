@@ -40,7 +40,10 @@ from forge.activities import (
     call_sanity_check,
     commit_changes_activity,
     create_worktree_activity,
+    discover_capabilities,
     evaluate_transition,
+    execute_mcp_tool,
+    execute_skill,
     fetch_extraction_input,
     fulfill_context_requests,
     parse_llm_response,
@@ -57,7 +60,12 @@ from forge.activities.batch_poll import set_temporal_client
 from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
-from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
+from forge.workflows import (
+    FORGE_TASK_QUEUE,
+    ForgeActionWorkflow,
+    ForgeSubTaskWorkflow,
+    ForgeTaskWorkflow,
+)
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
@@ -114,9 +122,11 @@ async def _ensure_schedule(
         if "already exists" in str(e).lower():
             # Update the existing schedule with the new interval
             handle = client.get_schedule_handle(schedule_id)
+
             async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
                 input.description.schedule.spec = schedule.spec
                 return ScheduleUpdate(schedule=input.description.schedule)
+
             await handle.update(_updater)
             logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
         else:
@@ -175,6 +185,7 @@ async def run_worker(
         workflows=[
             ForgeTaskWorkflow,
             ForgeSubTaskWorkflow,
+            ForgeActionWorkflow,
             ForgeExtractionWorkflow,
             BatchPollerWorkflow,
         ],
@@ -194,7 +205,10 @@ async def run_worker(
             call_sanity_check,
             commit_changes_activity,
             create_worktree_activity,
+            discover_capabilities,
             evaluate_transition,
+            execute_mcp_tool,
+            execute_skill,
             fetch_extraction_input,
             fulfill_context_requests,
             parse_llm_response,

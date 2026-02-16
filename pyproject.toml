@@ -16,6 +16,7 @@ dependencies = [
     "scipy>=1.14",
     "sqlalchemy>=2.0",
     "alembic>=1.14",
+    "mcp>=1.0.0",
 ]
 
 [project.scripts]
