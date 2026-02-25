@@ -189,8 +189,13 @@ class TestActivityInputModelName:
         assert inp.model_name == "custom:p"
 
     def test_exploration_input_default(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
         inp = ExplorationInput(
-            task=TaskDefinition(task_id="t1", description="desc"),
+            task_id=task.task_id,
+            task_description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             available_providers=[],
             round_number=1,
             max_rounds=5,
@@ -198,8 +203,13 @@ class TestActivityInputModelName:
         assert inp.model_name == ""
 
     def test_exploration_input_set(self) -> None:
+        task = TaskDefinition(task_id="t1", description="desc")
         inp = ExplorationInput(
-            task=TaskDefinition(task_id="t1", description="desc"),
+            task_id=task.task_id,
+            task_description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             available_providers=[],
             round_number=1,
             max_rounds=5,

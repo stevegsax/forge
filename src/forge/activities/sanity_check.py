@@ -33,7 +33,6 @@ from forge.models import (
     SanityCheckInput,
     SanityCheckResponse,
     StepResult,
-    TaskDefinition,
 )
 
 if TYPE_CHECKING:
@@ -63,7 +62,8 @@ def build_step_digest(step_result: StepResult) -> str:
 
 
 def build_sanity_check_system_prompt(
-    task: TaskDefinition,
+    task_id: str,
+    task_description: str,
     plan: Plan,
     completed_steps: list[StepResult],
     remaining_steps: list[PlanStep],
@@ -84,7 +84,7 @@ def build_sanity_check_system_prompt(
 
     parts.append("")
     parts.append("## Original Task")
-    parts.append(task.description)
+    parts.append(task_description)
 
     parts.append("")
     parts.append("## Full Plan")
@@ -239,7 +239,8 @@ async def assemble_sanity_check_context(
     project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
 
     system_prompt = build_sanity_check_system_prompt(
-        task=input.task,
+        task_id=input.task_id,
+        task_description=input.task_description,
         plan=input.plan,
         completed_steps=input.completed_steps,
         remaining_steps=input.remaining_steps,
@@ -251,7 +252,7 @@ async def assemble_sanity_check_context(
     )
 
     return SanityCheckInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )

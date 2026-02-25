@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant Forge as Forge Workflow
+    participant API as Anthropic Batches API
+    participant Poller as Batch Poller
+    participant Parse as parse_llm_response
+
+    loop Poll until complete
+        Poller->>API: messages.batches.retrieve(batch_id)
+        API-->>Poller: status
+    end
+
+    Note over Poller: Batch complete — deliver result
+    Poller->>Forge: signal: batch_result_received(BatchResult)
+
+    Note over Forge: workflow resumes
+
+    Note over Forge,Parse: parse response
+    Forge->>Parse: ParseResponseInput(raw_response_json)
+    Parse->>Parse: extract_tool_result → LLMResponse
+    Parse->>Parse: extract_usage → token stats
+    Parse-->>Forge: ParsedLLMResponse
+
+    Forge->>Forge: Reconstruct LLMCallResult

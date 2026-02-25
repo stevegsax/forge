@@ -399,7 +399,11 @@ class ForgeTaskWorkflow:
 
         for round_num in range(1, max_rounds + 1):
             exploration_input = ExplorationInput(
-                task=task,
+                task_id=task.task_id,
+                task_description=task.description,
+                target_files=task.target_files,
+                context_files=task.context_files,
+                context_config=task.context,
                 available_providers=PROVIDER_SPECS,
                 accumulated_context=accumulated,
                 round_number=round_num,
@@ -473,7 +477,11 @@ class ForgeTaskWorkflow:
             context = await workflow.execute_activity(
                 "assemble_context",
                 AssembleContextInput(
-                    task=task,
+                    task_id=task.task_id,
+                    description=task.description,
+                    target_files=task.target_files,
+                    context_files=task.context_files,
+                    context_config=task.context,
                     repo_root=input.repo_root,
                     worktree_path=wt_output.worktree_path,
                     prior_errors=prior_errors,
@@ -643,7 +651,11 @@ class ForgeTaskWorkflow:
         planner_input = await workflow.execute_activity(
             "assemble_planner_context",
             AssembleContextInput(
-                task=task,
+                task_id=task.task_id,
+                description=task.description,
+                target_files=task.target_files,
+                context_files=task.context_files,
+                context_config=task.context,
                 repo_root=input.repo_root,
                 worktree_path=wt_output.worktree_path,
             ),
@@ -727,7 +739,9 @@ class ForgeTaskWorkflow:
                 context = await workflow.execute_activity(
                     "assemble_step_context",
                     AssembleStepContextInput(
-                        task=task,
+                        task_id=task.task_id,
+                        task_description=task.description,
+                        context_config=task.context,
                         step=step,
                         step_index=step_index,
                         total_steps=len(plan.steps),
@@ -926,7 +940,8 @@ class ForgeTaskWorkflow:
         sanity_input = await workflow.execute_activity(
             "assemble_sanity_check_context",
             AssembleSanityCheckContextInput(
-                task=input.task,
+                task_id=input.task.task_id,
+                task_description=input.task.description,
                 plan=plan,
                 completed_steps=step_results,
                 remaining_steps=remaining_steps,

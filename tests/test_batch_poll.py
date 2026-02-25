@@ -78,16 +78,14 @@ def _make_anthropic_client(
     if retrieve_error:
         client.messages.batches.retrieve = AsyncMock(side_effect=retrieve_error)
     else:
-        client.messages.batches.retrieve = AsyncMock(
-            return_value=batch or _make_batch_response()
-        )
+        client.messages.batches.retrieve = AsyncMock(return_value=batch or _make_batch_response())
 
     if results_error:
         client.messages.batches.results = AsyncMock(side_effect=results_error)
     else:
         # results() returns an async iterable
         async def _async_iter():
-            for r in (results or []):
+            for r in results or []:
                 yield r
 
         client.messages.batches.results = AsyncMock(return_value=_async_iter())

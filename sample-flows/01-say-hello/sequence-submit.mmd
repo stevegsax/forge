@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant User
+    participant Forge as Forge Workflow
+    participant Submit as submit_batch_request
+    participant API as Anthropic Batches API
+
+    User->>Forge: TaskDefinition("Say hello")
+
+    Note over Forge: assemble_context
+    Forge->>Forge: Build system prompt (role + output requirements + task)
+    Forge->>Forge: Build user prompt (domain template)
+
+    Note over Forge,API: submit batch request
+    Forge->>Submit: BatchSubmitInput(context, "LLMResponse")
+    Submit->>API: messages.batches.create(requests=[...])
+    API-->>Submit: batch_id = "msgbatch_01ABC..."
+    Submit-->>Forge: BatchSubmitResult(request_id, batch_id)
+
+    Note over Forge: workflow suspends (wait_condition)

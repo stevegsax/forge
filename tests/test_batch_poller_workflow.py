@@ -23,13 +23,16 @@ async def test_batch_poller_workflow_executes_activity() -> None:
     async def mock_poll(_input: BatchPollerInput) -> BatchPollerResult:
         return expected
 
-    async with await WorkflowEnvironment.start_time_skipping(
-        data_converter=pydantic_data_converter,
-    ) as env, Worker(
-        env.client,
-        task_queue=FORGE_TASK_QUEUE,
-        workflows=[BatchPollerWorkflow],
-        activities=[mock_poll],
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=pydantic_data_converter,
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[BatchPollerWorkflow],
+            activities=[mock_poll],
+        ),
     ):
         result = await env.client.execute_workflow(
             BatchPollerWorkflow.run,

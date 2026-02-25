@@ -62,7 +62,11 @@ def _make_providers() -> list[ContextProviderSpec]:
 class TestBuildExplorationPrompt:
     def test_includes_task_description(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -73,7 +77,11 @@ class TestBuildExplorationPrompt:
 
     def test_includes_target_files(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -83,7 +91,11 @@ class TestBuildExplorationPrompt:
 
     def test_includes_providers(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -94,7 +106,11 @@ class TestBuildExplorationPrompt:
 
     def test_includes_accumulated_context(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             accumulated_context=[
                 ContextResult(
@@ -113,7 +129,11 @@ class TestBuildExplorationPrompt:
     def test_truncates_long_context(self) -> None:
         long_content = "x" * 10000
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             accumulated_context=[
                 ContextResult(
@@ -130,7 +150,11 @@ class TestBuildExplorationPrompt:
 
     def test_user_prompt_non_empty(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -164,7 +188,11 @@ class TestExecuteExplorationCall:
         mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -186,7 +214,11 @@ class TestExecuteExplorationCall:
         mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -264,7 +296,11 @@ class TestFulfillRequests:
 class TestBuildExplorationPromptProjectInstructions:
     def test_includes_project_instructions(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -276,7 +312,11 @@ class TestBuildExplorationPromptProjectInstructions:
 
     def test_instructions_before_round_info(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -289,7 +329,11 @@ class TestBuildExplorationPromptProjectInstructions:
 
     def test_omits_when_empty(self) -> None:
         input = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
@@ -328,7 +372,11 @@ class TestCallExplorationLlmModelNameThreading:
             mock_get_tracer.return_value = mock_tracer
 
             input_data = ExplorationInput(
-                task=_make_task(),
+                task_id=_make_task().task_id,
+                task_description=_make_task().description,
+                target_files=_make_task().target_files,
+                context_files=_make_task().context_files,
+                context_config=_make_task().context,
                 available_providers=_make_providers(),
                 round_number=1,
                 max_rounds=5,
@@ -366,7 +414,11 @@ class TestCallExplorationLlmModelNameThreading:
             mock_get_tracer.return_value = mock_tracer
 
             input_data = ExplorationInput(
-                task=_make_task(),
+                task_id=_make_task().task_id,
+                task_description=_make_task().description,
+                target_files=_make_task().target_files,
+                context_files=_make_task().context_files,
+                context_config=_make_task().context,
                 available_providers=_make_providers(),
                 round_number=1,
                 max_rounds=5,
@@ -391,10 +443,15 @@ class TestBuildExplorationPromptDomain:
             domain=TaskDomain.RESEARCH,
         )
         input_data = ExplorationInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,
+            domain=task.domain,
         )
         system, user = build_exploration_prompt(input_data)
         assert "research task" in system
@@ -403,7 +460,11 @@ class TestBuildExplorationPromptDomain:
 
     def test_code_generation_domain_preserves_current(self) -> None:
         input_data = ExplorationInput(
-            task=_make_task(),
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
             available_providers=_make_providers(),
             round_number=1,
             max_rounds=5,

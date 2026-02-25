@@ -270,11 +270,11 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
     planner prompt, giving it a structural overview of the codebase.
     """
     repo_root = Path(input.repo_root)
-    context_contents = _read_context_files(repo_root, input.task.context_files)
+    context_contents = _read_context_files(repo_root, input.context_files)
 
     repo_map_text: str | None = None
 
-    if input.task.context.auto_discover:
+    if input.context_config.auto_discover:
         try:
             from forge.code_intel import (
                 build_import_graph,
@@ -283,7 +283,7 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
                 rank_files,
             )
 
-            package_name = input.task.context.package_name or _detect_package_name(input.repo_root)
+            package_name = input.context_config.package_name or _detect_package_name(input.repo_root)
             graph = build_import_graph(package_name)
 
             # For the planner, rank all files (no specific targets)
@@ -302,7 +302,7 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
             repo_map_result = generate_repo_map(
                 ranked_set.ranked_files,
                 all_summaries,
-                token_budget=input.task.context.repo_map_tokens,
+                token_budget=input.context_config.repo_map_tokens,
             )
             if repo_map_result.content:
                 repo_map_text = repo_map_result.content
@@ -311,16 +311,24 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
 
     project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
 
+    task_mock = TaskDefinition(
+        task_id=input.task_id,
+        description=input.description,
+        target_files=input.target_files,
+        context_files=input.context_files,
+        context=input.context_config,
+    )
+
     system_prompt = build_planner_system_prompt(
-        input.task,
+        task_mock,
         context_contents,
         repo_map=repo_map_text,
         project_instructions=project_instructions,
     )
-    user_prompt = build_planner_user_prompt(input.task)
+    user_prompt = build_planner_user_prompt(task_mock)
 
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )

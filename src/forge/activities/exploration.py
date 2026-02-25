@@ -50,7 +50,7 @@ def build_exploration_prompt(
 
     Returns (system_prompt, user_prompt).
     """
-    domain_config = get_domain_config(input.task.domain)
+    domain_config = get_domain_config(input.domain)
     parts: list[str] = []
 
     parts.append("You are a code exploration assistant.")
@@ -72,12 +72,12 @@ def build_exploration_prompt(
     parts.append(f"## Round {input.round_number} of {input.max_rounds}")
     parts.append("")
     parts.append("## Task")
-    parts.append(input.task.description)
+    parts.append(input.task_description)
 
-    if input.task.target_files:
+    if input.target_files:
         parts.append("")
         parts.append("## Target Files")
-        for f in input.task.target_files:
+        for f in input.target_files:
             parts.append(f"- {f}")
 
     parts.append("")
@@ -274,7 +274,7 @@ async def assemble_exploration_context(input: ExplorationInput) -> AssembledCont
     model = input.model_name or DEFAULT_EXPLORATION_MODEL
 
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model_name=model,

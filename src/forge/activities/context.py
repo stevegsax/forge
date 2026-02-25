@@ -560,7 +560,7 @@ async def assemble_context(input: AssembleContextInput) -> AssembledContext:
 
 async def _assemble_context_inner(input: AssembleContextInput) -> AssembledContext:
     """Inner implementation of assemble_context (extracted for span wrapping)."""
-    task = input.task
+    task_id = input.task_id
     repo_root = Path(input.repo_root)
 
     error_section = build_error_section(
@@ -569,47 +569,62 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
 
     project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
 
-    if task.context.auto_discover and task.target_files:
+    if input.context_config.auto_discover and input.target_files:
         from forge.code_intel import discover_context
         from forge.code_intel.budget import pack_context
 
-        manual_contents = _read_context_files(repo_root, task.context_files)
+        manual_contents = _read_context_files(repo_root, input.context_files)
 
         packed = discover_context(
-            target_files=task.target_files,
+            target_files=input.target_files,
             project_root=input.repo_root,
-            package_name=task.context.package_name or _detect_package_name(input.repo_root),
+            package_name=input.context_config.package_name or _detect_package_name(input.repo_root),
             src_root="src",
             manual_context=manual_contents,
-            token_budget=task.context.token_budget,
-            max_import_depth=task.context.max_import_depth,
-            include_repo_map=task.context.include_repo_map,
-            repo_map_tokens=task.context.repo_map_tokens,
-            include_dependencies=task.context.include_dependencies,
+            token_budget=input.context_config.token_budget,
+            max_import_depth=input.context_config.max_import_depth,
+            include_repo_map=input.context_config.include_repo_map,
+            repo_map_tokens=input.context_config.repo_map_tokens,
+            include_dependencies=input.context_config.include_dependencies,
         )
 
         # Inject playbooks (best-effort, D42)
-        playbooks = _load_playbooks_for_task(task)
+        # We'd need to reconstruct a task-like object or modify infer_task_tags
+        task_mock = TaskDefinition(
+            task_id=input.task_id,
+            description=input.description,
+            target_files=input.target_files,
+            context_files=input.context_files,
+            context=input.context_config,
+        )
+        playbooks = _load_playbooks_for_task(task_mock)
         if playbooks:
             playbook_items = build_playbook_context_items(playbooks)
             all_items = packed.items + playbook_items
-            packed = pack_context(all_items, task.context.token_budget)
+            packed = pack_context(all_items, input.context_config.token_budget)
 
         system_prompt = build_system_prompt_with_context(
-            task, packed, error_section, project_instructions=project_instructions
+            task_mock, packed, error_section, project_instructions=project_instructions
         )
         context_stats = _build_context_stats(packed)
     else:
-        context_contents = _read_context_files(repo_root, task.context_files)
+        task_mock = TaskDefinition(
+            task_id=input.task_id,
+            description=input.description,
+            target_files=input.target_files,
+            context_files=input.context_files,
+            context=input.context_config,
+        )
+        context_contents = _read_context_files(repo_root, input.context_files)
         system_prompt = build_system_prompt(
-            task, context_contents, error_section, project_instructions=project_instructions
+            task_mock, context_contents, error_section, project_instructions=project_instructions
         )
         context_stats = None
 
-    user_prompt = build_user_prompt(task)
+    user_prompt = build_user_prompt(task_mock)
 
     return AssembledContext(
-        task_id=task.task_id,
+        task_id=input.task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         context_stats=context_stats,
@@ -748,8 +763,14 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         _read_project_instructions(Path(input.repo_root))
     )
 
+    task_mock = TaskDefinition(
+        task_id=input.task_id,
+        description=input.task_description,
+        context=input.context_config,
+    )
+
     system_prompt = build_step_system_prompt(
-        task=input.task,
+        task=task_mock,
         step=input.step,
         step_index=input.step_index,
         total_steps=input.total_steps,
@@ -759,10 +780,10 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         error_section=error_section,
         project_instructions=project_instructions,
     )
-    user_prompt = build_step_user_prompt(input.step, domain=input.task.domain)
+    user_prompt = build_step_user_prompt(input.step, domain=task_mock.domain)
 
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         step_id=input.step.step_id,

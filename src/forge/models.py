@@ -412,8 +412,13 @@ class FulfillContextInput(BaseModel):
 class ExplorationInput(BaseModel):
     """Input to the exploration LLM call."""
 
-    task: TaskDefinition
+    task_id: str
+    task_description: str
+    target_files: list[str]
+    context_files: list[str]
+    context_config: ContextConfig
     available_providers: list[ContextProviderSpec]
+    domain: TaskDomain = Field(default=TaskDomain.CODE_GENERATION)
     accumulated_context: list[ContextResult] = Field(default_factory=list)
     round_number: int
     max_rounds: int
@@ -581,7 +586,11 @@ class WriteResult(BaseModel):
 class AssembleContextInput(BaseModel):
     """Input to the assemble_context activity."""
 
-    task: TaskDefinition
+    task_id: str
+    description: str
+    target_files: list[str]
+    context_files: list[str]
+    context_config: ContextConfig
     repo_root: str
     worktree_path: str
     prior_errors: list[ValidationResult] = Field(default_factory=list)
@@ -790,7 +799,9 @@ class PlanCallResult(BaseModel):
 class AssembleStepContextInput(BaseModel):
     """Input to assemble_step_context activity."""
 
-    task: TaskDefinition
+    task_id: str
+    task_description: str
+    context_config: ContextConfig
     step: PlanStep
     step_index: int
     total_steps: int
@@ -845,7 +856,8 @@ class SanityCheckCallResult(BaseModel):
 class AssembleSanityCheckContextInput(BaseModel):
     """Input to assemble_sanity_check_context activity."""
 
-    task: TaskDefinition
+    task_id: str
+    task_description: str
     plan: Plan
     completed_steps: list[StepResult]
     remaining_steps: list[PlanStep]

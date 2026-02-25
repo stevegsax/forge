@@ -130,7 +130,11 @@ ForgeTaskInput:                         # Workflow entry point
     max_step_attempts: int = 2          # Phase 2: retry limit per step
 
 AssembleContextInput:
-    task: TaskDefinition
+    task_id: str
+    description: str
+    target_files: list[str]
+    context_files: list[str]
+    context_config: ContextConfig
     repo_root: str
     worktree_path: str
 

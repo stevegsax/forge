@@ -271,7 +271,9 @@ class TestAssembleStepContextInput:
         td = TaskDefinition(task_id="t", description="d")
         step = PlanStep(step_id="s1", description="d", target_files=["a.py"])
         inp = AssembleStepContextInput(
-            task=td,
+            task_id=td.task_id,
+            task_description=td.description,
+            context_config=td.context,
             step=step,
             step_index=0,
             total_steps=1,

@@ -22,6 +22,11 @@ forge run  ──►  Temporal Server  ◄──  forge worker
 
 `forge run` submits a workflow to the Temporal server and optionally waits for the result. `forge worker` polls the server for queued workflows and executes the activities (LLM calls, context assembly, validation, git operations). This separation provides Temporal's durability guarantees — if the worker crashes mid-task, the server retains workflow state, and a restarted worker resumes where it left off.
 
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Changelog](CHANGELOG.md)
+
 ## Usage
 
 Start the worker in one terminal:

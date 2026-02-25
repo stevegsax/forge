@@ -161,7 +161,11 @@ class TestAssemblePlannerContext:
             context_files=["ref.py"],
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -178,7 +182,11 @@ class TestAssemblePlannerContext:
             context_files=["nonexistent.py"],
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -221,7 +229,11 @@ class TestAssemblePlannerContextAutoDiscover:
             context=config,
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -295,7 +307,11 @@ class TestAssemblePlannerContextProjectInstructions:
             description="Build something.",
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -310,7 +326,11 @@ class TestAssemblePlannerContextProjectInstructions:
             description="Build something.",
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )

@@ -138,7 +138,11 @@ class TestAssembleContext:
             context_files=["ref.py"],
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -156,7 +160,11 @@ class TestAssembleContext:
             context_files=["nonexistent.py"],
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -172,7 +180,11 @@ class TestAssembleContext:
             target_files=["f.py"],
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -256,7 +268,9 @@ class TestAssembleStepContext:
             context_files=["prev.py"],
         )
         input_data = AssembleStepContextInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            context_config=task.context,
             step=step,
             step_index=1,
             total_steps=2,
@@ -281,7 +295,9 @@ class TestAssembleStepContext:
             context_files=["nonexistent.py"],
         )
         input_data = AssembleStepContextInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            context_config=task.context,
             step=step,
             step_index=0,
             total_steps=1,
@@ -596,7 +612,11 @@ class TestAssembleContextAutoDiscoverDisabled:
             context=config,
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -673,7 +693,9 @@ class TestAssembleStepContextTargetFiles:
             target_files=["target.py"],
         )
         input_data = AssembleStepContextInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            context_config=task.context,
             step=step,
             step_index=0,
             total_steps=1,
@@ -697,7 +719,9 @@ class TestAssembleStepContextTargetFiles:
             target_files=["new_file.py"],
         )
         input_data = AssembleStepContextInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            context_config=task.context,
             step=step,
             step_index=0,
             total_steps=1,
@@ -1170,7 +1194,11 @@ class TestProjectInstructionsInActivities:
             target_files=["out.py"],
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -1186,7 +1214,11 @@ class TestProjectInstructionsInActivities:
             target_files=["out.py"],
         )
         input_data = AssembleContextInput(
-            task=task,
+            task_id=task.task_id,
+            description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             repo_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
         )
@@ -1202,7 +1234,9 @@ class TestProjectInstructionsInActivities:
         task = TaskDefinition(task_id="t1", description="Build API.")
         step = PlanStep(step_id="s1", description="Create routes.", target_files=["routes.py"])
         input_data = AssembleStepContextInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            context_config=task.context,
             step=step,
             step_index=0,
             total_steps=1,

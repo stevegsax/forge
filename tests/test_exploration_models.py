@@ -148,7 +148,11 @@ class TestExplorationInput:
             target_files=["bug.py"],
         )
         inp = ExplorationInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             available_providers=[],
             round_number=1,
             max_rounds=5,
@@ -162,7 +166,11 @@ class TestExplorationInput:
             description="Fix bug.",
         )
         inp = ExplorationInput(
-            task=task,
+            task_id=task.task_id,
+            task_description=task.description,
+            target_files=task.target_files,
+            context_files=task.context_files,
+            context_config=task.context,
             available_providers=[],
             accumulated_context=[
                 ContextResult(provider="read_file", content="data", estimated_tokens=1),

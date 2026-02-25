@@ -86,7 +86,9 @@ PlanCallResult:
     latency_ms: float
 
 AssembleStepContextInput:
-    task: TaskDefinition
+    task_id: str
+    task_description: str
+    context_config: ContextConfig
     step: PlanStep
     step_index: int
     total_steps: int
