@@ -13,14 +13,14 @@ Request parameters are built by `build_messages_params()` in `src/forge/llm_clie
   "system": [
     {
       "type": "text",
-      "text": "You are a helpful assistant.\n\n## Output Requirements\n\nYou MUST respond with a valid LLMResponse containing an `explanation` string.\n\nPut your complete response in the `explanation` field. Leave `files` and `edits` empty.\n\nDo NOT return an empty object.\n\n## Task\nSay hello",
+      "text": "You are a helpful assistant.\n\n## Output Requirements\n\nYou MUST respond with a valid LLMResponse containing an `explanation` string and a `files` list.\n\nWrite your complete response as one or more markdown files using the `files` list. Each entry needs `file_path` and `content` (complete file content). Use the `explanation` field for a brief summary of what you produced.\n\nDo NOT return an empty object.\n\n## Task\nSay hello\n\n## Target Files\n- hello.md",
       "cache_control": { "type": "ephemeral" }
     }
   ],
   "messages": [
     {
       "role": "user",
-      "content": "Respond to the task described above."
+      "content": "Respond to the task described above. Write your response as markdown files using the `files` list."
     }
   ],
   "tools": [

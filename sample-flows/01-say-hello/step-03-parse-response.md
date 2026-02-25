@@ -32,9 +32,14 @@ The `raw_response_json` contains the full Anthropic Message. The LLM returns a s
       "id": "toolu_01ABC...",
       "name": "llm_response",
       "input": {
-        "files": [],
+        "files": [
+          {
+            "file_path": "hello.md",
+            "content": "# Hello\n\nHello! How can I help you today?"
+          }
+        ],
         "edits": [],
-        "explanation": "Hello! How can I help you today?"
+        "explanation": "Created a greeting in hello.md."
       }
     }
   ],
@@ -68,7 +73,7 @@ The result is a `ParsedLLMResponse` carrying the serialized model and usage stat
 
 ```python
 ParsedLLMResponse(
-    parsed_json='{"files":[],"edits":[],"explanation":"Hello! How can I help you today?"}',
+    parsed_json='{"files":[{"file_path":"hello.md","content":"# Hello\\n\\nHello! How can I help you today?"}],"edits":[],"explanation":"Created a greeting in hello.md."}',
     model_name="claude-sonnet-4-5-20250929",
     input_tokens=312,
     output_tokens=84,
@@ -104,4 +109,4 @@ LLMCallResult(
 
 ## What happens next
 
-In a full Forge workflow, this result would flow to `write_output` (apply files/edits to the worktree), then `validate_output` (run checks), then `evaluate_transition` (decide success/retry/fail). For this generic domain flow, `files` and `edits` are empty and validation is disabled — the response lives entirely in `explanation`.
+In a full Forge workflow, this result would flow to `write_output` (write `hello.md` to the worktree), then `validate_output` (all checks disabled for the generic domain), then `evaluate_transition` (returns SUCCESS), then `commit_changes`.

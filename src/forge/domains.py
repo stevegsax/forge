@@ -36,9 +36,11 @@ _PROSE_OUTPUT_REQUIREMENTS = (
 )
 
 _GENERIC_OUTPUT_REQUIREMENTS = (
-    "You MUST respond with a valid LLMResponse containing an `explanation` string.\n\n"
-    "Put your complete response in the `explanation` field. "
-    "Leave `files` and `edits` empty.\n\n"
+    "You MUST respond with a valid LLMResponse containing an `explanation` string "
+    "and a `files` list.\n\n"
+    "Write your complete response as one or more markdown files using the `files` list. "
+    "Each entry needs `file_path` and `content` (complete file content). "
+    "Use the `explanation` field for a brief summary of what you produced.\n\n"
     "Do NOT return an empty object."
 )
 
@@ -207,18 +209,23 @@ _DOCUMENTATION_CONFIG = DomainConfig(
 _GENERIC_CONFIG = DomainConfig(
     role_prompt="You are a helpful assistant.",
     output_requirements=_GENERIC_OUTPUT_REQUIREMENTS,
-    user_prompt_template="Respond to the task described above.",
+    user_prompt_template=(
+        "Respond to the task described above. "
+        "Write your response as markdown files using the `files` list."
+    ),
     step_user_prompt_template=(
-        "Execute step '{step_id}': {step_description}"
+        "Execute step '{step_id}': {step_description}\n\n"
+        "Write your response as markdown files using the `files` list."
     ),
     sub_task_user_prompt_template=(
-        "Execute sub-task '{sub_task_id}': {sub_task_description}"
+        "Execute sub-task '{sub_task_id}': {sub_task_description}\n\n"
+        "Write your response as markdown files using the `files` list."
     ),
     exploration_task_noun="task",
     exploration_completion_noun="response generation",
     planner_domain_instruction=(
-        "This is a **general-purpose** task. Each step should produce a response "
-        "in the explanation field. Code linting is disabled."
+        "This is a **general-purpose** task. Each step should produce markdown files "
+        "containing the response. Code linting is disabled."
     ),
     validation_defaults=ValidationConfig(
         auto_fix=False,

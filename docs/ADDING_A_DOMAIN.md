@@ -40,8 +40,7 @@ class LLMResponse(BaseModel):
 
 The `output_requirements` text steers the LLM toward the appropriate fields:
 
-- **File-producing domains** (code generation, research, documentation) instruct the LLM to populate `files` and/or `edits`
-- **Explanation-only domains** can instruct the LLM to put its answer in `explanation` and leave `files`/`edits` empty — both default to empty lists, so no schema change is needed
+The `output_requirements` text steers the LLM toward the appropriate fields. All current domains produce files — the pipeline assumes a successful run has something to write and commit. Code generation uses both `files` and `edits`; prose domains (research, documentation, generic) use `files` only.
 
 ## Files to modify
 

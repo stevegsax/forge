@@ -125,10 +125,10 @@ class TestGenericConfig:
         config = get_domain_config(TaskDomain.GENERIC)
         assert config.role_prompt == "You are a helpful assistant."
 
-    def test_output_requirements_explanation_only(self) -> None:
+    def test_output_requirements_files_and_explanation(self) -> None:
         config = get_domain_config(TaskDomain.GENERIC)
         assert "explanation" in config.output_requirements
-        assert "Leave `files` and `edits` empty" in config.output_requirements
+        assert "files" in config.output_requirements
 
     def test_ruff_off(self) -> None:
         config = get_domain_config(TaskDomain.GENERIC)
