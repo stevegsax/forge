@@ -46,3 +46,6 @@ ocr-output.txt
 
 # Python version
 .python-version
+
+sample-flows/**/*.svg
+.DS_Store
