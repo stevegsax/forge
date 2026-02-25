@@ -116,6 +116,32 @@ class TestDocumentationConfig:
 
 
 # ---------------------------------------------------------------------------
+# Generic config
+# ---------------------------------------------------------------------------
+
+
+class TestGenericConfig:
+    def test_role_prompt(self) -> None:
+        config = get_domain_config(TaskDomain.GENERIC)
+        assert config.role_prompt == "You are a helpful assistant."
+
+    def test_output_requirements_explanation_only(self) -> None:
+        config = get_domain_config(TaskDomain.GENERIC)
+        assert "explanation" in config.output_requirements
+        assert "Leave `files` and `edits` empty" in config.output_requirements
+
+    def test_ruff_off(self) -> None:
+        config = get_domain_config(TaskDomain.GENERIC)
+        assert config.validation_defaults.run_ruff_lint is False
+        assert config.validation_defaults.run_ruff_format is False
+
+    def test_exploration_nouns(self) -> None:
+        config = get_domain_config(TaskDomain.GENERIC)
+        assert config.exploration_task_noun == "task"
+        assert config.exploration_completion_noun == "response generation"
+
+
+# ---------------------------------------------------------------------------
 # Validation defaults
 # ---------------------------------------------------------------------------
 

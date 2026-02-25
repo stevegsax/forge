@@ -36,6 +36,7 @@ class TaskDomain(StrEnum):
     RESEARCH = "research"
     CODE_REVIEW = "code_review"
     DOCUMENTATION = "documentation"
+    GENERIC = "generic"
 
 
 class SanityCheckVerdict(StrEnum):

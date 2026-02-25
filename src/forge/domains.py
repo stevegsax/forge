@@ -35,6 +35,13 @@ _PROSE_OUTPUT_REQUIREMENTS = (
     "Do NOT return an empty object."
 )
 
+_GENERIC_OUTPUT_REQUIREMENTS = (
+    "You MUST respond with a valid LLMResponse containing an `explanation` string.\n\n"
+    "Put your complete response in the `explanation` field. "
+    "Leave `files` and `edits` empty.\n\n"
+    "Do NOT return an empty object."
+)
+
 
 # ---------------------------------------------------------------------------
 # DomainConfig model
@@ -197,6 +204,31 @@ _DOCUMENTATION_CONFIG = DomainConfig(
     ),
 )
 
+_GENERIC_CONFIG = DomainConfig(
+    role_prompt="You are a helpful assistant.",
+    output_requirements=_GENERIC_OUTPUT_REQUIREMENTS,
+    user_prompt_template="Respond to the task described above.",
+    step_user_prompt_template=(
+        "Execute step '{step_id}': {step_description}"
+    ),
+    sub_task_user_prompt_template=(
+        "Execute sub-task '{sub_task_id}': {sub_task_description}"
+    ),
+    exploration_task_noun="task",
+    exploration_completion_noun="response generation",
+    planner_domain_instruction=(
+        "This is a **general-purpose** task. Each step should produce a response "
+        "in the explanation field. Code linting is disabled."
+    ),
+    validation_defaults=ValidationConfig(
+        auto_fix=False,
+        run_ruff_lint=False,
+        run_ruff_format=False,
+        run_tests=False,
+        test_command=None,
+    ),
+)
+
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -207,6 +239,7 @@ _DOMAIN_REGISTRY: dict[TaskDomain, DomainConfig] = {
     TaskDomain.RESEARCH: _RESEARCH_CONFIG,
     TaskDomain.CODE_REVIEW: _CODE_REVIEW_CONFIG,
     TaskDomain.DOCUMENTATION: _DOCUMENTATION_CONFIG,
+    TaskDomain.GENERIC: _GENERIC_CONFIG,
 }
 
 

@@ -4,13 +4,13 @@ The `assemble_context` activity builds the system prompt and user prompt from th
 
 ## Input
 
-A `TaskDefinition` with a simple description and the `RESEARCH` domain (no code validation):
+A `TaskDefinition` with a simple description and the `GENERIC` domain (no files, no validation):
 
 ```python
 TaskDefinition(
     task_id="say-hello",
     description="Say hello",
-    domain=TaskDomain.RESEARCH,
+    domain=TaskDomain.GENERIC,
     target_files=[],
     context_files=[],
 )
@@ -21,15 +21,13 @@ TaskDefinition(
 The system prompt is assembled by `build_system_prompt()` in `src/forge/activities/context.py`. With no context files, no target files, and no prior errors, the prompt reduces to the domain role prompt, output requirements, and task description:
 
 ```
-You are a research assistant.
+You are a helpful assistant.
 
 ## Output Requirements
 
-You MUST respond with a valid LLMResponse containing an `explanation` string
-and a `files` list.
+You MUST respond with a valid LLMResponse containing an `explanation` string.
 
-Write your findings as one or more markdown files using the `files` list.
-Each entry needs `file_path` and `content` (complete file content).
+Put your complete response in the `explanation` field. Leave `files` and `edits` empty.
 
 Do NOT return an empty object.
 
@@ -37,14 +35,14 @@ Do NOT return an empty object.
 Say hello
 ```
 
-The role prompt comes from the domain configuration registry (`src/forge/domains.py`). The RESEARCH domain uses `"You are a research assistant."` and prose output requirements.
+The role prompt comes from the domain configuration registry (`src/forge/domains.py`). The GENERIC domain uses `"You are a helpful assistant."` and explanation-only output requirements.
 
 ## User prompt
 
 The user prompt is a fixed template from the domain config:
 
 ```
-Conduct the research described above. Write your findings as markdown files using the `files` list.
+Respond to the task described above.
 ```
 
 ## Output
@@ -54,8 +52,8 @@ An `AssembledContext` carrying both prompts to the next activity:
 ```python
 AssembledContext(
     task_id="say-hello",
-    system_prompt="You are a research assistant.\n\n## Output Requirements\n...",
-    user_prompt="Conduct the research described above. ...",
+    system_prompt="You are a helpful assistant.\n\n## Output Requirements\n...",
+    user_prompt="Respond to the task described above.",
     context_stats=None,
 )
 ```

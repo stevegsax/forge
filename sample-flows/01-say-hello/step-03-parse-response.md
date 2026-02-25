@@ -32,14 +32,9 @@ The `raw_response_json` contains the full Anthropic Message. The LLM returns a s
       "id": "toolu_01ABC...",
       "name": "llm_response",
       "input": {
-        "files": [
-          {
-            "file_path": "hello.md",
-            "content": "# Hello\n\nHello! Greetings from the assistant."
-          }
-        ],
+        "files": [],
         "edits": [],
-        "explanation": "Created a simple greeting markdown file."
+        "explanation": "Hello! How can I help you today?"
       }
     }
   ],
@@ -73,7 +68,7 @@ The result is a `ParsedLLMResponse` carrying the serialized model and usage stat
 
 ```python
 ParsedLLMResponse(
-    parsed_json='{"files":[{"file_path":"hello.md","content":"# Hello\\n\\n..."}],"edits":[],"explanation":"Created a simple greeting markdown file."}',
+    parsed_json='{"files":[],"edits":[],"explanation":"Hello! How can I help you today?"}',
     model_name="claude-sonnet-4-5-20250929",
     input_tokens=312,
     output_tokens=84,
@@ -109,4 +104,4 @@ LLMCallResult(
 
 ## What happens next
 
-In a full Forge workflow, this result would flow to `write_output` (apply files/edits to the worktree), then `validate_output` (run checks), then `evaluate_transition` (decide success/retry/fail). For this minimal flow, there are no target files and no validation — the pipeline stops here.
+In a full Forge workflow, this result would flow to `write_output` (apply files/edits to the worktree), then `validate_output` (run checks), then `evaluate_transition` (decide success/retry/fail). For this generic domain flow, `files` and `edits` are empty and validation is disabled — the response lives entirely in `explanation`.

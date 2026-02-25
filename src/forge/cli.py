@@ -520,10 +520,10 @@ def main() -> None:
 )
 @click.option(
     "--domain",
-    type=click.Choice(["code_generation", "research", "code_review", "documentation"]),
+    type=click.Choice(["code_generation", "research", "code_review", "documentation", "generic"]),
     default="code_generation",
     show_default=True,
-    help="Task domain: code_generation, research, code_review, documentation.",
+    help="Task domain: code_generation, research, code_review, documentation, generic.",
 )
 @click.option(
     "--temporal-address",
