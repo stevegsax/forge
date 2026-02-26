@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 from temporalio import activity
-from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
 from forge.activities import (
@@ -150,21 +149,6 @@ _REAL_ACTIVITIES = [
 _ACTIVITIES_VALID = [*_REAL_ACTIVITIES, mock_call_llm_valid]
 _ACTIVITIES_INVALID = [*_REAL_ACTIVITIES, mock_call_llm_invalid]
 _ACTIVITIES_FIXABLE = [*_REAL_ACTIVITIES, mock_call_llm_fixable]
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def env():
-    from temporalio.testing import WorkflowEnvironment
-
-    async with await WorkflowEnvironment.start_time_skipping(
-        data_converter=pydantic_data_converter,
-    ) as env:
-        yield env
 
 
 # ---------------------------------------------------------------------------

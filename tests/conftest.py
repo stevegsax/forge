@@ -5,9 +5,25 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+import pytest_asyncio
+
+if TYPE_CHECKING:
+    from temporalio.testing import WorkflowEnvironment
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def env() -> WorkflowEnvironment:
+    from temporalio.contrib.pydantic import pydantic_data_converter
+    from temporalio.testing import WorkflowEnvironment
+
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter,
+    ) as env:
+        yield env
 
 
 def build_mock_message(

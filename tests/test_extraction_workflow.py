@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
-from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+
+if TYPE_CHECKING:
+    from temporalio.testing import WorkflowEnvironment
 
 from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.models import (
@@ -108,79 +111,70 @@ def _make_save():
 
 class TestForgeExtractionWorkflow:
     @pytest.mark.asyncio
-    async def test_no_runs_returns_zero(self) -> None:
-        async with await WorkflowEnvironment.start_time_skipping(
-            data_converter=pydantic_data_converter,
-        ) as env:
-            save_fn, saved = _make_save()
-            async with Worker(
-                env.client,
+    async def test_no_runs_returns_zero(self, env: WorkflowEnvironment) -> None:
+        save_fn, saved = _make_save()
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[ForgeExtractionWorkflow],
+            activities=[
+                _make_fetch_no_runs(),
+                _make_call_llm(),
+                save_fn,
+            ],
+        ):
+            result = await env.client.execute_workflow(
+                ForgeExtractionWorkflow.run,
+                ExtractionWorkflowInput(limit=10, since_hours=24),
+                id="test-extraction-empty",
                 task_queue=TASK_QUEUE,
-                workflows=[ForgeExtractionWorkflow],
-                activities=[
-                    _make_fetch_no_runs(),
-                    _make_call_llm(),
-                    save_fn,
-                ],
-            ):
-                result = await env.client.execute_workflow(
-                    ForgeExtractionWorkflow.run,
-                    ExtractionWorkflowInput(limit=10, since_hours=24),
-                    id="test-extraction-empty",
-                    task_queue=TASK_QUEUE,
-                )
-            assert result.entries_created == 0
-            assert result.source_workflow_ids == []
-            assert len(saved) == 0
+            )
+        assert result.entries_created == 0
+        assert result.source_workflow_ids == []
+        assert len(saved) == 0
 
     @pytest.mark.asyncio
-    async def test_runs_found_produces_entries(self) -> None:
-        async with await WorkflowEnvironment.start_time_skipping(
-            data_converter=pydantic_data_converter,
-        ) as env:
-            save_fn, saved = _make_save()
-            async with Worker(
-                env.client,
+    async def test_runs_found_produces_entries(self, env: WorkflowEnvironment) -> None:
+        save_fn, saved = _make_save()
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[ForgeExtractionWorkflow],
+            activities=[
+                _make_fetch_with_runs(),
+                _make_call_llm(),
+                save_fn,
+            ],
+        ):
+            result = await env.client.execute_workflow(
+                ForgeExtractionWorkflow.run,
+                ExtractionWorkflowInput(limit=10, since_hours=24),
+                id="test-extraction-with-runs",
                 task_queue=TASK_QUEUE,
-                workflows=[ForgeExtractionWorkflow],
-                activities=[
-                    _make_fetch_with_runs(),
-                    _make_call_llm(),
-                    save_fn,
-                ],
-            ):
-                result = await env.client.execute_workflow(
-                    ForgeExtractionWorkflow.run,
-                    ExtractionWorkflowInput(limit=10, since_hours=24),
-                    id="test-extraction-with-runs",
-                    task_queue=TASK_QUEUE,
-                )
-            assert result.entries_created == 1
-            assert result.source_workflow_ids == ["wf-1", "wf-2"]
-            assert len(saved) == 1
-            assert saved[0].entries[0].title == "Test lesson"
+            )
+        assert result.entries_created == 1
+        assert result.source_workflow_ids == ["wf-1", "wf-2"]
+        assert len(saved) == 1
+        assert saved[0].entries[0].title == "Test lesson"
 
     @pytest.mark.asyncio
-    async def test_empty_entries_skips_save(self) -> None:
-        async with await WorkflowEnvironment.start_time_skipping(
-            data_converter=pydantic_data_converter,
-        ) as env:
-            save_fn, saved = _make_save()
-            async with Worker(
-                env.client,
+    async def test_empty_entries_skips_save(self, env: WorkflowEnvironment) -> None:
+        save_fn, saved = _make_save()
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[ForgeExtractionWorkflow],
+            activities=[
+                _make_fetch_with_runs(),
+                _make_call_llm(entries=[]),
+                save_fn,
+            ],
+        ):
+            result = await env.client.execute_workflow(
+                ForgeExtractionWorkflow.run,
+                ExtractionWorkflowInput(limit=10, since_hours=24),
+                id="test-extraction-no-entries",
                 task_queue=TASK_QUEUE,
-                workflows=[ForgeExtractionWorkflow],
-                activities=[
-                    _make_fetch_with_runs(),
-                    _make_call_llm(entries=[]),
-                    save_fn,
-                ],
-            ):
-                result = await env.client.execute_workflow(
-                    ForgeExtractionWorkflow.run,
-                    ExtractionWorkflowInput(limit=10, since_hours=24),
-                    id="test-extraction-no-entries",
-                    task_queue=TASK_QUEUE,
-                )
-            assert result.entries_created == 0
-            assert len(saved) == 0
+            )
+        assert result.entries_created == 0
+        assert len(saved) == 0
