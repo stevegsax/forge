@@ -425,6 +425,8 @@ class ExplorationInput(BaseModel):
     max_rounds: int
     repo_root: str = Field(default="", description="Repo root for reading project instructions.")
     model_name: str = ""
+    log_messages: bool = False
+    worktree_path: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +522,8 @@ class ConflictResolutionCallInput(BaseModel):
     model_name: str = ""
     thinking_budget_tokens: int = 0
     thinking_effort: str = "high"
+    log_messages: bool = False
+    worktree_path: str = ""
 
 
 class ConflictResolutionCallResult(BaseModel):
@@ -553,6 +557,8 @@ class AssembledContext(BaseModel):
     step_id: str | None = None
     sub_task_id: str | None = None
     model_name: str = ""
+    log_messages: bool = False
+    worktree_path: str = ""
 
 
 class LLMCallResult(BaseModel):
@@ -665,6 +671,10 @@ class ForgeTaskInput(BaseModel):
         default=False,
         description="Use synchronous Messages API. False enables batch mode (default).",
     )
+    log_messages: bool = Field(
+        default=False,
+        description="Save full API request/response JSON to messages/ in the worktree.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +754,8 @@ class SubTaskInput(BaseModel):
         default=False,
         description="Use synchronous Messages API. Inherited from parent workflow.",
     )
+    log_messages: bool = False
+    worktree_path: str = ""
 
 
 class WriteFilesInput(BaseModel):
@@ -782,6 +794,8 @@ class PlannerInput(BaseModel):
     model_name: str = ""
     thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
     thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
+    log_messages: bool = False
+    worktree_path: str = ""
 
 
 class PlanCallResult(BaseModel):
@@ -839,6 +853,8 @@ class SanityCheckInput(BaseModel):
     model_name: str = ""
     thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
     thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
+    log_messages: bool = False
+    worktree_path: str = ""
 
 
 class SanityCheckCallResult(BaseModel):
@@ -975,6 +991,8 @@ class ParseResponseInput(BaseModel):
     raw_response_json: str
     output_type_name: str
     task_id: str
+    log_messages: bool = False
+    worktree_path: str = ""
 
 
 class ParsedLLMResponse(BaseModel):
