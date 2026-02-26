@@ -128,6 +128,7 @@ async def run_worker(
     *,
     batch_poll_interval: int = 60,
     extraction_interval: int = 14400,
+    identity: str | None = None,
 ) -> None:
     """Connect to Temporal and run the Forge worker."""
     from forge.tracing import init_tracing, shutdown_tracing
@@ -138,9 +139,15 @@ async def run_worker(
     _init_store()
     init_tracing()
 
+    connect_kwargs: dict[str, object] = {
+        "data_converter": pydantic_data_converter,
+    }
+    if identity is not None:
+        connect_kwargs["identity"] = identity
+
     client = await Client.connect(
         address,
-        data_converter=pydantic_data_converter,
+        **connect_kwargs,
     )
 
     # Inject Temporal client for poll activity signal delivery

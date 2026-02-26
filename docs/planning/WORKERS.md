@@ -45,7 +45,14 @@ Each worker reports an identity string to the Temporal server. By default, the P
 
 The default identity is adequate for single-machine development. In multi-machine or containerized deployments, the default is often unhelpful (container PIDs are always `1`, cloud hostnames are random strings). In those environments, set a custom identity that maps back to the machine or deployment unit (e.g., ECS task ID, k8s pod name).
 
-Forge does not currently set a custom worker identity. The Temporal Python SDK accepts an `identity` parameter on the `Worker` constructor for this purpose.
+Set a custom identity via the `--worker-identity` flag or `FORGE_WORKER_IDENTITY` environment variable:
+
+```bash
+forge worker --worker-identity "worker-us-east-1a-01"
+FORGE_WORKER_IDENTITY="pod-abc123" forge worker
+```
+
+When omitted, the SDK default (`{pid}@{hostname}`) is used.
 
 ## Scaling
 

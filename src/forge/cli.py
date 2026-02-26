@@ -750,7 +750,18 @@ def run(
     show_default=True,
     help="Seconds between knowledge extraction schedule runs (default 4 hours).",
 )
-def worker(temporal_address: str, batch_poll_interval: int, extraction_interval: int) -> None:
+@click.option(
+    "--worker-identity",
+    envvar="FORGE_WORKER_IDENTITY",
+    default=None,
+    help="Custom worker identity reported to Temporal (default: {pid}@{hostname}).",
+)
+def worker(
+    temporal_address: str,
+    batch_poll_interval: int,
+    extraction_interval: int,
+    worker_identity: str | None,
+) -> None:
     """Start the Temporal worker."""
     from forge.worker import run_worker
 
@@ -759,6 +770,7 @@ def worker(temporal_address: str, batch_poll_interval: int, extraction_interval:
             address=temporal_address,
             batch_poll_interval=batch_poll_interval,
             extraction_interval=extraction_interval,
+            identity=worker_identity,
         )
     )
 
