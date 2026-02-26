@@ -6,6 +6,7 @@
 - [ARCHITECTURE.md](planning/ARCHITECTURE.md) — Architecture overview: universal workflow step, execution modes, context assembly, and data models.
 - [DECISIONS.md](planning/DECISIONS.md) — Key design decisions and rationale (batch mode, universal workflow step, Temporal, orchestrator control, etc.).
 - [USAGE.md](planning/USAGE.md) — Guide for submitting code development and research tasks to Forge with CLI examples.
+- [DEBUGGING.md](planning/DEBUGGING.md) — Logging, observability store, API message logs, OTel tracing, and environment variables for debugging.
 - [ADDING_A_DOMAIN.md](planning/ADDING_A_DOMAIN.md) — How to parameterize LLM behavior through task domains without changing pipeline logic.
 - [test-strategy.md](planning/test-strategy.md) — Practical guide for writing Python tests with emphasis on testing pyramid and signal quality.
 - [LSP_INTEGRATION_PLAN.md](planning/LSP_INTEGRATION_PLAN.md) — Investigation of Language Server Protocol support for context generation.
