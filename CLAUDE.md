@@ -6,21 +6,9 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 Phases 1–9 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, knowledge extraction with playbook generation and injection into future task contexts, LLM-guided context exploration where the LLM requests context from providers before generating code, error-aware retries that feed validation errors back to the LLM on retry, and prompt caching via Anthropic cache control headers with cache-efficient prompt ordering and cache token tracking. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
 
-## Key Documents
+## Documentation
 
-- `docs/DESIGN.md` — Full architecture and design document.
-- `docs/DECISIONS.md` — Key design decisions and rationale.
-- `docs/PHASE1.md` — Detailed specification for Phase 1 (the minimal loop).
-- `docs/PHASE2.md` — Detailed specification for Phase 2 (planning and multi-step).
-- `docs/PHASE3.md` — Detailed specification for Phase 3 (fan-out / gather).
-- `docs/PHASE4.md` — Detailed specification for Phase 4 (intelligent context assembly).
-- `docs/PHASE5.md` — Detailed specification for Phase 5 (observability store).
-- `docs/PHASE6.md` — Detailed specification for Phase 6 (knowledge extraction).
-- `docs/PHASE7.md` — Detailed specification for Phase 7 (LLM-guided context exploration).
-- `docs/PHASE8.md` — Detailed specification for Phase 8 (error-aware retries).
-- `docs/PHASE9.md` through `docs/PHASE12.md` — Specifications for Phases 9–12.
-- `docs/PHASE14.md` — Detailed specification for Phase 14 (batch processing: 14a infrastructure, 14b workflow integration, 14c poller + scheduling).
-- `docs/PHASE13.md` — Phase 13: Tree-Sitter multi-language support (deferred to Release 2).
+See [docs/TOC.md](docs/TOC.md) for a full table of contents covering design docs, phase specifications, research, and reference material.
 
 ## Development Conventions
 
@@ -44,19 +32,7 @@ Phases 1–9 are implemented. The system supports single-step execution, planned
 
 ## The Universal Workflow Step
 
-Every operation follows this pattern:
-
-1. Construct message (assemble prompt + context)
-2. Send to LLM
-3. Receive response
-4. Serialize result
-5. Evaluate transition (success, retry, escalate, new tasks discovered, etc.)
-
-Temporal provides the workflow engine. The LLM call and transition evaluation are separate Temporal activities.
-
-The goal is to provide the same high-level functionality as an agentic loop, but every LLM call is structured as a document completion so it is compatible with batch APIs and local LLM tools. The orchestrator (Temporal) owns the control loop, not the LLM. Latency is not a consideration — batch mode is chosen deliberately for cost efficiency, not speed.
-
-Currently implemented: LLMs can request follow-up information across exploration rounds (Phase 7). Aspirational (future release): task agents can update plans and leave notes for one another, enabling cross-step discovery propagation. External tool support (web fetch, API calls, etc.) is under separate discussion.
+Every operation follows: construct message, send to LLM, receive response, serialize result, evaluate transition. Temporal provides the workflow engine; the LLM call and transition evaluation are separate activities. Every LLM call is structured as a document completion for batch API compatibility. See [docs/DESIGN.md](docs/planning/DESIGN.md) for details.
 
 ## Git Strategy
 
@@ -67,17 +43,11 @@ Currently implemented: LLMs can request follow-up information across exploration
 
 ## Execution Modes
 
-- **Single-step** (`plan=False`, default): Phase 1 behavior. Assemble context, call LLM, write, validate, commit. Retries from a clean worktree.
-- **Planned** (`plan=True`): A planner LLM decomposes the task into ordered steps. Each step executes the universal workflow step and commits on success. Step-level retry resets uncommitted changes without losing prior commits.
-- **Fan-out** (planned steps with `sub_tasks`): Steps with sub-tasks fan out to parallel child workflows. Each sub-task runs in its own worktree, results are gathered and merged, then validated and committed by the parent. Sub-tasks can themselves contain nested `sub_tasks` for recursive fan-out, bounded by `--max-fan-out-depth` (default 1 = flat fan-out only).
+- **Single-step** (`plan=False`, default): Assemble context, call LLM, write, validate, commit.
+- **Planned** (`plan=True`): Planner decomposes task into ordered steps; each step commits on success.
+- **Fan-out** (planned steps with `sub_tasks`): Parallel child workflows per sub-task, gathered and merged by the parent.
 
-All modes use automatic context discovery (Phase 4) by default: import graph analysis via `grimp`, PageRank ranking via `networkx`, symbol extraction via `ast`, and token budget packing. By default, only target file contents and the repo map are assembled upfront (progressive disclosure); dependency file contents and transitive signatures are omitted to keep prompts lean. The LLM can pull dependencies on demand via exploration providers (Phase 7). Use `--include-deps` to include dependency contents upfront. Disable auto-discovery entirely with `--no-auto-discover`.
-
-All modes support LLM-guided context exploration (Phase 7) by default: the LLM requests context from providers (file reads, code search, symbols, import graphs, tests, lint, git history, repo maps, past runs, playbooks) before generating code. Disable with `--no-explore` or set `--max-exploration-rounds 0`.
-
-All modes use diff-based output (D50): the LLM produces search/replace edits (`edits` list) for existing files and full content (`files` list) for new files. Step and sub-task contexts always include current target file contents from the worktree so the LLM can produce precise diffs. The `write_output` activity applies edits sequentially, requiring each search string to match exactly once.
-
-All modes use error-aware retries (Phase 8): when a step fails validation and retries, the retry prompt includes the validation error output with AST-derived code context around error locations, so the LLM knows what went wrong and can fix it instead of retrying blind.
+All modes include automatic context discovery (Phase 4), LLM-guided exploration (Phase 7), diff-based output (D50), and error-aware retries (Phase 8) by default. See [docs/ARCHITECTURE.md](docs/planning/ARCHITECTURE.md) for details and CLI flags.
 
 ## Release Roadmap
 
