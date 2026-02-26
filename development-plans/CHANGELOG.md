@@ -7,3 +7,4 @@ Append-only log of completed tasks. Most recent entries at the bottom.
 | 2026-02-26 | 01 | Extract `detect_file_conflicts` into Temporal activity | 0f8e4ef |
 | 2026-02-26 | 02 | Add timeout guards to wait_condition, workflow execution, and worker shutdown | d9d2dd0 |
 | 2026-02-26 | 03 | Add explicit retry policies to all 52 execute_activity calls | pending |
+| 2026-02-26 | 04 | Extract shared LLM dispatch and remove_worktree into module-level helpers (-96 lines) | pending |

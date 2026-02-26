@@ -181,6 +181,143 @@ async def _assemble_conflict_resolution(
     )
 
 
+# ---------------------------------------------------------------------------
+# Shared dispatch helpers — used by both workflow classes
+# ---------------------------------------------------------------------------
+
+
+async def _call_llm_batch_dispatch(
+    batch_results: list[BatchResult],
+    context: AssembledContext,
+    output_type_name: str,
+    *,
+    thinking_budget_tokens: int = 0,
+    thinking_effort: str = "high",
+    max_tokens: int = 4096,
+) -> ParsedLLMResponse:
+    """Submit to batch API, wait for signal, then parse the response."""
+    await workflow.execute_activity(
+        "submit_batch_request",
+        BatchSubmitInput(
+            context=context,
+            output_type_name=output_type_name,
+            workflow_id=workflow.info().workflow_id,
+            thinking_budget_tokens=thinking_budget_tokens,
+            thinking_effort=thinking_effort,
+            max_tokens=max_tokens,
+        ),
+        start_to_close_timeout=_SUBMIT_TIMEOUT,
+        retry_policy=_LLM_RETRY,
+        result_type=BatchSubmitResult,
+    )
+    await workflow.wait_condition(
+        lambda: len(batch_results) > 0,
+        timeout=_BATCH_WAIT_TIMEOUT,
+    )
+    result = batch_results.pop(0)
+    if result.error:
+        raise ApplicationError(f"Batch error: {result.error}")
+    assert result.raw_response_json is not None
+    return await workflow.execute_activity(
+        "parse_llm_response",
+        ParseResponseInput(
+            raw_response_json=result.raw_response_json,
+            output_type_name=output_type_name,
+            task_id=context.task_id,
+            log_messages=context.log_messages,
+            worktree_path=context.worktree_path,
+        ),
+        start_to_close_timeout=_PARSE_TIMEOUT,
+        retry_policy=_LOCAL_RETRY,
+        result_type=ParsedLLMResponse,
+    )
+
+
+async def _call_generation_dispatch(
+    batch_results: list[BatchResult],
+    sync_mode: bool,
+    context: AssembledContext,
+) -> LLMCallResult:
+    """Dispatch generation LLM call via sync or batch path."""
+    if sync_mode:
+        return await workflow.execute_activity(
+            "call_llm",
+            context,
+            start_to_close_timeout=_LLM_TIMEOUT,
+            retry_policy=_LLM_RETRY,
+            result_type=LLMCallResult,
+        )
+    parsed = await _call_llm_batch_dispatch(batch_results, context, "LLMResponse")
+    return LLMCallResult(
+        task_id=context.task_id,
+        response=LLMResponse.model_validate_json(parsed.parsed_json),
+        model_name=parsed.model_name,
+        input_tokens=parsed.input_tokens,
+        output_tokens=parsed.output_tokens,
+        latency_ms=parsed.latency_ms,
+        cache_creation_input_tokens=parsed.cache_creation_input_tokens,
+        cache_read_input_tokens=parsed.cache_read_input_tokens,
+    )
+
+
+async def _call_conflict_resolution_dispatch(
+    batch_results: list[BatchResult],
+    sync_mode: bool,
+    call_input: ConflictResolutionCallInput,
+) -> ConflictResolutionCallResult:
+    """Dispatch conflict resolution LLM call via sync or batch path."""
+    if sync_mode:
+        return await workflow.execute_activity(
+            "call_conflict_resolution",
+            call_input,
+            start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
+            retry_policy=_LLM_RETRY,
+            result_type=ConflictResolutionCallResult,
+        )
+    context = AssembledContext(
+        task_id=call_input.task_id,
+        system_prompt=call_input.system_prompt,
+        user_prompt=call_input.user_prompt,
+        model_name=call_input.model_name,
+        log_messages=call_input.log_messages,
+        worktree_path=call_input.worktree_path,
+    )
+    parsed = await _call_llm_batch_dispatch(
+        batch_results,
+        context,
+        "ConflictResolutionResponse",
+        thinking_budget_tokens=call_input.thinking_budget_tokens,
+        thinking_effort=call_input.thinking_effort,
+    )
+    response = ConflictResolutionResponse.model_validate_json(parsed.parsed_json)
+    return ConflictResolutionCallResult(
+        task_id=call_input.task_id,
+        resolved_files={f.file_path: f.content for f in response.resolved_files},
+        explanation=response.explanation,
+        model_name=parsed.model_name,
+        input_tokens=parsed.input_tokens,
+        output_tokens=parsed.output_tokens,
+        latency_ms=parsed.latency_ms,
+        cache_creation_input_tokens=parsed.cache_creation_input_tokens,
+        cache_read_input_tokens=parsed.cache_read_input_tokens,
+    )
+
+
+async def _remove_worktree(repo_root: str, task_id: str) -> None:
+    """Remove a worktree via activity. Shared by both workflow classes."""
+    await workflow.execute_activity(
+        "remove_worktree_activity",
+        RemoveWorktreeInput(
+            repo_root=repo_root,
+            task_id=task_id,
+            force=True,
+        ),
+        start_to_close_timeout=_GIT_TIMEOUT,
+        retry_policy=_LOCAL_RETRY,
+        result_type=type(None),
+    )
+
+
 @workflow.defn
 class ForgeTaskWorkflow:
     """Execute a Forge task with optional planning and multi-step execution.
@@ -232,7 +369,7 @@ class ForgeTaskWorkflow:
         return await self._run_single_step(input)
 
     # ------------------------------------------------------------------
-    # Batch dispatch infrastructure
+    # LLM dispatch methods (delegating to module-level shared functions)
     # ------------------------------------------------------------------
 
     async def _call_llm_batch(
@@ -244,68 +381,18 @@ class ForgeTaskWorkflow:
         thinking_effort: str = "high",
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
-        """Submit to batch API, wait for signal, then parse the response."""
-        await workflow.execute_activity(
-            "submit_batch_request",
-            BatchSubmitInput(
-                context=context,
-                output_type_name=output_type_name,
-                workflow_id=workflow.info().workflow_id,
-                thinking_budget_tokens=thinking_budget_tokens,
-                thinking_effort=thinking_effort,
-                max_tokens=max_tokens,
-            ),
-            start_to_close_timeout=_SUBMIT_TIMEOUT,
-            retry_policy=_LLM_RETRY,
-            result_type=BatchSubmitResult,
+        return await _call_llm_batch_dispatch(
+            self._batch_results,
+            context,
+            output_type_name,
+            thinking_budget_tokens=thinking_budget_tokens,
+            thinking_effort=thinking_effort,
+            max_tokens=max_tokens,
         )
-        # Wait for the poller (14c) to deliver the result via signal
-        await workflow.wait_condition(
-            lambda: len(self._batch_results) > 0,
-            timeout=_BATCH_WAIT_TIMEOUT,
-        )
-        result = self._batch_results.pop(0)
-        if result.error:
-            raise ApplicationError(f"Batch error: {result.error}")
-        assert result.raw_response_json is not None
-        return await workflow.execute_activity(
-            "parse_llm_response",
-            ParseResponseInput(
-                raw_response_json=result.raw_response_json,
-                output_type_name=output_type_name,
-                task_id=context.task_id,
-                log_messages=context.log_messages,
-                worktree_path=context.worktree_path,
-            ),
-            start_to_close_timeout=_PARSE_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
-            result_type=ParsedLLMResponse,
-        )
-
-    # ------------------------------------------------------------------
-    # Per-call-type dispatch methods
-    # ------------------------------------------------------------------
 
     async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
-        """Dispatch generation LLM call via sync or batch path."""
-        if self._sync_mode:
-            return await workflow.execute_activity(
-                "call_llm",
-                context,
-                start_to_close_timeout=_LLM_TIMEOUT,
-                retry_policy=_LLM_RETRY,
-                result_type=LLMCallResult,
-            )
-        parsed = await self._call_llm_batch(context, "LLMResponse")
-        return LLMCallResult(
-            task_id=context.task_id,
-            response=LLMResponse.model_validate_json(parsed.parsed_json),
-            model_name=parsed.model_name,
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
-            latency_ms=parsed.latency_ms,
-            cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-            cache_read_input_tokens=parsed.cache_read_input_tokens,
+        return await _call_generation_dispatch(
+            self._batch_results, self._sync_mode, context
         )
 
     async def _call_planner_llm(self, planner_input: PlannerInput) -> PlanCallResult:
@@ -402,40 +489,8 @@ class ForgeTaskWorkflow:
     async def _call_conflict_resolution(
         self, call_input: ConflictResolutionCallInput
     ) -> ConflictResolutionCallResult:
-        """Dispatch conflict resolution LLM call via sync or batch path."""
-        if self._sync_mode:
-            return await workflow.execute_activity(
-                "call_conflict_resolution",
-                call_input,
-                start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
-                retry_policy=_LLM_RETRY,
-                result_type=ConflictResolutionCallResult,
-            )
-        context = AssembledContext(
-            task_id=call_input.task_id,
-            system_prompt=call_input.system_prompt,
-            user_prompt=call_input.user_prompt,
-            model_name=call_input.model_name,
-            log_messages=call_input.log_messages,
-            worktree_path=call_input.worktree_path,
-        )
-        parsed = await self._call_llm_batch(
-            context,
-            "ConflictResolutionResponse",
-            thinking_budget_tokens=call_input.thinking_budget_tokens,
-            thinking_effort=call_input.thinking_effort,
-        )
-        response = ConflictResolutionResponse.model_validate_json(parsed.parsed_json)
-        return ConflictResolutionCallResult(
-            task_id=call_input.task_id,
-            resolved_files={f.file_path: f.content for f in response.resolved_files},
-            explanation=response.explanation,
-            model_name=parsed.model_name,
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
-            latency_ms=parsed.latency_ms,
-            cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-            cache_read_input_tokens=parsed.cache_read_input_tokens,
+        return await _call_conflict_resolution_dispatch(
+            self._batch_results, self._sync_mode, call_input
         )
 
     # ------------------------------------------------------------------
@@ -692,17 +747,7 @@ class ForgeTaskWorkflow:
 
             if signal == TransitionSignal.FAILURE_RETRYABLE:
                 prior_errors = validation_results
-                await workflow.execute_activity(
-                    "remove_worktree_activity",
-                    RemoveWorktreeInput(
-                        repo_root=input.repo_root,
-                        task_id=task.task_id,
-                        force=True,
-                    ),
-                    start_to_close_timeout=_GIT_TIMEOUT,
-                    retry_policy=_LOCAL_RETRY,
-                    result_type=type(None),
-                )
+                await _remove_worktree(input.repo_root, task.task_id)
                 continue
 
             # FAILURE_TERMINAL
@@ -1409,7 +1454,7 @@ class ForgeSubTaskWorkflow:
         return await self._run_single_step(input)
 
     # ------------------------------------------------------------------
-    # Batch dispatch infrastructure
+    # LLM dispatch methods (delegating to module-level shared functions)
     # ------------------------------------------------------------------
 
     async def _call_llm_batch(
@@ -1421,106 +1466,25 @@ class ForgeSubTaskWorkflow:
         thinking_effort: str = "high",
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
-        """Submit to batch API, wait for signal, then parse the response."""
-        await workflow.execute_activity(
-            "submit_batch_request",
-            BatchSubmitInput(
-                context=context,
-                output_type_name=output_type_name,
-                workflow_id=workflow.info().workflow_id,
-                thinking_budget_tokens=thinking_budget_tokens,
-                thinking_effort=thinking_effort,
-                max_tokens=max_tokens,
-            ),
-            start_to_close_timeout=_SUBMIT_TIMEOUT,
-            retry_policy=_LLM_RETRY,
-            result_type=BatchSubmitResult,
+        return await _call_llm_batch_dispatch(
+            self._batch_results,
+            context,
+            output_type_name,
+            thinking_budget_tokens=thinking_budget_tokens,
+            thinking_effort=thinking_effort,
+            max_tokens=max_tokens,
         )
-        await workflow.wait_condition(
-            lambda: len(self._batch_results) > 0,
-            timeout=_BATCH_WAIT_TIMEOUT,
-        )
-        result = self._batch_results.pop(0)
-        if result.error:
-            raise ApplicationError(f"Batch error: {result.error}")
-        assert result.raw_response_json is not None
-        return await workflow.execute_activity(
-            "parse_llm_response",
-            ParseResponseInput(
-                raw_response_json=result.raw_response_json,
-                output_type_name=output_type_name,
-                task_id=context.task_id,
-                log_messages=context.log_messages,
-                worktree_path=context.worktree_path,
-            ),
-            start_to_close_timeout=_PARSE_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
-            result_type=ParsedLLMResponse,
-        )
-
-    # ------------------------------------------------------------------
-    # Per-call-type dispatch methods
-    # ------------------------------------------------------------------
 
     async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
-        """Dispatch generation LLM call via sync or batch path."""
-        if self._sync_mode:
-            return await workflow.execute_activity(
-                "call_llm",
-                context,
-                start_to_close_timeout=_LLM_TIMEOUT,
-                retry_policy=_LLM_RETRY,
-                result_type=LLMCallResult,
-            )
-        parsed = await self._call_llm_batch(context, "LLMResponse")
-        return LLMCallResult(
-            task_id=context.task_id,
-            response=LLMResponse.model_validate_json(parsed.parsed_json),
-            model_name=parsed.model_name,
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
-            latency_ms=parsed.latency_ms,
-            cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-            cache_read_input_tokens=parsed.cache_read_input_tokens,
+        return await _call_generation_dispatch(
+            self._batch_results, self._sync_mode, context
         )
 
     async def _call_conflict_resolution(
         self, call_input: ConflictResolutionCallInput
     ) -> ConflictResolutionCallResult:
-        """Dispatch conflict resolution LLM call via sync or batch path."""
-        if self._sync_mode:
-            return await workflow.execute_activity(
-                "call_conflict_resolution",
-                call_input,
-                start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
-                retry_policy=_LLM_RETRY,
-                result_type=ConflictResolutionCallResult,
-            )
-        context = AssembledContext(
-            task_id=call_input.task_id,
-            system_prompt=call_input.system_prompt,
-            user_prompt=call_input.user_prompt,
-            model_name=call_input.model_name,
-            log_messages=call_input.log_messages,
-            worktree_path=call_input.worktree_path,
-        )
-        parsed = await self._call_llm_batch(
-            context,
-            "ConflictResolutionResponse",
-            thinking_budget_tokens=call_input.thinking_budget_tokens,
-            thinking_effort=call_input.thinking_effort,
-        )
-        response = ConflictResolutionResponse.model_validate_json(parsed.parsed_json)
-        return ConflictResolutionCallResult(
-            task_id=call_input.task_id,
-            resolved_files={f.file_path: f.content for f in response.resolved_files},
-            explanation=response.explanation,
-            model_name=parsed.model_name,
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
-            latency_ms=parsed.latency_ms,
-            cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-            cache_read_input_tokens=parsed.cache_read_input_tokens,
+        return await _call_conflict_resolution_dispatch(
+            self._batch_results, self._sync_mode, call_input
         )
 
     async def _run_single_step(self, input: SubTaskInput) -> SubTaskResult:
@@ -1625,17 +1589,7 @@ class ForgeSubTaskWorkflow:
             digest = llm_result.response.explanation
 
             # --- Remove worktree (always — sub-tasks don't commit) ---
-            await workflow.execute_activity(
-                "remove_worktree_activity",
-                RemoveWorktreeInput(
-                    repo_root=input.repo_root,
-                    task_id=compound_id,
-                    force=True,
-                ),
-                start_to_close_timeout=_GIT_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
-                result_type=type(None),
-            )
+            await _remove_worktree(input.repo_root, compound_id)
 
             if signal == TransitionSignal.SUCCESS:
                 return SubTaskResult(
@@ -1686,17 +1640,7 @@ class ForgeSubTaskWorkflow:
         # --- Validate unique sub-task IDs ---
         nested_ids = [st.sub_task_id for st in nested_sub_tasks]
         if len(nested_ids) != len(set(nested_ids)):
-            await workflow.execute_activity(
-                "remove_worktree_activity",
-                RemoveWorktreeInput(
-                    repo_root=input.repo_root,
-                    task_id=compound_id,
-                    force=True,
-                ),
-                start_to_close_timeout=_GIT_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
-                result_type=type(None),
-            )
+            await _remove_worktree(input.repo_root, compound_id)
             return SubTaskResult(
                 sub_task_id=input.sub_task.sub_task_id,
                 status=TransitionSignal.FAILURE_TERMINAL,
@@ -1741,17 +1685,7 @@ class ForgeSubTaskWorkflow:
         # --- Check for failures ---
         failures = [r for r in sub_task_results if r.status != TransitionSignal.SUCCESS]
         if failures:
-            await workflow.execute_activity(
-                "remove_worktree_activity",
-                RemoveWorktreeInput(
-                    repo_root=input.repo_root,
-                    task_id=compound_id,
-                    force=True,
-                ),
-                start_to_close_timeout=_GIT_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
-                result_type=type(None),
-            )
+            await _remove_worktree(input.repo_root, compound_id)
             error_parts = [f"{r.sub_task_id}: {r.error}" for r in failures]
             return SubTaskResult(
                 sub_task_id=input.sub_task.sub_task_id,
@@ -1803,17 +1737,7 @@ class ForgeSubTaskWorkflow:
             resolved_paths = set(conflict_resolution_result.resolved_files.keys())
             missing = conflict_paths - resolved_paths
             if missing:
-                await workflow.execute_activity(
-                    "remove_worktree_activity",
-                    RemoveWorktreeInput(
-                        repo_root=input.repo_root,
-                        task_id=compound_id,
-                        force=True,
-                    ),
-                    start_to_close_timeout=_GIT_TIMEOUT,
-                    retry_policy=_LOCAL_RETRY,
-                    result_type=type(None),
-                )
+                await _remove_worktree(input.repo_root, compound_id)
                 return SubTaskResult(
                     sub_task_id=input.sub_task.sub_task_id,
                     status=TransitionSignal.FAILURE_TERMINAL,
@@ -1871,17 +1795,7 @@ class ForgeSubTaskWorkflow:
             signal = TransitionSignal(signal_value)
 
             if signal != TransitionSignal.SUCCESS:
-                await workflow.execute_activity(
-                    "remove_worktree_activity",
-                    RemoveWorktreeInput(
-                        repo_root=input.repo_root,
-                        task_id=compound_id,
-                        force=True,
-                    ),
-                    start_to_close_timeout=_GIT_TIMEOUT,
-                    retry_policy=_LOCAL_RETRY,
-                    result_type=type(None),
-                )
+                await _remove_worktree(input.repo_root, compound_id)
                 error = "; ".join(r.summary for r in validation_results if not r.passed)
                 return SubTaskResult(
                     sub_task_id=input.sub_task.sub_task_id,
@@ -1893,17 +1807,7 @@ class ForgeSubTaskWorkflow:
                 )
 
         # --- Remove worktree (sub-tasks never commit, D16) ---
-        await workflow.execute_activity(
-            "remove_worktree_activity",
-            RemoveWorktreeInput(
-                repo_root=input.repo_root,
-                task_id=compound_id,
-                force=True,
-            ),
-            start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
-            result_type=type(None),
-        )
+        await _remove_worktree(input.repo_root, compound_id)
 
         return SubTaskResult(
             sub_task_id=input.sub_task.sub_task_id,
