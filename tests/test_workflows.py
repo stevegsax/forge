@@ -8,6 +8,7 @@ import pytest
 from temporalio import activity
 from temporalio.worker import Worker
 
+from forge.activities.conflict_resolution import classify_file_conflicts
 from forge.models import (
     AssembleContextInput,
     AssembledContext,
@@ -22,8 +23,11 @@ from forge.models import (
     ConflictResolutionCallInput,
     ConflictResolutionCallResult,
     ConflictResolutionInput,
+    ConflictResolutionResponse,
     CreateWorktreeInput,
     CreateWorktreeOutput,
+    DetectFileConflictsInput,
+    DetectFileConflictsOutput,
     FileOutput,
     ForgeTaskInput,
     LLMCallResult,
@@ -53,9 +57,17 @@ from forge.models import (
     WriteOutputInput,
     WriteResult,
 )
-from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
+from forge.workflows import (
+    FORGE_TASK_QUEUE,
+    ForgeSubTaskWorkflow,
+    ForgeTaskWorkflow,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from pydantic import BaseModel
+    from temporalio.client import Client
     from temporalio.testing import WorkflowEnvironment
 
 
@@ -83,6 +95,71 @@ _LLM_RESPONSE = LLMResponse(
 
 
 # ---------------------------------------------------------------------------
+# Shared batch mock infrastructure
+# ---------------------------------------------------------------------------
+
+_test_client: Client | None = None
+_parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
+
+
+@activity.defn(name="submit_batch_request")
+async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResult:
+    """Self-signaling submit: immediately signal the workflow with a batch result."""
+    assert _test_client is not None
+    handle = _test_client.get_workflow_handle(input.workflow_id)
+    await handle.signal(
+        "batch_result_received",
+        BatchResult(
+            request_id="req-mock-123",
+            batch_id="msgbatch_mock123",
+            raw_response_json='{"mock": true}',
+            result_type=input.output_type_name,
+        ),
+    )
+    return BatchSubmitResult(
+        request_id="req-mock-123",
+        batch_id="msgbatch_mock123",
+    )
+
+
+@activity.defn(name="parse_llm_response")
+async def mock_parse_response(input: ParseResponseInput) -> ParsedLLMResponse:
+    """Dispatch to section-specific parse handler."""
+    assert _parse_handler is not None, "No parse handler set — call _reset_*() first"
+    return _parse_handler(input)
+
+
+def _make_parsed(
+    model: BaseModel,
+    *,
+    model_name: str = "mock-model",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    latency_ms: float = 200.0,
+) -> ParsedLLMResponse:
+    """Build a ParsedLLMResponse from any Pydantic model."""
+    return ParsedLLMResponse(
+        parsed_json=model.model_dump_json(),
+        model_name=model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+    )
+
+
+@activity.defn(name="detect_file_conflicts_activity")
+async def mock_detect_file_conflicts(
+    input: DetectFileConflictsInput,
+) -> DetectFileConflictsOutput:
+    """Mock conflict detection using the pure classify_file_conflicts function."""
+    non_conflicting, conflicts = classify_file_conflicts(input.sub_task_results)
+    return DetectFileConflictsOutput(
+        non_conflicting_files=non_conflicting,
+        conflicts=conflicts,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Mock activities — registered by name to match workflow string references
 # ---------------------------------------------------------------------------
 
@@ -93,13 +170,19 @@ _attempt_counter: int = 0
 _transition_sequence: list[str] = []
 
 
+def _single_step_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    _call_log.append("call_llm")
+    return _make_parsed(_LLM_RESPONSE)
+
+
 def _reset_mock_state(
     transitions: list[str] | None = None,
 ) -> None:
-    global _attempt_counter
+    global _attempt_counter, _parse_handler
     _call_log.clear()
     _attempt_counter = 0
     _transition_sequence.clear()
+    _parse_handler = _single_step_parse_handler
     if transitions:
         _transition_sequence.extend(transitions)
 
@@ -128,7 +211,7 @@ async def mock_commit_changes(input: CommitChangesInput) -> CommitChangesOutput:
 async def mock_assemble_context(input: AssembleContextInput) -> AssembledContext:
     _call_log.append("assemble_context")
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="system prompt",
         user_prompt="user prompt",
     )
@@ -185,6 +268,8 @@ _MOCK_ACTIVITIES = [
     mock_write_output,
     mock_validate_output,
     mock_evaluate_transition,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -193,6 +278,8 @@ async def _run_workflow(
     input: ForgeTaskInput = _FORGE_INPUT,
 ) -> TaskResult:
     """Helper to run the workflow with mock activities."""
+    global _test_client
+    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -366,13 +453,29 @@ _PLAN_TRANSITION_SEQUENCE: list[str] = []
 _PLAN_LLM_CALL_COUNT: int = 0
 
 
+def _planned_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    global _PLAN_LLM_CALL_COUNT
+    if input.output_type_name == "Plan":
+        _PLAN_CALL_LOG.append("call_planner")
+        return _make_parsed(_PLAN, model_name="mock-planner", input_tokens=300, output_tokens=150)
+    # LLMResponse — counter-based (odd=models.py, even=api.py)
+    _PLAN_LLM_CALL_COUNT += 1
+    _PLAN_CALL_LOG.append(f"call_llm:{_PLAN_LLM_CALL_COUNT}")
+    if _PLAN_LLM_CALL_COUNT % 2 == 1:
+        files = [FileOutput(file_path="models.py", content="class Model: pass\n")]
+    else:
+        files = [FileOutput(file_path="api.py", content="def endpoint(): pass\n")]
+    return _make_parsed(LLMResponse(files=files, explanation=f"LLM call #{_PLAN_LLM_CALL_COUNT}"))
+
+
 def _reset_plan_mock_state(
     transitions: list[str] | None = None,
 ) -> None:
-    global _PLAN_LLM_CALL_COUNT
+    global _PLAN_LLM_CALL_COUNT, _parse_handler
     _PLAN_CALL_LOG.clear()
     _PLAN_TRANSITION_SEQUENCE.clear()
     _PLAN_LLM_CALL_COUNT = 0
+    _parse_handler = _planned_parse_handler
     if transitions:
         _PLAN_TRANSITION_SEQUENCE.extend(transitions)
 
@@ -381,7 +484,7 @@ def _reset_plan_mock_state(
 async def mock_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
     _PLAN_CALL_LOG.append("assemble_planner_context")
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="planner system prompt",
         user_prompt="planner user prompt",
     )
@@ -404,7 +507,7 @@ async def mock_call_planner(input: PlannerInput) -> PlanCallResult:
 async def mock_assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
     _PLAN_CALL_LOG.append(f"assemble_step_context:{input.step.step_id}")
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=f"step system prompt for {input.step.step_id}",
         user_prompt=f"step user prompt for {input.step.step_id}",
     )
@@ -491,6 +594,8 @@ _PLAN_MOCK_ACTIVITIES = [
     mock_plan_evaluate_transition,
     mock_plan_commit_changes,
     mock_reset_worktree,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 _PLANNED_TASK = TaskDefinition(
@@ -512,6 +617,8 @@ async def _run_planned_workflow(
     input: ForgeTaskInput = _PLANNED_INPUT,
 ) -> TaskResult:
     """Helper to run the planned workflow with mock activities."""
+    global _test_client
+    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -723,11 +830,31 @@ class TestPlannedWorkflowStepFailure:
 
 _SUBTASK_CALL_LOG: list[str] = []
 _SUBTASK_TRANSITION_SEQUENCE: list[str] = []
+_SUBTASK_LLM_PARSE_COUNT: int = 0
+
+
+def _subtask_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    global _SUBTASK_LLM_PARSE_COUNT
+    _SUBTASK_CALL_LOG.append("call_llm")
+    _SUBTASK_LLM_PARSE_COUNT += 1
+    if _SUBTASK_LLM_PARSE_COUNT % 2 == 1:
+        files = [FileOutput(file_path="schema.py", content="# schema\n")]
+    else:
+        files = [FileOutput(file_path="routes.py", content="# routes\n")]
+    return _make_parsed(
+        LLMResponse(files=files, explanation="Sub-task output."),
+        input_tokens=50,
+        output_tokens=25,
+        latency_ms=100.0,
+    )
 
 
 def _reset_subtask_mock_state(transitions: list[str] | None = None) -> None:
+    global _SUBTASK_LLM_PARSE_COUNT, _parse_handler
     _SUBTASK_CALL_LOG.clear()
     _SUBTASK_TRANSITION_SEQUENCE.clear()
+    _SUBTASK_LLM_PARSE_COUNT = 0
+    _parse_handler = _subtask_parse_handler
     if transitions:
         _SUBTASK_TRANSITION_SEQUENCE.extend(transitions)
 
@@ -809,6 +936,8 @@ _SUBTASK_MOCK_ACTIVITIES = [
     mock_subtask_write_output,
     mock_subtask_validate_output,
     mock_subtask_evaluate_transition,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -817,6 +946,8 @@ async def _run_subtask_workflow(
     input: SubTaskInput,
 ) -> SubTaskResult:
     """Helper to run the sub-task workflow with mock activities."""
+    global _test_client
+    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -913,17 +1044,97 @@ _FANOUT_SUBTASK_LLM_RESPONSES: list[LLMResponse] = []
 _FANOUT_CONFLICT_RESOLUTION_RESPONSES: list[ConflictResolutionCallResult] = []
 
 
+_FANOUT_PARSE_LLM_COUNT: int = 0
+
+
+def _fanout_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    global _FANOUT_PARSE_LLM_COUNT
+    if input.output_type_name == "Plan":
+        _FANOUT_CALL_LOG.append("call_planner")
+        plan = Plan(
+            task_id=input.task_id,
+            steps=[
+                PlanStep(
+                    step_id="fan-step",
+                    description="Fan-out step.",
+                    target_files=[],
+                    sub_tasks=[
+                        SubTask(
+                            sub_task_id="st1",
+                            description="Create schema.",
+                            target_files=["schema.py"],
+                        ),
+                        SubTask(
+                            sub_task_id="st2",
+                            description="Create routes.",
+                            target_files=["routes.py"],
+                        ),
+                    ],
+                ),
+            ],
+            explanation="Single fan-out step.",
+        )
+        return _make_parsed(plan, model_name="mock-planner", input_tokens=300, output_tokens=150)
+    if input.output_type_name == "ConflictResolutionResponse":
+        _FANOUT_CALL_LOG.append("call_conflict_resolution")
+        if _FANOUT_CONFLICT_RESOLUTION_RESPONSES:
+            cr = _FANOUT_CONFLICT_RESOLUTION_RESPONSES.pop(0)
+            response = ConflictResolutionResponse(
+                resolved_files=[
+                    FileOutput(file_path=k, content=v) for k, v in cr.resolved_files.items()
+                ],
+                explanation=cr.explanation,
+            )
+            return _make_parsed(
+                response,
+                model_name=cr.model_name,
+                input_tokens=cr.input_tokens,
+                output_tokens=cr.output_tokens,
+                latency_ms=cr.latency_ms,
+            )
+        return _make_parsed(
+            ConflictResolutionResponse(
+                resolved_files=[],
+                explanation="No conflicts resolved (default mock).",
+            ),
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+    # LLMResponse
+    _FANOUT_CALL_LOG.append("call_llm")
+    if _FANOUT_SUBTASK_LLM_RESPONSES:
+        response = _FANOUT_SUBTASK_LLM_RESPONSES.pop(0)
+    else:
+        _FANOUT_PARSE_LLM_COUNT += 1
+        if _FANOUT_PARSE_LLM_COUNT % 2 == 1:
+            response = LLMResponse(
+                files=[FileOutput(file_path="schema.py", content="# schema\n")],
+                explanation="Created schema.",
+            )
+        else:
+            response = LLMResponse(
+                files=[FileOutput(file_path="routes.py", content="# routes\n")],
+                explanation="Created routes.",
+            )
+    return _make_parsed(response, input_tokens=50, output_tokens=25, latency_ms=100.0)
+
+
 def _reset_fanout_mock_state(
     step_transitions: list[str] | None = None,
     subtask_transitions: list[str] | None = None,
     subtask_responses: list[LLMResponse] | None = None,
     conflict_responses: list[ConflictResolutionCallResult] | None = None,
 ) -> None:
+    global _FANOUT_PARSE_LLM_COUNT, _parse_handler
     _FANOUT_CALL_LOG.clear()
     _FANOUT_STEP_TRANSITIONS.clear()
     _FANOUT_SUBTASK_TRANSITIONS.clear()
     _FANOUT_SUBTASK_LLM_RESPONSES.clear()
     _FANOUT_CONFLICT_RESOLUTION_RESPONSES.clear()
+    _FANOUT_PARSE_LLM_COUNT = 0
+    _parse_handler = _fanout_parse_handler
     if step_transitions:
         _FANOUT_STEP_TRANSITIONS.extend(step_transitions)
     if subtask_transitions:
@@ -952,7 +1163,7 @@ async def mock_fanout_remove_worktree(input: RemoveWorktreeInput) -> None:
 async def mock_fanout_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
     _FANOUT_CALL_LOG.append("assemble_planner_context")
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="planner system prompt",
         user_prompt="planner user prompt",
     )
@@ -1126,6 +1337,9 @@ _FANOUT_MOCK_ACTIVITIES = [
     mock_fanout_reset_worktree,
     mock_fanout_assemble_cr_context,
     mock_fanout_call_conflict_resolution,
+    mock_detect_file_conflicts,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -1148,6 +1362,8 @@ async def _run_fanout_workflow(
     input: ForgeTaskInput = _FANOUT_INPUT,
 ) -> TaskResult:
     """Helper to run the fan-out workflow with mock activities."""
+    global _test_client
+    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -1558,9 +1774,69 @@ async def mock_mixed_assemble_step_context(
     input: AssembleStepContextInput,
 ) -> AssembledContext:
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=f"step prompt for {input.step.step_id}",
         user_prompt=f"execute {input.step.step_id}",
+    )
+
+
+_MIXED_PARSE_COUNT: int = 0
+
+
+def _mixed_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    global _MIXED_PARSE_COUNT
+    if input.output_type_name == "Plan":
+        plan = Plan(
+            task_id=input.task_id,
+            steps=[
+                PlanStep(
+                    step_id="seq-1",
+                    description="Create models.",
+                    target_files=["models.py"],
+                ),
+                PlanStep(
+                    step_id="fan-step",
+                    description="Fan-out step.",
+                    target_files=[],
+                    sub_tasks=[
+                        SubTask(
+                            sub_task_id="st1",
+                            description="Create schema.",
+                            target_files=["schema.py"],
+                        ),
+                        SubTask(
+                            sub_task_id="st2",
+                            description="Create routes.",
+                            target_files=["routes.py"],
+                        ),
+                    ],
+                ),
+                PlanStep(
+                    step_id="seq-2",
+                    description="Create tests.",
+                    target_files=["tests.py"],
+                ),
+            ],
+            explanation="Mixed plan.",
+        )
+        return _make_parsed(plan, model_name="mock-planner", input_tokens=300, output_tokens=150)
+    # LLMResponse — counter-based order: models, schema, routes, tests
+    _MIXED_PARSE_COUNT += 1
+    files_map = {
+        1: [FileOutput(file_path="models.py", content="# models\n")],
+        2: [FileOutput(file_path="schema.py", content="# schema\n")],
+        3: [FileOutput(file_path="routes.py", content="# routes\n")],
+        4: [FileOutput(file_path="tests.py", content="# tests\n")],
+    }
+    files = files_map.get(
+        _MIXED_PARSE_COUNT,
+        [FileOutput(file_path=f"unknown{_MIXED_PARSE_COUNT}.py", content="# unknown\n")],
+    )
+    return _make_parsed(
+        LLMResponse(files=files, explanation=f"Call #{_MIXED_PARSE_COUNT}"),
+        input_tokens=50,
+        output_tokens=25,
+        latency_ms=100.0,
     )
 
 
@@ -1578,6 +1854,9 @@ _MIXED_MOCK_ACTIVITIES = [
     mock_fanout_evaluate_transition,
     mock_fanout_commit_changes,
     mock_fanout_reset_worktree,
+    mock_detect_file_conflicts,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -1586,9 +1865,12 @@ class TestMixedPlan:
 
     @pytest.mark.asyncio
     async def test_mixed_plan_succeeds(self, env: WorkflowEnvironment) -> None:
-        global _MIXED_LLM_CALL_COUNT
+        global _MIXED_LLM_CALL_COUNT, _MIXED_PARSE_COUNT, _test_client, _parse_handler
         _MIXED_LLM_CALL_COUNT = 0
+        _MIXED_PARSE_COUNT = 0
         _reset_fanout_mock_state()
+        _test_client = env.client
+        _parse_handler = _mixed_parse_handler
 
         async with Worker(
             env.client,
@@ -1641,14 +1923,26 @@ _P8_ASSEMBLE_CONTEXT_INPUTS: list[AssembleContextInput] = []
 _P8_VALIDATE_RESPONSES: list[list[ValidationResult]] = []
 
 
+def _p8_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    _P8_CALL_LOG.append("call_llm")
+    return _make_parsed(
+        LLMResponse(
+            files=[FileOutput(file_path="hello.py", content="print('hello')\n")],
+            explanation="output",
+        ),
+    )
+
+
 def _reset_p8_state(
     transitions: list[str] | None = None,
     validate_responses: list[list[ValidationResult]] | None = None,
 ) -> None:
+    global _parse_handler
     _P8_CALL_LOG.clear()
     _P8_TRANSITION_SEQUENCE.clear()
     _P8_ASSEMBLE_CONTEXT_INPUTS.clear()
     _P8_VALIDATE_RESPONSES.clear()
+    _parse_handler = _p8_parse_handler
     if transitions:
         _P8_TRANSITION_SEQUENCE.extend(transitions)
     if validate_responses:
@@ -1680,7 +1974,7 @@ async def mock_p8_assemble_context(input: AssembleContextInput) -> AssembledCont
     _P8_CALL_LOG.append("assemble_context")
     _P8_ASSEMBLE_CONTEXT_INPUTS.append(input)
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="system prompt",
         user_prompt="user prompt",
     )
@@ -1738,6 +2032,8 @@ _P8_MOCK_ACTIVITIES = [
     mock_p8_write_output,
     mock_p8_validate_output,
     mock_p8_evaluate_transition,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -1746,7 +2042,9 @@ class TestSingleStepErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_first_attempt_has_no_prior_errors(self, env: WorkflowEnvironment) -> None:
+        global _test_client
         _reset_p8_state(transitions=[TransitionSignal.SUCCESS.value])
+        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -1771,6 +2069,7 @@ class TestSingleStepErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
+        global _test_client
         lint_errors = [
             ValidationResult(
                 check_name="ruff_lint",
@@ -1789,6 +2088,7 @@ class TestSingleStepErrorAwareRetry:
                 [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")],
             ],
         )
+        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -1832,14 +2132,34 @@ _P8_STEP_CONTEXT_INPUTS: list[AssembleStepContextInput] = []
 _P8_STEP_VALIDATE_RESPONSES: list[list[ValidationResult]] = []
 
 
+def _p8_step_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    if input.output_type_name == "Plan":
+        _P8_STEP_CALL_LOG.append("call_planner")
+        plan = Plan(
+            task_id=input.task_id,
+            steps=[PlanStep(step_id="step-1", description="Create.", target_files=["a.py"])],
+            explanation="One step.",
+        )
+        return _make_parsed(plan, model_name="mock-planner", input_tokens=300, output_tokens=150)
+    _P8_STEP_CALL_LOG.append("call_llm")
+    return _make_parsed(
+        LLMResponse(
+            files=[FileOutput(file_path="a.py", content="# code\n")],
+            explanation="step output",
+        ),
+    )
+
+
 def _reset_p8_step_state(
     transitions: list[str] | None = None,
     validate_responses: list[list[ValidationResult]] | None = None,
 ) -> None:
+    global _parse_handler
     _P8_STEP_CALL_LOG.clear()
     _P8_STEP_TRANSITION_SEQUENCE.clear()
     _P8_STEP_CONTEXT_INPUTS.clear()
     _P8_STEP_VALIDATE_RESPONSES.clear()
+    _parse_handler = _p8_step_parse_handler
     if transitions:
         _P8_STEP_TRANSITION_SEQUENCE.extend(transitions)
     if validate_responses:
@@ -1859,7 +2179,7 @@ async def mock_p8s_create_worktree(input: CreateWorktreeInput) -> CreateWorktree
 async def mock_p8s_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
     _P8_STEP_CALL_LOG.append("assemble_planner_context")
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="planner prompt",
         user_prompt="planner user",
     )
@@ -1888,7 +2208,7 @@ async def mock_p8s_assemble_step_context(input: AssembleStepContextInput) -> Ass
     _P8_STEP_CALL_LOG.append(f"assemble_step_context:{input.step.step_id}")
     _P8_STEP_CONTEXT_INPUTS.append(input)
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=f"step prompt for {input.step.step_id}",
         user_prompt=f"step user for {input.step.step_id}",
     )
@@ -1959,6 +2279,8 @@ _P8_STEP_MOCK_ACTIVITIES = [
     mock_p8s_evaluate_transition,
     mock_p8s_commit,
     mock_p8s_reset_worktree,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -1967,6 +2289,7 @@ class TestPlannedStepErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_step_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
+        global _test_client
         lint_errors = [
             ValidationResult(
                 check_name="ruff_format",
@@ -1993,6 +2316,7 @@ class TestPlannedStepErrorAwareRetry:
             max_step_attempts=2,
             max_exploration_rounds=0,
         )
+        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -2030,14 +2354,29 @@ _P8_ST_CONTEXT_INPUTS: list[AssembleSubTaskContextInput] = []
 _P8_ST_VALIDATE_RESPONSES: list[list[ValidationResult]] = []
 
 
+def _p8_st_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    _P8_ST_CALL_LOG.append("call_llm")
+    return _make_parsed(
+        LLMResponse(
+            files=[FileOutput(file_path="schema.py", content="# schema\n")],
+            explanation="sub-task output",
+        ),
+        input_tokens=50,
+        output_tokens=25,
+        latency_ms=100.0,
+    )
+
+
 def _reset_p8_st_state(
     transitions: list[str] | None = None,
     validate_responses: list[list[ValidationResult]] | None = None,
 ) -> None:
+    global _parse_handler
     _P8_ST_CALL_LOG.clear()
     _P8_ST_TRANSITION_SEQUENCE.clear()
     _P8_ST_CONTEXT_INPUTS.clear()
     _P8_ST_VALIDATE_RESPONSES.clear()
+    _parse_handler = _p8_st_parse_handler
     if transitions:
         _P8_ST_TRANSITION_SEQUENCE.extend(transitions)
     if validate_responses:
@@ -2122,6 +2461,8 @@ _P8_ST_MOCK_ACTIVITIES = [
     mock_p8st_write_output,
     mock_p8st_validate_output,
     mock_p8st_evaluate_transition,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -2130,6 +2471,7 @@ class TestSubTaskErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_subtask_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
+        global _test_client
         test_errors = [
             ValidationResult(
                 check_name="tests",
@@ -2160,6 +2502,7 @@ class TestSubTaskErrorAwareRetry:
             parent_branch="forge/parent-task",
             max_attempts=2,
         )
+        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -2202,15 +2545,74 @@ _RECURSIVE_LLM_RESPONSES: list[LLMResponse] = []
 _RECURSIVE_CONFLICT_RESPONSES: list[ConflictResolutionCallResult] = []
 
 
+_RECURSIVE_PARSE_LLM_COUNT: int = 0
+
+
+def _recursive_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    global _RECURSIVE_PARSE_LLM_COUNT
+    if input.output_type_name == "ConflictResolutionResponse":
+        _RECURSIVE_CALL_LOG.append("call_conflict_resolution")
+        if _RECURSIVE_CONFLICT_RESPONSES:
+            cr = _RECURSIVE_CONFLICT_RESPONSES.pop(0)
+            response = ConflictResolutionResponse(
+                resolved_files=[
+                    FileOutput(file_path=k, content=v) for k, v in cr.resolved_files.items()
+                ],
+                explanation=cr.explanation,
+            )
+            return _make_parsed(
+                response,
+                model_name=cr.model_name,
+                input_tokens=cr.input_tokens,
+                output_tokens=cr.output_tokens,
+                latency_ms=cr.latency_ms,
+            )
+        return _make_parsed(
+            ConflictResolutionResponse(
+                resolved_files=[],
+                explanation="No conflicts resolved (default mock).",
+            ),
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+    # LLMResponse
+    _RECURSIVE_CALL_LOG.append("call_llm")
+    if _RECURSIVE_LLM_RESPONSES:
+        response = _RECURSIVE_LLM_RESPONSES.pop(0)
+    else:
+        _RECURSIVE_PARSE_LLM_COUNT += 1
+        if _RECURSIVE_PARSE_LLM_COUNT % 3 == 1:
+            response = LLMResponse(
+                files=[FileOutput(file_path="gc1.py", content="# gc1\n")],
+                explanation="Grandchild 1 output.",
+            )
+        elif _RECURSIVE_PARSE_LLM_COUNT % 3 == 2:
+            response = LLMResponse(
+                files=[FileOutput(file_path="gc2.py", content="# gc2\n")],
+                explanation="Grandchild 2 output.",
+            )
+        else:
+            response = LLMResponse(
+                files=[FileOutput(file_path="leaf.py", content="# leaf\n")],
+                explanation="Leaf output.",
+            )
+    return _make_parsed(response, input_tokens=50, output_tokens=25, latency_ms=100.0)
+
+
 def _reset_recursive_mock_state(
     transitions: list[str] | None = None,
     llm_responses: list[LLMResponse] | None = None,
     conflict_responses: list[ConflictResolutionCallResult] | None = None,
 ) -> None:
+    global _RECURSIVE_PARSE_LLM_COUNT, _parse_handler
     _RECURSIVE_CALL_LOG.clear()
     _RECURSIVE_TRANSITION_SEQUENCE.clear()
     _RECURSIVE_LLM_RESPONSES.clear()
     _RECURSIVE_CONFLICT_RESPONSES.clear()
+    _RECURSIVE_PARSE_LLM_COUNT = 0
+    _parse_handler = _recursive_parse_handler
     if transitions:
         _RECURSIVE_TRANSITION_SEQUENCE.extend(transitions)
     if llm_responses:
@@ -2351,6 +2753,9 @@ _RECURSIVE_MOCK_ACTIVITIES = [
     mock_recursive_evaluate_transition,
     mock_recursive_assemble_cr_context,
     mock_recursive_call_conflict_resolution,
+    mock_detect_file_conflicts,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 
@@ -2359,6 +2764,8 @@ async def _run_recursive_subtask_workflow(
     input: SubTaskInput,
 ) -> SubTaskResult:
     """Helper to run the sub-task workflow with recursive mock activities."""
+    global _test_client
+    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -2739,16 +3146,54 @@ _SC_PLAN = Plan(
 )
 
 
+def _sc_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    global _SC_LLM_CALL_COUNT
+    if input.output_type_name == "Plan":
+        _SC_CALL_LOG.append("call_planner")
+        return _make_parsed(
+            _SC_PLAN, model_name="mock-planner", input_tokens=300, output_tokens=150
+        )
+    if input.output_type_name == "SanityCheckResponse":
+        _SC_CALL_LOG.append("call_sanity_check")
+        if _SC_SANITY_RESPONSES:
+            sc = _SC_SANITY_RESPONSES.pop(0)
+            return _make_parsed(
+                sc.response,
+                model_name=sc.model_name,
+                input_tokens=sc.input_tokens,
+                output_tokens=sc.output_tokens,
+                latency_ms=sc.latency_ms,
+            )
+        return _make_parsed(
+            SanityCheckResponse(
+                verdict=SanityCheckVerdict.CONTINUE,
+                explanation="Plan looks good.",
+            ),
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+    # LLMResponse
+    _SC_LLM_CALL_COUNT += 1
+    _SC_CALL_LOG.append(f"call_llm:{_SC_LLM_CALL_COUNT}")
+    files = [FileOutput(file_path=f"file{_SC_LLM_CALL_COUNT}.py", content="# code\n")]
+    return _make_parsed(
+        LLMResponse(files=files, explanation=f"LLM call #{_SC_LLM_CALL_COUNT}"),
+    )
+
+
 def _reset_sc_mock_state(
     transitions: list[str] | None = None,
     sanity_responses: list[SanityCheckCallResult] | None = None,
     plan: Plan | None = None,
 ) -> None:
-    global _SC_LLM_CALL_COUNT, _SC_PLAN
+    global _SC_LLM_CALL_COUNT, _SC_PLAN, _parse_handler
     _SC_CALL_LOG.clear()
     _SC_TRANSITION_SEQUENCE.clear()
     _SC_LLM_CALL_COUNT = 0
     _SC_SANITY_RESPONSES.clear()
+    _parse_handler = _sc_parse_handler
     if transitions:
         _SC_TRANSITION_SEQUENCE.extend(transitions)
     if sanity_responses:
@@ -2770,7 +3215,7 @@ async def mock_sc_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeO
 async def mock_sc_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
     _SC_CALL_LOG.append("assemble_planner_context")
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="planner system prompt",
         user_prompt="planner user prompt",
     )
@@ -2793,7 +3238,7 @@ async def mock_sc_call_planner(input: PlannerInput) -> PlanCallResult:
 async def mock_sc_assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
     _SC_CALL_LOG.append(f"assemble_step_context:{input.step.step_id}")
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=f"step system prompt for {input.step.step_id}",
         user_prompt=f"step user prompt for {input.step.step_id}",
     )
@@ -2858,7 +3303,7 @@ async def mock_assemble_sanity_check_context(
 ) -> SanityCheckInput:
     _SC_CALL_LOG.append("assemble_sanity_check_context")
     return SanityCheckInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="sanity check system prompt",
         user_prompt="sanity check user prompt",
     )
@@ -2895,6 +3340,8 @@ _SC_MOCK_ACTIVITIES = [
     mock_sc_reset_worktree,
     mock_assemble_sanity_check_context,
     mock_call_sanity_check,
+    mock_self_signaling_submit,
+    mock_parse_response,
 ]
 
 _SC_TASK = TaskDefinition(
@@ -2908,6 +3355,8 @@ async def _run_sc_workflow(
     input: ForgeTaskInput | None = None,
 ) -> TaskResult:
     """Helper to run the planned workflow with sanity check mock activities."""
+    global _test_client
+    _test_client = env.client
     if input is None:
         input = ForgeTaskInput(
             task=_SC_TASK,
@@ -3265,7 +3714,7 @@ async def mock_batch_commit_changes(input: CommitChangesInput) -> CommitChangesO
 async def mock_batch_assemble_context(input: AssembleContextInput) -> AssembledContext:
     _BATCH_CALL_LOG.append("assemble_context")
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="system prompt",
         user_prompt="user prompt",
     )
@@ -3474,7 +3923,7 @@ async def mock_bp_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeO
 async def mock_bp_assemble_planner(input: AssembleContextInput) -> PlannerInput:
     _BATCH_PLAN_CALL_LOG.append("assemble_planner_context")
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="planner system",
         user_prompt="planner user",
     )
@@ -3499,7 +3948,7 @@ async def mock_bp_parse(input: ParseResponseInput) -> ParsedLLMResponse:
 async def mock_bp_assemble_step(input: AssembleStepContextInput) -> AssembledContext:
     _BATCH_PLAN_CALL_LOG.append(f"assemble_step:{input.step.step_id}")
     return AssembledContext(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt=f"step system for {input.step.step_id}",
         user_prompt=f"step user for {input.step.step_id}",
     )

@@ -20,6 +20,7 @@ from forge.activities import (
     assemble_sub_task_context,
     commit_changes_activity,
     create_worktree_activity,
+    detect_file_conflicts_activity,
     evaluate_transition,
     remove_worktree_activity,
     reset_worktree_activity,
@@ -30,10 +31,15 @@ from forge.activities import (
 from forge.models import (
     AssembleContextInput,
     AssembledContext,
+    BatchResult,
+    BatchSubmitInput,
+    BatchSubmitResult,
     FileOutput,
     ForgeTaskInput,
     LLMCallResult,
     LLMResponse,
+    ParsedLLMResponse,
+    ParseResponseInput,
     Plan,
     PlanCallResult,
     PlannerInput,
@@ -46,6 +52,10 @@ from forge.models import (
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from pydantic import BaseModel
+    from temporalio.client import Client
     from temporalio.testing import WorkflowEnvironment
 
 
@@ -77,6 +87,59 @@ def names() -> list[str]:
     """Return a list of names."""
     return ["Alice", "Bob"]
 '''
+
+
+# ---------------------------------------------------------------------------
+# Shared batch mock infrastructure
+# ---------------------------------------------------------------------------
+
+_test_client: Client | None = None
+_parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
+
+
+@activity.defn(name="submit_batch_request")
+async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResult:
+    """Self-signaling submit: immediately signal the workflow with a batch result."""
+    assert _test_client is not None
+    handle = _test_client.get_workflow_handle(input.workflow_id)
+    await handle.signal(
+        "batch_result_received",
+        BatchResult(
+            request_id="req-mock-123",
+            batch_id="msgbatch_mock123",
+            raw_response_json='{"mock": true}',
+            result_type=input.output_type_name,
+        ),
+    )
+    return BatchSubmitResult(
+        request_id="req-mock-123",
+        batch_id="msgbatch_mock123",
+    )
+
+
+@activity.defn(name="parse_llm_response")
+async def mock_parse_response(input: ParseResponseInput) -> ParsedLLMResponse:
+    """Dispatch to section-specific parse handler."""
+    assert _parse_handler is not None, "No parse handler set"
+    return _parse_handler(input)
+
+
+def _make_parsed(
+    model: BaseModel,
+    *,
+    model_name: str = "mock-model",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    latency_ms: float = 200.0,
+) -> ParsedLLMResponse:
+    """Build a ParsedLLMResponse from any Pydantic model."""
+    return ParsedLLMResponse(
+        parsed_json=model.model_dump_json(),
+        model_name=model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +196,38 @@ async def mock_call_llm_fixable(context: AssembledContext) -> LLMCallResult:
 
 
 # ---------------------------------------------------------------------------
+# Parse handlers for single-step e2e
+# ---------------------------------------------------------------------------
+
+
+def _e2e_valid_parse(input: ParseResponseInput) -> ParsedLLMResponse:
+    return _make_parsed(
+        LLMResponse(
+            files=[FileOutput(file_path="hello.py", content=_VALID_PYTHON)],
+            explanation="Created greeting module.",
+        ),
+    )
+
+
+def _e2e_invalid_parse(input: ParseResponseInput) -> ParsedLLMResponse:
+    return _make_parsed(
+        LLMResponse(
+            files=[FileOutput(file_path="hello.py", content=_INVALID_PYTHON)],
+            explanation="Created greeting module (with issues).",
+        ),
+    )
+
+
+def _e2e_fixable_parse(input: ParseResponseInput) -> ParsedLLMResponse:
+    return _make_parsed(
+        LLMResponse(
+            files=[FileOutput(file_path="hello.py", content=_FIXABLE_PYTHON)],
+            explanation="Created names module (with typing.List).",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Activity lists
 # ---------------------------------------------------------------------------
 
@@ -146,9 +241,11 @@ _REAL_ACTIVITIES = [
     evaluate_transition,
 ]
 
-_ACTIVITIES_VALID = [*_REAL_ACTIVITIES, mock_call_llm_valid]
-_ACTIVITIES_INVALID = [*_REAL_ACTIVITIES, mock_call_llm_invalid]
-_ACTIVITIES_FIXABLE = [*_REAL_ACTIVITIES, mock_call_llm_fixable]
+_BATCH_ACTIVITIES = [mock_self_signaling_submit, mock_parse_response]
+
+_ACTIVITIES_VALID = [*_REAL_ACTIVITIES, mock_call_llm_valid, *_BATCH_ACTIVITIES]
+_ACTIVITIES_INVALID = [*_REAL_ACTIVITIES, mock_call_llm_invalid, *_BATCH_ACTIVITIES]
+_ACTIVITIES_FIXABLE = [*_REAL_ACTIVITIES, mock_call_llm_fixable, *_BATCH_ACTIVITIES]
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +260,11 @@ async def _run_e2e_workflow(
     activities: list | None = None,
     task: TaskDefinition | None = None,
     max_attempts: int = 2,
+    parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None,
 ) -> TaskResult:
     """Run the ForgeTaskWorkflow with real activities and a mock LLM."""
+    global _test_client, _parse_handler
+    _test_client = env.client
     if task is None:
         task = TaskDefinition(
             task_id="e2e-task",
@@ -173,6 +273,16 @@ async def _run_e2e_workflow(
         )
     if activities is None:
         activities = _ACTIVITIES_VALID
+
+    # Determine parse handler from activity list if not explicit
+    if parse_handler is not None:
+        _parse_handler = parse_handler
+    elif activities is _ACTIVITIES_INVALID:
+        _parse_handler = _e2e_invalid_parse
+    elif activities is _ACTIVITIES_FIXABLE:
+        _parse_handler = _e2e_fixable_parse
+    else:
+        _parse_handler = _e2e_valid_parse
 
     forge_input = ForgeTaskInput(
         task=task,
@@ -401,7 +511,7 @@ def _reset_e2e_plan_state(responses: list[LLMResponse] | None = None) -> None:
 @activity.defn(name="assemble_planner_context")
 async def mock_e2e_assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="planner prompt",
         user_prompt="plan it",
     )
@@ -462,7 +572,34 @@ _PLANNED_REAL_ACTIVITIES = [
     mock_e2e_call_planner,
 ]
 
-_PLANNED_ACTIVITIES_VALID = [*_PLANNED_REAL_ACTIVITIES, mock_e2e_plan_call_llm]
+_PLANNED_ACTIVITIES_VALID = [
+    *_PLANNED_REAL_ACTIVITIES,
+    mock_e2e_plan_call_llm,
+    *_BATCH_ACTIVITIES,
+]
+
+
+def _e2e_planned_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    if input.output_type_name == "Plan":
+        plan = Plan(
+            task_id=input.task_id,
+            steps=[
+                PlanStep(
+                    step_id="step-1", description="Create model.", target_files=["models.py"]
+                ),
+                PlanStep(
+                    step_id="step-2",
+                    description="Create API.",
+                    target_files=["api.py"],
+                    context_files=["models.py"],
+                ),
+            ],
+            explanation="Two-step plan.",
+        )
+        return _make_parsed(plan, model_name="mock-planner", input_tokens=300, output_tokens=150)
+    # LLMResponse — pop from queue
+    response = _E2E_PLAN_LLM_RESPONSES.pop(0)
+    return _make_parsed(response)
 
 
 async def _run_planned_e2e(
@@ -474,6 +611,9 @@ async def _run_planned_e2e(
     max_step_attempts: int = 2,
 ) -> TaskResult:
     """Run the planned workflow with real git/validation and mock LLM+planner."""
+    global _test_client, _parse_handler
+    _test_client = env.client
+    _parse_handler = _e2e_planned_parse_handler
     if task is None:
         task = TaskDefinition(
             task_id="e2e-planned",
@@ -710,7 +850,7 @@ async def mock_e2e_fanout_assemble_planner_context(
     input: AssembleContextInput,
 ) -> PlannerInput:
     return PlannerInput(
-        task_id=input.task.task_id,
+        task_id=input.task_id,
         system_prompt="planner prompt",
         user_prompt="plan it",
     )
@@ -777,7 +917,40 @@ _FANOUT_REAL_ACTIVITIES = [
     mock_e2e_fanout_assemble_planner_context,
     mock_e2e_fanout_call_planner,
     mock_e2e_fanout_call_llm,
+    detect_file_conflicts_activity,
+    *_BATCH_ACTIVITIES,
 ]
+
+
+def _e2e_fanout_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
+    if input.output_type_name == "Plan":
+        plan = Plan(
+            task_id=input.task_id,
+            steps=[
+                PlanStep(
+                    step_id="fan-step",
+                    description="Create schema and routes in parallel.",
+                    target_files=[],
+                    sub_tasks=[
+                        SubTask(
+                            sub_task_id="st1",
+                            description="Create schema.",
+                            target_files=["schema.py"],
+                        ),
+                        SubTask(
+                            sub_task_id="st2",
+                            description="Create routes.",
+                            target_files=["routes.py"],
+                        ),
+                    ],
+                ),
+            ],
+            explanation="Fan-out plan.",
+        )
+        return _make_parsed(plan, model_name="mock-planner", input_tokens=300, output_tokens=150)
+    # LLMResponse — pop from queue
+    response = _E2E_FANOUT_LLM_RESPONSES.pop(0)
+    return _make_parsed(response)
 
 
 async def _run_fanout_e2e(
@@ -789,6 +962,9 @@ async def _run_fanout_e2e(
     max_sub_task_attempts: int = 2,
 ) -> TaskResult:
     """Run the fan-out workflow with real git/validation and mock LLM+planner."""
+    global _test_client, _parse_handler
+    _test_client = env.client
+    _parse_handler = _e2e_fanout_parse_handler
     if task is None:
         task = TaskDefinition(
             task_id="e2e-fanout",
