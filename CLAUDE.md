@@ -29,6 +29,7 @@ See [docs/TOC.md](docs/TOC.md) for a full table of contents covering design docs
 4. **Planning is the hard part.** Invest the most expensive models and highest token budgets in planning. Everything downstream is bounded by plan quality.
 5. **Halt when confused.** When the orchestrator encounters a situation it cannot classify, it stops and escalates to a human.
 6. **The LLM call is the universal primitive.** Every task is an instance of: construct message, send, receive, serialize, transition.
+7. **Follow Temporal best practices.** Before planning changes that touch Temporal workflows, activities, or worker configuration, check [Temporal Best Practices](https://docs.temporal.io/best-practices) and [docs/planning/WORKERS.md](docs/planning/WORKERS.md) to ensure the approach aligns with Temporal's guidance.
 
 ## The Universal Workflow Step
 

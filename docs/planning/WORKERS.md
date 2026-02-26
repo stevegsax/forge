@@ -65,3 +65,4 @@ Deploy at least two workers per task queue for redundancy.
 - [What is a Temporal Worker?](https://docs.temporal.io/workers) — Worker concepts, identity, and configuration.
 - [Worker deployment and performance](https://docs.temporal.io/best-practices/worker) — Production deployment, monitoring metrics, and task queue separation.
 - [Worker Versioning](https://docs.temporal.io/production-deployment/worker-deployments/worker-versioning) — Pinning workflow versions to specific worker builds for safe rollouts.
+- [Temporal Best Practices](https://docs.temporal.io/best-practices) — General best practices covering design patterns, testing, and production readiness.
