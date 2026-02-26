@@ -54,3 +54,7 @@ All modes include automatic context discovery (Phase 4), LLM-guided exploration 
 
 - **Release 1** (current): Phases 1–14 — the core orchestrator with batch processing. Focus on hardening and confidence before expanding scope.
 - **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See `docs/PHASE13.md`.
+
+## Development Plans
+
+When working on tasks from `development-plans/`, follow the process described in [development-plans/PROCESS.md](development-plans/PROCESS.md). Task files are living documents -- update status, sub-tasks, and development notes as you work. Accurate status documentation is as important as writing code.
