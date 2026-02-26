@@ -505,3 +505,9 @@ This document captures key design decisions and their rationale. Decisions are n
 - **Phase 14c — Batch poller + scheduling**: `poll_batch_results` activity, `BatchPollerWorkflow`, Temporal Schedule registration, anomaly detection, knowledge extraction schedule migration, flip default to batch mode.
 
 Each sub-phase is independently committable with all tests passing. 14a is pure plumbing with no behavior change. 14b adds workflow wiring but defaults to sync. 14c completes the loop and enables batch as default.
+
+## D84: No Speculation — Ask First, Then Investigate
+
+**Decision:** When encountering unexpected behavior (test failures, hangs, errors), do not speculate about the cause. Ask the user first. If the user doesn't know, offer to investigate.
+
+**Rationale:** Speculative explanations presented as fact erode trust. A wrong guess wastes time and can send debugging down the wrong path. Asking the user is cheap and often yields the answer immediately (e.g., "the Temporal server is already running"). If the user doesn't know either, a concrete offer to investigate sets the right expectation and leads to an evidence-based answer.
