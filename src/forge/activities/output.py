@@ -434,6 +434,11 @@ async def write_output(input: WriteOutputInput) -> WriteResult:
     Populates output_files with final content for all written files.
     """
     response = input.llm_result.response
+    logger.info(
+        "Write output: %d new files, %d edits",
+        len(response.files),
+        len(response.edits),
+    )
 
     # Validate no overlap between files and edits
     new_file_paths = {f.file_path for f in response.files}

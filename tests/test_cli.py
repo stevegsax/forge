@@ -14,6 +14,7 @@ from forge.cli import (
     EXIT_FAILURE,
     EXIT_INFRASTRUCTURE_ERROR,
     build_task_definition,
+    configure_logging,
     format_deterministic_result,
     format_eval_result,
     format_llm_stats,
@@ -604,6 +605,33 @@ class TestMainGroup:
         result = cli_runner.invoke(main, ["worker", "--help"])
         assert result.exit_code == 0
         assert "--temporal-address" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Logging configuration tests
+# ---------------------------------------------------------------------------
+
+
+class TestConfigureLogging:
+    """Tests for the configure_logging helper."""
+
+    def test_default_warning(self) -> None:
+        import logging
+
+        configure_logging(0)
+        assert logging.getLogger().level == logging.WARNING
+
+    def test_v_info(self) -> None:
+        import logging
+
+        configure_logging(1)
+        assert logging.getLogger().level == logging.INFO
+
+    def test_vv_debug(self) -> None:
+        import logging
+
+        configure_logging(2)
+        assert logging.getLogger().level == logging.DEBUG
 
 
 # ---------------------------------------------------------------------------

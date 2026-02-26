@@ -555,6 +555,7 @@ async def assemble_context(input: AssembleContextInput) -> AssembledContext:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.assemble_context"):
+        logger.info("Assemble context: task_id=%s", input.task_id)
         return await _assemble_context_inner(input)
 
 
@@ -751,6 +752,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
     Target files are also read from the worktree so the LLM can produce
     search/replace edits instead of rewriting entire files.
     """
+    logger.info("Assemble step context: task_id=%s step_id=%s", input.task_id, input.step.step_id)
     worktree = Path(input.worktree_path)
     context_contents = _read_context_files(worktree, input.step.context_files)
     target_contents = _read_context_files(worktree, input.step.target_files)
@@ -887,6 +889,11 @@ async def assemble_sub_task_context(
     Target files are also read from the parent worktree so the LLM can produce
     search/replace edits instead of rewriting entire files.
     """
+    logger.info(
+        "Assemble sub-task context: task_id=%s sub_task_id=%s",
+        input.parent_task_id,
+        input.sub_task.sub_task_id,
+    )
     parent_worktree = Path(input.worktree_path)
     context_contents = _read_context_files(parent_worktree, input.sub_task.context_files)
     target_contents = _read_context_files(parent_worktree, input.sub_task.target_files)

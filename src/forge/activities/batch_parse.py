@@ -10,10 +10,15 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import logging
+
 from temporalio import activity
 
 from forge.llm_client import parse_batch_response_json
+from forge.message_log import write_message_log
 from forge.models import ParsedLLMResponse, ParseResponseInput
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Testable function
@@ -53,6 +58,12 @@ async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.parse_llm_response") as span:
+        logger.info(
+            "Parse response: task_id=%s output_type=%s", input.task_id, input.output_type_name
+        )
+        if input.log_messages and input.worktree_path:
+            write_message_log(input.worktree_path, "response", input.raw_response_json)
+
         result = execute_parse_llm_response(input.raw_response_json, input.output_type_name)
 
         span.set_attributes(

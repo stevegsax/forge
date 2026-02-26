@@ -13,12 +13,15 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import dataclasses
+import logging
 import subprocess
 from pathlib import Path
 
 from temporalio import activity
 
 from forge.models import ValidateOutputInput, ValidationResult
+
+logger = logging.getLogger(__name__)
 
 SUBPROCESS_TIMEOUT_SECONDS = 60
 RUFF_CONFIG = "tool-config/ruff.toml"
@@ -149,6 +152,7 @@ async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.validate_output") as span:
+        logger.info("Validate: task_id=%s files=%d", input.task_id, len(input.files))
         wt = Path(input.worktree_path)
 
         # Fix phase: auto-correct cosmetic issues before checking.
@@ -168,6 +172,11 @@ async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
 
         if input.validation.run_tests and input.validation.test_command:
             results.append(_run_tests(wt, input.validation.test_command))
+
+        passed = all(r.passed for r in results)
+        logger.info(
+            "Validation: task_id=%s all_passed=%s checks=%d", input.task_id, passed, len(results)
+        )
 
         span.set_attributes(
             validation_attributes(

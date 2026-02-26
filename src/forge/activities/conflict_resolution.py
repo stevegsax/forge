@@ -13,6 +13,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -25,6 +26,7 @@ from forge.activities.context import (
     build_project_instructions_section,
 )
 from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
+from forge.message_log import write_message_log
 from forge.models import (
     ConflictResolutionCallInput,
     ConflictResolutionCallResult,
@@ -209,6 +211,15 @@ async def execute_conflict_resolution_call(
     )
     message = await client.messages.create(**params)
 
+    if input.log_messages and input.worktree_path:
+        request_json = json.dumps(params, indent=2, default=str)
+        write_message_log(input.worktree_path, "conflict-request", request_json)
+        write_message_log(
+            input.worktree_path,
+            "conflict-response",
+            message.model_dump_json(indent=2),
+        )
+
     elapsed_ms = (time.monotonic() - start) * 1000
     response = extract_tool_result(message, ConflictResolutionResponse)
     in_tok, out_tok, cache_create, cache_read = extract_usage(message)
@@ -304,6 +315,7 @@ async def call_conflict_resolution(
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_conflict_resolution") as span:
+        logger.info("Conflict resolution call: task_id=%s", input.task_id)
         client = get_anthropic_client()
         result = await execute_conflict_resolution_call(input, client)
 

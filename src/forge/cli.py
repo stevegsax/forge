@@ -14,6 +14,7 @@ Follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -295,6 +296,7 @@ async def _submit_and_wait(
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
     sync_mode: bool = True,
+    log_messages: bool = False,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
     from temporalio.client import Client
@@ -320,6 +322,7 @@ async def _submit_and_wait(
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
             sync_mode=sync_mode,
+            log_messages=log_messages,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -343,6 +346,7 @@ async def _submit_no_wait(
     model_routing: ModelConfig | None = None,
     thinking: ThinkingConfig | None = None,
     sync_mode: bool = True,
+    log_messages: bool = False,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
     from temporalio.client import Client
@@ -368,6 +372,7 @@ async def _submit_no_wait(
             model_routing=model_routing or ModelConfig(),
             thinking=thinking or ThinkingConfig(),
             sync_mode=sync_mode,
+            log_messages=log_messages,
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
@@ -397,10 +402,26 @@ def _persist_run(result: TaskResult, workflow_id: str) -> None:
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
 
+def configure_logging(verbosity: int) -> None:
+    """Set up root logger based on -v count: 0=WARNING, 1=INFO, 2+=DEBUG."""
+    level_map = {0: logging.WARNING, 1: logging.INFO}
+    level = level_map.get(verbosity, logging.DEBUG)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+
+
 @click.group()
 @click.version_option(package_name="forge")
-def main() -> None:
+@click.option(
+    "-v", "log_verbosity", count=True, help="Increase log verbosity (-v INFO, -vv DEBUG)."
+)
+def main(log_verbosity: int) -> None:
     """Forge — LLM task orchestrator."""
+    configure_logging(log_verbosity)
 
 
 @main.command()
@@ -519,6 +540,11 @@ def main() -> None:
     help="Use synchronous Messages API. --no-sync enables batch mode (default).",
 )
 @click.option(
+    "--log-messages",
+    is_flag=True,
+    help="Save full API request/response JSON to messages/ in the worktree.",
+)
+@click.option(
     "--domain",
     type=click.Choice(["code_generation", "research", "code_review", "documentation", "generic"]),
     default="code_generation",
@@ -566,6 +592,7 @@ def run(
     sanity_check_interval: int,
     no_resolve_conflicts: bool,
     sync_mode: bool,
+    log_messages: bool,
     domain: str,
     temporal_address: str,
 ) -> None:
@@ -658,6 +685,7 @@ def run(
                     model_routing=model_routing,
                     thinking=thinking,
                     sync_mode=sync_mode,
+                    log_messages=log_messages,
                 )
             )
             click.echo(workflow_id)
@@ -678,6 +706,7 @@ def run(
                     model_routing=model_routing,
                     thinking=thinking,
                     sync_mode=sync_mode,
+                    log_messages=log_messages,
                 )
             )
 

@@ -121,6 +121,8 @@ async def _assemble_conflict_resolution(
     domain: TaskDomain,
     model_routing: ModelConfig,
     thinking: ThinkingConfig,
+    *,
+    log_messages: bool = False,
 ) -> ConflictResolutionCallInput:
     """Assemble conflict resolution context via activity. Module-level, called from any workflow."""
     reasoning_model = resolve_model(CapabilityTier.REASONING, model_routing)
@@ -140,11 +142,14 @@ async def _assemble_conflict_resolution(
         thinking_effort=thinking.effort,
     )
 
-    return await workflow.execute_activity(
+    call_input = await workflow.execute_activity(
         "assemble_conflict_resolution_context",
         resolution_input,
         start_to_close_timeout=_CONTEXT_TIMEOUT,
         result_type=ConflictResolutionCallInput,
+    )
+    return call_input.model_copy(
+        update={"log_messages": log_messages, "worktree_path": worktree_path}
     )
 
 
@@ -178,6 +183,7 @@ class ForgeTaskWorkflow:
     def __init__(self) -> None:
         self._batch_results: list[BatchResult] = []
         self._sync_mode: bool = True
+        self._log_messages: bool = False
 
     @workflow.signal
     async def batch_result_received(self, result: BatchResult) -> None:
@@ -186,6 +192,13 @@ class ForgeTaskWorkflow:
     @workflow.run
     async def run(self, input: ForgeTaskInput) -> TaskResult:
         self._sync_mode = input.sync_mode
+        self._log_messages = input.log_messages
+        workflow.logger.info(
+            "Workflow started: task_id=%s plan=%s sync=%s",
+            input.task.task_id,
+            input.plan,
+            input.sync_mode,
+        )
         if input.plan:
             return await self._run_planned(input)
         return await self._run_single_step(input)
@@ -229,6 +242,8 @@ class ForgeTaskWorkflow:
                 raw_response_json=result.raw_response_json,
                 output_type_name=output_type_name,
                 task_id=context.task_id,
+                log_messages=context.log_messages,
+                worktree_path=context.worktree_path,
             ),
             start_to_close_timeout=_PARSE_TIMEOUT,
             result_type=ParsedLLMResponse,
@@ -273,6 +288,8 @@ class ForgeTaskWorkflow:
             system_prompt=planner_input.system_prompt,
             user_prompt=planner_input.user_prompt,
             model_name=planner_input.model_name,
+            log_messages=planner_input.log_messages,
+            worktree_path=planner_input.worktree_path,
         )
         parsed = await self._call_llm_batch(
             context,
@@ -323,6 +340,8 @@ class ForgeTaskWorkflow:
             system_prompt=sanity_input.system_prompt,
             user_prompt=sanity_input.user_prompt,
             model_name=sanity_input.model_name,
+            log_messages=sanity_input.log_messages,
+            worktree_path=sanity_input.worktree_path,
         )
         parsed = await self._call_llm_batch(
             context,
@@ -358,6 +377,8 @@ class ForgeTaskWorkflow:
             system_prompt=call_input.system_prompt,
             user_prompt=call_input.user_prompt,
             model_name=call_input.model_name,
+            log_messages=call_input.log_messages,
+            worktree_path=call_input.worktree_path,
         )
         parsed = await self._call_llm_batch(
             context,
@@ -396,8 +417,12 @@ class ForgeTaskWorkflow:
         readiness (empty requests list) or the round limit is reached.
         """
         accumulated: list[ContextResult] = []
+        round_num = 0
 
         for round_num in range(1, max_rounds + 1):
+            workflow.logger.debug(
+                "Exploration round %d/%d: task_id=%s", round_num, max_rounds, task.task_id
+            )
             exploration_input = ExplorationInput(
                 task_id=task.task_id,
                 task_description=task.description,
@@ -410,8 +435,15 @@ class ForgeTaskWorkflow:
                 max_rounds=max_rounds,
                 repo_root=repo_root,
                 model_name=model_name,
+                log_messages=self._log_messages,
+                worktree_path=worktree_path,
             )
             exploration_result = await self._call_exploration(exploration_input)
+            workflow.logger.debug(
+                "Exploration round %d: %d provider requests",
+                round_num,
+                len(exploration_result.requests),
+            )
 
             if not exploration_result.requests:
                 break  # LLM is ready to generate
@@ -428,6 +460,12 @@ class ForgeTaskWorkflow:
             )
             accumulated.extend(context_results)
 
+        workflow.logger.info(
+            "Exploration complete: task_id=%s rounds_used=%d results=%d",
+            task.task_id,
+            min(round_num, max_rounds),
+            len(accumulated),
+        )
         return accumulated
 
     @staticmethod
@@ -461,6 +499,10 @@ class ForgeTaskWorkflow:
         exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
 
         for attempt in range(1, max_attempts + 1):
+            workflow.logger.info(
+                "Single-step attempt %d/%d: task_id=%s", attempt, max_attempts, task.task_id
+            )
+
             # --- Create worktree ---
             wt_output = await workflow.execute_activity(
                 "create_worktree_activity",
@@ -512,11 +554,25 @@ class ForgeTaskWorkflow:
                         sub_task_id=context.sub_task_id,
                     )
 
-            # --- Set model_name on context ---
-            context = context.model_copy(update={"model_name": generation_model})
+            # --- Set model_name and log_messages on context ---
+            context = context.model_copy(
+                update={
+                    "model_name": generation_model,
+                    "log_messages": self._log_messages,
+                    "worktree_path": wt_output.worktree_path,
+                }
+            )
 
             # --- Call LLM ---
             llm_result = await self._call_generation(context)
+            workflow.logger.info(
+                "Generation complete: task_id=%s model=%s tokens=%din/%dout latency=%.0fms",
+                task.task_id,
+                llm_result.model_name,
+                llm_result.input_tokens,
+                llm_result.output_tokens,
+                llm_result.latency_ms,
+            )
 
             # --- Write output ---
             write_result = await workflow.execute_activity(
@@ -554,6 +610,13 @@ class ForgeTaskWorkflow:
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
+            workflow.logger.info(
+                "Transition: task_id=%s signal=%s attempt=%d/%d",
+                task.task_id,
+                signal.value,
+                attempt,
+                max_attempts,
+            )
 
             # --- Collect output files ---
             output_files = write_result.output_files
@@ -680,8 +743,12 @@ class ForgeTaskWorkflow:
                     user_prompt=planner_input.user_prompt,
                 )
 
-        # --- Set model_name and thinking config on planner input ---
-        planner_update: dict[str, object] = {"model_name": planner_model}
+        # --- Set model_name, thinking config, and log_messages on planner input ---
+        planner_update: dict[str, object] = {
+            "model_name": planner_model,
+            "log_messages": self._log_messages,
+            "worktree_path": wt_output.worktree_path,
+        }
         if input.thinking.enabled:
             planner_update["thinking_budget_tokens"] = input.thinking.budget_tokens
             planner_update["thinking_effort"] = input.thinking.effort
@@ -690,6 +757,7 @@ class ForgeTaskWorkflow:
         # --- Call planner ---
         planner_result = await self._call_planner_llm(planner_input)
         plan: Plan = planner_result.plan
+        workflow.logger.info("Plan created: task_id=%s steps=%d", task.task_id, len(plan.steps))
         p_stats = build_planner_stats(planner_result)
         step_results: list[StepResult] = []
         all_output_files: dict[str, str] = {}
@@ -699,6 +767,13 @@ class ForgeTaskWorkflow:
         step_index = 0
         while step_index < len(plan.steps):
             step = plan.steps[step_index]
+            workflow.logger.info(
+                "Step %d/%d: step_id=%s has_sub_tasks=%s",
+                step_index + 1,
+                len(plan.steps),
+                step.step_id,
+                bool(step.sub_tasks),
+            )
 
             # Resolve model for this step (per-step tier override or default)
             step_tier = step.capability_tier or CapabilityTier.GENERATION
@@ -756,8 +831,14 @@ class ForgeTaskWorkflow:
                     result_type=AssembledContext,
                 )
 
-                # --- Set model_name on context ---
-                context = context.model_copy(update={"model_name": step_model})
+                # --- Set model_name and log_messages on context ---
+                context = context.model_copy(
+                    update={
+                        "model_name": step_model,
+                        "log_messages": self._log_messages,
+                        "worktree_path": wt_output.worktree_path,
+                    }
+                )
 
                 # --- Call LLM ---
                 llm_result = await self._call_generation(context)
@@ -798,6 +879,13 @@ class ForgeTaskWorkflow:
                     result_type=str,
                 )
                 signal = TransitionSignal(signal_value)
+                workflow.logger.info(
+                    "Step transition: step_id=%s signal=%s attempt=%d/%d",
+                    step.step_id,
+                    signal.value,
+                    attempt,
+                    max_step_attempts,
+                )
 
                 output_files = write_result.output_files
 
@@ -884,6 +972,11 @@ class ForgeTaskWorkflow:
                     input, plan, step_results, plan.steps[step_index + 1 :], wt_output
                 )
                 sanity_check_count += 1
+                workflow.logger.info(
+                    "Sanity check #%d: verdict=%s",
+                    sanity_check_count,
+                    sanity_result.response.verdict.value,
+                )
 
                 if sanity_result.response.verdict == SanityCheckVerdict.ABORT:
                     return TaskResult(
@@ -901,15 +994,22 @@ class ForgeTaskWorkflow:
 
                 if sanity_result.response.verdict == SanityCheckVerdict.REVISE:
                     revised = sanity_result.response.revised_steps or []
+                    old_remaining = len(plan.steps) - step_index - 1
                     plan = Plan(
                         task_id=plan.task_id,
                         steps=plan.steps[: step_index + 1] + revised,
                         explanation=plan.explanation,
                     )
+                    workflow.logger.info(
+                        "Plan revised: remaining steps %d → %d",
+                        old_remaining,
+                        len(revised),
+                    )
 
             step_index += 1
 
         # --- All steps succeeded ---
+        workflow.logger.info("All %d steps completed: task_id=%s", len(plan.steps), task.task_id)
         return TaskResult(
             task_id=task.task_id,
             status=TransitionSignal.SUCCESS,
@@ -952,8 +1052,12 @@ class ForgeTaskWorkflow:
             result_type=SanityCheckInput,
         )
 
-        # Set model and thinking config
-        update: dict[str, object] = {"model_name": reasoning_model}
+        # Set model, thinking config, and log_messages
+        update: dict[str, object] = {
+            "model_name": reasoning_model,
+            "log_messages": self._log_messages,
+            "worktree_path": wt_output.worktree_path,
+        }
         if input.thinking.enabled:
             update["thinking_budget_tokens"] = input.thinking.budget_tokens
             update["thinking_effort"] = input.thinking.effort
@@ -996,6 +1100,7 @@ class ForgeTaskWorkflow:
             )
 
         # --- Start child workflows in parallel ---
+        workflow.logger.info("Fan-out: step_id=%s sub_tasks=%d", step.step_id, len(sub_tasks))
         child_timeout = _child_timeout(0, input.max_fan_out_depth)
         handles = []
         for st in sub_tasks:
@@ -1012,6 +1117,7 @@ class ForgeTaskWorkflow:
                 depth=0,
                 max_depth=input.max_fan_out_depth,
                 sync_mode=input.sync_mode,
+                log_messages=self._log_messages,
             )
             compound_id = f"{task.task_id}.sub.{st.sub_task_id}"
             handle = await workflow.start_child_workflow(
@@ -1031,6 +1137,13 @@ class ForgeTaskWorkflow:
 
         # --- Check for failures ---
         failures = [r for r in sub_task_results if r.status != TransitionSignal.SUCCESS]
+        successes = len(sub_task_results) - len(failures)
+        workflow.logger.info(
+            "Fan-out gather: step_id=%s successes=%d failures=%d",
+            step.step_id,
+            successes,
+            len(failures),
+        )
         if failures:
             error_parts = [f"{r.sub_task_id}: {r.error}" for r in failures]
             return StepResult(
@@ -1048,6 +1161,11 @@ class ForgeTaskWorkflow:
         )
         conflict_resolution_result: ConflictResolutionCallResult | None = None
 
+        if conflicts:
+            workflow.logger.info(
+                "Conflict resolution: step_id=%s conflicts=%d", step.step_id, len(conflicts)
+            )
+
         if conflicts and input.resolve_conflicts:
             call_input = await _assemble_conflict_resolution(
                 task_id=task.task_id,
@@ -1061,6 +1179,7 @@ class ForgeTaskWorkflow:
                 domain=task.domain,
                 model_routing=input.model_routing,
                 thinking=input.thinking,
+                log_messages=self._log_messages,
             )
             conflict_resolution_result = await self._call_conflict_resolution(call_input)
 
@@ -1201,6 +1320,7 @@ class ForgeSubTaskWorkflow:
     def __init__(self) -> None:
         self._batch_results: list[BatchResult] = []
         self._sync_mode: bool = True
+        self._log_messages: bool = False
 
     @workflow.signal
     async def batch_result_received(self, result: BatchResult) -> None:
@@ -1209,6 +1329,13 @@ class ForgeSubTaskWorkflow:
     @workflow.run
     async def run(self, input: SubTaskInput) -> SubTaskResult:
         self._sync_mode = input.sync_mode
+        self._log_messages = input.log_messages
+        workflow.logger.info(
+            "Sub-task started: sub_task_id=%s depth=%d/%d",
+            input.sub_task.sub_task_id,
+            input.depth,
+            input.max_depth,
+        )
         if input.sub_task.sub_tasks and input.depth < input.max_depth:
             return await self._run_nested_fan_out(input)
         return await self._run_single_step(input)
@@ -1251,6 +1378,8 @@ class ForgeSubTaskWorkflow:
                 raw_response_json=result.raw_response_json,
                 output_type_name=output_type_name,
                 task_id=context.task_id,
+                log_messages=context.log_messages,
+                worktree_path=context.worktree_path,
             ),
             start_to_close_timeout=_PARSE_TIMEOUT,
             result_type=ParsedLLMResponse,
@@ -1297,6 +1426,8 @@ class ForgeSubTaskWorkflow:
             system_prompt=call_input.system_prompt,
             user_prompt=call_input.user_prompt,
             model_name=call_input.model_name,
+            log_messages=call_input.log_messages,
+            worktree_path=call_input.worktree_path,
         )
         parsed = await self._call_llm_batch(
             context,
@@ -1353,9 +1484,14 @@ class ForgeSubTaskWorkflow:
                 result_type=AssembledContext,
             )
 
-            # --- Set model_name from parent ---
+            # --- Set model_name, log_messages from parent ---
+            ctx_update: dict[str, object] = {
+                "log_messages": self._log_messages,
+                "worktree_path": wt_output.worktree_path,
+            }
             if input.model_name:
-                context = context.model_copy(update={"model_name": input.model_name})
+                ctx_update["model_name"] = input.model_name
+            context = context.model_copy(update=ctx_update)
 
             # --- Call LLM ---
             llm_result = await self._call_generation(context)
@@ -1396,6 +1532,13 @@ class ForgeSubTaskWorkflow:
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
+            workflow.logger.info(
+                "Sub-task transition: sub_task_id=%s signal=%s attempt=%d/%d",
+                input.sub_task.sub_task_id,
+                signal.value,
+                attempt,
+                input.max_attempts,
+            )
 
             # --- Collect output files before cleanup ---
             output_files = write_result.output_files
@@ -1494,6 +1637,7 @@ class ForgeSubTaskWorkflow:
                 depth=input.depth + 1,
                 max_depth=input.max_depth,
                 sync_mode=input.sync_mode,
+                log_messages=self._log_messages,
             )
             child_compound_id = f"{compound_id}.sub.{st.sub_task_id}"
             handle = await workflow.start_child_workflow(
@@ -1560,6 +1704,7 @@ class ForgeSubTaskWorkflow:
                 domain=input.domain,
                 model_routing=resolution_model_routing,
                 thinking=ThinkingConfig(),
+                log_messages=self._log_messages,
             )
             conflict_resolution_result = await self._call_conflict_resolution(cr_call_input)
 

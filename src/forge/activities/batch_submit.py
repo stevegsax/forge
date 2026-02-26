@@ -9,6 +9,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import TYPE_CHECKING
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from forge.llm_client import build_batch_request, build_messages_params, get_output_type_registry
+from forge.message_log import write_message_log
 from forge.models import BatchSubmitInput, BatchSubmitResult
 
 if TYPE_CHECKING:
@@ -53,6 +55,10 @@ async def execute_batch_submit(
         thinking_budget_tokens=input.thinking_budget_tokens,
         thinking_effort=input.thinking_effort,
     )
+
+    if input.context.log_messages and input.context.worktree_path:
+        request_json = json.dumps(params, indent=2, default=str)
+        write_message_log(input.context.worktree_path, "request", request_json)
 
     request_id = str(uuid.uuid4())
     batch_request = build_batch_request(request_id, params)
@@ -95,6 +101,11 @@ async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.submit_batch_request") as span:
+        logger.info(
+            "Batch submitted: task_id=%s output_type=%s",
+            input.context.task_id,
+            input.output_type_name,
+        )
         client = get_anthropic_client()
         result = await execute_batch_submit(input, client)
 

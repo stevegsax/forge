@@ -9,6 +9,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
+from forge.message_log import write_message_log
 from forge.models import AssembledContext, LLMCallResult, LLMResponse
 
 if TYPE_CHECKING:
@@ -51,6 +53,11 @@ async def execute_llm_call(
         max_tokens=DEFAULT_MAX_TOKENS,
     )
     message = await client.messages.create(**params)
+
+    if context.log_messages and context.worktree_path:
+        request_json = json.dumps(params, indent=2, default=str)
+        write_message_log(context.worktree_path, "request", request_json)
+        write_message_log(context.worktree_path, "response", message.model_dump_json(indent=2))
 
     elapsed_ms = (time.monotonic() - start) * 1000
     response = extract_tool_result(message, LLMResponse)
@@ -109,8 +116,16 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_llm") as span:
+        logger.info("LLM call start: task_id=%s model=%s", context.task_id, context.model_name)
         client = get_anthropic_client()
         result = await execute_llm_call(context, client)
+        logger.info(
+            "LLM call done: task_id=%s tokens=%din/%dout latency=%.0fms",
+            context.task_id,
+            result.input_tokens,
+            result.output_tokens,
+            result.latency_ms,
+        )
 
         span.set_attributes(
             llm_call_attributes(

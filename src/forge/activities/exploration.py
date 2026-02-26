@@ -12,6 +12,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -20,6 +21,7 @@ from temporalio import activity
 
 from forge.domains import get_domain_config
 from forge.llm_client import build_messages_params, extract_tool_result
+from forge.message_log import write_message_log
 from forge.models import (
     AssembledContext,
     ContextResult,
@@ -185,6 +187,13 @@ async def execute_exploration_call(
     )
     message = await client.messages.create(**params)
 
+    if input.log_messages and input.worktree_path:
+        request_json = json.dumps(params, indent=2, default=str)
+        write_message_log(input.worktree_path, "explore-request", request_json)
+        write_message_log(
+            input.worktree_path, "explore-response", message.model_dump_json(indent=2)
+        )
+
     return extract_tool_result(message, ExplorationResponse)
 
 
@@ -207,6 +216,12 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_exploration_llm") as span:
+        logger.info(
+            "Exploration call: task_id=%s round=%d/%d",
+            input.task_id,
+            input.round_number,
+            input.max_rounds,
+        )
         project_instructions = ""
         if input.repo_root:
             project_instructions = build_project_instructions_section(
@@ -217,6 +232,9 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
         start = time.monotonic()
         response = await execute_exploration_call(input, client, project_instructions)
         elapsed_ms = (time.monotonic() - start) * 1000
+        logger.info(
+            "Exploration result: task_id=%s requests=%d", input.task_id, len(response.requests)
+        )
 
         span.set_attributes(
             {
@@ -236,6 +254,7 @@ async def fulfill_context_requests(input: FulfillContextInput) -> list[ContextRe
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.fulfill_context_requests") as span:
+        logger.info("Fulfilling %d context requests", len(input.requests))
         requests_as_dicts = [{"provider": r.provider, "params": r.params} for r in input.requests]
 
         results = fulfill_requests(
@@ -278,4 +297,6 @@ async def assemble_exploration_context(input: ExplorationInput) -> AssembledCont
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model_name=model,
+        log_messages=input.log_messages,
+        worktree_path=input.worktree_path,
     )

@@ -10,6 +10,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ from forge.activities.context import (
 )
 from forge.domains import get_domain_config
 from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
+from forge.message_log import write_message_log
 from forge.models import (
     AssembleContextInput,
     Plan,
@@ -207,6 +209,13 @@ async def execute_planner_call(
     )
     message = await client.messages.create(**params)
 
+    if input.log_messages and input.worktree_path:
+        request_json = json.dumps(params, indent=2, default=str)
+        write_message_log(input.worktree_path, "planner-request", request_json)
+        write_message_log(
+            input.worktree_path, "planner-response", message.model_dump_json(indent=2)
+        )
+
     elapsed_ms = (time.monotonic() - start) * 1000
     plan = extract_tool_result(message, Plan)
     in_tok, out_tok, cache_create, cache_read = extract_usage(message)
@@ -283,7 +292,9 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
                 rank_files,
             )
 
-            package_name = input.context_config.package_name or _detect_package_name(input.repo_root)
+            package_name = input.context_config.package_name or _detect_package_name(
+                input.repo_root
+            )
             graph = build_import_graph(package_name)
 
             # For the planner, rank all files (no specific targets)
@@ -352,8 +363,10 @@ async def call_planner(input: PlannerInput) -> PlanCallResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_planner") as span:
+        logger.info("Planner call: task_id=%s", input.task_id)
         client = get_anthropic_client()
         result = await execute_planner_call(input, client)
+        logger.info("Plan produced: task_id=%s steps=%d", input.task_id, len(result.plan.steps))
 
         span.set_attributes(
             llm_call_attributes(
