@@ -104,8 +104,8 @@ class TestTaskDomain:
         assert TaskDomain.CODE_REVIEW == "code_review"
         assert TaskDomain.DOCUMENTATION == "documentation"
 
-    def test_four_members(self) -> None:
-        assert len(TaskDomain) == 4
+    def test_five_members(self) -> None:
+        assert len(TaskDomain) == 5
 
 
 class TestTaskDefinitionDomain:

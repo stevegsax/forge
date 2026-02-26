@@ -99,7 +99,7 @@ class TestBuildStepDigest:
 class TestBuildSanityCheckSystemPrompt:
     def test_contains_task_description(self) -> None:
         prompt = build_sanity_check_system_prompt(
-            _TASK, _PLAN, [], _PLAN.steps, project_instructions=""
+            _TASK.task_id, _TASK.description, _PLAN, [], _PLAN.steps, project_instructions=""
         )
         assert "Build a REST API" in prompt
 
@@ -108,14 +108,15 @@ class TestBuildSanityCheckSystemPrompt:
             _make_step_result("step-1", output_files={"models.py": "class M: pass"}),
         ]
         prompt = build_sanity_check_system_prompt(
-            _TASK, _PLAN, completed, _PLAN.steps[1:], project_instructions=""
+            _TASK.task_id, _TASK.description, _PLAN, completed, _PLAN.steps[1:],
+            project_instructions="",
         )
         assert "step-1" in prompt
         assert "1 files" in prompt
 
     def test_contains_remaining_steps(self) -> None:
         prompt = build_sanity_check_system_prompt(
-            _TASK, _PLAN, [], _PLAN.steps, project_instructions=""
+            _TASK.task_id, _TASK.description, _PLAN, [], _PLAN.steps, project_instructions=""
         )
         assert "step-2" in prompt
         assert "step-3" in prompt
@@ -124,13 +125,14 @@ class TestBuildSanityCheckSystemPrompt:
 
     def test_contains_project_instructions(self) -> None:
         prompt = build_sanity_check_system_prompt(
-            _TASK, _PLAN, [], _PLAN.steps, project_instructions="## Project\nUse ruff."
+            _TASK.task_id, _TASK.description, _PLAN, [], _PLAN.steps,
+            project_instructions="## Project\nUse ruff.",
         )
         assert "Use ruff" in prompt
 
     def test_contains_verdict_instructions(self) -> None:
         prompt = build_sanity_check_system_prompt(
-            _TASK, _PLAN, [], _PLAN.steps, project_instructions=""
+            _TASK.task_id, _TASK.description, _PLAN, [], _PLAN.steps, project_instructions=""
         )
         assert "continue" in prompt
         assert "revise" in prompt
