@@ -24,8 +24,7 @@ forge run  ──►  Temporal Server  ◄──  forge worker
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Changelog](CHANGELOG.md)
+- [Table of Contents](docs/TOC.md) — Full index of design docs, phase specs, user guides, and research.
 
 ## Usage
 
@@ -214,14 +213,3 @@ forge playbooks --task-id my-task      # Filter by source task
 | `--limit` | `20` | Max entries to show |
 | `--json` | off | Machine-readable JSON output |
 
-## Documentation
-
-- `docs/DESIGN.md` — Architecture and design document
-- `docs/DECISIONS.md` — Design decisions and rationale
-- `docs/PHASE1.md` — Phase 1 spec: the minimal loop
-- `docs/PHASE2.md` — Phase 2 spec: planning and multi-step
-- `docs/PHASE3.md` — Phase 3 spec: fan-out / gather
-- `docs/PHASE4.md` — Phase 4 spec: intelligent context assembly
-- `docs/PHASE5.md` — Phase 5 spec: observability store
-- `docs/PHASE6.md` — Phase 6 spec: knowledge extraction
-- `docs/PHASE7.md` — Phase 7 spec: LLM-guided context exploration
