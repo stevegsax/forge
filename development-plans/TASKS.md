@@ -14,9 +14,9 @@ See [PROCESS.md](PROCESS.md) for the full workflow. Quick version:
 
 ## Tasks
 
-- [ ] [01 - Temporal Determinism Violation](01-temporal-determinism.md) `CRITICAL`
-- [ ] [02 - Wait Condition Timeouts](02-wait-condition-timeouts.md) `HIGH`
-- [ ] [03 - Retry Policies](03-retry-policies.md) `HIGH`
+- [x] [01 - Temporal Determinism Violation](01-temporal-determinism.md) `CRITICAL`
+- [x] [02 - Wait Condition Timeouts](02-wait-condition-timeouts.md) `HIGH`
+- [x] [03 - Retry Policies](03-retry-policies.md) `HIGH`
 - [ ] [04 - Workflow Duplication](04-workflow-duplication.md) `HIGH`
 - [ ] [05 - `_run_planned` Decomposition](05-run-planned-decomposition.md) `HIGH`
 - [ ] [06 - `_persist_interaction` Extraction](06-persist-interaction.md) `HIGH`

@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
@@ -99,6 +100,29 @@ _SUBMIT_TIMEOUT = timedelta(seconds=60)
 _PARSE_TIMEOUT = timedelta(seconds=30)
 _BATCH_WAIT_TIMEOUT = timedelta(hours=25)  # Anthropic batch API expires at 24h
 
+# ---------------------------------------------------------------------------
+# Activity retry policies
+# ---------------------------------------------------------------------------
+
+_LLM_RETRY = RetryPolicy(
+    maximum_attempts=3,
+    non_retryable_error_types=[
+        "BadRequestError",
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "NotFoundError",
+    ],
+)
+_LOCAL_RETRY = RetryPolicy(maximum_attempts=2)
+_GIT_RETRY = RetryPolicy(
+    maximum_attempts=2,
+    non_retryable_error_types=["CommitError", "RepoDiscoveryError"],
+)
+_WRITE_RETRY = RetryPolicy(
+    maximum_attempts=2,
+    non_retryable_error_types=["OutputWriteError", "EditApplicationError"],
+)
+
 _CHILD_BASE_MINUTES = 15
 _CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
 
@@ -149,6 +173,7 @@ async def _assemble_conflict_resolution(
         "assemble_conflict_resolution_context",
         resolution_input,
         start_to_close_timeout=_CONTEXT_TIMEOUT,
+        retry_policy=_LOCAL_RETRY,
         result_type=ConflictResolutionCallInput,
     )
     return call_input.model_copy(
@@ -231,6 +256,7 @@ class ForgeTaskWorkflow:
                 max_tokens=max_tokens,
             ),
             start_to_close_timeout=_SUBMIT_TIMEOUT,
+            retry_policy=_LLM_RETRY,
             result_type=BatchSubmitResult,
         )
         # Wait for the poller (14c) to deliver the result via signal
@@ -252,6 +278,7 @@ class ForgeTaskWorkflow:
                 worktree_path=context.worktree_path,
             ),
             start_to_close_timeout=_PARSE_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=ParsedLLMResponse,
         )
 
@@ -266,6 +293,7 @@ class ForgeTaskWorkflow:
                 "call_llm",
                 context,
                 start_to_close_timeout=_LLM_TIMEOUT,
+                retry_policy=_LLM_RETRY,
                 result_type=LLMCallResult,
             )
         parsed = await self._call_llm_batch(context, "LLMResponse")
@@ -287,6 +315,7 @@ class ForgeTaskWorkflow:
                 "call_planner",
                 planner_input,
                 start_to_close_timeout=_LLM_TIMEOUT,
+                retry_policy=_LLM_RETRY,
                 result_type=PlanCallResult,
             )
         context = AssembledContext(
@@ -321,12 +350,14 @@ class ForgeTaskWorkflow:
                 "call_exploration_llm",
                 exploration_input,
                 start_to_close_timeout=_EXPLORATION_LLM_TIMEOUT,
+                retry_policy=_LLM_RETRY,
                 result_type=ExplorationResponse,
             )
         context: AssembledContext = await workflow.execute_activity(
             "assemble_exploration_context",
             exploration_input,
             start_to_close_timeout=_CONTEXT_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=AssembledContext,
         )
         parsed = await self._call_llm_batch(context, "ExplorationResponse")
@@ -339,6 +370,7 @@ class ForgeTaskWorkflow:
                 "call_sanity_check",
                 sanity_input,
                 start_to_close_timeout=_SANITY_CHECK_TIMEOUT,
+                retry_policy=_LLM_RETRY,
                 result_type=SanityCheckCallResult,
             )
         context = AssembledContext(
@@ -376,6 +408,7 @@ class ForgeTaskWorkflow:
                 "call_conflict_resolution",
                 call_input,
                 start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
+                retry_policy=_LLM_RETRY,
                 result_type=ConflictResolutionCallResult,
             )
         context = AssembledContext(
@@ -462,6 +495,7 @@ class ForgeTaskWorkflow:
                     worktree_path=worktree_path,
                 ),
                 start_to_close_timeout=_EXPLORATION_FULFILL_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=list[ContextResult],
             )
             accumulated.extend(context_results)
@@ -518,6 +552,7 @@ class ForgeTaskWorkflow:
                     base_branch=task.base_branch,
                 ),
                 start_to_close_timeout=_GIT_TIMEOUT,
+                retry_policy=_GIT_RETRY,
                 result_type=CreateWorktreeOutput,
             )
 
@@ -537,6 +572,7 @@ class ForgeTaskWorkflow:
                     max_attempts=max_attempts,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=AssembledContext,
             )
 
@@ -588,6 +624,7 @@ class ForgeTaskWorkflow:
                     worktree_path=wt_output.worktree_path,
                 ),
                 start_to_close_timeout=_WRITE_TIMEOUT,
+                retry_policy=_WRITE_RETRY,
                 result_type=WriteResult,
             )
 
@@ -601,6 +638,7 @@ class ForgeTaskWorkflow:
                     validation=task.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -613,6 +651,7 @@ class ForgeTaskWorkflow:
                     max_attempts=max_attempts,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -637,6 +676,7 @@ class ForgeTaskWorkflow:
                         status="success",
                     ),
                     start_to_close_timeout=_GIT_TIMEOUT,
+                    retry_policy=_GIT_RETRY,
                     result_type=CommitChangesOutput,
                 )
                 return TaskResult(
@@ -660,6 +700,7 @@ class ForgeTaskWorkflow:
                         force=True,
                     ),
                     start_to_close_timeout=_GIT_TIMEOUT,
+                    retry_policy=_LOCAL_RETRY,
                     result_type=type(None),
                 )
                 continue
@@ -673,6 +714,7 @@ class ForgeTaskWorkflow:
                     status="failure",
                 ),
                 start_to_close_timeout=_GIT_TIMEOUT,
+                retry_policy=_GIT_RETRY,
                 result_type=CommitChangesOutput,
             )
             error = "; ".join(r.summary for r in validation_results if not r.passed)
@@ -713,6 +755,7 @@ class ForgeTaskWorkflow:
                 base_branch=task.base_branch,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
+            retry_policy=_GIT_RETRY,
             result_type=CreateWorktreeOutput,
         )
 
@@ -729,6 +772,7 @@ class ForgeTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_CONTEXT_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=PlannerInput,
         )
 
@@ -834,6 +878,7 @@ class ForgeTaskWorkflow:
                         max_attempts=max_step_attempts,
                     ),
                     start_to_close_timeout=_CONTEXT_TIMEOUT,
+                    retry_policy=_LOCAL_RETRY,
                     result_type=AssembledContext,
                 )
 
@@ -857,6 +902,7 @@ class ForgeTaskWorkflow:
                         worktree_path=wt_output.worktree_path,
                     ),
                     start_to_close_timeout=_WRITE_TIMEOUT,
+                    retry_policy=_WRITE_RETRY,
                     result_type=WriteResult,
                 )
 
@@ -870,6 +916,7 @@ class ForgeTaskWorkflow:
                         validation=task.validation,
                     ),
                     start_to_close_timeout=_VALIDATE_TIMEOUT,
+                    retry_policy=_LOCAL_RETRY,
                     result_type=list[ValidationResult],
                 )
 
@@ -882,6 +929,7 @@ class ForgeTaskWorkflow:
                         max_attempts=max_step_attempts,
                     ),
                     start_to_close_timeout=_TRANSITION_TIMEOUT,
+                    retry_policy=_LOCAL_RETRY,
                     result_type=str,
                 )
                 signal = TransitionSignal(signal_value)
@@ -907,6 +955,7 @@ class ForgeTaskWorkflow:
                             message=commit_msg,
                         ),
                         start_to_close_timeout=_GIT_TIMEOUT,
+                        retry_policy=_GIT_RETRY,
                         result_type=CommitChangesOutput,
                     )
                     step_results.append(
@@ -933,6 +982,7 @@ class ForgeTaskWorkflow:
                             task_id=task.task_id,
                         ),
                         start_to_close_timeout=_GIT_TIMEOUT,
+                        retry_policy=_GIT_RETRY,
                         result_type=type(None),
                     )
                     continue
@@ -1055,6 +1105,7 @@ class ForgeTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_CONTEXT_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=SanityCheckInput,
         )
 
@@ -1167,6 +1218,7 @@ class ForgeTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=DetectFileConflictsOutput,
         )
         non_conflicting = detect_result.non_conflicting_files
@@ -1233,6 +1285,7 @@ class ForgeTaskWorkflow:
                     files=merged_files,
                 ),
                 start_to_close_timeout=_WRITE_TIMEOUT,
+                retry_policy=_WRITE_RETRY,
                 result_type=WriteResult,
             )
 
@@ -1246,6 +1299,7 @@ class ForgeTaskWorkflow:
                     validation=task.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -1258,6 +1312,7 @@ class ForgeTaskWorkflow:
                     max_attempts=1,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -1286,6 +1341,7 @@ class ForgeTaskWorkflow:
                 message=commit_msg,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
+            retry_policy=_GIT_RETRY,
             result_type=CommitChangesOutput,
         )
 
@@ -1377,6 +1433,7 @@ class ForgeSubTaskWorkflow:
                 max_tokens=max_tokens,
             ),
             start_to_close_timeout=_SUBMIT_TIMEOUT,
+            retry_policy=_LLM_RETRY,
             result_type=BatchSubmitResult,
         )
         await workflow.wait_condition(
@@ -1397,6 +1454,7 @@ class ForgeSubTaskWorkflow:
                 worktree_path=context.worktree_path,
             ),
             start_to_close_timeout=_PARSE_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=ParsedLLMResponse,
         )
 
@@ -1411,6 +1469,7 @@ class ForgeSubTaskWorkflow:
                 "call_llm",
                 context,
                 start_to_close_timeout=_LLM_TIMEOUT,
+                retry_policy=_LLM_RETRY,
                 result_type=LLMCallResult,
             )
         parsed = await self._call_llm_batch(context, "LLMResponse")
@@ -1434,6 +1493,7 @@ class ForgeSubTaskWorkflow:
                 "call_conflict_resolution",
                 call_input,
                 start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
+                retry_policy=_LLM_RETRY,
                 result_type=ConflictResolutionCallResult,
             )
         context = AssembledContext(
@@ -1478,6 +1538,7 @@ class ForgeSubTaskWorkflow:
                     base_branch=input.parent_branch,
                 ),
                 start_to_close_timeout=_GIT_TIMEOUT,
+                retry_policy=_GIT_RETRY,
                 result_type=CreateWorktreeOutput,
             )
 
@@ -1496,6 +1557,7 @@ class ForgeSubTaskWorkflow:
                     domain=input.domain,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=AssembledContext,
             )
 
@@ -1519,6 +1581,7 @@ class ForgeSubTaskWorkflow:
                     worktree_path=wt_output.worktree_path,
                 ),
                 start_to_close_timeout=_WRITE_TIMEOUT,
+                retry_policy=_WRITE_RETRY,
                 result_type=WriteResult,
             )
 
@@ -1532,6 +1595,7 @@ class ForgeSubTaskWorkflow:
                     validation=input.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -1544,6 +1608,7 @@ class ForgeSubTaskWorkflow:
                     max_attempts=input.max_attempts,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -1568,6 +1633,7 @@ class ForgeSubTaskWorkflow:
                     force=True,
                 ),
                 start_to_close_timeout=_GIT_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=type(None),
             )
 
@@ -1613,6 +1679,7 @@ class ForgeSubTaskWorkflow:
                 base_branch=input.parent_branch,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
+            retry_policy=_GIT_RETRY,
             result_type=CreateWorktreeOutput,
         )
 
@@ -1627,6 +1694,7 @@ class ForgeSubTaskWorkflow:
                     force=True,
                 ),
                 start_to_close_timeout=_GIT_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=type(None),
             )
             return SubTaskResult(
@@ -1681,6 +1749,7 @@ class ForgeSubTaskWorkflow:
                     force=True,
                 ),
                 start_to_close_timeout=_GIT_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=type(None),
             )
             error_parts = [f"{r.sub_task_id}: {r.error}" for r in failures]
@@ -1699,6 +1768,7 @@ class ForgeSubTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=DetectFileConflictsOutput,
         )
         non_conflicting = detect_result.non_conflicting_files
@@ -1741,6 +1811,7 @@ class ForgeSubTaskWorkflow:
                         force=True,
                     ),
                     start_to_close_timeout=_GIT_TIMEOUT,
+                    retry_policy=_LOCAL_RETRY,
                     result_type=type(None),
                 )
                 return SubTaskResult(
@@ -1769,6 +1840,7 @@ class ForgeSubTaskWorkflow:
                     files=merged_files,
                 ),
                 start_to_close_timeout=_WRITE_TIMEOUT,
+                retry_policy=_WRITE_RETRY,
                 result_type=WriteResult,
             )
 
@@ -1781,6 +1853,7 @@ class ForgeSubTaskWorkflow:
                     validation=input.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -1792,6 +1865,7 @@ class ForgeSubTaskWorkflow:
                     max_attempts=1,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -1805,6 +1879,7 @@ class ForgeSubTaskWorkflow:
                         force=True,
                     ),
                     start_to_close_timeout=_GIT_TIMEOUT,
+                    retry_policy=_LOCAL_RETRY,
                     result_type=type(None),
                 )
                 error = "; ".join(r.summary for r in validation_results if not r.passed)
@@ -1826,6 +1901,7 @@ class ForgeSubTaskWorkflow:
                 force=True,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
+            retry_policy=_LOCAL_RETRY,
             result_type=type(None),
         )
 

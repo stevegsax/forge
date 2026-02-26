@@ -32,7 +32,7 @@ This document describes the workflow for working on tasks in `development-plans/
 
 1. Run the verification steps listed in the task file
 2. Update the task file's **Status** to `DONE`
-3. Check off the task in [TASKS.md](TASKS.md)
+3. Check off the task in [TASKS.md](TASKS.md) immediately
 4. Append a row to [CHANGELOG.md](CHANGELOG.md)
 
 ## Principles
