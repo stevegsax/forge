@@ -1,5 +1,9 @@
 # Documentation Table of Contents
 
+## User Guides
+
+- [playbooks.md](user/playbooks.md) — How playbooks capture lessons from completed tasks and inject them into future ones.
+
 ## Planning & Design
 
 - [DESIGN.md](planning/DESIGN.md) — Full architecture and design document: batch-first LLM orchestrator with document completion and core architectural principles.
