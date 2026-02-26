@@ -4,11 +4,13 @@ Resolves file conflicts when multiple sub-tasks produce the same file during
 fan-out execution. Uses REASONING-tier LLM to merge competing versions.
 
 Design follows Function Core / Imperative Shell:
-- Pure functions: detect_file_conflicts, build_conflict_resolution_system_prompt,
+- Pure functions: classify_file_conflicts, build_conflict_resolution_system_prompt,
   build_conflict_resolution_user_prompt
+- I/O wrapper: detect_file_conflicts (calls classify + reads originals from disk)
+- Temporal activities: detect_file_conflicts_activity, assemble_conflict_resolution_context,
+  call_conflict_resolution
 - Testable function: execute_conflict_resolution_call (takes client as argument)
-- Imperative shell: assemble_conflict_resolution_context, call_conflict_resolution,
-  _persist_interaction
+- Imperative shell: _persist_interaction
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ from forge.models import (
     ConflictResolutionCallResult,
     ConflictResolutionInput,
     ConflictResolutionResponse,
+    DetectFileConflictsInput,
+    DetectFileConflictsOutput,
     FileConflict,
     FileConflictVersion,
     SubTaskResult,
@@ -52,18 +56,18 @@ DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS = 8192
 # ---------------------------------------------------------------------------
 
 
-def detect_file_conflicts(
+def classify_file_conflicts(
     sub_task_results: list[SubTaskResult],
-    worktree_path: str | None = None,
 ) -> tuple[dict[str, str], list[FileConflict]]:
     """Separate sub-task outputs into non-conflicting files and conflicts.
+
+    Pure function — no filesystem I/O. Conflicts have ``original_content=None``.
 
     Returns:
         A tuple of (non_conflicting_files, conflicts) where:
         - non_conflicting_files: dict mapping file_path -> content for unique files
         - conflicts: list of FileConflict for files produced by multiple sub-tasks
     """
-    # Track which sub-tasks produced each file path
     file_sources: dict[str, list[FileConflictVersion]] = {}
     for result in sub_task_results:
         if result.status != TransitionSignal.SUCCESS:
@@ -82,25 +86,53 @@ def detect_file_conflicts(
         if len(versions) == 1:
             non_conflicting[file_path] = versions[0].content
         else:
-            # Read original content from worktree if available
-            original_content: str | None = None
-            if worktree_path:
-                original_path = Path(worktree_path) / file_path
-                try:
-                    if original_path.is_file():
-                        original_content = original_path.read_text()
-                except Exception:
-                    logger.debug("Could not read original content for %s", file_path)
-
             conflicts.append(
                 FileConflict(
                     file_path=file_path,
                     versions=versions,
-                    original_content=original_content,
+                    original_content=None,
                 )
             )
 
     return non_conflicting, conflicts
+
+
+def detect_file_conflicts(
+    sub_task_results: list[SubTaskResult],
+    worktree_path: str | None = None,
+) -> tuple[dict[str, str], list[FileConflict]]:
+    """Classify conflicts and read original content from the worktree.
+
+    Thin wrapper around :func:`classify_file_conflicts` that adds filesystem
+    reads for ``original_content``.  Preserves backward compatibility for
+    existing callers and tests.
+    """
+    non_conflicting, conflicts = classify_file_conflicts(sub_task_results)
+
+    if worktree_path:
+        for conflict in conflicts:
+            original_path = Path(worktree_path) / conflict.file_path
+            try:
+                if original_path.is_file():
+                    conflict.original_content = original_path.read_text()
+            except Exception:
+                logger.debug("Could not read original content for %s", conflict.file_path)
+
+    return non_conflicting, conflicts
+
+
+@activity.defn
+async def detect_file_conflicts_activity(
+    input: DetectFileConflictsInput,
+) -> DetectFileConflictsOutput:
+    """Temporal activity wrapper for detect_file_conflicts."""
+    non_conflicting, conflicts = detect_file_conflicts(
+        input.sub_task_results, input.worktree_path
+    )
+    return DetectFileConflictsOutput(
+        non_conflicting_files=non_conflicting,
+        conflicts=conflicts,
+    )
 
 
 def build_conflict_resolution_system_prompt(

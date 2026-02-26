@@ -37,6 +37,8 @@ with workflow.unsafe.imports_passed_through():
         ContextResult,
         CreateWorktreeInput,
         CreateWorktreeOutput,
+        DetectFileConflictsInput,
+        DetectFileConflictsOutput,
         ExplorationInput,
         ExplorationResponse,
         FileConflict,
@@ -1154,11 +1156,17 @@ class ForgeTaskWorkflow:
             )
 
         # --- Detect and resolve file conflicts ---
-        from forge.activities.conflict_resolution import detect_file_conflicts
-
-        non_conflicting, conflicts = detect_file_conflicts(
-            sub_task_results, wt_output.worktree_path
+        detect_result = await workflow.execute_activity(
+            "detect_file_conflicts_activity",
+            DetectFileConflictsInput(
+                sub_task_results=sub_task_results,
+                worktree_path=wt_output.worktree_path,
+            ),
+            start_to_close_timeout=_GIT_TIMEOUT,
+            result_type=DetectFileConflictsOutput,
         )
+        non_conflicting = detect_result.non_conflicting_files
+        conflicts = detect_result.conflicts
         conflict_resolution_result: ConflictResolutionCallResult | None = None
 
         if conflicts:
@@ -1677,11 +1685,17 @@ class ForgeSubTaskWorkflow:
             )
 
         # --- Detect and resolve file conflicts ---
-        from forge.activities.conflict_resolution import detect_file_conflicts
-
-        non_conflicting, conflicts = detect_file_conflicts(
-            sub_task_results, wt_output.worktree_path
+        detect_result = await workflow.execute_activity(
+            "detect_file_conflicts_activity",
+            DetectFileConflictsInput(
+                sub_task_results=sub_task_results,
+                worktree_path=wt_output.worktree_path,
+            ),
+            start_to_close_timeout=_GIT_TIMEOUT,
+            result_type=DetectFileConflictsOutput,
         )
+        non_conflicting = detect_result.non_conflicting_files
+        conflicts = detect_result.conflicts
         conflict_resolution_result: ConflictResolutionCallResult | None = None
 
         if conflicts:

@@ -484,6 +484,20 @@ class FileConflict(BaseModel):
     )
 
 
+class DetectFileConflictsInput(BaseModel):
+    """Input to detect_file_conflicts_activity."""
+
+    sub_task_results: list[SubTaskResult]
+    worktree_path: str | None = None
+
+
+class DetectFileConflictsOutput(BaseModel):
+    """Output from detect_file_conflicts_activity."""
+
+    non_conflicting_files: dict[str, str]
+    conflicts: list[FileConflict]
+
+
 class ConflictResolutionInput(BaseModel):
     """Input to assemble_conflict_resolution_context activity."""
 

@@ -9,13 +9,17 @@ import pytest
 from forge.activities.conflict_resolution import (
     build_conflict_resolution_system_prompt,
     build_conflict_resolution_user_prompt,
+    classify_file_conflicts,
     detect_file_conflicts,
+    detect_file_conflicts_activity,
     execute_conflict_resolution_call,
 )
 from forge.models import (
     ConflictResolutionCallInput,
     ConflictResolutionCallResult,
     ConflictResolutionResponse,
+    DetectFileConflictsInput,
+    DetectFileConflictsOutput,
     FileConflict,
     FileConflictVersion,
     FileOutput,
@@ -385,3 +389,110 @@ class TestExecuteConflictResolutionCall:
         assert len(result.resolved_files) == 2
         assert result.resolved_files["a.py"] == "# merged a"
         assert result.resolved_files["b.py"] == "# merged b"
+
+
+# ---------------------------------------------------------------------------
+# TestClassifyFileConflicts
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyFileConflicts:
+    """classify_file_conflicts is the pure function with no filesystem I/O."""
+
+    def test_separates_conflicts_from_non_conflicting(self) -> None:
+        results = [
+            SubTaskResult(
+                sub_task_id="st1",
+                status=TransitionSignal.SUCCESS,
+                output_files={"shared.py": "# from st1", "unique.py": "# unique"},
+            ),
+            SubTaskResult(
+                sub_task_id="st2",
+                status=TransitionSignal.SUCCESS,
+                output_files={"shared.py": "# from st2"},
+            ),
+        ]
+        non_conflicting, conflicts = classify_file_conflicts(results)
+        assert non_conflicting == {"unique.py": "# unique"}
+        assert len(conflicts) == 1
+        assert conflicts[0].file_path == "shared.py"
+        assert conflicts[0].original_content is None
+
+    def test_conflicts_have_no_original_content(self) -> None:
+        """classify_file_conflicts never reads the filesystem, so original_content is always None."""
+        results = [
+            SubTaskResult(
+                sub_task_id="st1",
+                status=TransitionSignal.SUCCESS,
+                output_files={"a.py": "# v1"},
+            ),
+            SubTaskResult(
+                sub_task_id="st2",
+                status=TransitionSignal.SUCCESS,
+                output_files={"a.py": "# v2"},
+            ),
+        ]
+        _, conflicts = classify_file_conflicts(results)
+        assert len(conflicts) == 1
+        assert conflicts[0].original_content is None
+
+
+# ---------------------------------------------------------------------------
+# TestDetectFileConflictsActivity
+# ---------------------------------------------------------------------------
+
+
+class TestDetectFileConflictsActivity:
+    """detect_file_conflicts_activity wraps detect_file_conflicts as a Temporal activity."""
+
+    @pytest.mark.asyncio
+    async def test_returns_output_model(self) -> None:
+        results = [
+            SubTaskResult(
+                sub_task_id="st1",
+                status=TransitionSignal.SUCCESS,
+                output_files={"shared.py": "# from st1", "unique.py": "# unique"},
+            ),
+            SubTaskResult(
+                sub_task_id="st2",
+                status=TransitionSignal.SUCCESS,
+                output_files={"shared.py": "# from st2"},
+            ),
+        ]
+        activity_input = DetectFileConflictsInput(sub_task_results=results)
+        output = await detect_file_conflicts_activity(activity_input)
+
+        assert isinstance(output, DetectFileConflictsOutput)
+        assert output.non_conflicting_files == {"unique.py": "# unique"}
+        assert len(output.conflicts) == 1
+        assert output.conflicts[0].file_path == "shared.py"
+        assert len(output.conflicts[0].versions) == 2
+
+    @pytest.mark.asyncio
+    async def test_reads_original_from_worktree(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wt = Path(tmpdir)
+            (wt / "existing.py").write_text("# original content")
+
+            results = [
+                SubTaskResult(
+                    sub_task_id="st1",
+                    status=TransitionSignal.SUCCESS,
+                    output_files={"existing.py": "# from st1"},
+                ),
+                SubTaskResult(
+                    sub_task_id="st2",
+                    status=TransitionSignal.SUCCESS,
+                    output_files={"existing.py": "# from st2"},
+                ),
+            ]
+            activity_input = DetectFileConflictsInput(
+                sub_task_results=results, worktree_path=str(wt)
+            )
+            output = await detect_file_conflicts_activity(activity_input)
+
+            assert len(output.conflicts) == 1
+            assert output.conflicts[0].original_content == "# original content"

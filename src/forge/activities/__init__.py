@@ -8,6 +8,7 @@ from forge.activities.batch_submit import submit_batch_request
 from forge.activities.conflict_resolution import (
     assemble_conflict_resolution_context,
     call_conflict_resolution,
+    detect_file_conflicts_activity,
 )
 from forge.activities.context import (
     assemble_context,
@@ -53,6 +54,7 @@ __all__ = [
     "call_sanity_check",
     "commit_changes_activity",
     "create_worktree_activity",
+    "detect_file_conflicts_activity",
     "evaluate_transition",
     "fetch_extraction_input",
     "fulfill_context_requests",
