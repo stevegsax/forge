@@ -216,6 +216,7 @@ async def run_worker(
             write_files,
             write_output,
         ],
+        graceful_shutdown_timeout=timedelta(seconds=30),
     )
 
     try:

@@ -97,6 +97,7 @@ _SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
 _CONFLICT_RESOLUTION_TIMEOUT = timedelta(minutes=5)
 _SUBMIT_TIMEOUT = timedelta(seconds=60)
 _PARSE_TIMEOUT = timedelta(seconds=30)
+_BATCH_WAIT_TIMEOUT = timedelta(hours=25)  # Anthropic batch API expires at 24h
 
 _CHILD_BASE_MINUTES = 15
 _CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
@@ -233,7 +234,10 @@ class ForgeTaskWorkflow:
             result_type=BatchSubmitResult,
         )
         # Wait for the poller (14c) to deliver the result via signal
-        await workflow.wait_condition(lambda: len(self._batch_results) > 0)
+        await workflow.wait_condition(
+            lambda: len(self._batch_results) > 0,
+            timeout=_BATCH_WAIT_TIMEOUT,
+        )
         result = self._batch_results.pop(0)
         if result.error:
             raise ApplicationError(f"Batch error: {result.error}")
@@ -1375,7 +1379,10 @@ class ForgeSubTaskWorkflow:
             start_to_close_timeout=_SUBMIT_TIMEOUT,
             result_type=BatchSubmitResult,
         )
-        await workflow.wait_condition(lambda: len(self._batch_results) > 0)
+        await workflow.wait_condition(
+            lambda: len(self._batch_results) > 0,
+            timeout=_BATCH_WAIT_TIMEOUT,
+        )
         result = self._batch_results.pop(0)
         if result.error:
             raise ApplicationError(f"Batch error: {result.error}")

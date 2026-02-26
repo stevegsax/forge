@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,6 +53,8 @@ if TYPE_CHECKING:
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_INFRASTRUCTURE_ERROR = 3
+
+_WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=48)
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +329,7 @@ async def _submit_and_wait(
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
+        execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
     )
     return result
 
@@ -376,6 +380,7 @@ async def _submit_no_wait(
         ),
         id=f"forge-task-{task_def.task_id}",
         task_queue=FORGE_TASK_QUEUE,
+        execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
     )
     return handle.id
 
