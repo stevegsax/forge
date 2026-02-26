@@ -511,3 +511,9 @@ Each sub-phase is independently committable with all tests passing. 14a is pure 
 **Decision:** When encountering unexpected behavior (test failures, hangs, errors), do not speculate about the cause. Ask the user first. If the user doesn't know, offer to investigate.
 
 **Rationale:** Speculative explanations presented as fact erode trust. A wrong guess wastes time and can send debugging down the wrong path. Asking the user is cheap and often yields the answer immediately (e.g., "the Temporal server is already running"). If the user doesn't know either, a concrete offer to investigate sets the right expectation and leads to an evidence-based answer.
+
+## D85: File-Based Application Logging at XDG State Directory
+
+**Decision:** Application logs are written to files under `$XDG_STATE_HOME/forge/` (defaulting to `~/.local/state/forge/`). Console output controlled by `-v` flags remains for interactive use, but the canonical log destination is the filesystem.
+
+**Rationale:** Console-only logging is ephemeral — once the terminal scrolls or the session ends, the output is gone. File-based logging enables post-hoc debugging, support triage, and correlation across Temporal activities and workflows. The XDG Base Directory Specification designates `$XDG_STATE_HOME` for persistent state data such as logs, which keeps them separate from configuration (`$XDG_CONFIG_HOME`) and cached data (`$XDG_CACHE_HOME`).
