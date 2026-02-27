@@ -365,6 +365,54 @@ class TestExecutePollBatchResults:
         assert result.signals_sent == 2
 
     @pytest.mark.asyncio
+    async def test_final_status_is_per_job_not_cumulative(self) -> None:
+        """Job B should get 'errored' even if job A already sent signals."""
+        entry_a = _make_result_entry(custom_id="req-a", result_type="succeeded")
+        batch = _make_batch_response()
+
+        async def _results_a():
+            yield entry_a
+
+        async def _results_b():
+            # Empty — no results for job B
+            return
+            yield  # make this an async generator
+
+        call_count = 0
+
+        async def _retrieve(batch_id):
+            return batch
+
+        async def _results(batch_id):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _results_a()
+            return _results_b()
+
+        client = AsyncMock()
+        client.messages.batches.retrieve = _retrieve
+        client.messages.batches.results = _results
+
+        temporal = _make_temporal_client()
+        updates: list[dict] = []
+
+        def track_update(**kwargs):
+            updates.append(kwargs)
+
+        jobs = [
+            _make_pending_job(request_id="req-a", batch_id="batch-a", workflow_id="wf-a"),
+            _make_pending_job(request_id="req-b", batch_id="batch-b", workflow_id="wf-b"),
+        ]
+
+        result = await execute_poll_batch_results(jobs, client, temporal, track_update)
+
+        assert result.signals_sent == 1
+        assert len(updates) == 2
+        assert updates[0] == {"request_id": "req-a", "status": "succeeded", "error_message": None}
+        assert updates[1] == {"request_id": "req-b", "status": "errored", "error_message": None}
+
+    @pytest.mark.asyncio
     async def test_results_retrieval_failure_increments_errors(self) -> None:
         client = _make_anthropic_client(results_error=RuntimeError("stream error"))
         temporal = _make_temporal_client()

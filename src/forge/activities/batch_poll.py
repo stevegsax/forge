@@ -111,12 +111,14 @@ async def execute_poll_batch_results(
             errors_found += 1
             continue
 
+        job_signals = 0
         async for entry in results_iter:
             signal = _build_signal_from_entry(entry, batch_id)
 
             try:
                 handle = temporal_client.get_workflow_handle(workflow_id)
                 await handle.signal("batch_result_received", signal)
+                job_signals += 1
                 signals_sent += 1
             except Exception:
                 logger.warning(
@@ -128,7 +130,7 @@ async def execute_poll_batch_results(
                 errors_found += 1
 
         # Update batch job status (best-effort, D42)
-        final_status = "succeeded" if signals_sent > 0 else "errored"
+        final_status = "succeeded" if job_signals > 0 else "errored"
         _safe_update_status(
             update_status_fn,
             request_id=request_id,

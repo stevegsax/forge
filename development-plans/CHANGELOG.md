@@ -11,3 +11,4 @@ Append-only log of completed tasks. Most recent entries at the bottom.
 | 2026-02-26 | 05 | Decompose _run_planned into _plan_task and _execute_step_with_retries helpers | cf33267 |
 | 2026-02-26 | 06 | Extract shared persist_interaction helper to eliminate 5-way duplication | f9f0826 |
 | 2026-02-26 | 07 | Add activity heartbeats to all long-running activities with heartbeat_timeout on invocations | pending |
+| 2026-02-26 | 08 | Fix batch poll final_status using cumulative signals_sent instead of per-job count | pending |
