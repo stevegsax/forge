@@ -11,11 +11,11 @@ from forge.activities.validate import (
     _run_ruff_format_fix,
     _run_ruff_lint,
     _run_ruff_lint_fix,
-    _SubprocessResult,
     parse_check_result,
     validate_output,
 )
 from forge.models import ValidateOutputInput, ValidationConfig
+from forge.subprocess_result import SubprocessResult
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -28,28 +28,28 @@ if TYPE_CHECKING:
 
 class TestParseCheckResult:
     def test_passing_result(self) -> None:
-        result = _SubprocessResult(returncode=0, stdout="", stderr="")
+        result = SubprocessResult(returncode=0, stdout="", stderr="")
         vr = parse_check_result("lint", result)
         assert vr.passed is True
         assert vr.check_name == "lint"
         assert "passed" in vr.summary
 
     def test_failing_result(self) -> None:
-        result = _SubprocessResult(returncode=1, stdout="error on line 5", stderr="")
+        result = SubprocessResult(returncode=1, stdout="error on line 5", stderr="")
         vr = parse_check_result("lint", result)
         assert vr.passed is False
         assert "error on line 5" in vr.summary
 
     def test_long_output_truncated_in_summary(self) -> None:
         long_output = "x" * 300
-        result = _SubprocessResult(returncode=1, stdout=long_output, stderr="")
+        result = SubprocessResult(returncode=1, stdout=long_output, stderr="")
         vr = parse_check_result("lint", result)
         assert len(vr.summary) < len(long_output)
         assert vr.summary.endswith("...")
         assert vr.details == long_output
 
     def test_stderr_used_when_stdout_empty(self) -> None:
-        result = _SubprocessResult(returncode=1, stdout="", stderr="stderr msg")
+        result = SubprocessResult(returncode=1, stdout="", stderr="stderr msg")
         vr = parse_check_result("check", result)
         assert "stderr msg" in vr.summary
 

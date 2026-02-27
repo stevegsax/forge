@@ -3,40 +3,14 @@
 from __future__ import annotations
 
 from forge.code_intel.budget import (
-    ContextBudget,
     ContextItem,
     PackedContext,
     Representation,
     build_context_items,
-    compute_budget,
     pack_context,
 )
 from forge.code_intel.graph import RankedFile, Relationship
 from forge.code_intel.repo_map import estimate_tokens
-
-# ---------------------------------------------------------------------------
-# compute_budget
-# ---------------------------------------------------------------------------
-
-
-class TestComputeBudget:
-    def test_basic(self) -> None:
-        budget = compute_budget(
-            model_max_tokens=200_000,
-            reserved_for_output=16_000,
-            task_description_tokens=4_000,
-        )
-        assert isinstance(budget, ContextBudget)
-        assert budget.available_for_context == 180_000
-
-    def test_zero_available(self) -> None:
-        budget = compute_budget(
-            model_max_tokens=1000,
-            reserved_for_output=800,
-            task_description_tokens=300,
-        )
-        assert budget.available_for_context == 0
-
 
 # ---------------------------------------------------------------------------
 # pack_context

@@ -80,7 +80,6 @@ def build_system_param(
 def build_thinking_param(
     model_name: str,
     budget_tokens: int,
-    effort: str,
 ) -> dict | None:
     """Build the thinking parameter for messages.create.
 
@@ -115,7 +114,6 @@ def build_messages_params(
     cache_instructions: bool = True,
     cache_tool_definitions: bool = True,
     thinking_budget_tokens: int = 0,
-    thinking_effort: str = "high",
 ) -> dict:
     """Build the full kwargs dict for client.messages.create.
 
@@ -134,7 +132,7 @@ def build_messages_params(
         "tool_choice": {"type": "tool", "name": tool_name},
     }
 
-    thinking = build_thinking_param(model, thinking_budget_tokens, thinking_effort)
+    thinking = build_thinking_param(model, thinking_budget_tokens)
     if thinking is not None:
         params["thinking"] = thinking
         # When thinking is enabled, tool_choice must be "auto" (API constraint)

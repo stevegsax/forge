@@ -175,7 +175,6 @@ async def execute_sanity_check_call(
         model=model,
         max_tokens=DEFAULT_SANITY_CHECK_MAX_TOKENS,
         thinking_budget_tokens=input.thinking.budget_tokens,
-        thinking_effort=input.thinking.effort,
     )
     message = await client.messages.create(**params)
 

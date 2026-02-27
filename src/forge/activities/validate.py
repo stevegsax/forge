@@ -3,7 +3,6 @@
 Runs deterministic checks (ruff lint, ruff format, tests) against generated files.
 
 Design follows Function Core / Imperative Shell:
-- Internal transport: _SubprocessResult
 - Pure function: parse_check_result
 - Imperative shell (fix): _run_ruff_lint_fix, _run_ruff_format_fix
 - Imperative shell (check): _run_ruff_lint, _run_ruff_format_check, _run_tests
@@ -12,7 +11,6 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import subprocess
 from pathlib import Path
@@ -21,29 +19,12 @@ from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
 from forge.models import ValidateOutputInput, ValidationResult
+from forge.subprocess_result import SubprocessResult
 
 logger = logging.getLogger(__name__)
 
 SUBPROCESS_TIMEOUT_SECONDS = 60
 RUFF_CONFIG = "tool-config/ruff.toml"
-
-
-# ---------------------------------------------------------------------------
-# Internal transport
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class _SubprocessResult:
-    """Result of a subprocess invocation. Internal transport only."""
-
-    returncode: int
-    stdout: str
-    stderr: str
-
-    @property
-    def ok(self) -> bool:
-        return self.returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +36,7 @@ def _run_command(
     args: list[str],
     cwd: Path,
     timeout: int = SUBPROCESS_TIMEOUT_SECONDS,
-) -> _SubprocessResult:
+) -> SubprocessResult:
     """Execute a command and return the result. Does not raise on non-zero exit."""
     result = subprocess.run(
         args,
@@ -64,7 +45,7 @@ def _run_command(
         text=True,
         timeout=timeout,
     )
-    return _SubprocessResult(
+    return SubprocessResult(
         returncode=result.returncode,
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),
@@ -76,7 +57,7 @@ def _run_command(
 # ---------------------------------------------------------------------------
 
 
-def parse_check_result(check_name: str, result: _SubprocessResult) -> ValidationResult:
+def parse_check_result(check_name: str, result: SubprocessResult) -> ValidationResult:
     """Convert a subprocess result to a ValidationResult."""
     if result.ok:
         return ValidationResult(

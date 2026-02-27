@@ -203,7 +203,7 @@ def rank_files(
 
         if module in direct_imports:
             relationship = Relationship.DIRECT_IMPORT
-        elif distance <= max_depth:
+        else:
             # Check if it's upstream or downstream
             is_upstream = any(
                 module in (graph.find_upstream_modules(t) or set()) for t in valid_targets
@@ -211,8 +211,6 @@ def rank_files(
             relationship = (
                 Relationship.TRANSITIVE_IMPORT if is_upstream else Relationship.DOWNSTREAM
             )
-        else:
-            relationship = Relationship.DOWNSTREAM
 
         ranked.append(
             RankedFile(

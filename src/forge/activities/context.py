@@ -44,18 +44,6 @@ logger = logging.getLogger(__name__)
 _ERROR_DETAIL_LIMIT = 2000
 _PROJECT_INSTRUCTIONS_FILENAME = "CLAUDE.md"
 
-_OUTPUT_REQUIREMENTS = (
-    "You MUST respond with a valid LLMResponse containing an `explanation` string "
-    "and either `files`, `edits`, or both.\n\n"
-    "- **`files`**: Use for NEW files that don't exist yet. Each entry needs "
-    "`file_path` and `content` (complete file content).\n"
-    "- **`edits`**: Use for EXISTING files that need changes. Each entry needs "
-    "`file_path` and a list of `edits`, where each edit has `search` (exact text "
-    "to find, must match exactly once) and `replace` (replacement text).\n\n"
-    "A file path must NOT appear in both `files` and `edits`. "
-    "Do NOT return an empty object."
-)
-
 
 # ---------------------------------------------------------------------------
 # Pure functions
@@ -561,7 +549,6 @@ async def assemble_context(input: AssembleContextInput) -> AssembledContext:
 
 async def _assemble_context_inner(input: AssembleContextInput) -> AssembledContext:
     """Inner implementation of assemble_context (extracted for span wrapping)."""
-    task_id = input.task_id
     repo_root = Path(input.repo_root)
 
     error_section = build_error_section(

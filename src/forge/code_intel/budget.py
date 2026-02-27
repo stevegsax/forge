@@ -41,15 +41,6 @@ class ContextItem(BaseModel):
     estimated_tokens: int
 
 
-class ContextBudget(BaseModel):
-    """Token budget breakdown."""
-
-    model_max_tokens: int = Field(description="Total model context window.")
-    reserved_for_output: int = Field(description="Tokens reserved for LLM response.")
-    reserved_for_task: int = Field(description="Tokens used by task description, instructions.")
-    available_for_context: int = Field(description="What remains for file context.")
-
-
 class PackedContext(BaseModel):
     """Result of packing context items into the budget."""
 
@@ -65,21 +56,6 @@ class PackedContext(BaseModel):
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
-
-
-def compute_budget(
-    model_max_tokens: int,
-    reserved_for_output: int,
-    task_description_tokens: int,
-) -> ContextBudget:
-    """Compute the available token budget for file context."""
-    available = model_max_tokens - reserved_for_output - task_description_tokens
-    return ContextBudget(
-        model_max_tokens=model_max_tokens,
-        reserved_for_output=reserved_for_output,
-        reserved_for_task=task_description_tokens,
-        available_for_context=max(0, available),
-    )
 
 
 def pack_context(

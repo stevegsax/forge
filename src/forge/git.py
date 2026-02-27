@@ -6,16 +6,17 @@ independent work without conflicts.
 
 Design follows Function Core / Imperative Shell:
 - Pure functions: worktree_path, branch_name, commit_message, _validate_task_id
-- Subprocess wrapper: _run_git (thin, never raises on non-zero)
+- Subprocess wrapper: _run_git (thin, never raises on non-zero; uses SubprocessResult)
 - Imperative shell: create_worktree, remove_worktree, commit_changes, etc.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import re
 import subprocess
 from pathlib import Path
+
+from forge.subprocess_result import SubprocessResult
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -46,27 +47,6 @@ class CommitError(ForgeGitError):
 
 class RepoDiscoveryError(ForgeGitError):
     """Failed to discover the git repository root."""
-
-
-# ---------------------------------------------------------------------------
-# Internal transport
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class _GitResult:
-    """Result of a git subprocess invocation.
-
-    Not a Pydantic model — internal transport only, never serialized.
-    """
-
-    returncode: int
-    stdout: str
-    stderr: str
-
-    @property
-    def ok(self) -> bool:
-        return self.returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +115,7 @@ def commit_message(task_id: str, status: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _run_git(*args: str, cwd: Path) -> _GitResult:
+def _run_git(*args: str, cwd: Path) -> SubprocessResult:
     """Execute ``git <args>`` and return the result.
 
     Does **not** raise on non-zero exit codes — callers decide what constitutes
@@ -148,7 +128,7 @@ def _run_git(*args: str, cwd: Path) -> _GitResult:
         text=True,
         timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
-    return _GitResult(
+    return SubprocessResult(
         returncode=result.returncode,
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),

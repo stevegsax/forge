@@ -31,13 +31,6 @@ class TestCodeGenerationConfig:
         config = get_domain_config(TaskDomain.CODE_GENERATION)
         assert config.role_prompt == "You are a code generation assistant."
 
-    def test_output_requirements_match_original(self) -> None:
-        """Output requirements must match the original _OUTPUT_REQUIREMENTS constant."""
-        from forge.activities.context import _OUTPUT_REQUIREMENTS
-
-        config = get_domain_config(TaskDomain.CODE_GENERATION)
-        assert config.output_requirements == _OUTPUT_REQUIREMENTS
-
     def test_user_prompt_template(self) -> None:
         config = get_domain_config(TaskDomain.CODE_GENERATION)
         assert "Generate the code" in config.user_prompt_template

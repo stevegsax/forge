@@ -133,6 +133,8 @@ async def execute_judge_call(
     system_prompt: str,
     user_prompt: str,
     client: AsyncAnthropic,
+    *,
+    model_name: str | None = None,
 ) -> JudgeVerdict:
     """Call the Anthropic API for judging and return the verdict.
 
@@ -144,7 +146,7 @@ async def execute_judge_call(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         output_type=JudgeVerdict,
-        model=DEFAULT_JUDGE_MODEL,
+        model=model_name or DEFAULT_JUDGE_MODEL,
         max_tokens=DEFAULT_JUDGE_MAX_TOKENS,
         cache_instructions=False,
         cache_tool_definitions=False,
@@ -185,4 +187,4 @@ async def judge_plan(
     system_prompt = build_judge_system_prompt(case, plan, repo_context)
     user_prompt = build_judge_user_prompt()
     client = get_anthropic_client()
-    return await execute_judge_call(system_prompt, user_prompt, client)
+    return await execute_judge_call(system_prompt, user_prompt, client, model_name=model_name)

@@ -20,6 +20,7 @@ from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
 from forge.activities.context import (
+    _detect_package_name,
     _read_context_files,
     _read_project_instructions,
     build_project_instructions_section,
@@ -206,7 +207,6 @@ async def execute_planner_call(
         model=model,
         max_tokens=DEFAULT_PLANNER_MAX_TOKENS,
         thinking_budget_tokens=input.thinking.budget_tokens,
-        thinking_effort=input.thinking.effort,
     )
     message = await client.messages.create(**params)
 
@@ -310,16 +310,6 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
-
-
-def _detect_package_name(repo_root: str) -> str:
-    """Detect the Python package name from the src/ directory."""
-    src_dir = Path(repo_root) / "src"
-    if src_dir.is_dir():
-        for child in sorted(src_dir.iterdir()):
-            if child.is_dir() and (child / "__init__.py").exists():
-                return child.name
-    return Path(repo_root).name
 
 
 @activity.defn

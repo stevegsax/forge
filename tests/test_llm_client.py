@@ -97,19 +97,19 @@ class TestBuildSystemParam:
 
 class TestBuildThinkingParam:
     def test_opus_gets_enabled(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", 10_000, "high")
+        result = build_thinking_param("claude-opus-4-6", 10_000)
         assert result == {"type": "enabled", "budget_tokens": 10_000}
 
     def test_sonnet_gets_budget(self) -> None:
-        result = build_thinking_param("claude-sonnet-4-5-20250929", 10_000, "high")
+        result = build_thinking_param("claude-sonnet-4-5-20250929", 10_000)
         assert result == {"type": "enabled", "budget_tokens": 10_000}
 
     def test_haiku_returns_none(self) -> None:
-        result = build_thinking_param("claude-haiku-4-5-20251001", 10_000, "high")
+        result = build_thinking_param("claude-haiku-4-5-20251001", 10_000)
         assert result is None
 
     def test_zero_budget_returns_none(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", 0, "high")
+        result = build_thinking_param("claude-opus-4-6", 0)
         assert result is None
 
 

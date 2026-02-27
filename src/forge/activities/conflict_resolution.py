@@ -40,7 +40,6 @@ from forge.models import (
     FileConflict,
     FileConflictVersion,
     SubTaskResult,
-    TaskDomain,
     TransitionSignal,
 )
 
@@ -142,7 +141,6 @@ def build_conflict_resolution_system_prompt(
     conflicts: list[FileConflict],
     non_conflicting_file_paths: list[str],
     project_instructions: str = "",
-    domain: TaskDomain = TaskDomain.CODE_GENERATION,
 ) -> str:
     """Build the system prompt for conflict resolution."""
     parts: list[str] = []
@@ -240,7 +238,6 @@ async def execute_conflict_resolution_call(
         model=model,
         max_tokens=DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
         thinking_budget_tokens=input.thinking.budget_tokens,
-        thinking_effort=input.thinking.effort,
     )
     message = await client.messages.create(**params)
 
@@ -289,7 +286,6 @@ async def assemble_conflict_resolution_context(
         conflicts=input.conflicts,
         non_conflicting_file_paths=list(input.non_conflicting_files.keys()),
         project_instructions=project_instructions,
-        domain=input.domain,
     )
     user_prompt = build_conflict_resolution_user_prompt(len(input.conflicts))
 
