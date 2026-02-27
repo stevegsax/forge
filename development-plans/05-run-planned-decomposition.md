@@ -1,6 +1,6 @@
 # 05 - `_run_planned` Decomposition
 
-**Status:** `NOT STARTED`
+**Status:** `DONE`
 **Priority:** HIGH
 **Code Review Section:** [Section 3](../reports/code-review-2026-02-26.md#3-high-structural-duplication-in-workflowspy) (final paragraph)
 **Depends on:** [04](04-workflow-duplication.md) (both refactor `workflows.py`; complete 04 first to avoid conflicts)

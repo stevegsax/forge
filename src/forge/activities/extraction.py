@@ -275,39 +275,6 @@ async def fetch_extraction_input(input: FetchExtractionInput) -> ExtractionInput
     )
 
 
-def _persist_extraction_interaction(
-    input: ExtractionInput,
-    result: ExtractionCallResult,
-) -> None:
-    """Best-effort store write for extraction interactions. Never raises (D42)."""
-    try:
-        from forge.models import AssembledContext
-        from forge.store import build_interaction_dict, get_db_path, get_engine, save_interaction
-
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        context = AssembledContext(
-            task_id="__extraction__",
-            system_prompt=input.system_prompt,
-            user_prompt=input.user_prompt,
-        )
-
-        engine = get_engine(db_path)
-        data = build_interaction_dict(
-            task_id="__extraction__",
-            step_id=None,
-            sub_task_id=None,
-            role="extraction",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, **data)
-    except Exception:
-        logger.warning("Failed to persist extraction interaction to store", exc_info=True)
-
-
 @activity.defn
 async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
     """Activity wrapper — creates client and delegates to execute_extraction_call."""
@@ -331,7 +298,15 @@ async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
             )
         )
 
-        _persist_extraction_interaction(input, result)
+        from forge.store import persist_interaction
+
+        persist_interaction(
+            task_id="__extraction__",
+            role="extraction",
+            system_prompt=input.system_prompt,
+            user_prompt=input.user_prompt,
+            llm_result=result,
+        )
         return result
 
 

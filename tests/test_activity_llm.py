@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from forge.activities.llm import _persist_interaction, execute_llm_call
+from forge.activities.llm import execute_llm_call
+from forge.store import persist_interaction
 from forge.models import AssembledContext, FileOutput, LLMCallResult, LLMResponse
 from tests.conftest import build_mock_message
 
@@ -109,18 +110,11 @@ class TestExecuteLlmCall:
 
 
 # ---------------------------------------------------------------------------
-# _persist_interaction (Phase 5)
+# persist_interaction (Phase 5) — now in forge.store
 # ---------------------------------------------------------------------------
 
 
 class TestPersistInteraction:
-    def _make_context(self) -> AssembledContext:
-        return AssembledContext(
-            task_id="llm-task",
-            system_prompt="sys",
-            user_prompt="usr",
-        )
-
     def _make_result(self) -> LLMCallResult:
         return LLMCallResult(
             task_id="llm-task",
@@ -148,14 +142,26 @@ class TestPersistInteraction:
         mock_get_db_path.return_value = Path("/tmp/test.db")
         mock_get_engine.return_value = MagicMock()
 
-        _persist_interaction(self._make_context(), self._make_result())
+        persist_interaction(
+            task_id="llm-task",
+            role="llm",
+            system_prompt="sys",
+            user_prompt="usr",
+            llm_result=self._make_result(),
+        )
         mock_save.assert_called_once()
 
     @patch("forge.store.get_db_path")
     def test_skips_when_disabled(self, mock_get_db_path: MagicMock) -> None:
         mock_get_db_path.return_value = None
         # Should not raise
-        _persist_interaction(self._make_context(), self._make_result())
+        persist_interaction(
+            task_id="llm-task",
+            role="llm",
+            system_prompt="sys",
+            user_prompt="usr",
+            llm_result=self._make_result(),
+        )
 
     @patch("forge.store.save_interaction", side_effect=RuntimeError("db error"))
     @patch("forge.store.get_engine")
@@ -172,7 +178,13 @@ class TestPersistInteraction:
         mock_get_engine.return_value = MagicMock()
 
         # Should not raise despite save_interaction throwing
-        _persist_interaction(self._make_context(), self._make_result())
+        persist_interaction(
+            task_id="llm-task",
+            role="llm",
+            system_prompt="sys",
+            user_prompt="usr",
+            llm_result=self._make_result(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +277,7 @@ class TestCallLlmModelNameThreading:
 
         with (
             patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
-            patch("forge.activities.llm._persist_interaction"),
+            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer", return_value=mock_tracer),
         ):
             context = AssembledContext(
@@ -302,7 +314,7 @@ class TestCallLlmModelNameThreading:
 
         with (
             patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
-            patch("forge.activities.llm._persist_interaction"),
+            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer", return_value=mock_tracer),
         ):
             context = AssembledContext(

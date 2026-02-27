@@ -4,7 +4,7 @@ Sends the assembled context to the Anthropic API and extracts the structured res
 
 Design follows Function Core / Imperative Shell:
 - Testable function: execute_llm_call (takes client as argument)
-- Imperative shell: call_llm, _persist_interaction
+- Imperative shell: call_llm
 """
 
 from __future__ import annotations
@@ -80,34 +80,6 @@ async def execute_llm_call(
 # ---------------------------------------------------------------------------
 
 
-def _persist_interaction(
-    context: AssembledContext,
-    result: LLMCallResult,
-    *,
-    role: str = "llm",
-) -> None:
-    """Best-effort store write. Never raises (D42)."""
-    try:
-        from forge.store import build_interaction_dict, get_db_path, get_engine, save_interaction
-
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        engine = get_engine(db_path)
-        data = build_interaction_dict(
-            task_id=context.task_id,
-            step_id=context.step_id,
-            sub_task_id=context.sub_task_id,
-            role=role,
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, **data)
-    except Exception:
-        logger.warning("Failed to persist LLM interaction to store", exc_info=True)
-
-
 @activity.defn
 async def call_llm(context: AssembledContext) -> LLMCallResult:
     """Activity wrapper — creates a client and delegates to execute_llm_call."""
@@ -139,5 +111,16 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
             )
         )
 
-        _persist_interaction(context, result)
+        from forge.store import persist_interaction
+
+        persist_interaction(
+            task_id=context.task_id,
+            role="llm",
+            system_prompt=context.system_prompt,
+            user_prompt=context.user_prompt,
+            llm_result=result,
+            step_id=context.step_id,
+            sub_task_id=context.sub_task_id,
+            context_stats=context.context_stats,
+        )
         return result

@@ -8,7 +8,7 @@ Design follows Function Core / Imperative Shell:
   build_step_digest
 - Testable function: execute_sanity_check_call (takes client as argument)
 - Imperative shell: assemble_sanity_check_context, call_sanity_check,
-  _persist_interaction
+  store.persist_interaction
 """
 
 from __future__ import annotations
@@ -204,39 +204,6 @@ async def execute_sanity_check_call(
 # ---------------------------------------------------------------------------
 
 
-def _persist_interaction(
-    sanity_input: SanityCheckInput,
-    result: SanityCheckCallResult,
-) -> None:
-    """Best-effort store write. Never raises (D42)."""
-    try:
-        from forge.models import AssembledContext
-        from forge.store import build_interaction_dict, get_db_path, get_engine, save_interaction
-
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        context = AssembledContext(
-            task_id=sanity_input.task_id,
-            system_prompt=sanity_input.system_prompt,
-            user_prompt=sanity_input.user_prompt,
-        )
-
-        engine = get_engine(db_path)
-        data = build_interaction_dict(
-            task_id=sanity_input.task_id,
-            step_id=None,
-            sub_task_id=None,
-            role="sanity_check",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, **data)
-    except Exception:
-        logger.warning("Failed to persist sanity check interaction to store", exc_info=True)
-
-
 @activity.defn
 async def assemble_sanity_check_context(
     input: AssembleSanityCheckContextInput,
@@ -292,5 +259,13 @@ async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
             )
         )
 
-        _persist_interaction(input, result)
+        from forge.store import persist_interaction
+
+        persist_interaction(
+            task_id=input.task_id,
+            role="sanity_check",
+            system_prompt=input.system_prompt,
+            user_prompt=input.user_prompt,
+            llm_result=result,
+        )
         return result

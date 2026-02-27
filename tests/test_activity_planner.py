@@ -386,7 +386,7 @@ class TestCallPlannerModelNameThreading:
 
         with (
             patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
-            patch("forge.activities.planner._persist_interaction"),
+            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -422,7 +422,7 @@ class TestCallPlannerModelNameThreading:
 
         with (
             patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
-            patch("forge.activities.planner._persist_interaction"),
+            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -482,7 +482,7 @@ class TestCallPlannerThinkingThreading:
 
         with (
             patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
-            patch("forge.activities.planner._persist_interaction"),
+            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()

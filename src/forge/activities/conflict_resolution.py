@@ -10,7 +10,7 @@ Design follows Function Core / Imperative Shell:
 - Temporal activities: detect_file_conflicts_activity, assemble_conflict_resolution_context,
   call_conflict_resolution
 - Testable function: execute_conflict_resolution_call (takes client as argument)
-- Imperative shell: _persist_interaction
+- Imperative shell: store.persist_interaction
 """
 
 from __future__ import annotations
@@ -274,40 +274,6 @@ async def execute_conflict_resolution_call(
 # ---------------------------------------------------------------------------
 
 
-def _persist_interaction(
-    call_input: ConflictResolutionCallInput,
-    result: ConflictResolutionCallResult,
-) -> None:
-    """Best-effort store write. Never raises (D42)."""
-    try:
-        from forge.models import AssembledContext
-        from forge.store import build_interaction_dict, get_db_path, get_engine, save_interaction
-
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        context = AssembledContext(
-            task_id=call_input.task_id,
-            system_prompt=call_input.system_prompt,
-            user_prompt=call_input.user_prompt,
-            step_id=call_input.step_id,
-        )
-
-        engine = get_engine(db_path)
-        data = build_interaction_dict(
-            task_id=call_input.task_id,
-            step_id=call_input.step_id,
-            sub_task_id=None,
-            role="conflict_resolution",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, **data)
-    except Exception:
-        logger.warning("Failed to persist conflict resolution interaction to store", exc_info=True)
-
-
 @activity.defn
 async def assemble_conflict_resolution_context(
     input: ConflictResolutionInput,
@@ -363,5 +329,14 @@ async def call_conflict_resolution(
             )
         )
 
-        _persist_interaction(input, result)
+        from forge.store import persist_interaction
+
+        persist_interaction(
+            task_id=input.task_id,
+            role="conflict_resolution",
+            system_prompt=input.system_prompt,
+            user_prompt=input.user_prompt,
+            llm_result=result,
+            step_id=input.step_id,
+        )
         return result

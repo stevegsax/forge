@@ -5,7 +5,7 @@ Decomposes a task into ordered steps using an LLM with structured output.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_planner_system_prompt, build_planner_user_prompt
 - Testable function: execute_planner_call (takes client as argument)
-- Imperative shell: assemble_planner_context, call_planner, _persist_interaction
+- Imperative shell: assemble_planner_context, call_planner, store.persist_interaction
 """
 
 from __future__ import annotations
@@ -237,40 +237,6 @@ async def execute_planner_call(
 # ---------------------------------------------------------------------------
 
 
-def _persist_interaction(
-    planner_input: PlannerInput,
-    result: PlanCallResult,
-) -> None:
-    """Best-effort store write. Never raises (D42)."""
-    try:
-        from forge.models import AssembledContext
-        from forge.store import build_interaction_dict, get_db_path, get_engine, save_interaction
-
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        # Build a minimal AssembledContext for the store
-        context = AssembledContext(
-            task_id=planner_input.task_id,
-            system_prompt=planner_input.system_prompt,
-            user_prompt=planner_input.user_prompt,
-        )
-
-        engine = get_engine(db_path)
-        data = build_interaction_dict(
-            task_id=planner_input.task_id,
-            step_id=None,
-            sub_task_id=None,
-            role="planner",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, **data)
-    except Exception:
-        logger.warning("Failed to persist planner interaction to store", exc_info=True)
-
-
 @activity.defn
 async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
     """Read context files and assemble the prompts for the planning call.
@@ -380,5 +346,13 @@ async def call_planner(input: PlannerInput) -> PlanCallResult:
             )
         )
 
-        _persist_interaction(input, result)
+        from forge.store import persist_interaction
+
+        persist_interaction(
+            task_id=input.task_id,
+            role="planner",
+            system_prompt=input.system_prompt,
+            user_prompt=input.user_prompt,
+            llm_result=result,
+        )
         return result

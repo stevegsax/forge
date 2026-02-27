@@ -18,8 +18,8 @@ See [PROCESS.md](PROCESS.md) for the full workflow. Quick version:
 - [x] [02 - Wait Condition Timeouts](02-wait-condition-timeouts.md) `HIGH`
 - [x] [03 - Retry Policies](03-retry-policies.md) `HIGH`
 - [x] [04 - Workflow Duplication](04-workflow-duplication.md) `HIGH`
-- [ ] [05 - `_run_planned` Decomposition](05-run-planned-decomposition.md) `HIGH`
-- [ ] [06 - `_persist_interaction` Extraction](06-persist-interaction.md) `HIGH`
+- [x] [05 - `_run_planned` Decomposition](05-run-planned-decomposition.md) `HIGH`
+- [x] [06 - `_persist_interaction` Extraction](06-persist-interaction.md) `HIGH`
 - [ ] [07 - Activity Heartbeats](07-activity-heartbeats.md) `HIGH`
 - [ ] [08 - Batch Poll Bug](08-batch-poll-bug.md) `MEDIUM`
 - [ ] [09 - Model Layer Cleanup](09-model-layer-cleanup.md) `MEDIUM`

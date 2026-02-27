@@ -1,6 +1,6 @@
 # 06 - `_persist_interaction` Extraction
 
-**Status:** `NOT STARTED`
+**Status:** `DONE`
 **Priority:** HIGH
 **Code Review Section:** [Section 4](../reports/code-review-2026-02-26.md#4-high-_persist_interaction-duplicated-across-5-files)
 
@@ -18,10 +18,10 @@ Each copy follows the same pattern: get db_path -> check None -> build Assembled
 
 ## Acceptance Criteria
 
-- [ ] Single shared `_persist_interaction` helper in a common module
-- [ ] All 5 activity files call the shared helper instead of their own copy
-- [ ] Existing tests pass
-- [ ] The shared helper has its own unit test
+- [x] Single shared `persist_interaction` helper in `forge/store.py`
+- [x] All 5 activity files call the shared helper instead of their own copy (4 had `_persist_interaction`, 1 had `_persist_extraction_interaction`)
+- [x] Existing tests pass (1060 passed)
+- [x] The shared helper has its own unit test (existing tests in `test_activity_llm.py::TestPersistInteraction` updated to test `forge.store.persist_interaction`)
 
 ## Plan
 

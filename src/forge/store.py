@@ -5,7 +5,7 @@ Persists full LLM interaction data and run results to a local SQLite database.
 Design follows Function Core / Imperative Shell:
 - Pure functions: get_db_path, build_interaction_dict
 - Imperative shell: get_engine, run_migrations, save_interaction, save_run,
-  get_interactions, get_run, list_recent_runs
+  persist_interaction, get_interactions, get_run, list_recent_runs
 """
 
 from __future__ import annotations
@@ -25,10 +25,24 @@ if TYPE_CHECKING:
 
     from forge.models import (
         AssembledContext,
+        ConflictResolutionCallResult,
+        ContextStats,
+        ExtractionCallResult,
         LLMCallResult,
         PlanCallResult,
         PlaybookEntry,
+        SanityCheckCallResult,
         TaskResult,
+    )
+
+    # Union of all LLM result types that share model_name, input_tokens,
+    # output_tokens, latency_ms, and optional cache token fields.
+    _AnyLLMResult = (
+        LLMCallResult
+        | PlanCallResult
+        | SanityCheckCallResult
+        | ConflictResolutionCallResult
+        | ExtractionCallResult
     )
 
 logger = logging.getLogger(__name__)
@@ -150,12 +164,13 @@ def build_interaction_dict(
     sub_task_id: str | None,
     role: str,
     context: AssembledContext,
-    llm_result: LLMCallResult | PlanCallResult,
+    llm_result: _AnyLLMResult,
 ) -> dict:
     """Assemble a dict from activity data for insertion.
 
-    Works with both LLMCallResult (has response.explanation) and
-    PlanCallResult (has plan.explanation).
+    Works with any LLM result type. Extracts explanation via duck typing:
+    response.explanation for LLMCallResult/SanityCheckCallResult,
+    plan.explanation for PlanCallResult.
     """
     explanation = ""
     if hasattr(llm_result, "response"):
@@ -242,6 +257,50 @@ def save_interaction(engine: Engine, **kwargs: object) -> None:
     """Insert a row into the interactions table."""
     with engine.begin() as conn:
         conn.execute(sa.insert(Interaction.__table__).values(**kwargs))
+
+
+def persist_interaction(
+    *,
+    task_id: str,
+    role: str,
+    system_prompt: str,
+    user_prompt: str,
+    llm_result: _AnyLLMResult,
+    step_id: str | None = None,
+    sub_task_id: str | None = None,
+    context_stats: ContextStats | None = None,
+) -> None:
+    """Best-effort persist of an LLM interaction. Never raises (D42).
+
+    Consolidates the get_db_path → get_engine → build_interaction_dict →
+    save_interaction pattern used across all activity modules.
+    """
+    try:
+        from forge.models import AssembledContext
+
+        db_path = get_db_path()
+        if db_path is None:
+            return
+
+        context = AssembledContext(
+            task_id=task_id,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            context_stats=context_stats,
+        )
+
+        engine = get_engine(db_path)
+        data = build_interaction_dict(
+            task_id=task_id,
+            step_id=step_id,
+            sub_task_id=sub_task_id,
+            role=role,
+            context=context,
+            llm_result=llm_result,
+        )
+        save_interaction(engine, **data)
+    except Exception:
+        logger.warning("Failed to persist %s interaction to store", role, exc_info=True)
 
 
 def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> None:
