@@ -4,7 +4,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phases 1–9 are implemented. The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, knowledge extraction with playbook generation and injection into future task contexts, LLM-guided context exploration where the LLM requests context from providers before generating code, error-aware retries that feed validation errors back to the LLM on retry, and prompt caching via Anthropic cache control headers with cache-efficient prompt ordering and cache token tracking. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
+Phases 1–12 and 14 are implemented (Phase 13, tree-sitter multi-language support, is deferred to Release 2). The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, knowledge extraction with playbook generation and injection into future task contexts, LLM-guided context exploration where the LLM requests context from providers before generating code, error-aware retries that feed validation errors back to the LLM on retry, prompt caching via Anthropic cache control headers with cache-efficient prompt ordering and cache token tracking, fuzzy edit matching with a four-level fallback chain, model routing with capability tiers, extended thinking for planning, and batch processing via the Anthropic Batch API. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented.
 
 ## Documentation
 
@@ -33,7 +33,7 @@ See [docs/TOC.md](docs/TOC.md) for a full table of contents covering design docs
 
 ## The Universal Workflow Step
 
-Every operation follows: construct message, send to LLM, receive response, serialize result, evaluate transition. Temporal provides the workflow engine; the LLM call and transition evaluation are separate activities. Every LLM call is structured as a document completion for batch API compatibility. See [docs/DESIGN.md](docs/planning/DESIGN.md) for details.
+Every operation follows: construct message, send to LLM, receive response, serialize result, evaluate transition. Temporal provides the workflow engine; the LLM call and transition evaluation are separate activities. Every LLM call is structured as a document completion for batch API compatibility. See [docs/planning/DESIGN.md](docs/planning/DESIGN.md) for details.
 
 ## Git Strategy
 
@@ -48,12 +48,12 @@ Every operation follows: construct message, send to LLM, receive response, seria
 - **Planned** (`plan=True`): Planner decomposes task into ordered steps; each step commits on success.
 - **Fan-out** (planned steps with `sub_tasks`): Parallel child workflows per sub-task, gathered and merged by the parent.
 
-All modes include automatic context discovery (Phase 4), LLM-guided exploration (Phase 7), diff-based output (D50), and error-aware retries (Phase 8) by default. See [docs/ARCHITECTURE.md](docs/planning/ARCHITECTURE.md) for details and CLI flags.
+All modes include automatic context discovery (Phase 4), LLM-guided exploration (Phase 7), diff-based output (D50), and error-aware retries (Phase 8) by default. See [docs/planning/ARCHITECTURE.md](docs/planning/ARCHITECTURE.md) for details and CLI flags.
 
 ## Release Roadmap
 
 - **Release 1** (current): Phases 1–14 — the core orchestrator with batch processing. Focus on hardening and confidence before expanding scope.
-- **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See `docs/PHASE13.md`.
+- **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md).
 
 ## Development Plans
 

@@ -87,6 +87,9 @@ forge run --task-file task.json
 | `--max-attempts` | `2` | Task-level retry limit |
 | `--max-step-attempts` | `2` | Retry limit per step in planning mode |
 | `--max-sub-task-attempts` | `2` | Retry limit per sub-task in fan-out steps |
+| `--max-fan-out-depth` | `1` | Maximum recursive fan-out depth (1 = flat fan-out only) |
+| `--sanity-check-interval` | `0` | Run sanity check every N steps in planning mode (0 = disabled) |
+| `--no-resolve-conflicts` | off | Disable LLM-based conflict resolution for fan-out file conflicts |
 
 **Validation options:**
 
@@ -104,6 +107,7 @@ forge run --task-file task.json
 | `--no-auto-discover` | off | Disable automatic context discovery via import graph |
 | `--token-budget` | `100000` | Token budget for context assembly |
 | `--max-import-depth` | `2` | How deep to trace imports |
+| `--include-deps` | off | Include dependency file contents in upfront context |
 
 **Exploration options:**
 
@@ -111,6 +115,25 @@ forge run --task-file task.json
 |--------|---------|-------------|
 | `--max-exploration-rounds` | `10` | Max rounds of LLM-guided context exploration (0 disables) |
 | `--no-explore` | off | Disable LLM-guided context exploration |
+
+**Model options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--reasoning-model` | — | Override model for REASONING tier (planning) |
+| `--generation-model` | — | Override model for GENERATION tier (code gen) |
+| `--summarization-model` | — | Override model for SUMMARIZATION tier (extraction) |
+| `--classification-model` | — | Override model for CLASSIFICATION tier (exploration) |
+| `--thinking-budget` | `10000` | Token budget for extended thinking in planner |
+| `--no-thinking` | off | Disable extended thinking for planner |
+| `--domain` | `code_generation` | Task domain: `code_generation`, `research`, `code_review`, `documentation`, `generic` |
+
+**API and debug options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--sync/--no-sync` | `--no-sync` | Use synchronous Messages API (`--sync`) or batch mode (`--no-sync`, default) |
+| `--log-messages` | off | Save full API request/response JSON to `messages/` in the worktree |
 
 **Common options:**
 
@@ -133,6 +156,9 @@ forge worker --temporal-address temporal.example.com:7233
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
+| `--batch-poll-interval` | `60` | Seconds between batch polling runs |
+| `--extraction-interval` | `14400` | Seconds between knowledge extraction runs (4 hours) |
+| `--worker-identity` | `{pid}@{hostname}` | Custom worker identity reported to Temporal (env: `FORGE_WORKER_IDENTITY`) |
 
 ### `forge status`
 
