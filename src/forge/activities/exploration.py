@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.activities._heartbeat import heartbeat_during
 from forge.domains import get_domain_config
 from forge.llm_client import build_messages_params, extract_tool_result
 from forge.message_log import write_message_log
@@ -230,7 +231,8 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
 
         client = get_anthropic_client()
         start = time.monotonic()
-        response = await execute_exploration_call(input, client, project_instructions)
+        async with heartbeat_during():
+            response = await execute_exploration_call(input, client, project_instructions)
         elapsed_ms = (time.monotonic() - start) * 1000
         logger.info(
             "Exploration result: task_id=%s requests=%d", input.task_id, len(response.requests)

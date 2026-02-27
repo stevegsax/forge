@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.activities._heartbeat import heartbeat_during
 from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.models import (
     ExtractionCallResult,
@@ -284,7 +285,8 @@ async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_extraction_llm") as span:
         client = get_anthropic_client()
-        result = await execute_extraction_call(input, client)
+        async with heartbeat_during():
+            result = await execute_extraction_call(input, client)
 
         span.set_attributes(
             llm_call_attributes(

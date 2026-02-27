@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.activities._heartbeat import heartbeat_during
 from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.message_log import write_message_log
 from forge.models import AssembledContext, LLMCallResult, LLMResponse
@@ -90,7 +91,8 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
     with tracer.start_as_current_span("forge.call_llm") as span:
         logger.info("LLM call start: task_id=%s model=%s", context.task_id, context.model_name)
         client = get_anthropic_client()
-        result = await execute_llm_call(context, client)
+        async with heartbeat_during():
+            result = await execute_llm_call(context, client)
         logger.info(
             "LLM call done: task_id=%s tokens=%din/%dout latency=%.0fms",
             context.task_id,

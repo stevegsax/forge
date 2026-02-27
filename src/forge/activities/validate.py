@@ -19,6 +19,7 @@ from pathlib import Path
 
 from temporalio import activity
 
+from forge.activities._heartbeat import heartbeat_during
 from forge.models import ValidateOutputInput, ValidationResult
 
 logger = logging.getLogger(__name__)
@@ -162,16 +163,18 @@ async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
             _run_ruff_format_fix(wt, input.files)
 
         # Check phase: validate the (possibly fixed) files.
+        # Heartbeat between checks so Temporal can detect worker crashes.
         results: list[ValidationResult] = []
 
-        if input.validation.run_ruff_lint:
-            results.append(_run_ruff_lint(wt, input.files))
+        async with heartbeat_during():
+            if input.validation.run_ruff_lint:
+                results.append(_run_ruff_lint(wt, input.files))
 
-        if input.validation.run_ruff_format:
-            results.append(_run_ruff_format_check(wt, input.files))
+            if input.validation.run_ruff_format:
+                results.append(_run_ruff_format_check(wt, input.files))
 
-        if input.validation.run_tests and input.validation.test_command:
-            results.append(_run_tests(wt, input.validation.test_command))
+            if input.validation.run_tests and input.validation.test_command:
+                results.append(_run_tests(wt, input.validation.test_command))
 
         passed = all(r.passed for r in results)
         logger.info(

@@ -20,7 +20,7 @@ See [PROCESS.md](PROCESS.md) for the full workflow. Quick version:
 - [x] [04 - Workflow Duplication](04-workflow-duplication.md) `HIGH`
 - [x] [05 - `_run_planned` Decomposition](05-run-planned-decomposition.md) `HIGH`
 - [x] [06 - `_persist_interaction` Extraction](06-persist-interaction.md) `HIGH`
-- [ ] [07 - Activity Heartbeats](07-activity-heartbeats.md) `HIGH`
+- [x] [07 - Activity Heartbeats](07-activity-heartbeats.md) `HIGH`
 - [ ] [08 - Batch Poll Bug](08-batch-poll-bug.md) `MEDIUM`
 - [ ] [09 - Model Layer Cleanup](09-model-layer-cleanup.md) `MEDIUM`
 - [ ] [10 - Dead Code Cleanup](10-dead-code-cleanup.md) `LOW`

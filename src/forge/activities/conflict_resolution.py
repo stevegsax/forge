@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.activities._heartbeat import heartbeat_during
 from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
@@ -315,7 +316,8 @@ async def call_conflict_resolution(
     with tracer.start_as_current_span("forge.call_conflict_resolution") as span:
         logger.info("Conflict resolution call: task_id=%s", input.task_id)
         client = get_anthropic_client()
-        result = await execute_conflict_resolution_call(input, client)
+        async with heartbeat_during():
+            result = await execute_conflict_resolution_call(input, client)
 
         span.set_attributes(
             llm_call_attributes(

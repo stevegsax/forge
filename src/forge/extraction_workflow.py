@@ -24,6 +24,7 @@ with workflow.unsafe.imports_passed_through():
 
 _FETCH_TIMEOUT = timedelta(seconds=30)
 _LLM_TIMEOUT = timedelta(minutes=5)
+_LLM_HEARTBEAT = timedelta(seconds=60)
 _SAVE_TIMEOUT = timedelta(seconds=30)
 
 
@@ -64,6 +65,7 @@ class ForgeExtractionWorkflow:
             "call_extraction_llm",
             extraction_input,
             start_to_close_timeout=_LLM_TIMEOUT,
+            heartbeat_timeout=_LLM_HEARTBEAT,
             result_type=ExtractionCallResult,
         )
 

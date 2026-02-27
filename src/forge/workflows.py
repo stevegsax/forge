@@ -102,6 +102,13 @@ _PARSE_TIMEOUT = timedelta(seconds=30)
 _BATCH_WAIT_TIMEOUT = timedelta(hours=25)  # Anthropic batch API expires at 24h
 
 # ---------------------------------------------------------------------------
+# Heartbeat timeouts — detect worker crashes during long-running activities
+# ---------------------------------------------------------------------------
+
+_LLM_HEARTBEAT = timedelta(seconds=60)
+_VALIDATE_HEARTBEAT = timedelta(seconds=120)  # subprocess.run blocks event loop
+
+# ---------------------------------------------------------------------------
 # Activity retry policies
 # ---------------------------------------------------------------------------
 
@@ -245,6 +252,7 @@ async def _call_generation_dispatch(
             "call_llm",
             context,
             start_to_close_timeout=_LLM_TIMEOUT,
+            heartbeat_timeout=_LLM_HEARTBEAT,
             retry_policy=_LLM_RETRY,
             result_type=LLMCallResult,
         )
@@ -272,6 +280,7 @@ async def _call_conflict_resolution_dispatch(
             "call_conflict_resolution",
             call_input,
             start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
+            heartbeat_timeout=_LLM_HEARTBEAT,
             retry_policy=_LLM_RETRY,
             result_type=ConflictResolutionCallResult,
         )
@@ -403,6 +412,7 @@ class ForgeTaskWorkflow:
                 "call_planner",
                 planner_input,
                 start_to_close_timeout=_LLM_TIMEOUT,
+                heartbeat_timeout=_LLM_HEARTBEAT,
                 retry_policy=_LLM_RETRY,
                 result_type=PlanCallResult,
             )
@@ -438,6 +448,7 @@ class ForgeTaskWorkflow:
                 "call_exploration_llm",
                 exploration_input,
                 start_to_close_timeout=_EXPLORATION_LLM_TIMEOUT,
+                heartbeat_timeout=_LLM_HEARTBEAT,
                 retry_policy=_LLM_RETRY,
                 result_type=ExplorationResponse,
             )
@@ -458,6 +469,7 @@ class ForgeTaskWorkflow:
                 "call_sanity_check",
                 sanity_input,
                 start_to_close_timeout=_SANITY_CHECK_TIMEOUT,
+                heartbeat_timeout=_LLM_HEARTBEAT,
                 retry_policy=_LLM_RETRY,
                 result_type=SanityCheckCallResult,
             )
@@ -694,6 +706,7 @@ class ForgeTaskWorkflow:
                     validation=task.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                heartbeat_timeout=_VALIDATE_HEARTBEAT,
                 retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
@@ -1074,6 +1087,7 @@ class ForgeTaskWorkflow:
                     validation=task.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                heartbeat_timeout=_VALIDATE_HEARTBEAT,
                 retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
@@ -1376,6 +1390,7 @@ class ForgeTaskWorkflow:
                     validation=task.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                heartbeat_timeout=_VALIDATE_HEARTBEAT,
                 retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
@@ -1591,6 +1606,7 @@ class ForgeSubTaskWorkflow:
                     validation=input.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                heartbeat_timeout=_VALIDATE_HEARTBEAT,
                 retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )
@@ -1809,6 +1825,7 @@ class ForgeSubTaskWorkflow:
                     validation=input.validation,
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
+                heartbeat_timeout=_VALIDATE_HEARTBEAT,
                 retry_policy=_LOCAL_RETRY,
                 result_type=list[ValidationResult],
             )

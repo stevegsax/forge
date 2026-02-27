@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from forge.activities._heartbeat import heartbeat_during
 from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
@@ -242,7 +243,8 @@ async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
     with tracer.start_as_current_span("forge.call_sanity_check") as span:
         logger.info("Sanity check call: task_id=%s", input.task_id)
         client = get_anthropic_client()
-        result = await execute_sanity_check_call(input, client)
+        async with heartbeat_during():
+            result = await execute_sanity_check_call(input, client)
         logger.info(
             "Sanity verdict: task_id=%s verdict=%s", input.task_id, result.response.verdict.value
         )

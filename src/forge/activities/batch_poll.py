@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
 
+from forge.activities._heartbeat import heartbeat_during
 from forge.models import BatchPollerInput, BatchPollerResult, BatchResult
 
 if TYPE_CHECKING:
@@ -263,12 +264,13 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
         anthropic_client = get_anthropic_client()
         temporal_client = get_temporal_client()
 
-        result = await execute_poll_batch_results(
-            pending_jobs=pending_jobs,
-            client=anthropic_client,
-            temporal_client=temporal_client,
-            update_status_fn=update_status_fn,
-        )
+        async with heartbeat_during():
+            result = await execute_poll_batch_results(
+                pending_jobs=pending_jobs,
+                client=anthropic_client,
+                temporal_client=temporal_client,
+                update_status_fn=update_status_fn,
+            )
 
         span.set_attributes(
             {

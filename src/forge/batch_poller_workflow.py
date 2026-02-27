@@ -11,6 +11,8 @@ from datetime import timedelta
 
 from temporalio import workflow
 
+_POLL_HEARTBEAT = timedelta(seconds=60)
+
 with workflow.unsafe.imports_passed_through():
     from forge.models import BatchPollerInput, BatchPollerResult
 
@@ -25,5 +27,6 @@ class BatchPollerWorkflow:
             "poll_batch_results",
             input,
             start_to_close_timeout=timedelta(minutes=5),
+            heartbeat_timeout=_POLL_HEARTBEAT,
             result_type=BatchPollerResult,
         )
