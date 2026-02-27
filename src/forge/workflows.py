@@ -47,6 +47,7 @@ with workflow.unsafe.imports_passed_through():
         FulfillContextInput,
         LLMCallResult,
         LLMResponse,
+        LLMStats,
         ModelConfig,
         ParsedLLMResponse,
         ParseResponseInput,
@@ -783,26 +784,15 @@ class ForgeTaskWorkflow:
     # Phase 2: Planned multi-step execution
     # ------------------------------------------------------------------
 
-    async def _run_planned(self, input: ForgeTaskInput) -> TaskResult:
+    async def _plan_task(
+        self,
+        input: ForgeTaskInput,
+        wt_output: CreateWorktreeOutput,
+    ) -> tuple[Plan, LLMStats]:
+        """Assemble planner context, run exploration, and call planner LLM."""
         task = input.task
-        max_step_attempts = input.max_step_attempts
-
-        # Resolve models for this workflow
         planner_model = resolve_model(CapabilityTier.REASONING, input.model_routing)
         exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
-
-        # --- Create worktree (once) ---
-        wt_output = await workflow.execute_activity(
-            "create_worktree_activity",
-            CreateWorktreeInput(
-                repo_root=input.repo_root,
-                task_id=task.task_id,
-                base_branch=task.base_branch,
-            ),
-            start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=_GIT_RETRY,
-            result_type=CreateWorktreeOutput,
-        )
 
         # --- Assemble planner context ---
         planner_input = await workflow.execute_activity(
@@ -853,7 +843,25 @@ class ForgeTaskWorkflow:
         planner_result = await self._call_planner_llm(planner_input)
         plan: Plan = planner_result.plan
         workflow.logger.info("Plan created: task_id=%s steps=%d", task.task_id, len(plan.steps))
-        p_stats = build_planner_stats(planner_result)
+        return plan, build_planner_stats(planner_result)
+
+    async def _run_planned(self, input: ForgeTaskInput) -> TaskResult:
+        task = input.task
+
+        # --- Create worktree (once) ---
+        wt_output = await workflow.execute_activity(
+            "create_worktree_activity",
+            CreateWorktreeInput(
+                repo_root=input.repo_root,
+                task_id=task.task_id,
+                base_branch=task.base_branch,
+            ),
+            start_to_close_timeout=_GIT_TIMEOUT,
+            retry_policy=_GIT_RETRY,
+            result_type=CreateWorktreeOutput,
+        )
+
+        plan, p_stats = await self._plan_task(input, wt_output)
         step_results: list[StepResult] = []
         all_output_files: dict[str, str] = {}
         sanity_check_count = 0
@@ -901,155 +909,22 @@ class ForgeTaskWorkflow:
                 step_index += 1
                 continue
 
-            step_succeeded = False
-            prior_errors: list[ValidationResult] = []
-
-            for attempt in range(1, max_step_attempts + 1):
-                # --- Assemble step context ---
-                context = await workflow.execute_activity(
-                    "assemble_step_context",
-                    AssembleStepContextInput(
-                        task_id=task.task_id,
-                        task_description=task.description,
-                        context_config=task.context,
-                        step=step,
-                        step_index=step_index,
-                        total_steps=len(plan.steps),
-                        completed_steps=step_results,
-                        repo_root=input.repo_root,
-                        worktree_path=wt_output.worktree_path,
-                        prior_errors=prior_errors,
-                        attempt=attempt,
-                        max_attempts=max_step_attempts,
-                    ),
-                    start_to_close_timeout=_CONTEXT_TIMEOUT,
-                    retry_policy=_LOCAL_RETRY,
-                    result_type=AssembledContext,
-                )
-
-                # --- Set model_name and log_messages on context ---
-                context = context.model_copy(
-                    update={
-                        "model_name": step_model,
-                        "log_messages": self._log_messages,
-                        "worktree_path": wt_output.worktree_path,
-                    }
-                )
-
-                # --- Call LLM ---
-                llm_result = await self._call_generation(context)
-
-                # --- Write output ---
-                write_result = await workflow.execute_activity(
-                    "write_output",
-                    WriteOutputInput(
-                        llm_result=llm_result,
-                        worktree_path=wt_output.worktree_path,
-                    ),
-                    start_to_close_timeout=_WRITE_TIMEOUT,
-                    retry_policy=_WRITE_RETRY,
-                    result_type=WriteResult,
-                )
-
-                # --- Validate output ---
-                validation_results = await workflow.execute_activity(
-                    "validate_output",
-                    ValidateOutputInput(
-                        task_id=task.task_id,
-                        worktree_path=wt_output.worktree_path,
-                        files=write_result.files_written,
-                        validation=task.validation,
-                    ),
-                    start_to_close_timeout=_VALIDATE_TIMEOUT,
-                    retry_policy=_LOCAL_RETRY,
-                    result_type=list[ValidationResult],
-                )
-
-                # --- Evaluate transition ---
-                signal_value = await workflow.execute_activity(
-                    "evaluate_transition",
-                    TransitionInput(
-                        validation_results=validation_results,
-                        attempt=attempt,
-                        max_attempts=max_step_attempts,
-                    ),
-                    start_to_close_timeout=_TRANSITION_TIMEOUT,
-                    retry_policy=_LOCAL_RETRY,
-                    result_type=str,
-                )
-                signal = TransitionSignal(signal_value)
-                workflow.logger.info(
-                    "Step transition: step_id=%s signal=%s attempt=%d/%d",
-                    step.step_id,
-                    signal.value,
-                    attempt,
-                    max_step_attempts,
-                )
-
-                output_files = write_result.output_files
-
-                if signal == TransitionSignal.SUCCESS:
-                    # Commit this step's changes
-                    commit_msg = f"forge({task.task_id}): step {step.step_id} success"
-                    commit_output = await workflow.execute_activity(
-                        "commit_changes_activity",
-                        CommitChangesInput(
-                            repo_root=input.repo_root,
-                            task_id=task.task_id,
-                            status="success",
-                            message=commit_msg,
-                        ),
-                        start_to_close_timeout=_GIT_TIMEOUT,
-                        retry_policy=_GIT_RETRY,
-                        result_type=CommitChangesOutput,
-                    )
-                    step_results.append(
-                        StepResult(
-                            step_id=step.step_id,
-                            status=TransitionSignal.SUCCESS,
-                            output_files=output_files,
-                            validation_results=validation_results,
-                            commit_sha=commit_output.commit_sha,
-                            llm_stats=build_llm_stats(llm_result),
-                        )
-                    )
-                    all_output_files.update(output_files)
-                    step_succeeded = True
-                    break
-
-                if signal == TransitionSignal.FAILURE_RETRYABLE:
-                    prior_errors = validation_results
-                    # Reset worktree (discard uncommitted changes) and retry
-                    await workflow.execute_activity(
-                        "reset_worktree_activity",
-                        ResetWorktreeInput(
-                            repo_root=input.repo_root,
-                            task_id=task.task_id,
-                        ),
-                        start_to_close_timeout=_GIT_TIMEOUT,
-                        retry_policy=_GIT_RETRY,
-                        result_type=type(None),
-                    )
-                    continue
-
-                # FAILURE_TERMINAL — step failed, task fails
-                error = "; ".join(r.summary for r in validation_results if not r.passed)
-                step_results.append(
-                    StepResult(
-                        step_id=step.step_id,
-                        status=TransitionSignal.FAILURE_TERMINAL,
-                        output_files=output_files,
-                        validation_results=validation_results,
-                        error=error,
-                        llm_stats=build_llm_stats(llm_result),
-                    )
-                )
+            step_result = await self._execute_step_with_retries(
+                input=input,
+                step=step,
+                step_index=step_index,
+                total_steps=len(plan.steps),
+                step_model=step_model,
+                wt_output=wt_output,
+                step_results=step_results,
+            )
+            step_results.append(step_result)
+            if step_result.status != TransitionSignal.SUCCESS:
                 return TaskResult(
                     task_id=task.task_id,
                     status=TransitionSignal.FAILURE_TERMINAL,
                     output_files=all_output_files,
-                    validation_results=validation_results,
-                    error=f"Step {step.step_id} failed: {error}",
+                    error=f"Step {step.step_id} failed: {step_result.error}",
                     worktree_path=wt_output.worktree_path,
                     worktree_branch=wt_output.branch_name,
                     step_results=step_results,
@@ -1057,11 +932,7 @@ class ForgeTaskWorkflow:
                     planner_stats=p_stats,
                     sanity_check_count=sanity_check_count,
                 )
-
-            if not step_succeeded:
-                # Exhausted retries for this step — should have hit TERMINAL above
-                msg = f"Step {step.step_id} exhausted all attempts without a terminal transition"
-                raise RuntimeError(msg)
+            all_output_files.update(step_result.output_files)
 
             # --- Sanity check trigger ---
             if (
@@ -1122,6 +993,167 @@ class ForgeTaskWorkflow:
             planner_stats=p_stats,
             sanity_check_count=sanity_check_count,
         )
+
+    # ------------------------------------------------------------------
+    # Step execution helper
+    # ------------------------------------------------------------------
+
+    async def _execute_step_with_retries(
+        self,
+        input: ForgeTaskInput,
+        step: PlanStep,
+        step_index: int,
+        total_steps: int,
+        step_model: str,
+        wt_output: CreateWorktreeOutput,
+        step_results: list[StepResult],
+    ) -> StepResult:
+        """Execute a single step through its retry loop.
+
+        Returns StepResult with SUCCESS or FAILURE_TERMINAL status.
+        Raises RuntimeError if retries exhaust without a terminal signal.
+        """
+        task = input.task
+        max_step_attempts = input.max_step_attempts
+        prior_errors: list[ValidationResult] = []
+
+        for attempt in range(1, max_step_attempts + 1):
+            # --- Assemble step context ---
+            context = await workflow.execute_activity(
+                "assemble_step_context",
+                AssembleStepContextInput(
+                    task_id=task.task_id,
+                    task_description=task.description,
+                    context_config=task.context,
+                    step=step,
+                    step_index=step_index,
+                    total_steps=total_steps,
+                    completed_steps=step_results,
+                    repo_root=input.repo_root,
+                    worktree_path=wt_output.worktree_path,
+                    prior_errors=prior_errors,
+                    attempt=attempt,
+                    max_attempts=max_step_attempts,
+                ),
+                start_to_close_timeout=_CONTEXT_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
+                result_type=AssembledContext,
+            )
+
+            # --- Set model_name and log_messages on context ---
+            context = context.model_copy(
+                update={
+                    "model_name": step_model,
+                    "log_messages": self._log_messages,
+                    "worktree_path": wt_output.worktree_path,
+                }
+            )
+
+            # --- Call LLM ---
+            llm_result = await self._call_generation(context)
+
+            # --- Write output ---
+            write_result = await workflow.execute_activity(
+                "write_output",
+                WriteOutputInput(
+                    llm_result=llm_result,
+                    worktree_path=wt_output.worktree_path,
+                ),
+                start_to_close_timeout=_WRITE_TIMEOUT,
+                retry_policy=_WRITE_RETRY,
+                result_type=WriteResult,
+            )
+
+            # --- Validate output ---
+            validation_results = await workflow.execute_activity(
+                "validate_output",
+                ValidateOutputInput(
+                    task_id=task.task_id,
+                    worktree_path=wt_output.worktree_path,
+                    files=write_result.files_written,
+                    validation=task.validation,
+                ),
+                start_to_close_timeout=_VALIDATE_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
+                result_type=list[ValidationResult],
+            )
+
+            # --- Evaluate transition ---
+            signal_value = await workflow.execute_activity(
+                "evaluate_transition",
+                TransitionInput(
+                    validation_results=validation_results,
+                    attempt=attempt,
+                    max_attempts=max_step_attempts,
+                ),
+                start_to_close_timeout=_TRANSITION_TIMEOUT,
+                retry_policy=_LOCAL_RETRY,
+                result_type=str,
+            )
+            signal = TransitionSignal(signal_value)
+            workflow.logger.info(
+                "Step transition: step_id=%s signal=%s attempt=%d/%d",
+                step.step_id,
+                signal.value,
+                attempt,
+                max_step_attempts,
+            )
+
+            output_files = write_result.output_files
+
+            if signal == TransitionSignal.SUCCESS:
+                # Commit this step's changes
+                commit_msg = f"forge({task.task_id}): step {step.step_id} success"
+                commit_output = await workflow.execute_activity(
+                    "commit_changes_activity",
+                    CommitChangesInput(
+                        repo_root=input.repo_root,
+                        task_id=task.task_id,
+                        status="success",
+                        message=commit_msg,
+                    ),
+                    start_to_close_timeout=_GIT_TIMEOUT,
+                    retry_policy=_GIT_RETRY,
+                    result_type=CommitChangesOutput,
+                )
+                return StepResult(
+                    step_id=step.step_id,
+                    status=TransitionSignal.SUCCESS,
+                    output_files=output_files,
+                    validation_results=validation_results,
+                    commit_sha=commit_output.commit_sha,
+                    llm_stats=build_llm_stats(llm_result),
+                )
+
+            if signal == TransitionSignal.FAILURE_RETRYABLE:
+                prior_errors = validation_results
+                # Reset worktree (discard uncommitted changes) and retry
+                await workflow.execute_activity(
+                    "reset_worktree_activity",
+                    ResetWorktreeInput(
+                        repo_root=input.repo_root,
+                        task_id=task.task_id,
+                    ),
+                    start_to_close_timeout=_GIT_TIMEOUT,
+                    retry_policy=_GIT_RETRY,
+                    result_type=type(None),
+                )
+                continue
+
+            # FAILURE_TERMINAL — step failed
+            error = "; ".join(r.summary for r in validation_results if not r.passed)
+            return StepResult(
+                step_id=step.step_id,
+                status=TransitionSignal.FAILURE_TERMINAL,
+                output_files=output_files,
+                validation_results=validation_results,
+                error=error,
+                llm_stats=build_llm_stats(llm_result),
+            )
+
+        # Exhausted retries for this step — should have hit TERMINAL above
+        msg = f"Step {step.step_id} exhausted all attempts without a terminal transition"
+        raise RuntimeError(msg)
 
     # ------------------------------------------------------------------
     # Sanity check helper
