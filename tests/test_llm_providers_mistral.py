@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from forge.llm_providers.mistral import MistralProvider
+from forge.llm_providers.models import BatchPollStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -215,3 +216,409 @@ class TestBuildBatchRequest:
 
         assert result["custom_id"] == "req-456"
         assert result["body"]["model"] == "test"
+
+
+def _make_batch_choice(arguments: str = "{}") -> dict:
+    """Build a minimal successful Mistral batch response body with a tool call."""
+    return {
+        "choices": [
+            {"message": {"tool_calls": [{"function": {"arguments": arguments}}]}}
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# submit_batch
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitBatch:
+    """Tests for MistralProvider.submit_batch."""
+
+    @pytest.mark.asyncio
+    async def test_returns_job_id(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.id = "batch-job-123"
+        provider._client.batch.jobs.create_async = AsyncMock(return_value=mock_job)
+
+        requests = [{"custom_id": "r1", "body": {"model": "mistral-large-latest"}}]
+        result = await provider.submit_batch(requests, "mistral-large-latest")
+
+        assert result == "batch-job-123"
+
+    @pytest.mark.asyncio
+    async def test_passes_correct_args(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.id = "batch-job-456"
+        provider._client.batch.jobs.create_async = AsyncMock(return_value=mock_job)
+
+        requests = [{"custom_id": "r1", "body": {}}]
+        await provider.submit_batch(requests, "codestral-latest")
+
+        provider._client.batch.jobs.create_async.assert_called_once_with(
+            input_data=requests,
+            model="codestral-latest",
+            endpoint="/v1/chat/completions",
+        )
+
+
+# ---------------------------------------------------------------------------
+# poll_batch
+# ---------------------------------------------------------------------------
+
+
+class TestPollBatch:
+    """Tests for MistralProvider.poll_batch."""
+
+    @pytest.mark.asyncio
+    async def test_queued_returns_pending(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "QUEUED"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.PENDING
+        assert result.entries == []
+
+    @pytest.mark.asyncio
+    async def test_running_returns_in_progress(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "RUNNING"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.IN_PROGRESS
+
+    @pytest.mark.asyncio
+    async def test_failed_returns_failed(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "FAILED"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.FAILED
+        assert result.entries == []
+
+    @pytest.mark.asyncio
+    async def test_timeout_exceeded_returns_expired(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "TIMEOUT_EXCEEDED"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.EXPIRED
+
+    @pytest.mark.asyncio
+    async def test_cancelled_returns_canceled(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "CANCELLED"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.CANCELED
+
+    @pytest.mark.asyncio
+    async def test_success_parses_jsonl_results(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "SUCCESS"
+        mock_job.output_file = "file-output-123"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        body_1 = {
+            **_make_batch_choice(),
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            "model": "mistral-large-latest",
+        }
+        body_2 = {
+            **_make_batch_choice(),
+            "usage": {"prompt_tokens": 15, "completion_tokens": 25},
+            "model": "mistral-large-latest",
+        }
+        jsonl = "\n".join([
+            json.dumps({"custom_id": "req-1", "response": {"body": body_1}}),
+            json.dumps({"custom_id": "req-2", "response": {"body": body_2}}),
+        ])
+        mock_file = MagicMock()
+        mock_file.read.return_value = jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 2
+        assert result.entries[0].custom_id == "req-1"
+        assert result.entries[0].succeeded is True
+        assert result.entries[0].raw_response_json is not None
+        assert result.entries[1].custom_id == "req-2"
+        assert result.entries[1].succeeded is True
+
+    @pytest.mark.asyncio
+    async def test_success_with_errored_entry(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "SUCCESS"
+        mock_job.output_file = "file-output-456"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        jsonl = json.dumps({
+            "custom_id": "req-bad",
+            "response": {
+                "body": {
+                    "error": {"type": "invalid_request", "message": "bad input"},
+                }
+            },
+        })
+        mock_file = MagicMock()
+        mock_file.read.return_value = jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 1
+        assert result.entries[0].custom_id == "req-bad"
+        assert result.entries[0].succeeded is False
+        assert result.entries[0].error is not None
+
+    @pytest.mark.asyncio
+    async def test_success_downloads_from_output_file(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "SUCCESS"
+        mock_job.output_file = "file-abc-789"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": {"choices": [{"message": {"tool_calls": []}}]}},
+        })
+        mock_file = MagicMock()
+        mock_file.read.return_value = jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+
+        await provider.poll_batch("batch-1")
+
+        provider._client.files.download_async.assert_called_once_with(
+            file_id="file-abc-789"
+        )
+
+    @pytest.mark.asyncio
+    async def test_success_with_string_output_file(self) -> None:
+        """When download returns a string instead of a file-like object."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "SUCCESS"
+        mock_job.output_file = "file-str-1"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {
+                "body": {
+                    "choices": [{"message": {"tool_calls": [{"function": {"arguments": "{}"}}]}}],
+                    "model": "mistral-large-latest",
+                }
+            },
+        })
+        # Return a plain string (no .read method)
+        provider._client.files.download_async = AsyncMock(return_value=jsonl)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 1
+        assert result.entries[0].succeeded is True
+
+    @pytest.mark.asyncio
+    async def test_skips_blank_lines_in_jsonl(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.status = "SUCCESS"
+        mock_job.output_file = "file-blank"
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        entry = {
+            "custom_id": "req-1",
+            "response": {"body": _make_batch_choice()},
+        }
+        jsonl = "\n" + json.dumps(entry) + "\n\n"
+        mock_file = MagicMock()
+        mock_file.read.return_value = jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert len(result.entries) == 1
+
+
+# ---------------------------------------------------------------------------
+# parse_batch_result
+# ---------------------------------------------------------------------------
+
+
+class TestParseBatchResult:
+    """Tests for MistralProvider.parse_batch_result."""
+
+    def test_parses_successful_response(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        raw = json.dumps({
+            "model": "mistral-large-latest",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "llm_response",
+                            "arguments": json.dumps({
+                                "files": [],
+                                "edits": [],
+                                "explanation": "Done.",
+                            }),
+                        }
+                    }]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 200,
+            },
+        })
+
+        result = provider.parse_batch_result(raw, "LLMResponse")
+
+        assert result.tool_input["explanation"] == "Done."
+        assert result.model_name == "mistral-large-latest"
+        assert result.input_tokens == 100
+        assert result.output_tokens == 200
+        assert result.cache_creation_input_tokens == 0
+        assert result.cache_read_input_tokens == 0
+        assert result.raw_response_json == raw
+
+    def test_parses_plan(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        plan_data = {
+            "task_id": "t1",
+            "steps": [{"step_id": "s1", "description": "Do it.", "target_files": ["a.py"]}],
+            "explanation": "Single step.",
+        }
+        raw = json.dumps({
+            "model": "mistral-large-latest",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "plan",
+                            "arguments": json.dumps(plan_data),
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 100},
+        })
+
+        result = provider.parse_batch_result(raw, "Plan")
+
+        assert result.tool_input["task_id"] == "t1"
+        assert len(result.tool_input["steps"]) == 1
+
+    def test_raises_for_unknown_output_type(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        with pytest.raises(KeyError, match="Unknown output type"):
+            provider.parse_batch_result("{}", "NonExistentType")
+
+    def test_missing_tool_calls_returns_empty_dict(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        raw = json.dumps({
+            "model": "mistral-large-latest",
+            "choices": [{"message": {"content": "text only"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+
+        result = provider.parse_batch_result(raw, "LLMResponse")
+
+        assert result.tool_input == {}
+
+    def test_missing_usage_defaults_to_zero(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        raw = json.dumps({
+            "model": "mistral-large-latest",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {"arguments": "{}"}
+                    }]
+                }
+            }],
+        })
+
+        result = provider.parse_batch_result(raw, "LLMResponse")
+
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+
+    def test_dict_arguments_not_double_parsed(self) -> None:
+        """If arguments is already a dict (not a string), it should pass through."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        raw = json.dumps({
+            "model": "mistral-large-latest",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {"arguments": {"key": "value"}}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+        })
+
+        result = provider.parse_batch_result(raw, "LLMResponse")
+
+        assert result.tool_input == {"key": "value"}
