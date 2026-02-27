@@ -76,7 +76,6 @@ with workflow.unsafe.imports_passed_through():
         WriteOutputInput,
         WriteResult,
         build_llm_stats,
-        build_planner_stats,
         resolve_model,
     )
     from forge.providers import PROVIDER_SPECS
@@ -173,8 +172,7 @@ async def _assemble_conflict_resolution(
         worktree_path=worktree_path,
         domain=domain,
         model_name=reasoning_model,
-        thinking_budget_tokens=thinking.budget_tokens if thinking.enabled else 0,
-        thinking_effort=thinking.effort,
+        thinking=thinking,
     )
 
     call_input = await workflow.execute_activity(
@@ -199,8 +197,7 @@ async def _call_llm_batch_dispatch(
     context: AssembledContext,
     output_type_name: str,
     *,
-    thinking_budget_tokens: int = 0,
-    thinking_effort: str = "high",
+    thinking: ThinkingConfig | None = None,
     max_tokens: int = 4096,
 ) -> ParsedLLMResponse:
     """Submit to batch API, wait for signal, then parse the response."""
@@ -210,8 +207,7 @@ async def _call_llm_batch_dispatch(
             context=context,
             output_type_name=output_type_name,
             workflow_id=workflow.info().workflow_id,
-            thinking_budget_tokens=thinking_budget_tokens,
-            thinking_effort=thinking_effort,
+            thinking=thinking or ThinkingConfig(),
             max_tokens=max_tokens,
         ),
         start_to_close_timeout=_SUBMIT_TIMEOUT,
@@ -296,8 +292,7 @@ async def _call_conflict_resolution_dispatch(
         batch_results,
         context,
         "ConflictResolutionResponse",
-        thinking_budget_tokens=call_input.thinking_budget_tokens,
-        thinking_effort=call_input.thinking_effort,
+        thinking=call_input.thinking,
     )
     response = ConflictResolutionResponse.model_validate_json(parsed.parsed_json)
     return ConflictResolutionCallResult(
@@ -387,16 +382,14 @@ class ForgeTaskWorkflow:
         context: AssembledContext,
         output_type_name: str,
         *,
-        thinking_budget_tokens: int = 0,
-        thinking_effort: str = "high",
+        thinking: ThinkingConfig | None = None,
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
         return await _call_llm_batch_dispatch(
             self._batch_results,
             context,
             output_type_name,
-            thinking_budget_tokens=thinking_budget_tokens,
-            thinking_effort=thinking_effort,
+            thinking=thinking,
             max_tokens=max_tokens,
         )
 
@@ -427,8 +420,7 @@ class ForgeTaskWorkflow:
         parsed = await self._call_llm_batch(
             context,
             "Plan",
-            thinking_budget_tokens=planner_input.thinking_budget_tokens,
-            thinking_effort=planner_input.thinking_effort,
+            thinking=planner_input.thinking,
         )
         return PlanCallResult(
             task_id=planner_input.task_id,
@@ -484,8 +476,7 @@ class ForgeTaskWorkflow:
         parsed = await self._call_llm_batch(
             context,
             "SanityCheckResponse",
-            thinking_budget_tokens=sanity_input.thinking_budget_tokens,
-            thinking_effort=sanity_input.thinking_effort,
+            thinking=sanity_input.thinking,
         )
         response = SanityCheckResponse.model_validate_json(parsed.parsed_json)
         return SanityCheckCallResult(
@@ -844,19 +835,17 @@ class ForgeTaskWorkflow:
         # --- Set model_name, thinking config, and log_messages on planner input ---
         planner_update: dict[str, object] = {
             "model_name": planner_model,
+            "thinking": input.thinking,
             "log_messages": self._log_messages,
             "worktree_path": wt_output.worktree_path,
         }
-        if input.thinking.enabled:
-            planner_update["thinking_budget_tokens"] = input.thinking.budget_tokens
-            planner_update["thinking_effort"] = input.thinking.effort
         planner_input = planner_input.model_copy(update=planner_update)
 
         # --- Call planner ---
         planner_result = await self._call_planner_llm(planner_input)
         plan: Plan = planner_result.plan
         workflow.logger.info("Plan created: task_id=%s steps=%d", task.task_id, len(plan.steps))
-        return plan, build_planner_stats(planner_result)
+        return plan, build_llm_stats(planner_result)
 
     async def _run_planned(self, input: ForgeTaskInput) -> TaskResult:
         task = input.task
@@ -1203,12 +1192,10 @@ class ForgeTaskWorkflow:
         # Set model, thinking config, and log_messages
         update: dict[str, object] = {
             "model_name": reasoning_model,
+            "thinking": input.thinking,
             "log_messages": self._log_messages,
             "worktree_path": wt_output.worktree_path,
         }
-        if input.thinking.enabled:
-            update["thinking_budget_tokens"] = input.thinking.budget_tokens
-            update["thinking_effort"] = input.thinking.effort
         sanity_input = sanity_input.model_copy(update=update)
 
         return await self._call_sanity_check_llm(sanity_input)
@@ -1509,16 +1496,14 @@ class ForgeSubTaskWorkflow:
         context: AssembledContext,
         output_type_name: str,
         *,
-        thinking_budget_tokens: int = 0,
-        thinking_effort: str = "high",
+        thinking: ThinkingConfig | None = None,
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
         return await _call_llm_batch_dispatch(
             self._batch_results,
             context,
             output_type_name,
-            thinking_budget_tokens=thinking_budget_tokens,
-            thinking_effort=thinking_effort,
+            thinking=thinking,
             max_tokens=max_tokens,
         )
 

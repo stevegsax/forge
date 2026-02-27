@@ -22,6 +22,7 @@ from forge.models import (
     PlanStep,
     TaskDefinition,
     TaskDomain,
+    ThinkingConfig,
 )
 from tests.conftest import build_mock_message
 
@@ -497,8 +498,7 @@ class TestCallPlannerThinkingThreading:
                 system_prompt="sys",
                 user_prompt="usr",
                 model_name="claude-opus-4-6",
-                thinking_budget_tokens=10_000,
-                thinking_effort="high",
+                thinking=ThinkingConfig(budget_tokens=10_000, effort="high"),
             )
             await call_planner(planner_input)
 

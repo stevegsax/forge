@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+ThinkingEffort = Literal["low", "medium", "high", "max"]
 
 
 class MatchLevel(StrEnum):
@@ -88,11 +91,13 @@ def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
 
 
 class ThinkingConfig(BaseModel):
-    """Extended thinking configuration for planner calls (Phase 12)."""
+    """Extended thinking configuration (Phase 12).
 
-    enabled: bool = Field(default=True, description="Enable extended thinking for planner.")
-    budget_tokens: int = Field(default=10_000, description="Token budget for thinking (Sonnet).")
-    effort: str = Field(
+    Set budget_tokens=0 to disable thinking.
+    """
+
+    budget_tokens: int = Field(default=0, description="Token budget for thinking (0 = disabled).")
+    effort: ThinkingEffort = Field(
         default="high",
         description="Effort level for adaptive thinking (Opus 4.6+): low, medium, high, max.",
     )
@@ -301,27 +306,15 @@ class LLMStats(BaseModel):
     cache_read_input_tokens: int = 0
 
 
-def build_llm_stats(llm_result: LLMCallResult) -> LLMStats:
-    """Build LLMStats from an LLMCallResult."""
+def build_llm_stats(result: LLMStats) -> LLMStats:
+    """Extract an LLMStats from any LLMStats subclass (strips domain-specific fields)."""
     return LLMStats(
-        model_name=llm_result.model_name,
-        input_tokens=llm_result.input_tokens,
-        output_tokens=llm_result.output_tokens,
-        latency_ms=llm_result.latency_ms,
-        cache_creation_input_tokens=llm_result.cache_creation_input_tokens,
-        cache_read_input_tokens=llm_result.cache_read_input_tokens,
-    )
-
-
-def build_planner_stats(planner_result: PlanCallResult) -> LLMStats:
-    """Build LLMStats from a PlanCallResult."""
-    return LLMStats(
-        model_name=planner_result.model_name,
-        input_tokens=planner_result.input_tokens,
-        output_tokens=planner_result.output_tokens,
-        latency_ms=planner_result.latency_ms,
-        cache_creation_input_tokens=planner_result.cache_creation_input_tokens,
-        cache_read_input_tokens=planner_result.cache_read_input_tokens,
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        latency_ms=result.latency_ms,
+        cache_creation_input_tokens=result.cache_creation_input_tokens,
+        cache_read_input_tokens=result.cache_read_input_tokens,
     )
 
 
@@ -513,8 +506,7 @@ class ConflictResolutionInput(BaseModel):
     worktree_path: str
     domain: TaskDomain
     model_name: str = ""
-    thinking_budget_tokens: int = 0
-    thinking_effort: str = "high"
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
 
 
 class ConflictResolutionResponse(BaseModel):
@@ -534,13 +526,12 @@ class ConflictResolutionCallInput(BaseModel):
     system_prompt: str
     user_prompt: str
     model_name: str = ""
-    thinking_budget_tokens: int = 0
-    thinking_effort: str = "high"
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     log_messages: bool = False
     worktree_path: str = ""
 
 
-class ConflictResolutionCallResult(BaseModel):
+class ConflictResolutionCallResult(LLMStats):
     """Output of call_conflict_resolution activity."""
 
     task_id: str
@@ -548,12 +539,6 @@ class ConflictResolutionCallResult(BaseModel):
         description="file_path -> merged content.",
     )
     explanation: str
-    model_name: str
-    input_tokens: int
-    output_tokens: int
-    latency_ms: float
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -575,17 +560,11 @@ class AssembledContext(BaseModel):
     worktree_path: str = ""
 
 
-class LLMCallResult(BaseModel):
+class LLMCallResult(LLMStats):
     """Output of call_llm, input to write_output."""
 
     task_id: str
     response: LLMResponse
-    model_name: str
-    input_tokens: int
-    output_tokens: int
-    latency_ms: float
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
 
 
 class WriteResult(BaseModel):
@@ -680,7 +659,9 @@ class ForgeTaskInput(BaseModel):
         description="Attempt LLM-based conflict resolution for fan-out file conflicts.",
     )
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
-    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    thinking: ThinkingConfig = Field(
+        default_factory=lambda: ThinkingConfig(budget_tokens=10_000),
+    )
     sync_mode: bool = Field(
         default=False,
         description="Use synchronous Messages API. False enables batch mode (default).",
@@ -806,23 +787,16 @@ class PlannerInput(BaseModel):
     system_prompt: str
     user_prompt: str
     model_name: str = ""
-    thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
-    thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     log_messages: bool = False
     worktree_path: str = ""
 
 
-class PlanCallResult(BaseModel):
+class PlanCallResult(LLMStats):
     """Output of call_planner."""
 
     task_id: str
     plan: Plan
-    model_name: str
-    input_tokens: int
-    output_tokens: int
-    latency_ms: float
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
 
 
 class AssembleStepContextInput(BaseModel):
@@ -865,23 +839,16 @@ class SanityCheckInput(BaseModel):
     system_prompt: str
     user_prompt: str
     model_name: str = ""
-    thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
-    thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     log_messages: bool = False
     worktree_path: str = ""
 
 
-class SanityCheckCallResult(BaseModel):
+class SanityCheckCallResult(LLMStats):
     """Output of call_sanity_check."""
 
     task_id: str
     response: SanityCheckResponse
-    model_name: str
-    input_tokens: int
-    output_tokens: int
-    latency_ms: float
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
 
 
 class AssembleSanityCheckContextInput(BaseModel):
@@ -919,17 +886,11 @@ class ExtractionInput(BaseModel):
     model_name: str = ""
 
 
-class ExtractionCallResult(BaseModel):
+class ExtractionCallResult(LLMStats):
     """Output of call_extraction_llm."""
 
     result: ExtractionResult
     source_workflow_ids: list[str]
-    model_name: str
-    input_tokens: int
-    output_tokens: int
-    latency_ms: float
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
 
 
 class SaveExtractionInput(BaseModel):
@@ -977,8 +938,7 @@ class BatchSubmitInput(BaseModel):
     context: AssembledContext
     output_type_name: str = Field(description="Key in get_output_type_registry().")
     workflow_id: str = Field(description="Temporal workflow ID for audit linkage.")
-    thinking_budget_tokens: int = Field(default=0, description="Thinking budget (0 = disabled).")
-    thinking_effort: str = Field(default="high", description="Effort for adaptive thinking.")
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     max_tokens: int = Field(default=4096, description="Max output tokens.")
 
 
@@ -1009,16 +969,11 @@ class ParseResponseInput(BaseModel):
     worktree_path: str = ""
 
 
-class ParsedLLMResponse(BaseModel):
+class ParsedLLMResponse(LLMStats):
     """Generic parsed LLM response from sync or batch path."""
 
     parsed_json: str = Field(description="JSON of the parsed Pydantic model (tool_use input).")
-    model_name: str
-    input_tokens: int
-    output_tokens: int
     latency_ms: float = 0.0
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
 
 
 class BatchPollerInput(BaseModel):

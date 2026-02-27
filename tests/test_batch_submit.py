@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from forge.activities.batch_submit import DEFAULT_MODEL, execute_batch_submit
-from forge.models import AssembledContext, BatchSubmitInput
+from forge.models import AssembledContext, BatchSubmitInput, ThinkingConfig
 
 
 def _make_mock_client(batch_id: str = "msgbatch_test123") -> AsyncMock:
@@ -24,8 +24,7 @@ def _make_input(
     *,
     model_name: str = "",
     output_type_name: str = "LLMResponse",
-    thinking_budget_tokens: int = 0,
-    thinking_effort: str = "high",
+    thinking: ThinkingConfig | None = None,
     max_tokens: int = 4096,
 ) -> BatchSubmitInput:
     """Build a BatchSubmitInput with sensible defaults."""
@@ -39,8 +38,7 @@ def _make_input(
         context=context,
         output_type_name=output_type_name,
         workflow_id="wf-test-123",
-        thinking_budget_tokens=thinking_budget_tokens,
-        thinking_effort=thinking_effort,
+        thinking=thinking or ThinkingConfig(),
         max_tokens=max_tokens,
     )
 
@@ -116,8 +114,7 @@ class TestExecuteBatchSubmit:
         client = _make_mock_client()
         input = _make_input(
             model_name="claude-sonnet-4-5-20250929",
-            thinking_budget_tokens=10_000,
-            thinking_effort="high",
+            thinking=ThinkingConfig(budget_tokens=10_000, effort="high"),
         )
 
         await execute_batch_submit(input, client)

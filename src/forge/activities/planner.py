@@ -205,8 +205,8 @@ async def execute_planner_call(
         output_type=Plan,
         model=model,
         max_tokens=DEFAULT_PLANNER_MAX_TOKENS,
-        thinking_budget_tokens=input.thinking_budget_tokens,
-        thinking_effort=input.thinking_effort,
+        thinking_budget_tokens=input.thinking.budget_tokens,
+        thinking_effort=input.thinking.effort,
     )
     message = await client.messages.create(**params)
 

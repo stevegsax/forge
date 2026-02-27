@@ -52,8 +52,8 @@ async def execute_batch_submit(
         output_type=output_type,
         model=model,
         max_tokens=input.max_tokens,
-        thinking_budget_tokens=input.thinking_budget_tokens,
-        thinking_effort=input.thinking_effort,
+        thinking_budget_tokens=input.thinking.budget_tokens,
+        thinking_effort=input.thinking.effort,
     )
 
     if input.context.log_messages and input.context.worktree_path:

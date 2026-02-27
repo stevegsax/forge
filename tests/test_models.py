@@ -35,7 +35,6 @@ from forge.models import (
     WriteFilesInput,
     WriteResult,
     build_llm_stats,
-    build_planner_stats,
 )
 
 # ---------------------------------------------------------------------------
@@ -572,7 +571,7 @@ class TestBuildLlmStats:
         assert stats.latency_ms == 250.0
 
 
-class TestBuildPlannerStats:
+class TestBuildLlmStatsFromPlanCallResult:
     def test_from_plan_call_result(self) -> None:
         plan = Plan(
             task_id="t",
@@ -587,7 +586,7 @@ class TestBuildPlannerStats:
             output_tokens=100,
             latency_ms=500.0,
         )
-        stats = build_planner_stats(result)
+        stats = build_llm_stats(result)
         assert stats.model_name == "planner-model"
         assert stats.input_tokens == 200
         assert stats.output_tokens == 100
@@ -890,7 +889,7 @@ class TestBuildLlmStatsCache:
         assert stats.cache_read_input_tokens == 0
 
 
-class TestBuildPlannerStatsCache:
+class TestBuildLlmStatsFromPlanCallResultCache:
     def test_propagates_cache_fields(self) -> None:
         plan = Plan(
             task_id="t",
@@ -907,6 +906,6 @@ class TestBuildPlannerStatsCache:
             cache_creation_input_tokens=300,
             cache_read_input_tokens=700,
         )
-        stats = build_planner_stats(result)
+        stats = build_llm_stats(result)
         assert stats.cache_creation_input_tokens == 300
         assert stats.cache_read_input_tokens == 700

@@ -239,8 +239,8 @@ async def execute_conflict_resolution_call(
         output_type=ConflictResolutionResponse,
         model=model,
         max_tokens=DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
-        thinking_budget_tokens=input.thinking_budget_tokens,
-        thinking_effort=input.thinking_effort,
+        thinking_budget_tokens=input.thinking.budget_tokens,
+        thinking_effort=input.thinking.effort,
     )
     message = await client.messages.create(**params)
 
@@ -299,8 +299,7 @@ async def assemble_conflict_resolution_context(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model_name=input.model_name,
-        thinking_budget_tokens=input.thinking_budget_tokens,
-        thinking_effort=input.thinking_effort,
+        thinking=input.thinking,
     )
 
 

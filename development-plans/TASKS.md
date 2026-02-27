@@ -22,7 +22,7 @@ See [PROCESS.md](PROCESS.md) for the full workflow. Quick version:
 - [x] [06 - `_persist_interaction` Extraction](06-persist-interaction.md) `HIGH`
 - [x] [07 - Activity Heartbeats](07-activity-heartbeats.md) `HIGH`
 - [x] [08 - Batch Poll Bug](08-batch-poll-bug.md) `MEDIUM`
-- [ ] [09 - Model Layer Cleanup](09-model-layer-cleanup.md) `MEDIUM`
+- [x] [09 - Model Layer Cleanup](09-model-layer-cleanup.md) `MEDIUM`
 - [ ] [10 - Dead Code Cleanup](10-dead-code-cleanup.md) `LOW`
 
 ## Dependencies
