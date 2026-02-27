@@ -201,13 +201,16 @@ def _reindent(dedented: str, level: int) -> str:
     return "".join(result)
 
 
-def _indentation_normalized_match(content: str, search: str) -> tuple[int, int] | None:
+def _indentation_normalized_match(content: str, search: str) -> tuple[int, int, int] | None:
     """Match after normalizing indentation.
 
     Dedents the search string fully, then re-indents at each indentation
     level present in the file and checks for exact match.
 
-    Returns (start, end) indices in the original content, or None.
+    Returns (start, end, matched_indent_level) indices in the original
+    content, or None.  The third element is the indentation level (number
+    of leading spaces) at which the match was found — used by the caller
+    to re-indent the replacement string.
 
     Raises:
         EditApplicationError: If multiple matches found (ambiguous).
@@ -221,7 +224,7 @@ def _indentation_normalized_match(content: str, search: str) -> tuple[int, int] 
         if stripped:
             indent_levels.add(len(line) - len(stripped))
 
-    all_matches: list[tuple[int, int]] = []
+    all_matches: list[tuple[int, int, int]] = []
     for level in sorted(indent_levels):
         reindented = _reindent(dedented, level)
         if reindented == search:
@@ -230,7 +233,7 @@ def _indentation_normalized_match(content: str, search: str) -> tuple[int, int] 
         count = content.count(reindented)
         if count == 1:
             pos = content.index(reindented)
-            all_matches.append((pos, pos + len(reindented)))
+            all_matches.append((pos, pos + len(reindented), level))
         elif count > 1:
             raise EditApplicationError(
                 f"indentation-normalized search matches {count} times "
@@ -371,11 +374,12 @@ def _apply_single_edit(
         return new_content, EditMatchResult(edit_index=index, match_level=MatchLevel.WHITESPACE)
 
     # 3. Indentation-normalized match
-    span = _indentation_normalized_match(content, edit.search)
-    if span is not None:
-        start, end = span
+    indent_span = _indentation_normalized_match(content, edit.search)
+    if indent_span is not None:
+        start, end, matched_indent = indent_span
         logger.warning("Edit %d: matched via indentation normalization", index)
-        new_content = content[:start] + edit.replace + content[end:]
+        adjusted_replace = _reindent(textwrap.dedent(edit.replace), matched_indent)
+        new_content = content[:start] + adjusted_replace + content[end:]
         return new_content, EditMatchResult(edit_index=index, match_level=MatchLevel.INDENTATION)
 
     # 4. Fuzzy match

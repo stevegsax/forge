@@ -304,16 +304,18 @@ class TestIndentationNormalizedMatch:
         search = "def method(self):\n    return 42\n"
         result = _indentation_normalized_match(content, search)
         assert result is not None
-        start, end = result
+        start, end, level = result
         assert content[start:end] == "    def method(self):\n        return 42\n"
+        assert level == 4
 
     def test_search_too_indented(self) -> None:
         content = "def foo():\n    return 42\n"
         search = "        def foo():\n            return 42\n"
         result = _indentation_normalized_match(content, search)
         assert result is not None
-        start, end = result
+        start, end, level = result
         assert content[start:end] == "def foo():\n    return 42\n"
+        assert level == 0
 
     def test_no_match_returns_none(self) -> None:
         content = "def foo():\n    return 42\n"
@@ -347,7 +349,7 @@ class TestIndentationNormalizedMatch:
         search = "def method(self):\n\n    return 42\n"
         result = _indentation_normalized_match(content, search)
         assert result is not None
-        start, end = result
+        start, end, _level = result
         assert "    def method(self):" in content[start:end]
 
 
@@ -513,8 +515,45 @@ class TestApplyEditsDetailed:
         replace = "def method(self):\n    return 99\n"
         edits = [SearchReplaceEdit(search=search, replace=replace)]
         result = apply_edits_detailed(original, edits)
-        assert "return 99" in result.content
+        assert result.content == "class Foo:\n    def method(self):\n        return 99\n"
         assert result.match_results[0].match_level == MatchLevel.INDENTATION
+
+    def test_indentation_adjustment_preserves_internal_structure(self) -> None:
+        """Replacement with richer internal indentation is re-indented correctly."""
+        original = "class Foo:\n    def method(self):\n        return 42\n"
+        search = "def method(self):\n    return 42\n"
+        replace = "def method(self):\n    if condition:\n        return 99\n    return 42\n"
+        edits = [SearchReplaceEdit(search=search, replace=replace)]
+        result = apply_edits_detailed(original, edits)
+        expected = (
+            "class Foo:\n"
+            "    def method(self):\n"
+            "        if condition:\n"
+            "            return 99\n"
+            "        return 42\n"
+        )
+        assert result.content == expected
+        assert result.match_results[0].match_level == MatchLevel.INDENTATION
+
+    def test_indentation_adjustment_over_indented_search(self) -> None:
+        """Search over-indented relative to file; replacement is de-indented to match."""
+        original = "def foo():\n    return 42\n"
+        search = "        def foo():\n            return 42\n"
+        replace = "        def foo():\n            return 99\n"
+        edits = [SearchReplaceEdit(search=search, replace=replace)]
+        result = apply_edits_detailed(original, edits)
+        assert result.content == "def foo():\n    return 99\n"
+        assert result.match_results[0].match_level == MatchLevel.INDENTATION
+
+    def test_indentation_adjustment_preserves_blank_lines(self) -> None:
+        """Blank lines in replacement are not indented."""
+        original = "class Foo:\n    def method(self):\n\n        return 42\n"
+        search = "def method(self):\n\n    return 42\n"
+        replace = "def method(self):\n\n    return 99\n"
+        edits = [SearchReplaceEdit(search=search, replace=replace)]
+        result = apply_edits_detailed(original, edits)
+        expected = "class Foo:\n    def method(self):\n\n        return 99\n"
+        assert result.content == expected
 
     def test_fuzzy_fallback(self) -> None:
         original = "def foo():\n    return 42\n"
