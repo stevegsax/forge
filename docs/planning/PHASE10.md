@@ -35,7 +35,6 @@ These failures are wasteful: the LLM produced the correct intent but a trivially
 
 - Tree-sitter-based structural matching (requires Phase 13 for multi-language tree-sitter support).
 - LLM-assisted edit repair (asking the LLM to fix its own failed edit).
-- Automatic indentation adjustment of the replacement string to match the matched block's indentation level. This is a natural follow-on but adds complexity; Phase 10 focuses on matching only.
 
 ## Architecture
 
@@ -76,9 +75,9 @@ def _whitespace_normalized_match(content: str, search: str) -> tuple[int, int] |
     """Match after stripping trailing whitespace from each line.
     Returns (start, end) indices in the original content, or None."""
 
-def _indentation_normalized_match(content: str, search: str) -> tuple[int, int] | None:
+def _indentation_normalized_match(content: str, search: str) -> tuple[int, int, int] | None:
     """Match after normalizing indentation.
-    Returns (start, end) indices in the original content, or None."""
+    Returns (start, end, matched_indent_level) in the original content, or None."""
 
 def _fuzzy_match(
     content: str,
@@ -184,7 +183,7 @@ No new dependencies. Uses `difflib.SequenceMatcher` (stdlib) for fuzzy matching 
 - **Empty file:** Exact match of empty search already errors. Fuzzy matching on an empty file finds no windows. Normal error path.
 - **Very long search strings:** `SequenceMatcher` performance degrades for very long strings. In practice, search strings are typically 1-20 lines. No special handling needed.
 - **Binary content / encoding issues:** `apply_edits` operates on strings. Files with encoding issues are caught at read time, before matching.
-- **Replacement indentation:** Phase 10 does NOT adjust the replacement string's indentation to match the matched block. If the search matched at indentation level 8 but the search string was at level 4, the replacement is applied as-is. This is a known limitation; automatic indentation adjustment is deferred.
+- **Replacement indentation:** When the indentation-normalized strategy matches, the replacement string is automatically re-indented to the matched block's indentation level. The replacement is fully dedented via `textwrap.dedent`, then re-indented to the matched level via `_reindent`, preserving internal indentation structure.
 
 ## Definition of Done
 
