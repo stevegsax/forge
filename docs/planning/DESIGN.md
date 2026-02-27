@@ -182,7 +182,7 @@ OTel tracing is initialized in the worker and spans are emitted by LLM, planner,
 
 ### Recurring Meta-Tasks
 
-**Sanity check the task list.** Periodically re-evaluate whether the current plan still makes sense given completed work. Triggered by time (every N completed tasks), events (new-tasks-discovered transitions), or thresholds (failure rate exceeds limit). Consumes knowledge extraction summaries rather than raw task outputs. Output: either "plan is valid, continue" or a revised task DAG.
+**Sanity check the task list.** Periodically re-evaluate whether the current plan still makes sense given completed work. Currently triggered by time (every N completed steps via `--sanity-check-interval`) or thresholds (failure rate exceeds limit). In a future dynamic task evolution model, `new_tasks_discovered` transitions will be an additional trigger. Consumes knowledge extraction summaries rather than raw task outputs. Output: either "plan is valid, continue" or a revised task DAG.
 
 ## Plan Format
 
@@ -202,14 +202,16 @@ Each task in the plan specifies:
 
 The orchestrator needs a finite set of outcome signals to act on:
 
-| Signal | Meaning | Action |
-|--------|---------|--------|
-| `success` | Task completed, validation passed | Proceed to next task or gather |
-| `failure_retryable` | Task failed, worth retrying | Fresh worktree, retry (up to limit) |
-| `failure_terminal` | Task failed, cannot recover | Halt and escalate |
-| `new_tasks_discovered` | Agent identified work not in the plan | Trigger sanity check / re-planning |
-| `blocked_on_human` | Needs clarification or decision | Pause and escalate |
-| `blocked_on_sibling` | Discovered unexpected dependency | Re-evaluate task ordering |
+| Signal | Meaning | Action | Status |
+|--------|---------|--------|--------|
+| `success` | Task completed, validation passed | Proceed to next task or gather | Implemented |
+| `failure_retryable` | Task failed, worth retrying | Fresh worktree, retry (up to limit) | Implemented |
+| `failure_terminal` | Task failed, cannot recover | Halt and escalate | Implemented |
+| `new_tasks_discovered` | Agent identified work not in the plan | Trigger sanity check / re-planning | Deferred (see below) |
+| `blocked_on_human` | Needs clarification or decision | Pause and escalate | Deferred (see below) |
+| `blocked_on_sibling` | Discovered unexpected dependency | Re-evaluate task ordering | Deferred (see below) |
+
+The three deferred signals are not needed by the current plan-then-execute architecture but are required for dynamic task evolution in future releases. See [Plan-Then-Execute vs. Dynamic Task Evolution](#plan-then-execute-vs-dynamic-task-evolution) for the full rationale.
 
 ## Retry and Failure
 
@@ -217,6 +219,43 @@ The orchestrator needs a finite set of outcome signals to act on:
 2. Create a new worktree and start the task from scratch.
 3. If the second attempt also fails, halt and escalate to a human.
 4. The failure documentation from both attempts is included in the escalation report.
+
+## Plan-Then-Execute vs. Dynamic Task Evolution
+
+The current architecture follows a **plan-then-execute** model: the planner commits to a full decomposition upfront, and execution proceeds deterministically within that plan. Future releases will introduce **dynamic task evolution**, where tasks can emerge, block, and re-order during execution. The three deferred transition signals (`new_tasks_discovered`, `blocked_on_human`, `blocked_on_sibling`) exist to support this future model.
+
+### Current Model: Plan-Then-Execute
+
+In the current system, each of the three deferred signals is handled by existing mechanisms:
+
+**`new_tasks_discovered` is eliminated by upfront planning.** The planner receives the full task description, target files, repo map, and context files, then decomposes the entire task into an ordered sequence of steps before any execution begins. Executing steps have no mechanism to signal "I found work not in the plan." Instead, periodic sanity checks (`--sanity-check-interval`) re-evaluate the remaining plan against completed work and can revise or abort — handling plan staleness without a discovery signal.
+
+**`blocked_on_human` is covered by `failure_terminal`.** Any condition requiring human judgment becomes a validation failure, which maps to `failure_terminal`. The human receives a structured result with full context (error summary, validation results, worktree path) and decides what to do. There is no pause-and-resume mechanism where the workflow waits for human input and then continues — it terminates and the human triages. A separate signal would add a distinction without a functional difference.
+
+**`blocked_on_sibling` is eliminated by dependency ordering and fan-out design.** The planner declares step ordering and dependencies upfront. Fan-out sub-tasks run fully independently to completion, then results are gathered and merged by the parent workflow. If two sub-tasks touch the same file, the system detects the conflict at gather time and either resolves it via LLM or returns `failure_terminal`. Sibling blocking cannot happen by construction — there is no channel for a running sub-task to depend on another sub-task's output.
+
+### Future Model: Dynamic Task Evolution
+
+In dynamic task evolution, tasks will be allowed to evolve as they progress. An executing step may discover that the original plan is incomplete, that it needs human input to proceed, or that it depends on work assigned to a sibling. This requires the three deferred signals:
+
+**`new_tasks_discovered`** enables agents to report emergent work. An agent executing a step realizes the task requires changes to files or modules not in the plan. Rather than silently exceeding its scope or failing, it emits `new_tasks_discovered` with a structured description of the new work. The orchestrator triggers a sanity check or re-planning pass that incorporates the discovery, potentially adding steps, re-ordering remaining work, or splitting the current task.
+
+**`blocked_on_human`** enables pause-and-resume. Unlike `failure_terminal`, which halts execution permanently, `blocked_on_human` pauses the specific task while the rest of the plan continues. The human receives a structured query (not just a failure report), provides input, and the paused task resumes with the answer injected into its context. This is important for tasks where the system can identify exactly what it needs from a human without abandoning all progress.
+
+**`blocked_on_sibling`** enables runtime dependency discovery. During execution, an agent discovers that it needs an artifact (a type definition, a shared module, test fixtures) that another in-flight task is producing. Rather than failing or producing incomplete output, it emits `blocked_on_sibling` with the dependency. The orchestrator re-evaluates task ordering, potentially serializing the two tasks or injecting a synchronization point.
+
+### What Changes
+
+| Aspect | Plan-Then-Execute | Dynamic Task Evolution |
+|--------|-------------------|----------------------|
+| Plan completeness | Plan is complete before execution starts | Plan is a starting point that evolves |
+| Discovery | Not possible — steps execute within fixed scope | Steps can report emergent work |
+| Human interaction | Terminal — halt and hand off | Conversational — pause, ask, resume |
+| Sibling coordination | Prevented by ordering; conflicts detected post-hoc | Runtime dependency signaling between tasks |
+| Sanity checks | Periodic, time-based | Also triggered by discovery events |
+| Workflow lifecycle | Submit → execute → terminal result | Submit → execute → pause/evolve → resume → terminal result |
+
+The plan-then-execute model is simpler, more predictable, and sufficient for tasks where the planner can anticipate the full scope of work. Dynamic task evolution adds complexity but enables tasks where the scope genuinely cannot be known until execution is underway.
 
 ## Technology Stack
 
@@ -324,16 +363,16 @@ Proves out: error feedback in retry prompts, AST-based context enrichment around
 
 Deliverable: Run `forge run` with a task that fails validation and observe the retry prompt including the previous failure's error output.
 
-### Phase 9+ (Future)
+### Phases 10–12, 14 (complete)
 
-- Recursive fan-out (sub-tasks can fan out further).
-- Model routing (capability tiers mapped to concrete models).
-- Multi-provider support.
-- Conflict resolution workflow.
-- Additional task domains (TypeScript code generation, research, analysis).
-
-Each phase uses the previous version to build the next iteration.
+- **Phase 10: Fuzzy Edit Matching** — Four-level fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy) for applying LLM-generated edits. See `docs/PHASE10.md`.
+- **Phase 11: Model Routing** — Capability tiers (Reasoning, Generation, Summarization, Classification) mapped to concrete models at dispatch time. See `docs/PHASE11.md`.
+- **Phase 12: Extended Thinking** — Extended thinking support for the planner, with configurable token budget. See `docs/PHASE12.md`.
+- **Phase 14: Batch Processing** — Batch submission via the Anthropic Batch API with a polling workflow. See `docs/PHASE14.md`.
 
 ### Release 2 (Future)
 
 - **Phase 13: Tree-Sitter Multi-Language Support** — Replace Python `ast` with tree-sitter for symbol extraction, repo maps, and error context enrichment. Enables non-Python codebases. Deferred until Release 1 is stable. See `docs/PHASE13.md`.
+- **Dynamic Task Evolution** — Allow tasks to evolve during execution via `new_tasks_discovered`, `blocked_on_human`, and `blocked_on_sibling` transition signals. See [Plan-Then-Execute vs. Dynamic Task Evolution](#plan-then-execute-vs-dynamic-task-evolution).
+- Multi-provider support.
+- Additional task domains (TypeScript code generation, research, analysis).
