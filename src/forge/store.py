@@ -102,6 +102,7 @@ class BatchJob(Base):
     batch_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
     workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
     status: Mapped[str] = mapped_column(sa.String, nullable=False)
+    provider: Mapped[str] = mapped_column(sa.String, nullable=False, server_default="anthropic")
     error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime,
@@ -442,6 +443,7 @@ def record_batch_submission(
     request_id: str,
     batch_id: str,
     workflow_id: str,
+    provider: str = "anthropic",
 ) -> None:
     """Insert a new batch job record with status 'submitted'."""
     with engine.begin() as conn:
@@ -451,6 +453,7 @@ def record_batch_submission(
                 batch_id=batch_id,
                 workflow_id=workflow_id,
                 status="submitted",
+                provider=provider,
             )
         )
 

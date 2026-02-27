@@ -64,10 +64,10 @@ class CapabilityTier(StrEnum):
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TIER_MODELS: dict[CapabilityTier, str] = {
-    CapabilityTier.REASONING: "claude-opus-4-6",
-    CapabilityTier.GENERATION: "claude-sonnet-4-5-20250929",
-    CapabilityTier.SUMMARIZATION: "claude-sonnet-4-5-20250929",
-    CapabilityTier.CLASSIFICATION: "claude-haiku-4-5-20251001",
+    CapabilityTier.REASONING: "anthropic:claude-opus-4-6",
+    CapabilityTier.GENERATION: "anthropic:claude-sonnet-4-5-20250929",
+    CapabilityTier.SUMMARIZATION: "anthropic:claude-sonnet-4-5-20250929",
+    CapabilityTier.CLASSIFICATION: "anthropic:claude-haiku-4-5-20251001",
 }
 
 
@@ -965,6 +965,7 @@ class ParseResponseInput(BaseModel):
     raw_response_json: str
     output_type_name: str
     task_id: str
+    provider: str = Field(default="anthropic", description="LLM provider name for parsing.")
     log_messages: bool = False
     worktree_path: str = ""
 

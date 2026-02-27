@@ -1,7 +1,7 @@
 """Batch parse activity for Forge.
 
-Deserializes a raw Anthropic Message JSON from a batch response into
-a typed ParsedLLMResponse.
+Deserializes a raw LLM response JSON from a batch response into
+a typed ParsedLLMResponse. Routes to the correct provider for parsing.
 
 Design follows Function Core / Imperative Shell:
 - Testable function: execute_parse_llm_response
@@ -14,7 +14,6 @@ import logging
 
 from temporalio import activity
 
-from forge.llm_client import parse_batch_response_json
 from forge.message_log import write_message_log
 from forge.models import ParsedLLMResponse, ParseResponseInput
 
@@ -28,21 +27,27 @@ logger = logging.getLogger(__name__)
 def execute_parse_llm_response(
     raw_json: str,
     output_type_name: str,
+    provider_name: str = "anthropic",
 ) -> ParsedLLMResponse:
-    """Parse raw Anthropic Message JSON into a ParsedLLMResponse.
+    """Parse raw LLM response JSON into a ParsedLLMResponse.
 
+    Routes to the correct provider for parsing.
     Separated from the imperative shell so tests can call directly.
     """
-    parsed, model_name, in_tok, out_tok, cache_create, cache_read = parse_batch_response_json(
-        raw_json, output_type_name
-    )
+    from forge.llm_providers import get_provider
+
+    provider = get_provider(provider_name)
+    result = provider.parse_batch_result(raw_json, output_type_name)
+
+    import json
+
     return ParsedLLMResponse(
-        parsed_json=parsed.model_dump_json(),
-        model_name=model_name,
-        input_tokens=in_tok,
-        output_tokens=out_tok,
-        cache_creation_input_tokens=cache_create,
-        cache_read_input_tokens=cache_read,
+        parsed_json=json.dumps(result.tool_input),
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cache_creation_input_tokens=result.cache_creation_input_tokens,
+        cache_read_input_tokens=result.cache_read_input_tokens,
     )
 
 
@@ -64,7 +69,11 @@ async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
         if input.log_messages and input.worktree_path:
             write_message_log(input.worktree_path, "response", input.raw_response_json)
 
-        result = execute_parse_llm_response(input.raw_response_json, input.output_type_name)
+        result = execute_parse_llm_response(
+            input.raw_response_json,
+            input.output_type_name,
+            provider_name=input.provider,
+        )
 
         span.set_attributes(
             {

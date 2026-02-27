@@ -26,7 +26,6 @@ from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
 )
-from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.message_log import write_message_log
 from forge.models import (
     AssembleSanityCheckContextInput,
@@ -39,7 +38,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from anthropic import AsyncAnthropic
+    from forge.llm_providers.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -159,16 +158,19 @@ def build_sanity_check_user_prompt(completed_count: int, total_count: int) -> st
 
 async def execute_sanity_check_call(
     input: SanityCheckInput,
-    client: AsyncAnthropic,
+    provider: LLMProvider,
 ) -> SanityCheckCallResult:
-    """Call the Anthropic API for sanity check and extract structured results.
+    """Call the LLM provider for sanity check and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock client.
+    Separated from the imperative shell so tests can inject a mock provider.
     """
-    model = input.model_name or "claude-sonnet-4-5-20250929"
+    from forge.llm_providers import parse_model_id
+
+    full_model = input.model_name or "claude-sonnet-4-5-20250929"
+    _, model = parse_model_id(full_model)
     start = time.monotonic()
 
-    params = build_messages_params(
+    params = provider.build_request_params(
         system_prompt=input.system_prompt,
         user_prompt=input.user_prompt,
         output_type=SanityCheckResponse,
@@ -176,26 +178,25 @@ async def execute_sanity_check_call(
         max_tokens=DEFAULT_SANITY_CHECK_MAX_TOKENS,
         thinking_budget_tokens=input.thinking.budget_tokens,
     )
-    message = await client.messages.create(**params)
+    result = await provider.call(params)
 
     if input.log_messages and input.worktree_path:
         request_json = json.dumps(params, indent=2, default=str)
         write_message_log(input.worktree_path, "sanity-request", request_json)
-        write_message_log(input.worktree_path, "sanity-response", message.model_dump_json(indent=2))
+        write_message_log(input.worktree_path, "sanity-response", result.raw_response_json)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    response = extract_tool_result(message, SanityCheckResponse)
-    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
+    response = SanityCheckResponse.model_validate(result.tool_input)
 
     return SanityCheckCallResult(
         task_id=input.task_id,
         response=response,
-        model_name=model,
-        input_tokens=in_tok,
-        output_tokens=out_tok,
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=cache_create,
-        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=result.cache_creation_input_tokens,
+        cache_read_input_tokens=result.cache_read_input_tokens,
     )
 
 
@@ -234,16 +235,16 @@ async def assemble_sanity_check_context(
 
 @activity.defn
 async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
-    """Activity wrapper -- creates a client and delegates to execute_sanity_check_call."""
-    from forge.llm_client import get_anthropic_client
+    """Activity wrapper -- creates a provider and delegates to execute_sanity_check_call."""
+    from forge.llm_providers import get_provider
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_sanity_check") as span:
         logger.info("Sanity check call: task_id=%s", input.task_id)
-        client = get_anthropic_client()
+        provider = get_provider(input.model_name or "claude-sonnet-4-5-20250929")
         async with heartbeat_during():
-            result = await execute_sanity_check_call(input, client)
+            result = await execute_sanity_check_call(input, provider)
         logger.info(
             "Sanity verdict: task_id=%s verdict=%s", input.task_id, result.response.verdict.value
         )

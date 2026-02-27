@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,7 +24,7 @@ from forge.models import (
     TaskDefinition,
     TaskDomain,
 )
-from tests.conftest import build_mock_message
+from tests.conftest import build_mock_provider
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -180,12 +180,7 @@ class TestExecuteExplorationCall:
                 ),
             ]
         )
-        mock_message = build_mock_message(
-            tool_name="exploration_response",
-            tool_input=response.model_dump(),
-        )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
+        provider = build_mock_provider(tool_input=response.model_dump())
 
         input = ExplorationInput(
             task_id=_make_task().task_id,
@@ -198,7 +193,7 @@ class TestExecuteExplorationCall:
             max_rounds=5,
         )
 
-        result = await execute_exploration_call(input, mock_client)
+        result = await execute_exploration_call(input, provider)
 
         assert len(result.requests) == 1
         assert result.requests[0].provider == "read_file"
@@ -206,12 +201,7 @@ class TestExecuteExplorationCall:
     @pytest.mark.asyncio
     async def test_empty_requests_signals_ready(self) -> None:
         response = ExplorationResponse(requests=[])
-        mock_message = build_mock_message(
-            tool_name="exploration_response",
-            tool_input=response.model_dump(),
-        )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
+        provider = build_mock_provider(tool_input=response.model_dump())
 
         input = ExplorationInput(
             task_id=_make_task().task_id,
@@ -224,7 +214,7 @@ class TestExecuteExplorationCall:
             max_rounds=5,
         )
 
-        result = await execute_exploration_call(input, mock_client)
+        result = await execute_exploration_call(input, provider)
 
         assert result.requests == []
 
@@ -353,15 +343,13 @@ class TestCallExplorationLlmModelNameThreading:
         from forge.activities.exploration import call_exploration_llm
 
         response = ExplorationResponse(requests=[])
-        mock_message = build_mock_message(
-            tool_name="exploration_response",
+        provider = build_mock_provider(
             tool_input=response.model_dump(),
+            model_name="custom-explore",
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         with (
-            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
+            patch("forge.llm_providers.get_provider", return_value=provider) as mock_get,
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -384,8 +372,7 @@ class TestCallExplorationLlmModelNameThreading:
             )
             await call_exploration_llm(input_data)
 
-            call_kwargs = mock_client.messages.create.call_args[1]
-            assert call_kwargs["model"] == "custom-explore"
+            mock_get.assert_called_once_with("custom-explore")
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
@@ -395,15 +382,13 @@ class TestCallExplorationLlmModelNameThreading:
         )
 
         response = ExplorationResponse(requests=[])
-        mock_message = build_mock_message(
-            tool_name="exploration_response",
+        provider = build_mock_provider(
             tool_input=response.model_dump(),
+            model_name=DEFAULT_EXPLORATION_MODEL,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         with (
-            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
+            patch("forge.llm_providers.get_provider", return_value=provider) as mock_get,
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -425,8 +410,7 @@ class TestCallExplorationLlmModelNameThreading:
             )
             await call_exploration_llm(input_data)
 
-            call_kwargs = mock_client.messages.create.call_args[1]
-            assert call_kwargs["model"] == DEFAULT_EXPLORATION_MODEL
+            mock_get.assert_called_once_with(DEFAULT_EXPLORATION_MODEL)
 
 
 # ---------------------------------------------------------------------------

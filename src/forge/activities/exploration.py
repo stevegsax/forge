@@ -1,7 +1,7 @@
 """Exploration activities for LLM-guided context discovery (Phase 7).
 
 Two activities:
-1. call_exploration_llm — Calls Anthropic API with ExplorationResponse output type.
+1. call_exploration_llm — Calls LLM provider with ExplorationResponse output type.
 2. fulfill_context_requests — Dispatches requests to the provider registry.
 
 Design follows Function Core / Imperative Shell:
@@ -21,7 +21,6 @@ from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
 from forge.domains import get_domain_config
-from forge.llm_client import build_messages_params, extract_tool_result
 from forge.message_log import write_message_log
 from forge.models import (
     AssembledContext,
@@ -32,7 +31,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from anthropic import AsyncAnthropic
+    from forge.llm_providers.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -169,33 +168,34 @@ def fulfill_requests(
 
 async def execute_exploration_call(
     input: ExplorationInput,
-    client: AsyncAnthropic,
+    provider: LLMProvider,
     project_instructions: str = "",
 ) -> ExplorationResponse:
-    """Call the Anthropic API for exploration and return the structured response.
+    """Call the LLM provider for exploration and return the structured response.
 
-    Separated from the imperative shell so tests can inject a mock client.
+    Separated from the imperative shell so tests can inject a mock provider.
     """
-    system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
-    model = input.model_name or DEFAULT_EXPLORATION_MODEL
+    from forge.llm_providers import parse_model_id
 
-    params = build_messages_params(
+    system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
+    full_model = input.model_name or DEFAULT_EXPLORATION_MODEL
+    _, model = parse_model_id(full_model)
+
+    params = provider.build_request_params(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         output_type=ExplorationResponse,
         model=model,
         max_tokens=DEFAULT_EXPLORATION_MAX_TOKENS,
     )
-    message = await client.messages.create(**params)
+    result = await provider.call(params)
 
     if input.log_messages and input.worktree_path:
         request_json = json.dumps(params, indent=2, default=str)
         write_message_log(input.worktree_path, "explore-request", request_json)
-        write_message_log(
-            input.worktree_path, "explore-response", message.model_dump_json(indent=2)
-        )
+        write_message_log(input.worktree_path, "explore-response", result.raw_response_json)
 
-    return extract_tool_result(message, ExplorationResponse)
+    return ExplorationResponse.model_validate(result.tool_input)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
         _read_project_instructions,
         build_project_instructions_section,
     )
-    from forge.llm_client import get_anthropic_client
+    from forge.llm_providers import get_provider
     from forge.tracing import get_tracer
 
     tracer = get_tracer()
@@ -229,10 +229,10 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
                 _read_project_instructions(Path(input.repo_root))
             )
 
-        client = get_anthropic_client()
+        provider = get_provider(input.model_name or DEFAULT_EXPLORATION_MODEL)
         start = time.monotonic()
         async with heartbeat_during():
-            response = await execute_exploration_call(input, client, project_instructions)
+            response = await execute_exploration_call(input, provider, project_instructions)
         elapsed_ms = (time.monotonic() - start) * 1000
         logger.info(
             "Exploration result: task_id=%s requests=%d", input.task_id, len(response.requests)

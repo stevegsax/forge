@@ -13,11 +13,9 @@ import time
 from typing import TYPE_CHECKING
 
 from forge.eval.models import EvalCase, JudgeCriterion, JudgeVerdict
-from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 
 if TYPE_CHECKING:
-    from anthropic import AsyncAnthropic
-
+    from forge.llm_providers.protocol import LLMProvider
     from forge.models import Plan
 
 logger = logging.getLogger(__name__)
@@ -132,37 +130,40 @@ def build_judge_user_prompt() -> str:
 async def execute_judge_call(
     system_prompt: str,
     user_prompt: str,
-    client: AsyncAnthropic,
+    provider: LLMProvider,
     *,
     model_name: str | None = None,
 ) -> JudgeVerdict:
-    """Call the Anthropic API for judging and return the verdict.
+    """Call the LLM provider for judging and return the verdict.
 
-    Separated from the imperative shell so tests can inject a mock client.
+    Separated from the imperative shell so tests can inject a mock provider.
     """
+    from forge.llm_providers import parse_model_id
+
+    full_model = model_name or DEFAULT_JUDGE_MODEL
+    _, model = parse_model_id(full_model)
     start = time.monotonic()
 
-    params = build_messages_params(
+    params = provider.build_request_params(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         output_type=JudgeVerdict,
-        model=model_name or DEFAULT_JUDGE_MODEL,
+        model=model,
         max_tokens=DEFAULT_JUDGE_MAX_TOKENS,
         cache_instructions=False,
         cache_tool_definitions=False,
     )
-    message = await client.messages.create(**params)
+    result = await provider.call(params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    in_tok, out_tok, _, _ = extract_usage(message)
     logger.info(
         "Judge call completed in %.0fms (input=%d, output=%d)",
         elapsed_ms,
-        in_tok,
-        out_tok,
+        result.input_tokens,
+        result.output_tokens,
     )
 
-    return extract_tool_result(message, JudgeVerdict)
+    return JudgeVerdict.model_validate(result.tool_input)
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +183,9 @@ async def judge_plan(
     This is the imperative shell entry point — creates the client and
     delegates to pure/testable functions.
     """
-    from forge.llm_client import get_anthropic_client
+    from forge.llm_providers import get_provider
 
     system_prompt = build_judge_system_prompt(case, plan, repo_context)
     user_prompt = build_judge_user_prompt()
-    client = get_anthropic_client()
-    return await execute_judge_call(system_prompt, user_prompt, client, model_name=model_name)
+    provider = get_provider(model_name or DEFAULT_JUDGE_MODEL)
+    return await execute_judge_call(system_prompt, user_prompt, provider, model_name=model_name)

@@ -7,6 +7,7 @@ dependencies = [
     "temporalio>=1.9.0",
     "pydantic>=2.10.0",
     "anthropic>=0.40.0",
+    "mistralai>=1.0.0",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-sdk>=1.28.0",
     "opentelemetry-exporter-otlp>=1.28.0",

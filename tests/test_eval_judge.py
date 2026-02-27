@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from forge.eval.judge import (
@@ -18,7 +16,7 @@ from forge.eval.models import (
     JudgeVerdict,
 )
 from forge.models import Plan, PlanStep, SubTask, TaskDefinition
-from tests.conftest import build_mock_message
+from tests.conftest import build_mock_provider
 
 _TASK = TaskDefinition(
     task_id="t1",
@@ -129,36 +127,32 @@ class TestExecuteJudgeCall:
             overall_assessment="Solid plan.",
         )
 
-        mock_message = build_mock_message(
-            tool_name="judge_verdict",
+        provider = build_mock_provider(
             tool_input=verdict.model_dump(),
             input_tokens=500,
             output_tokens=200,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
-        result = await execute_judge_call("system prompt", "user prompt", mock_client)
+        result = await execute_judge_call("system prompt", "user prompt", provider)
 
         assert result == verdict
 
     @pytest.mark.asyncio
-    async def test_passes_prompts_to_client(self) -> None:
+    async def test_passes_prompts_to_provider(self) -> None:
         verdict = JudgeVerdict(
             scores=[],
             overall_assessment="OK.",
         )
 
-        mock_message = build_mock_message(
-            tool_name="judge_verdict",
+        provider = build_mock_provider(
             tool_input=verdict.model_dump(),
             input_tokens=0,
             output_tokens=0,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
-        await execute_judge_call("sys", "usr", mock_client)
+        await execute_judge_call("sys", "usr", provider)
 
-        call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs["messages"][0]["content"] == "usr"
+        provider.build_request_params.assert_called_once()
+        call_kwargs = provider.build_request_params.call_args[1]
+        assert call_kwargs["system_prompt"] == "sys"
+        assert call_kwargs["user_prompt"] == "usr"

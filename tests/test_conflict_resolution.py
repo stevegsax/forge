@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from forge.activities.conflict_resolution import (
@@ -26,7 +24,7 @@ from forge.models import (
     SubTaskResult,
     TransitionSignal,
 )
-from tests.conftest import build_mock_message
+from tests.conftest import build_mock_provider
 
 # ---------------------------------------------------------------------------
 # TestDetectFileConflicts
@@ -316,7 +314,7 @@ class TestBuildConflictResolutionUserPrompt:
 
 
 class TestExecuteConflictResolutionCall:
-    """execute_conflict_resolution_call calls client and extracts structured results."""
+    """execute_conflict_resolution_call calls provider and extracts structured results."""
 
     @pytest.mark.asyncio
     async def test_returns_result_with_correct_fields(self) -> None:
@@ -329,16 +327,13 @@ class TestExecuteConflictResolutionCall:
             ],
             explanation="Combined both functions.",
         )
-        mock_message = build_mock_message(
-            tool_name="conflict_resolution_response",
+        provider = build_mock_provider(
             tool_input=mock_response.model_dump(),
             input_tokens=200,
             output_tokens=100,
             cache_creation_input_tokens=10,
             cache_read_input_tokens=5,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input_data = ConflictResolutionCallInput(
             task_id="test-task",
@@ -347,7 +342,7 @@ class TestExecuteConflictResolutionCall:
             user_prompt="user",
         )
 
-        result = await execute_conflict_resolution_call(input_data, mock_client)
+        result = await execute_conflict_resolution_call(input_data, provider)
 
         assert isinstance(result, ConflictResolutionCallResult)
         assert result.task_id == "test-task"
@@ -368,14 +363,11 @@ class TestExecuteConflictResolutionCall:
             ],
             explanation="Merged both files.",
         )
-        mock_message = build_mock_message(
-            tool_name="conflict_resolution_response",
+        provider = build_mock_provider(
             tool_input=mock_response.model_dump(),
             input_tokens=300,
             output_tokens=150,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input_data = ConflictResolutionCallInput(
             task_id="test-task",
@@ -384,7 +376,7 @@ class TestExecuteConflictResolutionCall:
             user_prompt="user",
         )
 
-        result = await execute_conflict_resolution_call(input_data, mock_client)
+        result = await execute_conflict_resolution_call(input_data, provider)
 
         assert len(result.resolved_files) == 2
         assert result.resolved_files["a.py"] == "# merged a"

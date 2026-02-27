@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
-from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.models import (
     ExtractionCallResult,
     ExtractionInput,
@@ -29,7 +28,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from anthropic import AsyncAnthropic
+    from forge.llm_providers.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -185,29 +184,30 @@ def infer_tags_from_task(
 
 async def execute_extraction_call(
     input: ExtractionInput,
-    client: AsyncAnthropic,
+    provider: LLMProvider,
 ) -> ExtractionCallResult:
-    """Call the Anthropic API for extraction and return structured results.
+    """Call the LLM provider for extraction and return structured results.
 
-    Separated from the imperative shell so tests can inject a mock client.
+    Separated from the imperative shell so tests can inject a mock provider.
     """
     from forge.activities.llm import DEFAULT_MODEL
+    from forge.llm_providers import parse_model_id
 
-    model = input.model_name or DEFAULT_MODEL
+    full_model = input.model_name or DEFAULT_MODEL
+    _, model = parse_model_id(full_model)
     start = time.monotonic()
 
-    params = build_messages_params(
+    params = provider.build_request_params(
         system_prompt=input.system_prompt,
         user_prompt=input.user_prompt,
         output_type=ExtractionResult,
         model=model,
         max_tokens=DEFAULT_EXTRACTION_MAX_TOKENS,
     )
-    message = await client.messages.create(**params)
+    result = await provider.call(params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    extraction_result = extract_tool_result(message, ExtractionResult)
-    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
+    extraction_result = ExtractionResult.model_validate(result.tool_input)
 
     for entry in extraction_result.entries:
         if not entry.source_workflow_id:
@@ -218,12 +218,12 @@ async def execute_extraction_call(
     return ExtractionCallResult(
         result=extraction_result,
         source_workflow_ids=input.source_workflow_ids,
-        model_name=model,
-        input_tokens=in_tok,
-        output_tokens=out_tok,
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=cache_create,
-        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=result.cache_creation_input_tokens,
+        cache_read_input_tokens=result.cache_read_input_tokens,
     )
 
 
@@ -278,15 +278,16 @@ async def fetch_extraction_input(input: FetchExtractionInput) -> ExtractionInput
 
 @activity.defn
 async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
-    """Activity wrapper — creates client and delegates to execute_extraction_call."""
-    from forge.llm_client import get_anthropic_client
+    """Activity wrapper — creates provider and delegates to execute_extraction_call."""
+    from forge.activities.llm import DEFAULT_MODEL
+    from forge.llm_providers import get_provider
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_extraction_llm") as span:
-        client = get_anthropic_client()
+        provider = get_provider(input.model_name or DEFAULT_MODEL)
         async with heartbeat_during():
-            result = await execute_extraction_call(input, client)
+            result = await execute_extraction_call(input, provider)
 
         span.set_attributes(
             llm_call_attributes(

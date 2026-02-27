@@ -28,7 +28,6 @@ from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
 )
-from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.message_log import write_message_log
 from forge.models import (
     ConflictResolutionCallInput,
@@ -44,7 +43,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from anthropic import AsyncAnthropic
+    from forge.llm_providers.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -222,16 +221,19 @@ def build_conflict_resolution_user_prompt(conflict_count: int) -> str:
 
 async def execute_conflict_resolution_call(
     input: ConflictResolutionCallInput,
-    client: AsyncAnthropic,
+    provider: LLMProvider,
 ) -> ConflictResolutionCallResult:
-    """Call the Anthropic API for conflict resolution and extract structured results.
+    """Call the LLM provider for conflict resolution and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock client.
+    Separated from the imperative shell so tests can inject a mock provider.
     """
-    model = input.model_name or "claude-sonnet-4-5-20250929"
+    from forge.llm_providers import parse_model_id
+
+    full_model = input.model_name or "claude-sonnet-4-5-20250929"
+    _, model = parse_model_id(full_model)
     start = time.monotonic()
 
-    params = build_messages_params(
+    params = provider.build_request_params(
         system_prompt=input.system_prompt,
         user_prompt=input.user_prompt,
         output_type=ConflictResolutionResponse,
@@ -239,7 +241,7 @@ async def execute_conflict_resolution_call(
         max_tokens=DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
         thinking_budget_tokens=input.thinking.budget_tokens,
     )
-    message = await client.messages.create(**params)
+    result = await provider.call(params)
 
     if input.log_messages and input.worktree_path:
         request_json = json.dumps(params, indent=2, default=str)
@@ -247,23 +249,22 @@ async def execute_conflict_resolution_call(
         write_message_log(
             input.worktree_path,
             "conflict-response",
-            message.model_dump_json(indent=2),
+            result.raw_response_json,
         )
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    response = extract_tool_result(message, ConflictResolutionResponse)
-    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
+    response = ConflictResolutionResponse.model_validate(result.tool_input)
 
     return ConflictResolutionCallResult(
         task_id=input.task_id,
         resolved_files={f.file_path: f.content for f in response.resolved_files},
         explanation=response.explanation,
-        model_name=model,
-        input_tokens=in_tok,
-        output_tokens=out_tok,
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=cache_create,
-        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=result.cache_creation_input_tokens,
+        cache_read_input_tokens=result.cache_read_input_tokens,
     )
 
 
@@ -303,16 +304,16 @@ async def assemble_conflict_resolution_context(
 async def call_conflict_resolution(
     input: ConflictResolutionCallInput,
 ) -> ConflictResolutionCallResult:
-    """Activity wrapper -- creates a client and delegates to execute_conflict_resolution_call."""
-    from forge.llm_client import get_anthropic_client
+    """Activity wrapper -- creates a provider and delegates to execute_conflict_resolution_call."""
+    from forge.llm_providers import get_provider
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_conflict_resolution") as span:
         logger.info("Conflict resolution call: task_id=%s", input.task_id)
-        client = get_anthropic_client()
+        provider = get_provider(input.model_name or "claude-sonnet-4-5-20250929")
         async with heartbeat_during():
-            result = await execute_conflict_resolution_call(input, client)
+            result = await execute_conflict_resolution_call(input, provider)
 
         span.set_attributes(
             llm_call_attributes(

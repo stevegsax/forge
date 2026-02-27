@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,7 +24,7 @@ from forge.models import (
     TaskDomain,
     ThinkingConfig,
 )
-from tests.conftest import build_mock_message
+from tests.conftest import build_mock_provider
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -104,21 +104,19 @@ _TEST_PLAN = Plan(
 class TestExecutePlannerCall:
     @pytest.mark.asyncio
     async def test_returns_plan_call_result(self) -> None:
-        mock_message = build_mock_message(
-            tool_name="plan",
+        provider = build_mock_provider(
             tool_input=_TEST_PLAN.model_dump(),
+            model_name="claude-sonnet-4-5-20250929",
             input_tokens=200,
             output_tokens=100,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         planner_input = PlannerInput(
             task_id="t1",
             system_prompt="sys",
             user_prompt="usr",
         )
-        result = await execute_planner_call(planner_input, mock_client)
+        result = await execute_planner_call(planner_input, provider)
 
         assert result.task_id == "t1"
         assert result.plan == _TEST_PLAN
@@ -127,23 +125,20 @@ class TestExecutePlannerCall:
         assert result.latency_ms >= 0
 
     @pytest.mark.asyncio
-    async def test_calls_client_with_correct_prompts(self) -> None:
-        mock_message = build_mock_message(
-            tool_name="plan",
+    async def test_calls_provider_build_and_call(self) -> None:
+        provider = build_mock_provider(
             tool_input=_TEST_PLAN.model_dump(),
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         planner_input = PlannerInput(
             task_id="t1",
             system_prompt="my system prompt",
             user_prompt="my user prompt",
         )
-        await execute_planner_call(planner_input, mock_client)
+        await execute_planner_call(planner_input, provider)
 
-        call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs["messages"][0]["content"] == "my user prompt"
+        provider.build_request_params.assert_called_once()
+        provider.call.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -250,23 +245,20 @@ class TestAssemblePlannerContextAutoDiscover:
 class TestPlannerCacheStats:
     @pytest.mark.asyncio
     async def test_extracts_cache_tokens(self) -> None:
-        mock_message = build_mock_message(
-            tool_name="plan",
+        provider = build_mock_provider(
             tool_input=_TEST_PLAN.model_dump(),
             input_tokens=200,
             output_tokens=100,
             cache_creation_input_tokens=500,
             cache_read_input_tokens=1000,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         planner_input = PlannerInput(
             task_id="t1",
             system_prompt="sys",
             user_prompt="usr",
         )
-        result = await execute_planner_call(planner_input, mock_client)
+        result = await execute_planner_call(planner_input, provider)
         assert result.cache_creation_input_tokens == 500
         assert result.cache_read_input_tokens == 1000
 
@@ -373,20 +365,18 @@ class TestBuildPlannerSystemPromptCapabilityTier:
 
 class TestCallPlannerModelNameThreading:
     @pytest.mark.asyncio
-    async def test_threads_model_name_to_client(self) -> None:
+    async def test_threads_model_name_to_provider(self) -> None:
         from forge.activities.planner import call_planner
 
-        mock_message = build_mock_message(
-            tool_name="plan",
+        provider = build_mock_provider(
             tool_input=_TEST_PLAN.model_dump(),
+            model_name="custom-planner",
             input_tokens=100,
             output_tokens=50,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         with (
-            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
+            patch("forge.llm_providers.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -403,26 +393,23 @@ class TestCallPlannerModelNameThreading:
                 user_prompt="usr",
                 model_name="custom-planner",
             )
-            await call_planner(planner_input)
+            result = await call_planner(planner_input)
 
-            call_kwargs = mock_client.messages.create.call_args[1]
-            assert call_kwargs["model"] == "custom-planner"
+            assert result.model_name == "custom-planner"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
         from forge.activities.planner import call_planner
 
-        mock_message = build_mock_message(
-            tool_name="plan",
+        provider = build_mock_provider(
             tool_input=_TEST_PLAN.model_dump(),
+            model_name="claude-sonnet-4-5-20250929",
             input_tokens=100,
             output_tokens=50,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         with (
-            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
+            patch("forge.llm_providers.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -438,10 +425,9 @@ class TestCallPlannerModelNameThreading:
                 system_prompt="sys",
                 user_prompt="usr",
             )
-            await call_planner(planner_input)
+            result = await call_planner(planner_input)
 
-            call_kwargs = mock_client.messages.create.call_args[1]
-            assert call_kwargs["model"] == "claude-sonnet-4-5-20250929"
+            assert result.model_name == "claude-sonnet-4-5-20250929"
 
 
 # ---------------------------------------------------------------------------
@@ -472,17 +458,15 @@ class TestCallPlannerThinkingThreading:
     async def test_threads_thinking_config_to_params(self) -> None:
         from forge.activities.planner import call_planner
 
-        mock_message = build_mock_message(
-            tool_name="plan",
+        provider = build_mock_provider(
             tool_input=_TEST_PLAN.model_dump(),
+            model_name="claude-opus-4-6",
             input_tokens=100,
             output_tokens=50,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         with (
-            patch("forge.llm_client.get_anthropic_client", return_value=mock_client),
+            patch("forge.llm_providers.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -502,8 +486,9 @@ class TestCallPlannerThinkingThreading:
             )
             await call_planner(planner_input)
 
-            call_kwargs = mock_client.messages.create.call_args[1]
-            assert "thinking" in call_kwargs
+            provider.build_request_params.assert_called_once()
+            call_kwargs = provider.build_request_params.call_args
+            assert call_kwargs[1].get("thinking_budget_tokens") == 10_000
 
 
 # ---------------------------------------------------------------------------

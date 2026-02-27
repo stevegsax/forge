@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from forge.activities.sanity_check import (
@@ -23,7 +21,7 @@ from forge.models import (
     TaskDefinition,
     TransitionSignal,
 )
-from tests.conftest import build_mock_message
+from tests.conftest import build_mock_provider
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -166,14 +164,11 @@ class TestExecuteSanityCheckCall:
             verdict=SanityCheckVerdict.CONTINUE,
             explanation="Plan looks good.",
         )
-        mock_message = build_mock_message(
-            tool_name="sanity_check_response",
+        provider = build_mock_provider(
             tool_input=mock_response.model_dump(),
             input_tokens=100,
             output_tokens=50,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input_data = SanityCheckInput(
             task_id="test-task",
@@ -181,7 +176,7 @@ class TestExecuteSanityCheckCall:
             user_prompt="user",
         )
 
-        result = await execute_sanity_check_call(input_data, mock_client)
+        result = await execute_sanity_check_call(input_data, provider)
 
         assert isinstance(result, SanityCheckCallResult)
         assert result.task_id == "test-task"
@@ -201,14 +196,11 @@ class TestExecuteSanityCheckCall:
             explanation="Need to adjust.",
             revised_steps=revised,
         )
-        mock_message = build_mock_message(
-            tool_name="sanity_check_response",
+        provider = build_mock_provider(
             tool_input=mock_response.model_dump(),
             input_tokens=200,
             output_tokens=100,
         )
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_message)
 
         input_data = SanityCheckInput(
             task_id="test-task",
@@ -216,7 +208,7 @@ class TestExecuteSanityCheckCall:
             user_prompt="user",
         )
 
-        result = await execute_sanity_check_call(input_data, mock_client)
+        result = await execute_sanity_check_call(input_data, provider)
 
         assert result.response.verdict == SanityCheckVerdict.REVISE
         assert result.response.revised_steps is not None

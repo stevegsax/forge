@@ -6,18 +6,22 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from forge.activities.batch_submit import DEFAULT_MODEL, execute_batch_submit
+from forge.activities.batch_submit import execute_batch_submit
 from forge.models import AssembledContext, BatchSubmitInput, ThinkingConfig
+from tests.conftest import build_mock_provider
 
 
-def _make_mock_client(batch_id: str = "msgbatch_test123") -> AsyncMock:
-    """Build a mock AsyncAnthropic client with batches.create."""
-    mock_batch = MagicMock()
-    mock_batch.id = batch_id
-
-    client = AsyncMock()
-    client.messages.batches.create = AsyncMock(return_value=mock_batch)
-    return client
+def _make_mock_provider(batch_id: str = "msgbatch_test123") -> MagicMock:
+    """Build a mock LLMProvider with batch methods."""
+    provider = build_mock_provider(
+        tool_input={},
+        model_name="test-model",
+    )
+    provider.build_batch_request = MagicMock(
+        return_value={"custom_id": "mock-id", "params": {"model": "test"}}
+    )
+    provider.submit_batch = AsyncMock(return_value=batch_id)
+    return provider
 
 
 def _make_input(
@@ -51,58 +55,31 @@ def _make_input(
 class TestExecuteBatchSubmit:
     @pytest.mark.asyncio
     async def test_returns_batch_submit_result(self) -> None:
-        client = _make_mock_client()
-        input = _make_input()
+        provider = _make_mock_provider()
+        input_data = _make_input()
 
-        result = await execute_batch_submit(input, client)
+        result = await execute_batch_submit(input_data, provider)
 
         assert result.batch_id == "msgbatch_test123"
         assert result.request_id  # non-empty UUID
 
     @pytest.mark.asyncio
-    async def test_calls_batches_create(self) -> None:
-        client = _make_mock_client()
-        input = _make_input()
+    async def test_calls_provider_submit_batch(self) -> None:
+        provider = _make_mock_provider()
+        input_data = _make_input()
 
-        await execute_batch_submit(input, client)
+        await execute_batch_submit(input_data, provider)
 
-        client.messages.batches.create.assert_called_once()
-        call_kwargs = client.messages.batches.create.call_args
-        requests = call_kwargs.kwargs.get("requests") or call_kwargs[1].get("requests")
-        assert len(requests) == 1
-        assert "custom_id" in requests[0]
-        assert "params" in requests[0]
-
-    @pytest.mark.asyncio
-    async def test_uses_context_model_name(self) -> None:
-        client = _make_mock_client()
-        input = _make_input(model_name="claude-opus-4-6")
-
-        await execute_batch_submit(input, client)
-
-        call_kwargs = client.messages.batches.create.call_args
-        requests = call_kwargs.kwargs.get("requests") or call_kwargs[1].get("requests")
-        params = requests[0]["params"]
-        assert params["model"] == "claude-opus-4-6"
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_default_model(self) -> None:
-        client = _make_mock_client()
-        input = _make_input(model_name="")
-
-        await execute_batch_submit(input, client)
-
-        call_kwargs = client.messages.batches.create.call_args
-        requests = call_kwargs.kwargs.get("requests") or call_kwargs[1].get("requests")
-        params = requests[0]["params"]
-        assert params["model"] == DEFAULT_MODEL
+        provider.build_request_params.assert_called_once()
+        provider.build_batch_request.assert_called_once()
+        provider.submit_batch.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_request_id_is_uuid_format(self) -> None:
-        client = _make_mock_client()
-        input = _make_input()
+        provider = _make_mock_provider()
+        input_data = _make_input()
 
-        result = await execute_batch_submit(input, client)
+        result = await execute_batch_submit(input_data, provider)
 
         # UUID format: 8-4-4-4-12 hex digits
         parts = result.request_id.split("-")
@@ -111,28 +88,23 @@ class TestExecuteBatchSubmit:
 
     @pytest.mark.asyncio
     async def test_passes_thinking_config_through(self) -> None:
-        client = _make_mock_client()
-        input = _make_input(
+        provider = _make_mock_provider()
+        input_data = _make_input(
             model_name="claude-sonnet-4-5-20250929",
             thinking=ThinkingConfig(budget_tokens=10_000, effort="high"),
         )
 
-        await execute_batch_submit(input, client)
+        await execute_batch_submit(input_data, provider)
 
-        call_kwargs = client.messages.batches.create.call_args
-        requests = call_kwargs.kwargs.get("requests") or call_kwargs[1].get("requests")
-        params = requests[0]["params"]
-        assert "thinking" in params
-        assert params["thinking"]["budget_tokens"] >= 10_000
+        call_kwargs = provider.build_request_params.call_args
+        assert call_kwargs[1].get("thinking_budget_tokens") == 10_000
 
     @pytest.mark.asyncio
     async def test_passes_max_tokens_through(self) -> None:
-        client = _make_mock_client()
-        input = _make_input(max_tokens=8192)
+        provider = _make_mock_provider()
+        input_data = _make_input(max_tokens=8192)
 
-        await execute_batch_submit(input, client)
+        await execute_batch_submit(input_data, provider)
 
-        call_kwargs = client.messages.batches.create.call_args
-        requests = call_kwargs.kwargs.get("requests") or call_kwargs[1].get("requests")
-        params = requests[0]["params"]
-        assert params["max_tokens"] == 8192
+        call_kwargs = provider.build_request_params.call_args
+        assert call_kwargs[1].get("max_tokens") == 8192

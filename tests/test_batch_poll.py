@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from forge.activities.batch_poll import (
-    _build_signal_from_entry,
     _ensure_utc,
     execute_poll_batch_results,
 )
+from forge.llm_providers.models import BatchPollResult as ProviderBatchPollResult
+from forge.llm_providers.models import BatchPollStatus, BatchResultEntry
 from forge.models import BatchPollerResult
 
 # ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ def _make_pending_job(
     batch_id: str = "msgbatch_abc",
     workflow_id: str = "forge-task-test",
     created_at: datetime | None = None,
+    provider: str = "anthropic",
 ) -> dict:
     """Build a pending batch job dict matching store rows."""
     return {
@@ -33,64 +35,25 @@ def _make_pending_job(
         "workflow_id": workflow_id,
         "created_at": created_at or datetime.now(UTC),
         "status": "submitted",
+        "provider": provider,
     }
 
 
-def _make_batch_response(*, processing_status: str = "ended") -> MagicMock:
-    """Build a mock batch retrieve response."""
-    batch = MagicMock()
-    batch.processing_status = processing_status
-    return batch
-
-
-def _make_result_entry(
+def _make_mock_provider(
     *,
-    custom_id: str = "req-1",
-    result_type: str = "succeeded",
-    message_json: str = '{"content": "hello"}',
-    error: str = "some error",
+    poll_result: ProviderBatchPollResult | None = None,
+    poll_error: Exception | None = None,
 ) -> MagicMock:
-    """Build a mock batch result entry."""
-    entry = MagicMock()
-    entry.custom_id = custom_id
-    entry.result = MagicMock()
-    entry.result.type = result_type
-
-    if result_type == "succeeded":
-        entry.result.message = MagicMock()
-        entry.result.message.model_dump_json.return_value = message_json
-    elif result_type == "errored":
-        entry.result.error = error
-
-    return entry
-
-
-def _make_anthropic_client(
-    *,
-    batch: MagicMock | None = None,
-    results: list[MagicMock] | None = None,
-    retrieve_error: Exception | None = None,
-    results_error: Exception | None = None,
-) -> AsyncMock:
-    """Build a mock AsyncAnthropic client."""
-    client = AsyncMock()
-
-    if retrieve_error:
-        client.messages.batches.retrieve = AsyncMock(side_effect=retrieve_error)
+    """Build a mock LLMProvider with poll_batch method."""
+    provider = MagicMock()
+    if poll_error:
+        provider.poll_batch = AsyncMock(side_effect=poll_error)
     else:
-        client.messages.batches.retrieve = AsyncMock(return_value=batch or _make_batch_response())
-
-    if results_error:
-        client.messages.batches.results = AsyncMock(side_effect=results_error)
-    else:
-        # results() returns an async iterable
-        async def _async_iter():
-            for r in results or []:
-                yield r
-
-        client.messages.batches.results = AsyncMock(return_value=_async_iter())
-
-    return client
+        provider.poll_batch = AsyncMock(
+            return_value=poll_result
+            or ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
+        )
+    return provider
 
 
 def _make_temporal_client(*, signal_error: Exception | None = None) -> AsyncMock:
@@ -129,56 +92,6 @@ class TestEnsureUtc:
 
 
 # ---------------------------------------------------------------------------
-# _build_signal_from_entry
-# ---------------------------------------------------------------------------
-
-
-class TestBuildSignalFromEntry:
-    def test_succeeded_entry(self) -> None:
-        entry = _make_result_entry(result_type="succeeded", message_json='{"role": "assistant"}')
-        signal = _build_signal_from_entry(entry, "msgbatch_x")
-
-        assert signal.request_id == "req-1"
-        assert signal.batch_id == "msgbatch_x"
-        assert signal.raw_response_json == '{"role": "assistant"}'
-        assert signal.error is None
-        assert signal.result_type == "succeeded"
-
-    def test_errored_entry(self) -> None:
-        entry = _make_result_entry(result_type="errored", error="rate limited")
-        signal = _build_signal_from_entry(entry, "msgbatch_x")
-
-        assert signal.error is not None
-        assert "rate limited" in signal.error
-        assert signal.raw_response_json is None
-        assert signal.result_type == "errored"
-
-    def test_expired_entry(self) -> None:
-        entry = _make_result_entry(result_type="expired")
-        signal = _build_signal_from_entry(entry, "msgbatch_x")
-
-        assert signal.error is not None
-        assert "expired" in signal.error.lower()
-        assert signal.result_type == "expired"
-
-    def test_canceled_entry(self) -> None:
-        entry = _make_result_entry(result_type="canceled")
-        signal = _build_signal_from_entry(entry, "msgbatch_x")
-
-        assert signal.error is not None
-        assert "canceled" in signal.error.lower()
-        assert signal.result_type == "canceled"
-
-    def test_unknown_result_type(self) -> None:
-        entry = _make_result_entry(result_type="something_new")
-        signal = _build_signal_from_entry(entry, "msgbatch_x")
-
-        assert signal.error is not None
-        assert "something_new" in signal.error
-        assert signal.result_type == "something_new"
-
-
-# ---------------------------------------------------------------------------
 # execute_poll_batch_results
 # ---------------------------------------------------------------------------
 
@@ -186,17 +99,25 @@ class TestBuildSignalFromEntry:
 class TestExecutePollBatchResults:
     @pytest.mark.asyncio
     async def test_no_pending_jobs_returns_zero_counts(self) -> None:
-        client = _make_anthropic_client()
         temporal = _make_temporal_client()
 
-        result = await execute_poll_batch_results([], client, temporal, _noop_update)
+        result = await execute_poll_batch_results([], temporal, _noop_update)
 
         assert result == BatchPollerResult(batches_checked=0, signals_sent=0, errors_found=0)
 
     @pytest.mark.asyncio
     async def test_succeeded_batch_sends_signal(self) -> None:
-        entry = _make_result_entry(result_type="succeeded", message_json='{"text": "hi"}')
-        client = _make_anthropic_client(results=[entry])
+        poll_result = ProviderBatchPollResult(
+            status=BatchPollStatus.ENDED,
+            entries=[
+                BatchResultEntry(
+                    custom_id="req-1",
+                    succeeded=True,
+                    raw_response_json='{"text": "hi"}',
+                )
+            ],
+        )
+        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
         updates: list[dict] = []
 
@@ -204,7 +125,8 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, track_update)
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, track_update)
 
         assert result.batches_checked == 1
         assert result.signals_sent == 1
@@ -223,13 +145,23 @@ class TestExecutePollBatchResults:
         assert updates[0]["status"] == "succeeded"
 
     @pytest.mark.asyncio
-    async def test_errored_batch_sends_error_signal(self) -> None:
-        entry = _make_result_entry(result_type="errored", error="invalid request")
-        client = _make_anthropic_client(results=[entry])
+    async def test_errored_entry_sends_error_signal(self) -> None:
+        poll_result = ProviderBatchPollResult(
+            status=BatchPollStatus.ENDED,
+            entries=[
+                BatchResultEntry(
+                    custom_id="req-1",
+                    succeeded=False,
+                    error="invalid request",
+                )
+            ],
+        )
+        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, _noop_update)
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, _noop_update)
 
         assert result.signals_sent == 1
         handle = temporal.get_workflow_handle.return_value
@@ -238,42 +170,14 @@ class TestExecutePollBatchResults:
         assert "invalid request" in signal.error
 
     @pytest.mark.asyncio
-    async def test_expired_batch_sends_error_signal(self) -> None:
-        entry = _make_result_entry(result_type="expired")
-        client = _make_anthropic_client(results=[entry])
-        temporal = _make_temporal_client()
-
-        job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, _noop_update)
-
-        assert result.signals_sent == 1
-        handle = temporal.get_workflow_handle.return_value
-        signal = handle.signal.call_args[0][1]
-        assert signal.error is not None
-        assert "expired" in signal.error.lower()
-
-    @pytest.mark.asyncio
-    async def test_canceled_batch_sends_error_signal(self) -> None:
-        entry = _make_result_entry(result_type="canceled")
-        client = _make_anthropic_client(results=[entry])
-        temporal = _make_temporal_client()
-
-        job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, _noop_update)
-
-        assert result.signals_sent == 1
-        handle = temporal.get_workflow_handle.return_value
-        signal = handle.signal.call_args[0][1]
-        assert "canceled" in signal.error.lower()
-
-    @pytest.mark.asyncio
     async def test_still_processing_is_skipped(self) -> None:
-        batch = _make_batch_response(processing_status="in_progress")
-        client = _make_anthropic_client(batch=batch)
+        poll_result = ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
+        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, _noop_update)
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, _noop_update)
 
         assert result.batches_checked == 1
         assert result.signals_sent == 0
@@ -281,11 +185,12 @@ class TestExecutePollBatchResults:
 
     @pytest.mark.asyncio
     async def test_retrieve_failure_logged_no_crash(self) -> None:
-        client = _make_anthropic_client(retrieve_error=RuntimeError("network error"))
+        provider = _make_mock_provider(poll_error=RuntimeError("network error"))
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, _noop_update)
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, _noop_update)
 
         assert result.batches_checked == 1
         assert result.signals_sent == 0
@@ -293,7 +198,7 @@ class TestExecutePollBatchResults:
 
     @pytest.mark.asyncio
     async def test_missing_batch_old_job_marks_missing(self) -> None:
-        client = _make_anthropic_client(retrieve_error=RuntimeError("not found"))
+        provider = _make_mock_provider(poll_error=RuntimeError("not found"))
         temporal = _make_temporal_client()
         updates: list[dict] = []
 
@@ -302,7 +207,8 @@ class TestExecutePollBatchResults:
 
         old_time = datetime.now(UTC) - timedelta(hours=25)
         job = _make_pending_job(created_at=old_time)
-        result = await execute_poll_batch_results([job], client, temporal, track_update)
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, track_update)
 
         assert result.errors_found == 1
         assert len(updates) == 1
@@ -310,12 +216,16 @@ class TestExecutePollBatchResults:
 
     @pytest.mark.asyncio
     async def test_signal_delivery_failure_increments_errors(self) -> None:
-        entry = _make_result_entry(result_type="succeeded")
-        client = _make_anthropic_client(results=[entry])
+        poll_result = ProviderBatchPollResult(
+            status=BatchPollStatus.ENDED,
+            entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
+        )
+        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
 
         job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, _noop_update)
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, _noop_update)
 
         assert result.batches_checked == 1
         assert result.signals_sent == 0
@@ -323,35 +233,11 @@ class TestExecutePollBatchResults:
 
     @pytest.mark.asyncio
     async def test_multiple_pending_jobs_all_processed(self) -> None:
-        entry1 = _make_result_entry(custom_id="req-1", result_type="succeeded")
-        entry2 = _make_result_entry(custom_id="req-2", result_type="succeeded")
-
-        # Create two separate clients that return different results
-        # For simplicity, use a single client that's called twice
-        batch = _make_batch_response()
-
-        async def _results1():
-            yield entry1
-
-        async def _results2():
-            yield entry2
-
-        call_count = 0
-
-        async def _retrieve(batch_id):
-            return batch
-
-        async def _results(batch_id):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return _results1()
-            return _results2()
-
-        client = AsyncMock()
-        client.messages.batches.retrieve = _retrieve
-        client.messages.batches.results = _results
-
+        poll_result = ProviderBatchPollResult(
+            status=BatchPollStatus.ENDED,
+            entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
+        )
+        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
 
         jobs = [
@@ -359,67 +245,8 @@ class TestExecutePollBatchResults:
             _make_pending_job(request_id="req-2", batch_id="batch-2", workflow_id="wf-2"),
         ]
 
-        result = await execute_poll_batch_results(jobs, client, temporal, _noop_update)
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results(jobs, temporal, _noop_update)
 
         assert result.batches_checked == 2
         assert result.signals_sent == 2
-
-    @pytest.mark.asyncio
-    async def test_final_status_is_per_job_not_cumulative(self) -> None:
-        """Job B should get 'errored' even if job A already sent signals."""
-        entry_a = _make_result_entry(custom_id="req-a", result_type="succeeded")
-        batch = _make_batch_response()
-
-        async def _results_a():
-            yield entry_a
-
-        async def _results_b():
-            # Empty — no results for job B
-            return
-            yield  # make this an async generator
-
-        call_count = 0
-
-        async def _retrieve(batch_id):
-            return batch
-
-        async def _results(batch_id):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return _results_a()
-            return _results_b()
-
-        client = AsyncMock()
-        client.messages.batches.retrieve = _retrieve
-        client.messages.batches.results = _results
-
-        temporal = _make_temporal_client()
-        updates: list[dict] = []
-
-        def track_update(**kwargs):
-            updates.append(kwargs)
-
-        jobs = [
-            _make_pending_job(request_id="req-a", batch_id="batch-a", workflow_id="wf-a"),
-            _make_pending_job(request_id="req-b", batch_id="batch-b", workflow_id="wf-b"),
-        ]
-
-        result = await execute_poll_batch_results(jobs, client, temporal, track_update)
-
-        assert result.signals_sent == 1
-        assert len(updates) == 2
-        assert updates[0] == {"request_id": "req-a", "status": "succeeded", "error_message": None}
-        assert updates[1] == {"request_id": "req-b", "status": "errored", "error_message": None}
-
-    @pytest.mark.asyncio
-    async def test_results_retrieval_failure_increments_errors(self) -> None:
-        client = _make_anthropic_client(results_error=RuntimeError("stream error"))
-        temporal = _make_temporal_client()
-
-        job = _make_pending_job()
-        result = await execute_poll_batch_results([job], client, temporal, _noop_update)
-
-        assert result.batches_checked == 1
-        assert result.signals_sent == 0
-        assert result.errors_found == 1

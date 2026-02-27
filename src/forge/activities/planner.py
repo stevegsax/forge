@@ -4,7 +4,7 @@ Decomposes a task into ordered steps using an LLM with structured output.
 
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_planner_system_prompt, build_planner_user_prompt
-- Testable function: execute_planner_call (takes client as argument)
+- Testable function: execute_planner_call (takes provider as argument)
 - Imperative shell: assemble_planner_context, call_planner, store.persist_interaction
 """
 
@@ -26,7 +26,6 @@ from forge.activities.context import (
     build_project_instructions_section,
 )
 from forge.domains import get_domain_config
-from forge.llm_client import build_messages_params, extract_tool_result, extract_usage
 from forge.message_log import write_message_log
 from forge.models import (
     AssembleContextInput,
@@ -37,7 +36,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from anthropic import AsyncAnthropic
+    from forge.llm_providers.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -191,16 +190,19 @@ def build_planner_user_prompt(task: TaskDefinition) -> str:
 
 async def execute_planner_call(
     input: PlannerInput,
-    client: AsyncAnthropic,
+    provider: LLMProvider,
 ) -> PlanCallResult:
-    """Call the Anthropic API for planning and extract structured results.
+    """Call the LLM provider for planning and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock client.
+    Separated from the imperative shell so tests can inject a mock provider.
     """
-    model = input.model_name or "claude-sonnet-4-5-20250929"
+    from forge.llm_providers import parse_model_id
+
+    full_model = input.model_name or "claude-sonnet-4-5-20250929"
+    _, model = parse_model_id(full_model)
     start = time.monotonic()
 
-    params = build_messages_params(
+    params = provider.build_request_params(
         system_prompt=input.system_prompt,
         user_prompt=input.user_prompt,
         output_type=Plan,
@@ -208,28 +210,25 @@ async def execute_planner_call(
         max_tokens=DEFAULT_PLANNER_MAX_TOKENS,
         thinking_budget_tokens=input.thinking.budget_tokens,
     )
-    message = await client.messages.create(**params)
+    result = await provider.call(params)
 
     if input.log_messages and input.worktree_path:
         request_json = json.dumps(params, indent=2, default=str)
         write_message_log(input.worktree_path, "planner-request", request_json)
-        write_message_log(
-            input.worktree_path, "planner-response", message.model_dump_json(indent=2)
-        )
+        write_message_log(input.worktree_path, "planner-response", result.raw_response_json)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    plan = extract_tool_result(message, Plan)
-    in_tok, out_tok, cache_create, cache_read = extract_usage(message)
+    plan = Plan.model_validate(result.tool_input)
 
     return PlanCallResult(
         task_id=input.task_id,
         plan=plan,
-        model_name=model,
-        input_tokens=in_tok,
-        output_tokens=out_tok,
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=cache_create,
-        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=result.cache_creation_input_tokens,
+        cache_read_input_tokens=result.cache_read_input_tokens,
     )
 
 
@@ -314,16 +313,16 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
 
 @activity.defn
 async def call_planner(input: PlannerInput) -> PlanCallResult:
-    """Activity wrapper — creates a client and delegates to execute_planner_call."""
-    from forge.llm_client import get_anthropic_client
+    """Activity wrapper — creates a provider and delegates to execute_planner_call."""
+    from forge.llm_providers import get_provider
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_planner") as span:
         logger.info("Planner call: task_id=%s", input.task_id)
-        client = get_anthropic_client()
+        provider = get_provider(input.model_name or "claude-sonnet-4-5-20250929")
         async with heartbeat_during():
-            result = await execute_planner_call(input, client)
+            result = await execute_planner_call(input, provider)
         logger.info("Plan produced: task_id=%s steps=%d", input.task_id, len(result.plan.steps))
 
         span.set_attributes(

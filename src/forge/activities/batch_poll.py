@@ -1,6 +1,6 @@
 """Batch poll activity for Forge.
 
-Polls the Anthropic API for completed batch results and signals waiting
+Polls LLM providers for completed batch results and signals waiting
 workflows via Temporal.
 
 Design follows Function Core / Imperative Shell:
@@ -22,7 +22,6 @@ from forge.models import BatchPollerInput, BatchPollerResult, BatchResult
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from anthropic import AsyncAnthropic
     from temporalio.client import Client
 
 logger = logging.getLogger(__name__)
@@ -57,18 +56,19 @@ def get_temporal_client() -> Client:
 
 async def execute_poll_batch_results(
     pending_jobs: list[dict[str, Any]],
-    client: AsyncAnthropic,
     temporal_client: Client,
     update_status_fn: Callable[..., None],
 ) -> BatchPollerResult:
-    """Poll Anthropic for batch results and signal waiting workflows.
+    """Poll LLM providers for batch results and signal waiting workflows.
 
     Args:
         pending_jobs: Rows from get_pending_batch_jobs() (dicts with batch job fields).
-        client: Anthropic async client.
         temporal_client: Temporal client for sending signals to workflows.
         update_status_fn: Callable to update batch job status in the store.
     """
+    from forge.llm_providers import get_provider
+    from forge.llm_providers.models import BatchPollStatus
+
     batches_checked = 0
     signals_sent = 0
     errors_found = 0
@@ -78,15 +78,16 @@ async def execute_poll_batch_results(
         request_id = job["id"]
         workflow_id = job["workflow_id"]
         created_at = job["created_at"]
+        provider_name = job.get("provider", "anthropic")
 
         batches_checked += 1
 
-        # Retrieve batch status from Anthropic
+        provider = get_provider(provider_name)
+
         try:
-            batch = await client.messages.batches.retrieve(batch_id)
+            poll_result = await provider.poll_batch(batch_id)
         except Exception:
-            logger.warning("Failed to retrieve batch %s", batch_id, exc_info=True)
-            # If the job is old, mark as MISSING
+            logger.warning("Failed to poll batch %s", batch_id, exc_info=True)
             age = datetime.now(UTC) - _ensure_utc(created_at)
             if age > _MISSING_THRESHOLD:
                 logger.warning("Batch %s is >24h old and unretrievable, marking MISSING", batch_id)
@@ -99,21 +100,25 @@ async def execute_poll_batch_results(
                 errors_found += 1
             continue
 
-        # Skip batches that are still processing
-        if batch.processing_status != "ended":
-            continue
-
-        # Iterate results for ended batches
-        try:
-            results_iter = await client.messages.batches.results(batch_id)
-        except Exception:
-            logger.warning("Failed to retrieve results for batch %s", batch_id, exc_info=True)
-            errors_found += 1
+        if poll_result.status != BatchPollStatus.ENDED:
             continue
 
         job_signals = 0
-        async for entry in results_iter:
-            signal = _build_signal_from_entry(entry, batch_id)
+        for entry in poll_result.entries:
+            if entry.succeeded:
+                signal = BatchResult(
+                    request_id=entry.custom_id,
+                    batch_id=batch_id,
+                    raw_response_json=entry.raw_response_json,
+                    result_type="succeeded",
+                )
+            else:
+                signal = BatchResult(
+                    request_id=entry.custom_id,
+                    batch_id=batch_id,
+                    error=entry.error or "Unknown error",
+                    result_type="errored",
+                )
 
             try:
                 handle = temporal_client.get_workflow_handle(workflow_id)
@@ -129,7 +134,6 @@ async def execute_poll_batch_results(
                 )
                 errors_found += 1
 
-        # Update batch job status (best-effort, D42)
         final_status = "succeeded" if job_signals > 0 else "errored"
         _safe_update_status(
             update_status_fn,
@@ -141,54 +145,6 @@ async def execute_poll_batch_results(
         batches_checked=batches_checked,
         signals_sent=signals_sent,
         errors_found=errors_found,
-    )
-
-
-def _build_signal_from_entry(entry: Any, batch_id: str) -> BatchResult:
-    """Build a BatchResult signal from a batch results entry."""
-    request_id = entry.custom_id
-    result_type = entry.result.type
-
-    if result_type == "succeeded":
-        raw_json = entry.result.message.model_dump_json()
-        return BatchResult(
-            request_id=request_id,
-            batch_id=batch_id,
-            raw_response_json=raw_json,
-            result_type="succeeded",
-        )
-
-    if result_type == "errored":
-        error_msg = str(entry.result.error)
-        return BatchResult(
-            request_id=request_id,
-            batch_id=batch_id,
-            error=f"Batch error: {error_msg}",
-            result_type="errored",
-        )
-
-    if result_type == "expired":
-        return BatchResult(
-            request_id=request_id,
-            batch_id=batch_id,
-            error="Batch request expired (24h limit)",
-            result_type="expired",
-        )
-
-    if result_type == "canceled":
-        return BatchResult(
-            request_id=request_id,
-            batch_id=batch_id,
-            error="Batch request was canceled",
-            result_type="canceled",
-        )
-
-    # Unknown result type — treat as error
-    return BatchResult(
-        request_id=request_id,
-        batch_id=batch_id,
-        error=f"Unknown result type: {result_type}",
-        result_type=result_type,
     )
 
 
@@ -221,7 +177,6 @@ def _safe_update_status(
 @activity.defn
 async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
     """Activity wrapper — wires up real dependencies and delegates."""
-    from forge.llm_client import get_anthropic_client
     from forge.tracing import get_tracer
 
     tracer = get_tracer()
@@ -263,13 +218,11 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
                 error_message=error_message,
             )
 
-        anthropic_client = get_anthropic_client()
         temporal_client = get_temporal_client()
 
         async with heartbeat_during():
             result = await execute_poll_batch_results(
                 pending_jobs=pending_jobs,
-                client=anthropic_client,
                 temporal_client=temporal_client,
                 update_status_fn=update_status_fn,
             )
