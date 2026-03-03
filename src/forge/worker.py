@@ -58,6 +58,14 @@ from forge.activities.batch_poll import set_temporal_client
 from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
+from forge.ocr.activities import (
+    parse_ocr_result,
+    read_file_as_base64,
+    store_ocr_result,
+    submit_ocr_batch,
+)
+from forge.ocr.workflow_store import OcrStoreWorkflow
+from forge.ocr.workflow_submit import OcrSubmitWorkflow
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
@@ -185,6 +193,8 @@ async def run_worker(
             ForgeSubTaskWorkflow,
             ForgeExtractionWorkflow,
             BatchPollerWorkflow,
+            OcrSubmitWorkflow,
+            OcrStoreWorkflow,
         ],
         activities=[
             assemble_conflict_resolution_context,
@@ -215,6 +225,11 @@ async def run_worker(
             validate_output,
             write_files,
             write_output,
+            # OCR activities
+            read_file_as_base64,
+            submit_ocr_batch,
+            parse_ocr_result,
+            store_ocr_result,
         ],
         graceful_shutdown_timeout=timedelta(seconds=30),
     )

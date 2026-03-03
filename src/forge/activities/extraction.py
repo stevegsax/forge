@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
+from forge.llm_providers.models import text_messages
 from forge.models import (
     ExtractionCallResult,
     ExtractionInput,
@@ -198,8 +199,7 @@ async def execute_extraction_call(
     start = time.monotonic()
 
     params = provider.build_request_params(
-        system_prompt=input.system_prompt,
-        user_prompt=input.user_prompt,
+        messages=text_messages(input.system_prompt, input.user_prompt),
         output_type=ExtractionResult,
         model=model,
         max_tokens=DEFAULT_EXTRACTION_MAX_TOKENS,

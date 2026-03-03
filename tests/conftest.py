@@ -59,8 +59,9 @@ def build_mock_message(
 
 
 def build_mock_provider(
-    tool_input: dict,
+    tool_input: dict | None = None,
     *,
+    text_content: str | None = None,
     model_name: str = "test-model",
     input_tokens: int = 100,
     output_tokens: int = 200,
@@ -76,7 +77,8 @@ def build_mock_provider(
     from forge.llm_providers.models import ProviderResponse
 
     response = ProviderResponse(
-        tool_input=tool_input,
+        tool_input=tool_input or {},
+        text_content=text_content,
         model_name=model_name,
         input_tokens=input_tokens,
         output_tokens=output_tokens,

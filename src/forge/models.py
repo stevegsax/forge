@@ -963,7 +963,7 @@ class ParseResponseInput(BaseModel):
     """Input to a parse activity that deserializes a batch response (14b)."""
 
     raw_response_json: str
-    output_type_name: str
+    output_type_name: str | None = None
     task_id: str
     provider: str = Field(default="anthropic", description="LLM provider name for parsing.")
     log_messages: bool = False

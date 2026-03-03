@@ -1,0 +1,257 @@
+"""OCR activities for Forge.
+
+Activities for reading files, submitting OCR batch requests,
+parsing results, and storing extracted text.
+
+Design follows Function Core / Imperative Shell:
+- Pure functions: build_ocr_messages, detect_mime_type
+- Testable functions: execute_read_file, execute_submit_ocr_batch,
+  execute_parse_ocr_result, execute_store_ocr_result
+- Imperative shell: Temporal activities wrapping the testable functions
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import mimetypes
+import uuid
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from temporalio import activity
+
+from forge.llm_providers.models import (
+    DocumentContent,
+    ImageContent,
+    Message,
+    TextContent,
+)
+from forge.ocr.models import (
+    FileContentResult,
+    OcrParseResult,
+    OcrStoreResult,
+    OcrSubmitResult,
+)
+
+if TYPE_CHECKING:
+    from forge.llm_providers.protocol import LLMProvider
+    from forge.ocr.models import OcrSubmitInput
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Pure functions
+# ---------------------------------------------------------------------------
+
+
+def detect_mime_type(file_path: str) -> str:
+    """Detect MIME type from file extension."""
+    mime_type, _ = mimetypes.guess_type(file_path)
+    return mime_type or "application/octet-stream"
+
+
+def build_ocr_messages(
+    base64_data: str,
+    mime_type: str,
+    instruction: str = "Extract all text from this document. Return the full text content.",
+) -> list[Message]:
+    """Build multimodal messages for OCR."""
+    if mime_type.startswith("image/"):
+        content_block: ImageContent | DocumentContent = ImageContent(
+            media_type=mime_type,
+            data=base64_data,
+        )
+    else:
+        content_block = DocumentContent(
+            media_type=mime_type,
+            data=base64_data,
+        )
+
+    return [
+        Message(role="system", content="You are a document OCR assistant."),
+        Message(
+            role="user",
+            content=[content_block, TextContent(text=instruction)],
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Testable functions
+# ---------------------------------------------------------------------------
+
+
+def execute_read_file(file_path: str) -> FileContentResult:
+    """Read a file and return base64-encoded content with MIME type."""
+    path = Path(file_path)
+    raw = path.read_bytes()
+    encoded = base64.b64encode(raw).decode("ascii")
+    mime_type = detect_mime_type(file_path)
+    return FileContentResult(
+        base64_data=encoded,
+        mime_type=mime_type,
+        file_size_bytes=len(raw),
+    )
+
+
+async def execute_submit_ocr_batch(
+    input: OcrSubmitInput,
+    file_content: FileContentResult,
+    provider: LLMProvider,
+    workflow_id: str,
+) -> OcrSubmitResult:
+    """Build multimodal message and submit to batch API."""
+    from forge.llm_providers import parse_model_id
+
+    document_id = input.document_id or str(uuid.uuid4())
+    _, model = parse_model_id(input.model_name)
+
+    messages = build_ocr_messages(file_content.base64_data, file_content.mime_type)
+
+    params = provider.build_request_params(
+        messages=messages,
+        output_type=None,
+        model=model,
+        max_tokens=input.max_tokens,
+    )
+
+    request_id = str(uuid.uuid4())
+    batch_request = provider.build_batch_request(request_id, params)
+    batch_id = await provider.submit_batch([batch_request], model)
+
+    return OcrSubmitResult(
+        batch_id=batch_id,
+        request_id=request_id,
+        document_id=document_id,
+        workflow_id=workflow_id,
+    )
+
+
+def execute_parse_ocr_result(
+    raw_json: str,
+    provider_name: str = "mistral",
+) -> OcrParseResult:
+    """Parse OCR batch result into extracted text."""
+    from forge.llm_providers import get_provider
+
+    provider = get_provider(provider_name)
+    result = provider.parse_batch_result(raw_json, output_type_name=None)
+
+    return OcrParseResult(
+        text=result.text_content or "",
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+    )
+
+
+def execute_store_ocr_result(
+    *,
+    document_id: str,
+    file_path: str,
+    text: str,
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    batch_id: str,
+    workflow_id: str,
+) -> OcrStoreResult:
+    """Store OCR result in the database."""
+    from forge.store import get_db_path, get_engine, save_ocr_result
+
+    db_path = get_db_path()
+    if db_path is None:
+        return OcrStoreResult(
+            document_id=document_id,
+            text_length=len(text),
+            stored=False,
+        )
+
+    engine = get_engine(db_path)
+    save_ocr_result(
+        engine,
+        document_id=document_id,
+        file_path=file_path,
+        text=text,
+        model_name=model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        batch_id=batch_id,
+        workflow_id=workflow_id,
+    )
+    return OcrStoreResult(
+        document_id=document_id,
+        text_length=len(text),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Imperative shell (Temporal activities)
+# ---------------------------------------------------------------------------
+
+
+@activity.defn
+async def read_file_as_base64(file_path: str) -> FileContentResult:
+    """Activity: read file and encode as base64."""
+    logger.info("Reading file: %s", file_path)
+    return execute_read_file(file_path)
+
+
+@activity.defn
+async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
+    """Activity: submit OCR batch request.
+
+    Takes JSON-serialized OcrSubmitInput + FileContentResult to avoid
+    complex activity input. The actual submission uses the provider.
+    """
+    from forge.llm_providers import get_provider
+    from forge.ocr.models import OcrSubmitInput
+    from forge.store import get_db_path, get_engine, record_batch_submission
+
+    data = json.loads(input_json)
+    ocr_input = OcrSubmitInput.model_validate(data["submit_input"])
+    file_content = FileContentResult.model_validate(data["file_content"])
+    store_workflow_id = data["store_workflow_id"]
+
+    provider = get_provider(ocr_input.model_name)
+    result = await execute_submit_ocr_batch(
+        ocr_input, file_content, provider, store_workflow_id
+    )
+
+    # Record batch submission for the poller to find
+    try:
+        from forge.llm_providers import parse_model_id
+
+        provider_name, _ = parse_model_id(ocr_input.model_name)
+        db_path = get_db_path()
+        if db_path is not None:
+            engine = get_engine(db_path)
+            record_batch_submission(
+                engine,
+                request_id=result.request_id,
+                batch_id=result.batch_id,
+                workflow_id=store_workflow_id,
+                provider=provider_name,
+            )
+    except Exception:
+        logger.warning("Failed to record OCR batch submission", exc_info=True)
+
+    return result
+
+
+@activity.defn
+async def parse_ocr_result(raw_json: str) -> OcrParseResult:
+    """Activity: parse raw OCR batch result."""
+    logger.info("Parsing OCR result")
+    return execute_parse_ocr_result(raw_json, provider_name="mistral")
+
+
+@activity.defn
+async def store_ocr_result(input_json: str) -> OcrStoreResult:
+    """Activity: store OCR result in database."""
+    data = json.loads(input_json)
+    logger.info("Storing OCR result: document_id=%s", data.get("document_id", ""))
+    return execute_store_ocr_result(**data)

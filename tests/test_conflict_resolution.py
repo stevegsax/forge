@@ -411,7 +411,7 @@ class TestClassifyFileConflicts:
         assert conflicts[0].original_content is None
 
     def test_conflicts_have_no_original_content(self) -> None:
-        """classify_file_conflicts never reads the filesystem, so original_content is always None."""
+        """classify_file_conflicts never reads filesystem; original_content is always None."""
         results = [
             SubTaskResult(
                 sub_task_id="st1",

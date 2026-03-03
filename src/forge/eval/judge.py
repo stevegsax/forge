@@ -13,6 +13,7 @@ import time
 from typing import TYPE_CHECKING
 
 from forge.eval.models import EvalCase, JudgeCriterion, JudgeVerdict
+from forge.llm_providers.models import text_messages
 
 if TYPE_CHECKING:
     from forge.llm_providers.protocol import LLMProvider
@@ -145,8 +146,7 @@ async def execute_judge_call(
     start = time.monotonic()
 
     params = provider.build_request_params(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        messages=text_messages(system_prompt, user_prompt, cache_system=False),
         output_type=JudgeVerdict,
         model=model,
         max_tokens=DEFAULT_JUDGE_MAX_TOKENS,

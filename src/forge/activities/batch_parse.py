@@ -26,23 +26,29 @@ logger = logging.getLogger(__name__)
 
 def execute_parse_llm_response(
     raw_json: str,
-    output_type_name: str,
+    output_type_name: str | None,
     provider_name: str = "anthropic",
 ) -> ParsedLLMResponse:
     """Parse raw LLM response JSON into a ParsedLLMResponse.
 
     Routes to the correct provider for parsing.
+    When output_type_name is None, returns text_content as parsed_json.
     Separated from the imperative shell so tests can call directly.
     """
+    import json
+
     from forge.llm_providers import get_provider
 
     provider = get_provider(provider_name)
     result = provider.parse_batch_result(raw_json, output_type_name)
 
-    import json
+    if output_type_name is None:
+        parsed_json = json.dumps(result.text_content)
+    else:
+        parsed_json = json.dumps(result.tool_input)
 
     return ParsedLLMResponse(
-        parsed_json=json.dumps(result.tool_input),
+        parsed_json=parsed_json,
         model_name=result.model_name,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
@@ -77,7 +83,7 @@ async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
 
         span.set_attributes(
             {
-                "forge.batch.output_type": input.output_type_name,
+                "forge.batch.output_type": input.output_type_name or "",
                 "forge.batch.task_id": input.task_id,
                 "forge.batch.model_name": result.model_name,
             }

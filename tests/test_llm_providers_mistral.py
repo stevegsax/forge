@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from forge.llm_providers.mistral import MistralProvider
-from forge.llm_providers.models import BatchPollStatus
+from forge.llm_providers.models import (
+    BatchPollStatus,
+    ImageContent,
+    Message,
+    TextContent,
+    text_messages,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,8 +74,7 @@ class TestBuildRequestParams:
         provider._client = MagicMock()
 
         params = provider.build_request_params(
-            system_prompt="You are helpful.",
-            user_prompt="Do something.",
+            messages=text_messages("You are helpful.", "Do something."),
             output_type=TestOutput,
             model="mistral-large-latest",
             max_tokens=1024,
@@ -101,8 +106,7 @@ class TestBuildRequestParams:
         provider._client = MagicMock()
 
         params = provider.build_request_params(
-            system_prompt="sys",
-            user_prompt="user",
+            messages=text_messages("sys", "user"),
             output_type=TestOutput,
             model="mistral-large-latest",
             max_tokens=1024,
@@ -127,8 +131,7 @@ class TestBuildRequestParams:
         provider._client = MagicMock()
 
         params = provider.build_request_params(
-            system_prompt="sys",
-            user_prompt="user",
+            messages=text_messages("sys", "user"),
             output_type=TestOutput,
             model="mistral-large-latest",
             max_tokens=1024,
@@ -137,6 +140,47 @@ class TestBuildRequestParams:
 
         # No thinking param in output
         assert "thinking" not in params
+
+    def test_output_type_none_omits_tools(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        params = provider.build_request_params(
+            messages=text_messages("sys", "user"),
+            output_type=None,
+            model="mistral-large-latest",
+            max_tokens=1024,
+        )
+
+        assert "tools" not in params
+        assert "tool_choice" not in params
+
+    def test_multimodal_image_content(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        messages = [
+            Message(role="system", content="Describe the image."),
+            Message(
+                role="user",
+                content=[
+                    ImageContent(media_type="image/png", data="base64data"),
+                    TextContent(text="What is this?"),
+                ],
+            ),
+        ]
+        params = provider.build_request_params(
+            messages=messages,
+            output_type=None,
+            model="pixtral-large-latest",
+            max_tokens=4096,
+        )
+
+        user_msg = params["messages"][1]
+        assert isinstance(user_msg["content"], list)
+        assert user_msg["content"][0]["type"] == "image_url"
+        assert "data:image/png;base64," in user_msg["content"][0]["image_url"]
+        assert user_msg["content"][1]["type"] == "text"
 
 
 class TestCall:
@@ -151,7 +195,10 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({"model": "mistral-large-latest"})
+        result = await provider.call({
+            "model": "mistral-large-latest",
+            "tools": [{"type": "function"}],
+        })
 
         assert result.tool_input == tool_input
 
@@ -165,7 +212,10 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({"model": "test"})
+        result = await provider.call({
+            "model": "test",
+            "tools": [{"type": "function"}],
+        })
 
         assert result.input_tokens == 120
         assert result.output_tokens == 300
@@ -178,7 +228,10 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({"model": "test"})
+        result = await provider.call({
+            "model": "test",
+            "tools": [{"type": "function"}],
+        })
 
         assert result.cache_creation_input_tokens == 0
         assert result.cache_read_input_tokens == 0
@@ -191,9 +244,41 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({"model": "mistral-large-latest"})
+        result = await provider.call({
+            "model": "mistral-large-latest",
+            "tools": [{"type": "function"}],
+        })
 
         assert result.model_name == "mistral-large-2"
+
+    @pytest.mark.asyncio
+    async def test_no_tools_extracts_text_content(self) -> None:
+        """When no tools are in params, extract text content from response."""
+        message = MagicMock()
+        message.content = "Extracted text from image"
+        message.tool_calls = None
+
+        choice = MagicMock()
+        choice.message = message
+
+        usage = MagicMock()
+        usage.prompt_tokens = 50
+        usage.completion_tokens = 30
+
+        response = MagicMock()
+        response.choices = [choice]
+        response.usage = usage
+        response.model = "pixtral-large-latest"
+        response.model_dump = MagicMock(return_value={"model": "pixtral-large-latest"})
+
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+        provider._client.chat.complete_async = AsyncMock(return_value=response)
+
+        result = await provider.call({"model": "pixtral-large-latest"})
+
+        assert result.text_content == "Extracted text from image"
+        assert result.tool_input == {}
 
 
 class TestSupportsBatch:
@@ -622,3 +707,20 @@ class TestParseBatchResult:
         result = provider.parse_batch_result(raw, "LLMResponse")
 
         assert result.tool_input == {"key": "value"}
+
+    def test_output_type_name_none_returns_text_content(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        raw = json.dumps({
+            "model": "pixtral-large-latest",
+            "choices": [{"message": {"content": "Extracted OCR text"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 200},
+        })
+
+        result = provider.parse_batch_result(raw, None)
+
+        assert result.text_content == "Extracted OCR text"
+        assert result.tool_input == {}
+        assert result.model_name == "pixtral-large-latest"
+        assert result.input_tokens == 100

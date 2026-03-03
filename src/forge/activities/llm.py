@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
+from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import AssembledContext, LLMCallResult, LLMResponse
 
@@ -49,8 +50,7 @@ async def execute_llm_call(
     start = time.monotonic()
 
     params = provider.build_request_params(
-        system_prompt=context.system_prompt,
-        user_prompt=context.user_prompt,
+        messages=text_messages(context.system_prompt, context.user_prompt),
         output_type=LLMResponse,
         model=model,
         max_tokens=DEFAULT_MAX_TOKENS,

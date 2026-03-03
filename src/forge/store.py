@@ -130,6 +130,25 @@ class Playbook(Base):
     )
 
 
+class OcrResult(Base):
+    __tablename__ = "ocr_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True, index=True)
+    file_path: Mapped[str] = mapped_column(sa.String, nullable=False)
+    text: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    page_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    model_name: Mapped[str] = mapped_column(sa.String, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    batch_id: Mapped[str] = mapped_column(sa.String, nullable=False)
+    workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime,
+        default=lambda: datetime.now(UTC),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
@@ -493,6 +512,53 @@ def get_batch_job(engine: Engine, request_id: str) -> dict | None:
     """Look up a single batch job by request ID."""
     t = BatchJob.__table__
     stmt = t.select().where(t.c.id == request_id)
+
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# OCR result functions
+# ---------------------------------------------------------------------------
+
+
+def save_ocr_result(
+    engine: Engine,
+    *,
+    document_id: str,
+    file_path: str,
+    text: str,
+    page_count: int = 0,
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    batch_id: str,
+    workflow_id: str,
+) -> None:
+    """Insert a row into the ocr_results table."""
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(OcrResult.__table__).values(
+                document_id=document_id,
+                file_path=file_path,
+                text=text,
+                page_count=page_count,
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                batch_id=batch_id,
+                workflow_id=workflow_id,
+            )
+        )
+
+
+def get_ocr_result(engine: Engine, document_id: str) -> dict | None:
+    """Look up an OCR result by document ID."""
+    t = OcrResult.__table__
+    stmt = t.select().where(t.c.document_id == document_id)
 
     with engine.connect() as conn:
         row = conn.execute(stmt).mappings().first()

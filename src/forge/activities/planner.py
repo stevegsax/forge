@@ -26,6 +26,7 @@ from forge.activities.context import (
     build_project_instructions_section,
 )
 from forge.domains import get_domain_config
+from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import (
     AssembleContextInput,
@@ -203,8 +204,7 @@ async def execute_planner_call(
     start = time.monotonic()
 
     params = provider.build_request_params(
-        system_prompt=input.system_prompt,
-        user_prompt=input.user_prompt,
+        messages=text_messages(input.system_prompt, input.user_prompt),
         output_type=Plan,
         model=model,
         max_tokens=DEFAULT_PLANNER_MAX_TOKENS,

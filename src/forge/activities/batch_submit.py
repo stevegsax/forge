@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from forge.llm_client import get_output_type_registry
+from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import BatchSubmitInput, BatchSubmitResult
 
@@ -44,14 +45,15 @@ async def execute_batch_submit(
     """
     from forge.llm_providers import parse_model_id
 
-    registry = get_output_type_registry()
-    output_type = registry[input.output_type_name]
+    output_type = None
+    if input.output_type_name:
+        registry = get_output_type_registry()
+        output_type = registry[input.output_type_name]
     full_model = input.context.model_name or DEFAULT_MODEL
     _, model = parse_model_id(full_model)
 
     params = provider.build_request_params(
-        system_prompt=input.context.system_prompt,
-        user_prompt=input.context.user_prompt,
+        messages=text_messages(input.context.system_prompt, input.context.user_prompt),
         output_type=output_type,
         model=model,
         max_tokens=input.max_tokens,

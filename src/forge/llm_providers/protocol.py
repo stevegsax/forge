@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-    from forge.llm_providers.models import BatchPollResult, ProviderResponse
+    from forge.llm_providers.models import BatchPollResult, Message, ProviderResponse
 
 
 @runtime_checkable
@@ -22,9 +22,8 @@ class LLMProvider(Protocol):
 
     def build_request_params(
         self,
-        system_prompt: str,
-        user_prompt: str,
-        output_type: type[BaseModel],
+        messages: list[Message],
+        output_type: type[BaseModel] | None,
         model: str,
         max_tokens: int,
         *,
@@ -61,7 +60,7 @@ class LLMProvider(Protocol):
     def parse_batch_result(
         self,
         raw_json: str,
-        output_type_name: str,
+        output_type_name: str | None,
     ) -> ProviderResponse:
         """Parse a single batch result entry into a normalized response."""
         ...

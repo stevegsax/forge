@@ -21,6 +21,7 @@ from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
 from forge.domains import get_domain_config
+from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import (
     AssembledContext,
@@ -182,8 +183,7 @@ async def execute_exploration_call(
     _, model = parse_model_id(full_model)
 
     params = provider.build_request_params(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        messages=text_messages(system_prompt, user_prompt),
         output_type=ExplorationResponse,
         model=model,
         max_tokens=DEFAULT_EXPLORATION_MAX_TOKENS,

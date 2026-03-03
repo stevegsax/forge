@@ -11,7 +11,11 @@ from forge.llm_providers.models import (
     BatchPollResult,
     BatchPollStatus,
     BatchResultEntry,
+    DocumentContent,
+    ImageContent,
+    Message,
     ProviderResponse,
+    TextContent,
 )
 
 if TYPE_CHECKING:
@@ -23,6 +27,42 @@ def _snake_case(name: str) -> str:
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
     return s.lower()
+
+
+# ---------------------------------------------------------------------------
+# Message translation helpers
+# ---------------------------------------------------------------------------
+
+
+def _content_block_to_mistral(block: TextContent | ImageContent | DocumentContent) -> dict:
+    """Convert a ContentBlock to Mistral API format."""
+    if isinstance(block, TextContent):
+        return {"type": "text", "text": block.text}
+    if isinstance(block, ImageContent):
+        data_uri = f"data:{block.media_type};base64,{block.data}"
+        return {"type": "image_url", "image_url": data_uri}
+    if isinstance(block, DocumentContent):
+        data_uri = f"data:{block.media_type};base64,{block.data}"
+        return {"type": "image_url", "image_url": data_uri}
+    msg = f"Unknown content block type: {type(block)}"
+    raise TypeError(msg)
+
+
+def _content_to_mistral(
+    content: str | list[TextContent | ImageContent | DocumentContent],
+) -> str | list[dict]:
+    """Convert message content to Mistral format."""
+    if isinstance(content, str):
+        return content
+    return [_content_block_to_mistral(b) for b in content]
+
+
+def _messages_to_mistral(messages: list[Message]) -> list[dict]:
+    """Convert Message list to Mistral format (system messages stay in array)."""
+    return [
+        {"role": msg.role, "content": _content_to_mistral(msg.content)}
+        for msg in messages
+    ]
 
 
 class MistralProvider:
@@ -41,9 +81,8 @@ class MistralProvider:
 
     def build_request_params(
         self,
-        system_prompt: str,
-        user_prompt: str,
-        output_type: type[BaseModel],
+        messages: list[Message],
+        output_type: type[BaseModel] | None,
         model: str,
         max_tokens: int,
         *,
@@ -56,44 +95,54 @@ class MistralProvider:
         Ignores cache_instructions, cache_tool_definitions, and
         thinking_budget_tokens (Mistral has no equivalents).
         """
-        schema = output_type.model_json_schema()
-        tool_name = _snake_case(output_type.__name__)
-        description = (output_type.__doc__ or "").strip() or f"Structured output: {tool_name}"
-
-        tool_def = {
-            "type": "function",
-            "function": {
-                "name": tool_name,
-                "description": description,
-                "parameters": schema,
-            },
-        }
-
-        return {
+        params: dict = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "tools": [tool_def],
-            "tool_choice": "any",
+            "messages": _messages_to_mistral(messages),
         }
+
+        if output_type is not None:
+            schema = output_type.model_json_schema()
+            tool_name = _snake_case(output_type.__name__)
+            description = (output_type.__doc__ or "").strip() or f"Structured output: {tool_name}"
+
+            tool_def = {
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": description,
+                    "parameters": schema,
+                },
+            }
+            params["tools"] = [tool_def]
+            params["tool_choice"] = "any"
+
+        return params
 
     async def call(self, params: dict) -> ProviderResponse:
         """Call the Mistral API and return a normalized response."""
         response = await self._client.chat.complete_async(**params)
 
         tool_input: dict = {}
-        if response.choices and response.choices[0].message.tool_calls:
-            args_str = response.choices[0].message.tool_calls[0].function.arguments
-            tool_input = json.loads(args_str) if isinstance(args_str, str) else args_str
+        text_content: str | None = None
+        has_tools = "tools" in params and params["tools"]
+
+        if has_tools:
+            if response.choices and response.choices[0].message.tool_calls:
+                args_str = response.choices[0].message.tool_calls[0].function.arguments
+                tool_input = json.loads(args_str) if isinstance(args_str, str) else args_str
+        else:
+            # No tools — extract text content
+            if response.choices and response.choices[0].message.content:
+                content = response.choices[0].message.content
+                text_content = content if isinstance(content, str) else str(content)
 
         input_tokens = response.usage.prompt_tokens if response.usage else 0
         output_tokens = response.usage.completion_tokens if response.usage else 0
 
         return ProviderResponse(
             tool_input=tool_input,
+            text_content=text_content,
             model_name=response.model or params.get("model", ""),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -173,9 +222,32 @@ class MistralProvider:
     def parse_batch_result(
         self,
         raw_json: str,
-        output_type_name: str,
+        output_type_name: str | None,
     ) -> ProviderResponse:
         """Parse a Mistral batch result entry into a normalized response."""
+        data = json.loads(raw_json)
+        usage = data.get("usage", {})
+        model_name = data.get("model", "")
+
+        if output_type_name is None:
+            # Text-only response (no tool call)
+            choices = data.get("choices", [])
+            text_content: str | None = None
+            if choices:
+                message = choices[0].get("message", {})
+                content = message.get("content", "")
+                text_content = content if isinstance(content, str) else str(content)
+
+            return ProviderResponse(
+                text_content=text_content,
+                model_name=model_name,
+                input_tokens=usage.get("prompt_tokens", 0),
+                output_tokens=usage.get("completion_tokens", 0),
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+                raw_response_json=raw_json,
+            )
+
         from forge.llm_client import get_output_type_registry
 
         registry = get_output_type_registry()
@@ -183,7 +255,6 @@ class MistralProvider:
             msg = f"Unknown output type: {output_type_name!r}"
             raise KeyError(msg)
 
-        data = json.loads(raw_json)
         choices = data.get("choices", [])
         tool_input: dict = {}
         if choices:
@@ -193,11 +264,9 @@ class MistralProvider:
                 args = tool_calls[0].get("function", {}).get("arguments", "{}")
                 tool_input = json.loads(args) if isinstance(args, str) else args
 
-        usage = data.get("usage", {})
-
         return ProviderResponse(
             tool_input=tool_input,
-            model_name=data.get("model", ""),
+            model_name=model_name,
             input_tokens=usage.get("prompt_tokens", 0),
             output_tokens=usage.get("completion_tokens", 0),
             cache_creation_input_tokens=0,

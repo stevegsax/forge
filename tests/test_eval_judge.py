@@ -154,5 +154,8 @@ class TestExecuteJudgeCall:
 
         provider.build_request_params.assert_called_once()
         call_kwargs = provider.build_request_params.call_args[1]
-        assert call_kwargs["system_prompt"] == "sys"
-        assert call_kwargs["user_prompt"] == "usr"
+        messages = call_kwargs["messages"]
+        assert messages[0].role == "system"
+        assert messages[0].content == "sys"
+        assert messages[1].role == "user"
+        assert messages[1].content == "usr"
