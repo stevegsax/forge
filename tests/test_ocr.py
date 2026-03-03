@@ -1,4 +1,4 @@
-"""Tests for forge.ocr — OCR models, activities, and store functions."""
+"""Tests for forge.ocr — OCR models, activities, store functions, and workflow."""
 
 from __future__ import annotations
 
@@ -38,6 +38,8 @@ from forge.store import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from temporalio.testing import WorkflowEnvironment
 
 
 def _setup_db(tmp_path: Path):
@@ -678,3 +680,160 @@ class TestReadAndStoreFileContent:
             llm_mod.get_provider = original_get_provider
             store_mod.get_db_path = original_get_db_path
             store_mod.get_engine = original_get_engine
+
+
+# ---------------------------------------------------------------------------
+# OcrStoreWorkflow — workflow-level tests
+# ---------------------------------------------------------------------------
+
+
+class TestOcrStoreWorkflow:
+    """Workflow-level tests for OcrStoreWorkflow signal handling and error paths."""
+
+    @pytest.mark.asyncio
+    async def test_batch_id_from_signal_not_input(self, env: WorkflowEnvironment) -> None:
+        """batch_id in store_data must come from the BatchResult signal, not OcrStoreInput."""
+        from temporalio import activity
+        from temporalio.worker import Worker
+
+        from forge.models import BatchResult
+        from forge.ocr.workflow_store import OcrStoreWorkflow
+        from forge.workflows import FORGE_TASK_QUEUE
+
+        captured_store_data: list[str] = []
+
+        @activity.defn(name="parse_ocr_result")
+        async def mock_parse_ocr_result(_raw_json: str) -> OcrParseResult:
+            return OcrParseResult(
+                text="Extracted text",
+                model_name="pixtral-large-latest",
+                input_tokens=500,
+                output_tokens=100,
+            )
+
+        @activity.defn(name="store_ocr_result")
+        async def mock_store_ocr_result(store_data: str) -> OcrStoreResult:
+            captured_store_data.append(store_data)
+            return OcrStoreResult(document_id="doc-1", text_length=14)
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[OcrStoreWorkflow],
+            activities=[mock_parse_ocr_result, mock_store_ocr_result],
+        ):
+            handle = await env.client.start_workflow(
+                OcrStoreWorkflow.run,
+                OcrStoreInput(
+                    batch_id="",  # empty — the bug scenario
+                    request_id="req-1",
+                    document_id="doc-1",
+                    file_path="/tmp/test.pdf",
+                ),
+                id="test-ocr-store-batch-id",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            await handle.signal(
+                OcrStoreWorkflow.batch_result_received,
+                BatchResult(
+                    request_id="req-1",
+                    batch_id="real-batch-id-from-poller",
+                    raw_response_json='{"choices": []}',
+                    result_type="succeeded",
+                ),
+            )
+
+            result = await handle.result()
+
+        assert result.document_id == "doc-1"
+        assert result.text_length == 14
+
+        # Core assertion: batch_id must be from the signal, not the empty input
+        assert len(captured_store_data) == 1
+        stored = json.loads(captured_store_data[0])
+        assert stored["batch_id"] == "real-batch-id-from-poller"
+
+    @pytest.mark.asyncio
+    async def test_error_signal_raises(self, env: WorkflowEnvironment) -> None:
+        """A BatchResult with error set should raise ApplicationError."""
+        from temporalio.client import WorkflowFailureError
+        from temporalio.worker import Worker
+
+        from forge.models import BatchResult
+        from forge.ocr.workflow_store import OcrStoreWorkflow
+        from forge.workflows import FORGE_TASK_QUEUE
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[OcrStoreWorkflow],
+            activities=[],
+        ):
+            handle = await env.client.start_workflow(
+                OcrStoreWorkflow.run,
+                OcrStoreInput(
+                    batch_id="",
+                    request_id="req-err",
+                    document_id="doc-err",
+                    file_path="/tmp/test.pdf",
+                ),
+                id="test-ocr-store-error-signal",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            await handle.signal(
+                OcrStoreWorkflow.batch_result_received,
+                BatchResult(
+                    request_id="req-err",
+                    batch_id="batch-err",
+                    error="something went wrong",
+                    result_type="errored",
+                ),
+            )
+
+            with pytest.raises(WorkflowFailureError) as exc_info:
+                await handle.result()
+            assert "something went wrong" in str(exc_info.value.cause)
+
+    @pytest.mark.asyncio
+    async def test_missing_response_json_raises(self, env: WorkflowEnvironment) -> None:
+        """A BatchResult with raw_response_json=None should raise ApplicationError."""
+        from temporalio.client import WorkflowFailureError
+        from temporalio.worker import Worker
+
+        from forge.models import BatchResult
+        from forge.ocr.workflow_store import OcrStoreWorkflow
+        from forge.workflows import FORGE_TASK_QUEUE
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[OcrStoreWorkflow],
+            activities=[],
+        ):
+            handle = await env.client.start_workflow(
+                OcrStoreWorkflow.run,
+                OcrStoreInput(
+                    batch_id="",
+                    request_id="req-none",
+                    document_id="doc-none",
+                    file_path="/tmp/test.pdf",
+                ),
+                id="test-ocr-store-no-json",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            await handle.signal(
+                OcrStoreWorkflow.batch_result_received,
+                BatchResult(
+                    request_id="req-none",
+                    batch_id="batch-none",
+                    raw_response_json=None,
+                    result_type="succeeded",
+                ),
+            )
+
+            with pytest.raises(WorkflowFailureError) as exc_info:
+                await handle.result()
+            assert "no response JSON" in str(exc_info.value.cause)
