@@ -1,14 +1,17 @@
 """CLI entry point for Forge.
 
 Provides ``forge run``, ``forge worker``, ``forge status``,
-``forge eval-planner``, ``forge extract``, and ``forge playbooks`` subcommands.
+``forge eval-planner``, ``forge extract``, ``forge playbooks``,
+and ``forge start`` subcommands.
 
 Follows Function Core / Imperative Shell:
 - Pure functions: format_task_result, format_validation_results,
   build_task_definition, load_task_definition, format_eval_result,
-  format_deterministic_result, format_extraction_result, format_playbook_entry
-- Async shell: _submit_and_wait, _submit_no_wait, _run_eval, _submit_extraction
-- Click commands: main, run, worker, status, eval_planner, extract, playbooks
+  format_deterministic_result, format_extraction_result, format_playbook_entry,
+  load_workflow_input
+- Async shell: _submit_and_wait, _submit_no_wait, _run_eval, _submit_extraction,
+  _start_workflow, _start_workflow_and_wait
+- Click commands: main, run, worker, status, eval_planner, extract, playbooks, start
 """
 
 from __future__ import annotations
@@ -276,6 +279,51 @@ def load_task_definition(path: str) -> TaskDefinition:
     except Exception as e:
         msg = f"Invalid task definition: {e}"
         raise click.BadParameter(msg, param_hint="'--task-file'") from e
+
+
+def load_workflow_input(
+    input_json: str | None,
+    input_file: str | None,
+) -> dict:
+    """Parse workflow input from a JSON string or file path.
+
+    Returns an empty dict when neither *input_json* nor *input_file* is
+    provided.
+
+    Raises:
+        click.UsageError: If both sources are provided.
+        click.BadParameter: If the JSON is invalid or not an object.
+    """
+    if input_json and input_file:
+        msg = "Provide either INPUT_JSON or --input-file, not both."
+        raise click.UsageError(msg)
+
+    raw: str | None = None
+    if input_file:
+        try:
+            raw = Path(input_file).read_text()
+        except OSError as e:
+            msg = f"Cannot read input file: {e}"
+            raise click.BadParameter(msg, param_hint="'--input-file'") from e
+    elif input_json:
+        raw = input_json
+
+    if raw is None:
+        return {}
+
+    import json
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        msg = f"Invalid JSON: {e}"
+        raise click.BadParameter(msg, param_hint="INPUT_JSON") from e
+
+    if not isinstance(parsed, dict):
+        msg = f"Expected a JSON object, got {type(parsed).__name__}."
+        raise click.BadParameter(msg, param_hint="INPUT_JSON")
+
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -1241,3 +1289,155 @@ def eval_planner(
     # Exit with failure if any deterministic check failed
     if any(not r.deterministic.all_passed for r in results):
         sys.exit(EXIT_FAILURE)
+
+
+# ---------------------------------------------------------------------------
+# Start command — generic workflow launcher
+# ---------------------------------------------------------------------------
+
+
+async def _start_workflow(
+    workflow_name: str,
+    workflow_input: dict,
+    *,
+    workflow_id: str,
+    task_queue: str,
+    temporal_address: str,
+    timeout_hours: float,
+) -> str:
+    """Start a Temporal workflow by string name and return its ID."""
+    from temporalio.client import Client
+    from temporalio.contrib.pydantic import pydantic_data_converter
+
+    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    handle = await client.start_workflow(
+        workflow_name,
+        workflow_input,
+        id=workflow_id,
+        task_queue=task_queue,
+        execution_timeout=timedelta(hours=timeout_hours),
+    )
+    return handle.id
+
+
+async def _start_workflow_and_wait(
+    workflow_name: str,
+    workflow_input: dict,
+    *,
+    workflow_id: str,
+    task_queue: str,
+    temporal_address: str,
+    timeout_hours: float,
+) -> object:
+    """Start a Temporal workflow by string name and wait for its result."""
+    from temporalio.client import Client
+    from temporalio.contrib.pydantic import pydantic_data_converter
+
+    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    result = await client.execute_workflow(
+        workflow_name,
+        workflow_input,
+        id=workflow_id,
+        task_queue=task_queue,
+        execution_timeout=timedelta(hours=timeout_hours),
+    )
+    return result
+
+
+@main.command()
+@click.argument("workflow", required=True)
+@click.argument("input_json", required=False, default=None)
+@click.option(
+    "--input-file",
+    type=click.Path(exists=True),
+    default=None,
+    help="Read JSON input from file instead of argument.",
+)
+@click.option(
+    "--id",
+    "workflow_id",
+    default=None,
+    help="Custom workflow ID (default: auto-generated).",
+)
+@click.option(
+    "--task-queue",
+    default="forge-task-queue",
+    show_default=True,
+    help="Temporal task queue.",
+)
+@click.option(
+    "--wait",
+    "wait_for_result",
+    is_flag=True,
+    help="Wait for result and print it as JSON.",
+)
+@click.option(
+    "--timeout",
+    "timeout_hours",
+    default=48.0,
+    show_default=True,
+    type=float,
+    help="Execution timeout in hours.",
+)
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+    help="Temporal server address.",
+)
+def start(
+    workflow: str,
+    input_json: str | None,
+    input_file: str | None,
+    workflow_id: str | None,
+    task_queue: str,
+    wait_for_result: bool,
+    timeout_hours: float,
+    temporal_address: str,
+) -> None:
+    """Start an arbitrary Temporal workflow by name.
+
+    WORKFLOW is the workflow class name (e.g. OcrSubmitWorkflow).
+    INPUT_JSON is an optional JSON object passed as the workflow argument.
+    """
+    import json
+    import uuid
+
+    wf_input = load_workflow_input(input_json, input_file)
+
+    if workflow_id is None:
+        short_uuid = str(uuid.uuid4())[:8]
+        workflow_id = f"{workflow.lower()}-{short_uuid}"
+
+    try:
+        if wait_for_result:
+            result = asyncio.run(
+                _start_workflow_and_wait(
+                    workflow,
+                    wf_input,
+                    workflow_id=workflow_id,
+                    task_queue=task_queue,
+                    temporal_address=temporal_address,
+                    timeout_hours=timeout_hours,
+                )
+            )
+            if hasattr(result, "model_dump_json"):
+                click.echo(result.model_dump_json(indent=2))
+            else:
+                click.echo(json.dumps(result, indent=2, default=str))
+        else:
+            returned_id = asyncio.run(
+                _start_workflow(
+                    workflow,
+                    wf_input,
+                    workflow_id=workflow_id,
+                    task_queue=task_queue,
+                    temporal_address=temporal_address,
+                    timeout_hours=timeout_hours,
+                )
+            )
+            click.echo(returned_id)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)

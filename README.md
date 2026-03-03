@@ -24,7 +24,7 @@ forge run  ──►  Temporal Server  ◄──  forge worker
 
 ## Documentation
 
-- [Table of Contents](docs/TOC.md) — Full index of design docs, phase specs, user guides, and research.
+- [Table of Contents](TOC.md) — Full index of design docs, phase specs, user guides, and research.
 
 ## Usage
 

@@ -8,7 +8,7 @@ Phases 1–12 and 14 are implemented (Phase 13, tree-sitter multi-language suppo
 
 ## Documentation
 
-See [docs/TOC.md](docs/TOC.md) for a full table of contents covering design docs, phase specifications, research, and reference material.
+See [TOC.md](TOC.md) for a full table of contents covering design docs, phase specifications, research, and reference material.
 
 ## Development Conventions
 

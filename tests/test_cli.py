@@ -7,6 +7,7 @@ import pathlib
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -24,6 +25,7 @@ from forge.cli import (
     format_validation_results,
     format_verbose_result,
     load_task_definition,
+    load_workflow_input,
     main,
 )
 from forge.models import (
@@ -1673,3 +1675,124 @@ class TestFormatVerboseResultSanityCheckCount:
         )
         output = format_verbose_result(result)
         assert "Sanity checks" not in output
+
+
+# ---------------------------------------------------------------------------
+# Start command tests
+# ---------------------------------------------------------------------------
+
+
+class TestLoadWorkflowInput:
+    """Tests for load_workflow_input pure function."""
+
+    def test_json_string(self) -> None:
+        result = load_workflow_input('{"file_path": "/data/doc.pdf"}', None)
+        assert result == {"file_path": "/data/doc.pdf"}
+
+    def test_empty_input(self) -> None:
+        result = load_workflow_input(None, None)
+        assert result == {}
+
+    def test_both_provided_error(self) -> None:
+        with pytest.raises(click.UsageError, match="not both"):
+            load_workflow_input('{"a": 1}', "input.json")
+
+    def test_invalid_json(self) -> None:
+        with pytest.raises(click.BadParameter, match="Invalid JSON"):
+            load_workflow_input("{bad json", None)
+
+    def test_non_object_json(self) -> None:
+        with pytest.raises(click.BadParameter, match="Expected a JSON object"):
+            load_workflow_input("[1, 2, 3]", None)
+
+    def test_file_input(self, tmp_path: Path) -> None:
+        f = tmp_path / "input.json"
+        f.write_text('{"key": "value"}')
+        result = load_workflow_input(None, str(f))
+        assert result == {"key": "value"}
+
+    def test_file_not_found(self) -> None:
+        with pytest.raises(click.BadParameter, match="Cannot read input file"):
+            load_workflow_input(None, "/nonexistent/path.json")
+
+
+class TestStartCommand:
+    """Tests for the ``forge start`` CLI command."""
+
+    def test_fire_and_forget(self, cli_runner: CliRunner) -> None:
+        with patch("forge.cli._start_workflow") as mock_start:
+            mock_start.side_effect = _async_result("myworkflow-abc12345")
+            result = cli_runner.invoke(
+                main,
+                ["start", "MyWorkflow", '{"key": "val"}'],
+            )
+            assert result.exit_code == 0
+            assert "myworkflow-abc12345" in result.output
+            call_args = mock_start.call_args
+            assert call_args[0][0] == "MyWorkflow"
+            assert call_args[0][1] == {"key": "val"}
+
+    def test_wait_mode(self, cli_runner: CliRunner) -> None:
+        with patch("forge.cli._start_workflow_and_wait") as mock_wait:
+            mock_wait.side_effect = _async_result({"status": "done", "pages": 5})
+            result = cli_runner.invoke(
+                main,
+                ["start", "MyWorkflow", '{"key": "val"}', "--wait"],
+            )
+            assert result.exit_code == 0
+            parsed = json.loads(result.output)
+            assert parsed == {"status": "done", "pages": 5}
+
+    def test_custom_id(self, cli_runner: CliRunner) -> None:
+        with patch("forge.cli._start_workflow") as mock_start:
+            mock_start.side_effect = _async_result("custom-id")
+            result = cli_runner.invoke(
+                main,
+                ["start", "MyWorkflow", "--id", "custom-id"],
+            )
+            assert result.exit_code == 0
+            call_kwargs = mock_start.call_args[1]
+            assert call_kwargs["workflow_id"] == "custom-id"
+
+    def test_no_input_sends_empty_dict(self, cli_runner: CliRunner) -> None:
+        with patch("forge.cli._start_workflow") as mock_start:
+            mock_start.side_effect = _async_result("wf-123")
+            result = cli_runner.invoke(main, ["start", "MyWorkflow"])
+            assert result.exit_code == 0
+            assert mock_start.call_args[0][1] == {}
+
+    def test_input_file(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        f = tmp_path / "input.json"
+        f.write_text('{"from_file": true}')
+        with patch("forge.cli._start_workflow") as mock_start:
+            mock_start.side_effect = _async_result("wf-file")
+            result = cli_runner.invoke(
+                main,
+                ["start", "MyWorkflow", "--input-file", str(f)],
+            )
+            assert result.exit_code == 0
+            assert mock_start.call_args[0][1] == {"from_file": True}
+
+    def test_invalid_json_error(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["start", "MyWorkflow", "{bad"])
+        assert result.exit_code != 0
+        assert "Invalid JSON" in result.output
+
+    def test_connection_error(self, cli_runner: CliRunner) -> None:
+        with patch("forge.cli._start_workflow") as mock_start:
+            mock_start.side_effect = RuntimeError("Connection refused")
+            result = cli_runner.invoke(
+                main,
+                ["start", "MyWorkflow", '{"a": 1}'],
+            )
+            assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
+            assert "Connection refused" in result.stderr
+
+    def test_auto_generated_id_format(self, cli_runner: CliRunner) -> None:
+        with patch("forge.cli._start_workflow") as mock_start:
+            mock_start.side_effect = _async_result("wf-123")
+            cli_runner.invoke(main, ["start", "OcrSubmitWorkflow"])
+            call_kwargs = mock_start.call_args[1]
+            wf_id = call_kwargs["workflow_id"]
+            assert wf_id.startswith("ocrsubmitworkflow-")
+            assert len(wf_id) == len("ocrsubmitworkflow-") + 8

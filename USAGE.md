@@ -1,6 +1,6 @@
 # Submitting Tasks
 
-This guide covers how to submit code development and research tasks to Forge.
+This guide covers how to submit tasks to Forge.
 
 ## Prerequisites
 
@@ -266,6 +266,53 @@ This prints the Temporal workflow ID and exits immediately. Check results with:
 ```bash
 forge status --workflow-id forge-task-background-task
 ```
+
+## Starting Arbitrary Workflows
+
+The `forge start` command launches any registered Temporal workflow by name, without needing a Python script. The worker's `pydantic_data_converter` handles deserialization into the correct Pydantic model on the receiving end.
+
+### Fire-and-forget
+
+```bash
+forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}'
+```
+
+Prints the workflow ID and exits immediately.
+
+### Wait for result
+
+```bash
+forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}' --wait
+```
+
+Blocks until the workflow completes and prints the result as JSON.
+
+### Input from file
+
+```bash
+forge start OcrSubmitWorkflow --input-file input.json --id my-ocr-run
+```
+
+### No input
+
+Some workflows take no arguments:
+
+```bash
+forge start BatchPollerWorkflow --wait
+```
+
+An empty dict is passed as the workflow argument.
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--input-file PATH` | — | Read JSON input from a file instead of the argument |
+| `--id TEXT` | auto-generated | Custom workflow ID (`{name_lower}-{uuid[:8]}` by default) |
+| `--task-queue TEXT` | `forge-task-queue` | Temporal task queue |
+| `--wait` | off | Wait for completion and print result as JSON |
+| `--timeout FLOAT` | `48` | Execution timeout in hours |
+| `--temporal-address TEXT` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 
 ## Output Formats
 
