@@ -21,7 +21,7 @@ from forge.llm_providers.models import (
     text_messages,
 )
 from forge.llm_providers.protocol import LLMProvider
-from forge.llm_providers.registry import get_provider, parse_model_id
+from forge.llm_providers.registry import get_provider, get_provider_by_name, parse_model_id
 
 __all__ = [
     "ContentBlock",
@@ -32,6 +32,7 @@ __all__ = [
     "ProviderResponse",
     "TextContent",
     "get_provider",
+    "get_provider_by_name",
     "parse_model_id",
     "text_messages",
 ]

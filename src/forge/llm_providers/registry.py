@@ -32,14 +32,12 @@ def parse_model_id(model_id: str) -> tuple[str, str]:
     return _DEFAULT_PROVIDER, model_id
 
 
-def get_provider(model_id: str) -> LLMProvider:
-    """Return a cached provider instance for the given model ID.
+def get_provider_by_name(provider_name: str) -> LLMProvider:
+    """Return a cached provider instance for a bare provider name.
 
-    The model ID is parsed to extract the provider name. Provider instances
-    are singletons, cached by provider name.
+    Use this when you already have the provider name (e.g. ``"anthropic"``,
+    ``"mistral"``) rather than a ``"provider:model"`` model ID.
     """
-    provider_name, _ = parse_model_id(model_id)
-
     if provider_name in _provider_cache:
         return _provider_cache[provider_name]
 
@@ -57,6 +55,16 @@ def get_provider(model_id: str) -> LLMProvider:
 
     _provider_cache[provider_name] = instance
     return instance
+
+
+def get_provider(model_id: str) -> LLMProvider:
+    """Return a cached provider instance for the given model ID.
+
+    The model ID is parsed to extract the provider name. Provider instances
+    are singletons, cached by provider name.
+    """
+    provider_name, _ = parse_model_id(model_id)
+    return get_provider_by_name(provider_name)
 
 
 def reset_provider_cache() -> None:

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from forge.llm_providers.registry import get_provider, parse_model_id, reset_provider_cache
+from forge.llm_providers.registry import (
+    get_provider,
+    get_provider_by_name,
+    parse_model_id,
+    reset_provider_cache,
+)
 
 # ---------------------------------------------------------------------------
 # parse_model_id
@@ -99,3 +104,48 @@ class TestGetProvider:
         reset_provider_cache()
         p2 = get_provider("anthropic:model-a")
         assert p1 is not p2
+
+    def test_get_provider_delegates_to_get_provider_by_name(self) -> None:
+        """get_provider should return the same cached instance as get_provider_by_name."""
+        p1 = get_provider("anthropic:claude-sonnet-4-5-20250929")
+        p2 = get_provider_by_name("anthropic")
+        assert p1 is p2
+
+
+# ---------------------------------------------------------------------------
+# get_provider_by_name
+# ---------------------------------------------------------------------------
+
+
+class TestGetProviderByName:
+    """Tests for the get_provider_by_name factory (bare provider names)."""
+
+    def setup_method(self) -> None:
+        reset_provider_cache()
+
+    def test_returns_anthropic_provider(self) -> None:
+        from forge.llm_providers.anthropic import AnthropicProvider
+
+        provider = get_provider_by_name("anthropic")
+        assert isinstance(provider, AnthropicProvider)
+
+    def test_returns_mistral_provider(self) -> None:
+        from forge.llm_providers.mistral import MistralProvider
+
+        provider = get_provider_by_name("mistral")
+        assert isinstance(provider, MistralProvider)
+
+    def test_raises_for_unknown_provider(self) -> None:
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            get_provider_by_name("openai")
+
+    def test_caches_provider_instances(self) -> None:
+        p1 = get_provider_by_name("anthropic")
+        p2 = get_provider_by_name("anthropic")
+        assert p1 is p2
+
+    def test_shares_cache_with_get_provider(self) -> None:
+        """Both functions use the same cache, keyed by provider name."""
+        p1 = get_provider_by_name("mistral")
+        p2 = get_provider("mistral:mistral-large-latest")
+        assert p1 is p2

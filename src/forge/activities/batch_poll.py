@@ -73,7 +73,7 @@ async def execute_poll_batch_results(
         temporal_client: Temporal client for sending signals to workflows.
         update_status_fn: Callable to update batch job status in the store.
     """
-    from forge.llm_providers import get_provider
+    from forge.llm_providers import get_provider_by_name
 
     batches_checked = 0
     signals_sent = 0
@@ -88,7 +88,7 @@ async def execute_poll_batch_results(
 
         batches_checked += 1
 
-        provider = get_provider(provider_name)
+        provider = get_provider_by_name(provider_name)
 
         try:
             poll_result = await provider.poll_batch(batch_id)

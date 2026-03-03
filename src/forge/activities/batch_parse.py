@@ -37,9 +37,9 @@ def execute_parse_llm_response(
     """
     import json
 
-    from forge.llm_providers import get_provider
+    from forge.llm_providers import get_provider_by_name
 
-    provider = get_provider(provider_name)
+    provider = get_provider_by_name(provider_name)
     result = provider.parse_batch_result(raw_json, output_type_name)
 
     if output_type_name is None:

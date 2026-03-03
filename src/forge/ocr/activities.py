@@ -165,9 +165,9 @@ def execute_parse_ocr_result(
     provider_name: str = "mistral",
 ) -> OcrParseResult:
     """Parse OCR batch result into extracted text."""
-    from forge.llm_providers import get_provider
+    from forge.llm_providers import get_provider_by_name
 
-    provider = get_provider(provider_name)
+    provider = get_provider_by_name(provider_name)
     result = provider.parse_batch_result(raw_json, output_type_name=None)
 
     return OcrParseResult(
