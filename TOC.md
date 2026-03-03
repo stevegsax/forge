@@ -33,6 +33,10 @@
 - [PHASE13.md](docs/planning/PHASE13.md) — Tree-Sitter Multi-Language Support: replace Python `ast` with tree-sitter for multi-language code analysis (deferred to Release 2).
 - [PHASE14.md](docs/planning/PHASE14.md) — Batch Processing: replace synchronous LLM calls with async batch processing via Anthropic Batch API.
 
+## Inference Providers
+
+- [mistral.md](docs/inference-providers/mistral.md) — Mistral API reference: authentication, batch API, OCR, SDK usage, and curl examples.
+
 ## Research
 
 - [planner-prompt-research.md](docs/research/planner-prompt-research.md) — Survey of planning approaches in Claude Code, Aider, and other AI coding tools.
