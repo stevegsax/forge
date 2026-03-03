@@ -615,25 +615,67 @@ class TestMainGroup:
 
 
 class TestConfigureLogging:
-    """Tests for the configure_logging helper."""
+    """Tests for the configure_logging helper.
+
+    File logging is disabled via ``FORGE_LOG_DIR=""`` so we can test console
+    handler level independently.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _disable_file_logging(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_LOG_DIR", "")
 
     def test_default_warning(self) -> None:
         import logging
 
         configure_logging(0)
-        assert logging.getLogger().level == logging.WARNING
+        root = logging.getLogger()
+        assert root.level == logging.WARNING
+        stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)]
+        assert stream_handlers
+        assert stream_handlers[0].level == logging.WARNING
 
     def test_v_info(self) -> None:
         import logging
 
         configure_logging(1)
-        assert logging.getLogger().level == logging.INFO
+        root = logging.getLogger()
+        assert root.level == logging.INFO
+        stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)]
+        assert stream_handlers
+        assert stream_handlers[0].level == logging.INFO
 
     def test_vv_debug(self) -> None:
         import logging
 
         configure_logging(2)
-        assert logging.getLogger().level == logging.DEBUG
+        root = logging.getLogger()
+        assert root.level == logging.DEBUG
+        stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)]
+        assert stream_handlers
+        assert stream_handlers[0].level == logging.DEBUG
+
+    def test_file_handler_active_sets_root_debug(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When file logging is active, root level is DEBUG regardless of console level."""
+        import logging
+
+        monkeypatch.setenv("FORGE_LOG_DIR", str(tmp_path))
+        configure_logging(0)  # console=WARNING
+        root = logging.getLogger()
+        try:
+            assert root.level == logging.DEBUG
+            stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
+                               and not hasattr(h, "maxBytes")]
+            assert stream_handlers
+            assert stream_handlers[0].level == logging.WARNING
+        finally:
+            # Clean up file handlers to avoid leaking FDs.
+            for h in list(root.handlers):
+                if hasattr(h, "maxBytes"):
+                    root.removeHandler(h)
+                    h.close()
 
 
 # ---------------------------------------------------------------------------

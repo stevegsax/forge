@@ -455,16 +455,36 @@ def _persist_run(result: TaskResult, workflow_id: str) -> None:
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
 
-def configure_logging(verbosity: int) -> None:
-    """Set up root logger based on -v count: 0=WARNING, 1=INFO, 2+=DEBUG."""
+def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
+    """Set up root logger with console + optional file handler.
+
+    Console level is controlled by *verbosity*: 0=WARNING, 1=INFO, 2+=DEBUG.
+    A ``RotatingFileHandler`` at DEBUG level is added via
+    :func:`forge.logging_config.configure_file_handler` (best-effort).
+    """
+    from forge.logging_config import configure_file_handler
+
     level_map = {0: logging.WARNING, 1: logging.INFO}
-    level = level_map.get(verbosity, logging.DEBUG)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-        datefmt="%H:%M:%S",
-        force=True,
+    console_level = level_map.get(verbosity, logging.DEBUG)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(console_level)
+    stream_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+            datefmt="%H:%M:%S",
+        )
     )
+    root.addHandler(stream_handler)
+
+    file_handler = configure_file_handler(log_name=log_name)
+    if file_handler is not None:
+        root.setLevel(logging.DEBUG)
+    else:
+        root.setLevel(console_level)
 
 
 @click.group()
@@ -817,6 +837,11 @@ def worker(
 ) -> None:
     """Start the Temporal worker."""
     from forge.worker import run_worker
+
+    # Reconfigure logging so the worker writes to worker.log instead of forge.log.
+    ctx = click.get_current_context()
+    verbosity = ctx.parent.params.get("log_verbosity", 0) if ctx.parent else 0
+    configure_logging(verbosity, log_name="worker")
 
     asyncio.run(
         run_worker(

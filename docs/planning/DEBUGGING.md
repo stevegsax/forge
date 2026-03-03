@@ -17,6 +17,11 @@ Default (no flag) is `WARNING`. Log format: `HH:MM:SS LEVEL    logger — messag
 
 Application logs are written to `$XDG_STATE_HOME/forge/` (default `~/.local/state/forge/`). Console output is ephemeral; the filesystem logs persist for post-hoc debugging.
 
+- `forge.log` — logs from CLI commands (`forge run`, `forge status`, etc.)
+- `worker.log` — logs from the Temporal worker (`forge worker`)
+
+Both files use `RotatingFileHandler` with 10 MB max size and 5 backups (e.g. `worker.log`, `worker.log.1`, ... `worker.log.5`). The file handler always logs at DEBUG level regardless of the console verbosity setting. Override the log directory with `FORGE_LOG_DIR`; set it to an empty string to disable file logging.
+
 ## Observability Store
 
 Full LLM interaction data (prompts, tokens, latency, context stats) is persisted to a SQLite database at `$XDG_STATE_HOME/forge/forge.db` (default `~/.local/state/forge/forge.db`).
@@ -129,6 +134,7 @@ temporal workflow describe --workflow-id <workflow-id>
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `FORGE_DB_PATH` | Override observability store path (empty string disables) | `~/.local/state/forge/forge.db` |
+| `FORGE_LOG_DIR` | Override log file directory (empty string disables file logging) | `~/.local/state/forge/` |
 | `FORGE_OTEL_EXPORTER` | OTel trace exporter type | `console` |
 | `FORGE_OTEL_ENDPOINT` | OTel exporter endpoint URL | Per exporter default |
 | `XDG_STATE_HOME` | Base directory for logs and database | `~/.local/state` |
