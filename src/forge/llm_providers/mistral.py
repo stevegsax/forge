@@ -163,7 +163,7 @@ class MistralProvider:
     async def submit_batch(self, requests: list[dict], model: str) -> str:
         """Submit a batch to the Mistral Batch API."""
         job = await self._client.batch.jobs.create_async(
-            input_data=requests,
+            requests=requests,
             model=model,
             endpoint="/v1/chat/completions",
         )
