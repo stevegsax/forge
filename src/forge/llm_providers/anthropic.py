@@ -199,7 +199,7 @@ class AnthropicProvider:
         """Wrap params into an Anthropic batch request item."""
         return build_batch_request(request_id, params)
 
-    async def submit_batch(self, requests: list[dict], model: str) -> str:
+    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
         """Submit a batch to the Anthropic Message Batches API."""
         client = self._get_client()
         batch = await client.messages.batches.create(requests=requests)

@@ -483,10 +483,34 @@ class TestBuildBatchRequest:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        result = provider.build_batch_request("req-456", {"model": "test"})
+        params = {
+            "model": "mistral-large-latest",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1024,
+        }
+        result = provider.build_batch_request("req-456", params)
 
         assert result["custom_id"] == "req-456"
-        assert result["body"]["model"] == "test"
+        assert result["body"]["messages"] == [{"role": "user", "content": "hi"}]
+        assert result["body"]["max_tokens"] == 1024
+
+    def test_strips_model_from_body(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        params = {"model": "mistral-large-latest", "max_tokens": 512}
+        result = provider.build_batch_request("req-789", params)
+
+        assert "model" not in result["body"]
+
+    def test_does_not_mutate_original_params(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        params = {"model": "mistral-large-latest", "max_tokens": 512}
+        provider.build_batch_request("req-abc", params)
+
+        assert params["model"] == "mistral-large-latest"
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +530,7 @@ class TestSubmitBatch:
         mock_job.id = "batch-job-123"
         provider._client.batch.jobs.create_async = AsyncMock(return_value=mock_job)
 
-        requests = [{"custom_id": "r1", "body": {"model": "mistral-large-latest"}}]
+        requests = [{"custom_id": "r1", "body": {"max_tokens": 512}}]
         result = await provider.submit_batch(requests, "mistral-large-latest")
 
         assert result == "batch-job-123"
@@ -526,6 +550,42 @@ class TestSubmitBatch:
         provider._client.batch.jobs.create_async.assert_called_once_with(
             requests=requests,
             model="codestral-latest",
+            endpoint="/v1/chat/completions",
+        )
+
+    @pytest.mark.asyncio
+    async def test_uses_custom_endpoint(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.id = "batch-job-789"
+        provider._client.batch.jobs.create_async = AsyncMock(return_value=mock_job)
+
+        requests = [{"custom_id": "r1", "body": {}}]
+        await provider.submit_batch(requests, "pixtral-large-latest", endpoint="/v1/ocr")
+
+        provider._client.batch.jobs.create_async.assert_called_once_with(
+            requests=requests,
+            model="pixtral-large-latest",
+            endpoint="/v1/ocr",
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_endpoint_uses_default(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.id = "batch-job-000"
+        provider._client.batch.jobs.create_async = AsyncMock(return_value=mock_job)
+
+        requests = [{"custom_id": "r1", "body": {}}]
+        await provider.submit_batch(requests, "mistral-large-latest", endpoint="")
+
+        provider._client.batch.jobs.create_async.assert_called_once_with(
+            requests=requests,
+            model="mistral-large-latest",
             endpoint="/v1/chat/completions",
         )
 

@@ -49,7 +49,7 @@ class LLMProvider(Protocol):
         """Wrap request params into a batch request entry."""
         ...
 
-    async def submit_batch(self, requests: list[dict], model: str) -> str:
+    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
         """Submit a batch of requests. Returns the batch job ID."""
         ...
 

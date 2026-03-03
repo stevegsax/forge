@@ -142,6 +142,9 @@ def _parse_error_file_entries(content: str) -> list[BatchResultEntry]:
     return entries
 
 
+_DEFAULT_MISTRAL_ENDPOINT = "/v1/chat/completions"
+
+
 class MistralProvider:
     """LLM provider backed by the Mistral API.
 
@@ -234,15 +237,20 @@ class MistralProvider:
         return True
 
     def build_batch_request(self, request_id: str, params: dict) -> dict:
-        """Build a Mistral inline batch entry."""
-        return {"custom_id": request_id, "body": params}
+        """Build a Mistral inline batch entry.
 
-    async def submit_batch(self, requests: list[dict], model: str) -> str:
+        Strips ``model`` from the body — Mistral requires model at the
+        top-level ``create`` call, not inside individual request bodies.
+        """
+        body = {k: v for k, v in params.items() if k != "model"}
+        return {"custom_id": request_id, "body": body}
+
+    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
         """Submit a batch to the Mistral Batch API."""
         job = await self._client.batch.jobs.create_async(
             requests=requests,
             model=model,
-            endpoint="/v1/chat/completions",
+            endpoint=endpoint or _DEFAULT_MISTRAL_ENDPOINT,
         )
         return job.id
 
