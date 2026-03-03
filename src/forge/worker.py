@@ -60,7 +60,7 @@ from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.ocr.activities import (
     parse_ocr_result,
-    read_file_as_base64,
+    read_and_store_file_content,
     store_ocr_result,
     submit_ocr_batch,
 )
@@ -223,7 +223,7 @@ async def run_worker(
             write_files,
             write_output,
             # OCR activities
-            read_file_as_base64,
+            read_and_store_file_content,
             submit_ocr_batch,
             parse_ocr_result,
             store_ocr_result,

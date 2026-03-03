@@ -149,6 +149,19 @@ class OcrResult(Base):
     )
 
 
+class FileContentBlob(Base):
+    __tablename__ = "file_content_blobs"
+
+    id: Mapped[str] = mapped_column(sa.String, primary_key=True)
+    data: Mapped[bytes] = mapped_column(sa.LargeBinary, nullable=False)
+    mime_type: Mapped[str] = mapped_column(sa.String, nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime,
+        default=lambda: datetime.now(UTC),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
@@ -565,3 +578,47 @@ def get_ocr_result(engine: Engine, document_id: str) -> dict | None:
         if row is None:
             return None
         return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# File content blob functions
+# ---------------------------------------------------------------------------
+
+
+def save_file_content(
+    engine: Engine,
+    *,
+    content_id: str,
+    data: bytes,
+    mime_type: str,
+    file_size_bytes: int,
+) -> None:
+    """Insert a row into the file_content_blobs table."""
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(FileContentBlob.__table__).values(
+                id=content_id,
+                data=data,
+                mime_type=mime_type,
+                file_size_bytes=file_size_bytes,
+            )
+        )
+
+
+def get_file_content(engine: Engine, content_id: str) -> dict | None:
+    """Look up file content by ID. Returns dict with id, data, mime_type, file_size_bytes."""
+    t = FileContentBlob.__table__
+    stmt = t.select().where(t.c.id == content_id)
+
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)
+
+
+def delete_file_content(engine: Engine, content_id: str) -> None:
+    """Delete file content by ID."""
+    t = FileContentBlob.__table__
+    with engine.begin() as conn:
+        conn.execute(sa.delete(t).where(t.c.id == content_id))

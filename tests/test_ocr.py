@@ -13,11 +13,13 @@ from forge.ocr.activities import (
     build_ocr_messages,
     detect_mime_type,
     execute_parse_ocr_result,
+    execute_read_and_store_file,
     execute_read_file,
     execute_store_ocr_result,
     execute_submit_ocr_batch,
 )
 from forge.ocr.models import (
+    FileContentRef,
     FileContentResult,
     OcrParseResult,
     OcrStoreInput,
@@ -27,8 +29,10 @@ from forge.ocr.models import (
 )
 from forge.store import (
     get_engine,
+    get_file_content,
     get_ocr_result,
     run_migrations,
+    save_file_content,
     save_ocr_result,
 )
 
@@ -499,3 +503,178 @@ class TestMigration006:
         result = get_ocr_result(engine, "mig-test")
         assert result is not None
         assert result["text"] == "Migration test text"
+
+
+# ---------------------------------------------------------------------------
+# Read and store file content
+# ---------------------------------------------------------------------------
+
+
+class TestReadAndStoreFileContent:
+    def test_execute_read_and_store_file(self, tmp_path: Path) -> None:
+        # Create a test file
+        test_file = tmp_path / "test.pdf"
+        content = b"%PDF-1.4 fake pdf content for testing"
+        test_file.write_bytes(content)
+
+        # Set up test database
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        ref = execute_read_and_store_file(str(test_file), engine)
+
+        # Verify the returned ref
+        assert isinstance(ref, FileContentRef)
+        assert ref.mime_type == "application/pdf"
+        assert ref.file_size_bytes == len(content)
+        assert ref.content_id  # non-empty UUID
+
+        # Verify the bytes were stored in the database
+        blob = get_file_content(engine, ref.content_id)
+        assert blob is not None
+        assert blob["data"] == content
+        assert blob["mime_type"] == "application/pdf"
+        assert blob["file_size_bytes"] == len(content)
+
+    def test_execute_read_and_store_file_not_found(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        with pytest.raises(FileNotFoundError):
+            execute_read_and_store_file("/tmp/nonexistent_file_12345.pdf", engine)
+
+    @pytest.mark.asyncio
+    async def test_submit_ocr_batch_loads_from_db(self, tmp_path: Path) -> None:
+        """Verify submit_ocr_batch loads content from DB using file_content_ref."""
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        # Pre-store file content
+        test_data = b"fake pdf bytes"
+        content_id = "test-content-id"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=test_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(test_data),
+        )
+
+        # Build the input JSON with file_content_ref instead of file_content
+        submit_input = OcrSubmitInput(
+            file_path="/tmp/test.pdf",
+            model_name="mistral:pixtral-large-latest",
+            document_id="doc-1",
+        )
+        input_json = json.dumps({
+            "submit_input": submit_input.model_dump(),
+            "file_content_ref": {
+                "content_id": content_id,
+                "mime_type": "application/pdf",
+                "file_size_bytes": len(test_data),
+            },
+            "store_workflow_id": "wf-store-1",
+        })
+
+        # Mock the provider and store functions
+        mock_provider = MagicMock()
+        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
+        mock_provider.build_batch_request = MagicMock(
+            return_value={"custom_id": "req-1", "params": {}}
+        )
+        mock_provider.submit_batch = AsyncMock(return_value="batch-123")
+
+        import forge.llm_providers as llm_mod
+        import forge.store as store_mod
+
+        original_get_provider = llm_mod.get_provider
+        original_get_db_path = store_mod.get_db_path
+        original_get_engine = store_mod.get_engine
+        try:
+            llm_mod.get_provider = MagicMock(return_value=mock_provider)
+            store_mod.get_db_path = lambda: db_path
+            store_mod.get_engine = lambda _path: engine
+
+            from forge.ocr.activities import submit_ocr_batch
+
+            result = await submit_ocr_batch(input_json)
+
+            assert result.batch_id == "batch-123"
+            assert result.document_id == "doc-1"
+
+            # Verify the provider received base64-encoded data
+            call_args = mock_provider.build_request_params.call_args
+            messages = call_args.kwargs["messages"]
+            assert len(messages) == 2  # system + user
+        finally:
+            llm_mod.get_provider = original_get_provider
+            store_mod.get_db_path = original_get_db_path
+            store_mod.get_engine = original_get_engine
+
+    @pytest.mark.asyncio
+    async def test_submit_ocr_batch_cleans_up_blob(self, tmp_path: Path) -> None:
+        """Verify BLOB is deleted after successful submission."""
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        # Pre-store file content
+        test_data = b"cleanup test bytes"
+        content_id = "cleanup-content-id"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=test_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(test_data),
+        )
+
+        # Verify blob exists before submission
+        assert get_file_content(engine, content_id) is not None
+
+        submit_input = OcrSubmitInput(
+            file_path="/tmp/test.pdf",
+            model_name="mistral:pixtral-large-latest",
+            document_id="doc-cleanup",
+        )
+        input_json = json.dumps({
+            "submit_input": submit_input.model_dump(),
+            "file_content_ref": {
+                "content_id": content_id,
+                "mime_type": "application/pdf",
+                "file_size_bytes": len(test_data),
+            },
+            "store_workflow_id": "wf-store-cleanup",
+        })
+
+        mock_provider = MagicMock()
+        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
+        mock_provider.build_batch_request = MagicMock(
+            return_value={"custom_id": "req-1", "params": {}}
+        )
+        mock_provider.submit_batch = AsyncMock(return_value="batch-456")
+
+        import forge.llm_providers as llm_mod
+        import forge.store as store_mod
+
+        original_get_provider = llm_mod.get_provider
+        original_get_db_path = store_mod.get_db_path
+        original_get_engine = store_mod.get_engine
+        try:
+            llm_mod.get_provider = MagicMock(return_value=mock_provider)
+            store_mod.get_db_path = lambda: db_path
+            store_mod.get_engine = lambda _path: engine
+
+            from forge.ocr.activities import submit_ocr_batch
+
+            await submit_ocr_batch(input_json)
+
+            # Verify the BLOB was deleted after successful submission
+            assert get_file_content(engine, content_id) is None
+        finally:
+            llm_mod.get_provider = original_get_provider
+            store_mod.get_db_path = original_get_db_path
+            store_mod.get_engine = original_get_engine

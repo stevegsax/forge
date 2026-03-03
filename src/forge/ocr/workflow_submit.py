@@ -1,16 +1,15 @@
 """OcrSubmitWorkflow — submit a document for OCR via batch API.
 
 Steps:
-1. Read and encode the file
+1. Read file and store in database (returns lightweight ref)
 2. Start child OcrStoreWorkflow (abandoned on parent close)
-3. Submit batch request to Mistral
+3. Submit batch request to Mistral (loads file from DB, cleans up BLOB)
 4. Return OcrSubmitResult
 """
 
 from __future__ import annotations
 
 import json
-import uuid
 from datetime import timedelta
 
 from temporalio import workflow
@@ -18,7 +17,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from forge.ocr.models import (
-        FileContentResult,
+        FileContentRef,
         OcrStoreInput,
         OcrSubmitInput,
         OcrSubmitResult,
@@ -35,20 +34,20 @@ class OcrSubmitWorkflow:
 
     @workflow.run
     async def run(self, input: OcrSubmitInput) -> OcrSubmitResult:
-        document_id = input.document_id or str(uuid.uuid4())
+        document_id = input.document_id or str(workflow.uuid4())
         workflow.logger.info(
             "OcrSubmit started: file=%s document_id=%s",
             input.file_path,
             document_id,
         )
 
-        # Step 1: Read and encode the file
-        file_content = await workflow.execute_activity(
-            "read_file_as_base64",
+        # Step 1: Read file and store in database (returns lightweight ref)
+        file_content_ref = await workflow.execute_activity(
+            "read_and_store_file_content",
             input.file_path,
             start_to_close_timeout=_IO_TIMEOUT,
             retry_policy=_IO_RETRY,
-            result_type=FileContentResult,
+            result_type=FileContentRef,
         )
 
         # Step 2: Start child OcrStoreWorkflow
@@ -68,7 +67,7 @@ class OcrSubmitWorkflow:
         # Step 3: Submit batch request
         submit_data = json.dumps({
             "submit_input": input.model_copy(update={"document_id": document_id}).model_dump(),
-            "file_content": file_content.model_dump(),
+            "file_content_ref": file_content_ref.model_dump(),
             "store_workflow_id": store_handle.id,
         })
         result = await workflow.execute_activity(

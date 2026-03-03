@@ -42,9 +42,17 @@ class OcrStoreResult(BaseModel):
 
 
 class FileContentResult(BaseModel):
-    """Result from read_file_as_base64 activity."""
+    """Base64-encoded file content used for LLM batch submission."""
 
     base64_data: str
+    mime_type: str
+    file_size_bytes: int
+
+
+class FileContentRef(BaseModel):
+    """Lightweight reference to file content stored in the database."""
+
+    content_id: str
     mime_type: str
     file_size_bytes: int
 

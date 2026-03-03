@@ -29,6 +29,7 @@ from forge.llm_providers.models import (
     TextContent,
 )
 from forge.ocr.models import (
+    FileContentRef,
     FileContentResult,
     OcrParseResult,
     OcrStoreResult,
@@ -36,6 +37,8 @@ from forge.ocr.models import (
 )
 
 if TYPE_CHECKING:
+    from sqlalchemy import Engine
+
     from forge.llm_providers.protocol import LLMProvider
     from forge.ocr.models import OcrSubmitInput
 
@@ -92,6 +95,33 @@ def execute_read_file(file_path: str) -> FileContentResult:
     mime_type = detect_mime_type(file_path)
     return FileContentResult(
         base64_data=encoded,
+        mime_type=mime_type,
+        file_size_bytes=len(raw),
+    )
+
+
+def execute_read_and_store_file(file_path: str, engine: Engine) -> FileContentRef:
+    """Read a file and store raw bytes in the database.
+
+    Returns a lightweight reference suitable for Temporal payloads.
+    """
+    from forge.store import save_file_content
+
+    path = Path(file_path)
+    raw = path.read_bytes()
+    mime_type = detect_mime_type(file_path)
+    content_id = str(uuid.uuid4())
+
+    save_file_content(
+        engine,
+        content_id=content_id,
+        data=raw,
+        mime_type=mime_type,
+        file_size_bytes=len(raw),
+    )
+
+    return FileContentRef(
+        content_id=content_id,
         mime_type=mime_type,
         file_size_bytes=len(raw),
     )
@@ -194,48 +224,92 @@ def execute_store_ocr_result(
 
 
 @activity.defn
-async def read_file_as_base64(file_path: str) -> FileContentResult:
-    """Activity: read file and encode as base64."""
-    logger.info("Reading file: %s", file_path)
-    return execute_read_file(file_path)
+async def read_and_store_file_content(file_path: str) -> FileContentRef:
+    """Activity: read file and store raw bytes in the database.
+
+    Returns a lightweight FileContentRef instead of the full file content,
+    avoiding Temporal's 2MB payload limit for large files.
+    """
+    from forge.store import get_db_path, get_engine
+
+    logger.info("Reading and storing file: %s", file_path)
+    db_path = get_db_path()
+    if db_path is None:
+        msg = "Cannot store file content: database is disabled"
+        raise RuntimeError(msg)
+
+    engine = get_engine(db_path)
+    return execute_read_and_store_file(file_path, engine)
 
 
 @activity.defn
 async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
     """Activity: submit OCR batch request.
 
-    Takes JSON-serialized OcrSubmitInput + FileContentResult to avoid
-    complex activity input. The actual submission uses the provider.
+    Takes JSON-serialized OcrSubmitInput + FileContentRef to avoid
+    complex activity input. Loads file bytes from the database,
+    base64-encodes in memory, and submits to the provider.
     """
     from forge.llm_providers import get_provider
     from forge.ocr.models import OcrSubmitInput
-    from forge.store import get_db_path, get_engine, record_batch_submission
+    from forge.store import (
+        delete_file_content,
+        get_db_path,
+        get_engine,
+        get_file_content,
+        record_batch_submission,
+    )
 
     data = json.loads(input_json)
     ocr_input = OcrSubmitInput.model_validate(data["submit_input"])
-    file_content = FileContentResult.model_validate(data["file_content"])
     store_workflow_id = data["store_workflow_id"]
+
+    # Load file content from database
+    db_path = get_db_path()
+    if db_path is None:
+        msg = "Cannot load file content: database is disabled"
+        raise RuntimeError(msg)
+
+    engine = get_engine(db_path)
+
+    file_content_ref = data["file_content_ref"]
+    content_id = file_content_ref["content_id"]
+    blob = get_file_content(engine, content_id)
+    if blob is None:
+        msg = f"File content not found for content_id={content_id}"
+        raise RuntimeError(msg)
+
+    # Build FileContentResult from stored bytes (base64-encode in memory)
+    encoded = base64.b64encode(blob["data"]).decode("ascii")
+    file_content = FileContentResult(
+        base64_data=encoded,
+        mime_type=blob["mime_type"],
+        file_size_bytes=blob["file_size_bytes"],
+    )
 
     provider = get_provider(ocr_input.model_name)
     result = await execute_submit_ocr_batch(
         ocr_input, file_content, provider, store_workflow_id
     )
 
+    # Clean up the BLOB after successful submission
+    try:
+        delete_file_content(engine, content_id)
+    except Exception:
+        logger.warning("Failed to delete file content blob %s", content_id, exc_info=True)
+
     # Record batch submission for the poller to find
     try:
         from forge.llm_providers import parse_model_id
 
         provider_name, _ = parse_model_id(ocr_input.model_name)
-        db_path = get_db_path()
-        if db_path is not None:
-            engine = get_engine(db_path)
-            record_batch_submission(
-                engine,
-                request_id=result.request_id,
-                batch_id=result.batch_id,
-                workflow_id=store_workflow_id,
-                provider=provider_name,
-            )
+        record_batch_submission(
+            engine,
+            request_id=result.request_id,
+            batch_id=result.batch_id,
+            workflow_id=store_workflow_id,
+            provider=provider_name,
+        )
     except Exception:
         logger.warning("Failed to record OCR batch submission", exc_info=True)
 
