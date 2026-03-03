@@ -88,6 +88,42 @@ forge playbooks --task-id <id>     # Filter by source task
 forge playbooks --json             # JSON output
 ```
 
+## Temporal CLI
+
+The `temporal` CLI can inspect workflow execution history directly from the Temporal server, including error messages and stack traces that may not appear in worker logs.
+
+### List recent workflows
+
+```bash
+temporal workflow list --limit 10
+```
+
+### Show workflow event history
+
+```bash
+temporal workflow show --workflow-id <workflow-id>
+```
+
+If you have the run ID (useful when a workflow has been retried):
+
+```bash
+temporal workflow show --workflow-id <workflow-id> --run-id <run-id>
+```
+
+### Full event detail as JSON
+
+The JSON output includes complete failure messages, stack traces, and input payloads:
+
+```bash
+temporal workflow show --workflow-id <workflow-id> -o json
+```
+
+### Describe workflow status
+
+```bash
+temporal workflow describe --workflow-id <workflow-id>
+```
+
 ## Environment Variables
 
 | Variable | Purpose | Default |
