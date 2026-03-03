@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
+from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from forge.llm_providers.mistral import MistralProvider
+from forge.llm_providers.mistral import (
+    MistralProvider,
+    _download_file_content,
+    _format_batch_errors,
+    _is_set,
+    _parse_error_file_entries,
+)
 from forge.llm_providers.models import (
     BatchPollStatus,
     ImageContent,
@@ -54,8 +62,186 @@ def _make_mock_response(
     return response
 
 
+def _make_mock_batch_job(
+    status: str = "SUCCESS",
+    *,
+    output_file: str | None = "file-output-default",
+    error_file: object | None = None,
+    errors: list | None = None,
+    failed_requests: int = 0,
+    total_requests: int = 10,
+) -> MagicMock:
+    """Build a mock Mistral BatchJobOut with explicit error-related fields.
+
+    Using explicit values prevents MagicMock from auto-creating truthy stubs
+    for ``errors``, ``error_file``, and ``failed_requests``.
+    """
+    job = MagicMock()
+    job.status = status
+    job.output_file = output_file
+    job.error_file = error_file
+    job.errors = errors or []
+    job.failed_requests = failed_requests
+    job.total_requests = total_requests
+    return job
+
+
+def _make_batch_choice(arguments: str = "{}") -> dict:
+    """Build a minimal successful Mistral batch response body with a tool call."""
+    return {
+        "choices": [
+            {"message": {"tool_calls": [{"function": {"arguments": arguments}}]}}
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
-# Tests
+# Tests — helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestIsSet:
+    """Tests for _is_set sentinel guard."""
+
+    def test_none_is_not_set(self) -> None:
+        assert _is_set(None) is False
+
+    def test_unset_sentinel_is_not_set(self) -> None:
+        """The Mistral SDK UNSET sentinel is falsy but not None."""
+
+        class _Unset:
+            def __bool__(self) -> bool:
+                return False
+
+        assert _is_set(_Unset()) is False
+
+    def test_valid_string_is_set(self) -> None:
+        assert _is_set("file-abc-123") is True
+
+    def test_empty_string_is_not_set(self) -> None:
+        assert _is_set("") is False
+
+
+class TestFormatBatchErrors:
+    """Tests for _format_batch_errors."""
+
+    def test_empty_list(self) -> None:
+        assert _format_batch_errors([]) == ""
+
+    def test_single_error_count_one(self) -> None:
+        err = MagicMock()
+        err.message = "rate limit exceeded"
+        err.count = 1
+        assert _format_batch_errors([err]) == "rate limit exceeded"
+
+    def test_single_error_count_greater_than_one(self) -> None:
+        err = MagicMock()
+        err.message = "context length exceeded"
+        err.count = 5
+        assert _format_batch_errors([err]) == "context length exceeded (x5)"
+
+    def test_multiple_errors(self) -> None:
+        err1 = MagicMock()
+        err1.message = "error A"
+        err1.count = 1
+        err2 = MagicMock()
+        err2.message = "error B"
+        err2.count = 3
+        result = _format_batch_errors([err1, err2])
+        assert result == "error A; error B (x3)"
+
+    def test_fallback_to_str_when_no_message_attr(self) -> None:
+        """When error objects lack .message, fall back to str()."""
+        result = _format_batch_errors(["plain string error"])
+        assert result == "plain string error"
+
+
+class TestParseErrorFileEntries:
+    """Tests for _parse_error_file_entries."""
+
+    def test_empty_content(self) -> None:
+        assert _parse_error_file_entries("") == []
+
+    def test_blank_lines_skipped(self) -> None:
+        assert _parse_error_file_entries("\n\n  \n") == []
+
+    def test_standard_error_format(self) -> None:
+        line = json.dumps({
+            "custom_id": "req-1",
+            "response": {
+                "body": {
+                    "error": {"type": "invalid_request", "message": "bad input"},
+                }
+            },
+        })
+        entries = _parse_error_file_entries(line)
+        assert len(entries) == 1
+        assert entries[0].custom_id == "req-1"
+        assert entries[0].succeeded is False
+        assert "bad input" in entries[0].error
+
+    def test_top_level_error_key(self) -> None:
+        line = json.dumps({
+            "custom_id": "req-2",
+            "error": {"message": "server error"},
+        })
+        entries = _parse_error_file_entries(line)
+        assert len(entries) == 1
+        assert entries[0].custom_id == "req-2"
+        assert "server error" in entries[0].error
+
+    def test_malformed_json_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        content = "not valid json\n" + json.dumps({
+            "custom_id": "req-ok",
+            "error": {"message": "real error"},
+        })
+        with caplog.at_level(logging.WARNING):
+            entries = _parse_error_file_entries(content)
+        assert len(entries) == 1
+        assert entries[0].custom_id == "req-ok"
+        assert "malformed" in caplog.text.lower()
+
+    def test_missing_custom_id_defaults_to_unknown(self) -> None:
+        line = json.dumps({"error": {"message": "oops"}})
+        entries = _parse_error_file_entries(line)
+        assert entries[0].custom_id == "unknown"
+
+    def test_multiple_lines(self) -> None:
+        lines = "\n".join([
+            json.dumps({"custom_id": "r1", "error": {"message": "e1"}}),
+            json.dumps({"custom_id": "r2", "error": {"message": "e2"}}),
+        ])
+        entries = _parse_error_file_entries(lines)
+        assert len(entries) == 2
+        assert entries[0].custom_id == "r1"
+        assert entries[1].custom_id == "r2"
+
+
+class TestDownloadFileContent:
+    """Tests for _download_file_content."""
+
+    @pytest.mark.asyncio
+    async def test_file_like_object(self) -> None:
+        client = MagicMock()
+        file_obj = BytesIO(b"hello world")
+        client.files.download_async = AsyncMock(return_value=file_obj)
+
+        result = await _download_file_content(client, "file-123")
+
+        assert result == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_plain_string(self) -> None:
+        client = MagicMock()
+        client.files.download_async = AsyncMock(return_value="raw string content")
+
+        result = await _download_file_content(client, "file-456")
+
+        assert result == "raw string content"
+
+
+# ---------------------------------------------------------------------------
+# Tests — MistralProvider
 # ---------------------------------------------------------------------------
 
 
@@ -303,15 +489,6 @@ class TestBuildBatchRequest:
         assert result["body"]["model"] == "test"
 
 
-def _make_batch_choice(arguments: str = "{}") -> dict:
-    """Build a minimal successful Mistral batch response body with a tool call."""
-    return {
-        "choices": [
-            {"message": {"tool_calls": [{"function": {"arguments": arguments}}]}}
-        ],
-    }
-
-
 # ---------------------------------------------------------------------------
 # submit_batch
 # ---------------------------------------------------------------------------
@@ -366,8 +543,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "QUEUED"
+        mock_job = _make_mock_batch_job("QUEUED", output_file=None)
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         result = await provider.poll_batch("batch-1")
@@ -380,8 +556,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "RUNNING"
+        mock_job = _make_mock_batch_job("RUNNING", output_file=None)
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         result = await provider.poll_batch("batch-1")
@@ -393,8 +568,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "FAILED"
+        mock_job = _make_mock_batch_job("FAILED", output_file=None)
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         result = await provider.poll_batch("batch-1")
@@ -407,8 +581,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "TIMEOUT_EXCEEDED"
+        mock_job = _make_mock_batch_job("TIMEOUT_EXCEEDED", output_file=None)
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         result = await provider.poll_batch("batch-1")
@@ -420,8 +593,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "CANCELLED"
+        mock_job = _make_mock_batch_job("CANCELLED", output_file=None)
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         result = await provider.poll_batch("batch-1")
@@ -433,9 +605,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "SUCCESS"
-        mock_job.output_file = "file-output-123"
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-output-123")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         body_1 = {
@@ -471,9 +641,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "SUCCESS"
-        mock_job.output_file = "file-output-456"
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-output-456")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         jsonl = json.dumps({
@@ -501,9 +669,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "SUCCESS"
-        mock_job.output_file = "file-abc-789"
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-abc-789")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         jsonl = json.dumps({
@@ -526,9 +692,7 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "SUCCESS"
-        mock_job.output_file = "file-str-1"
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-str-1")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         jsonl = json.dumps({
@@ -550,13 +714,26 @@ class TestPollBatch:
         assert result.entries[0].succeeded is True
 
     @pytest.mark.asyncio
+    async def test_success_with_null_output_file_returns_failed(self) -> None:
+        """When Mistral reports SUCCESS but output_file is None, return FAILED."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = _make_mock_batch_job("SUCCESS", output_file=None)
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.FAILED
+        assert result.entries == []
+        provider._client.files.download_async.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_skips_blank_lines_in_jsonl(self) -> None:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = MagicMock()
-        mock_job.status = "SUCCESS"
-        mock_job.output_file = "file-blank"
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-blank")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         entry = {
@@ -571,6 +748,307 @@ class TestPollBatch:
         result = await provider.poll_batch("batch-1")
 
         assert len(result.entries) == 1
+
+    # -----------------------------------------------------------------------
+    # New tests: error logging, error_file merging, UNSET sentinel
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_failed_status_logs_errors(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """FAILED batch with errors logs WARNING with error details."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        err = MagicMock()
+        err.message = "context length exceeded"
+        err.count = 3
+
+        mock_job = _make_mock_batch_job(
+            "FAILED",
+            output_file=None,
+            errors=[err],
+            failed_requests=3,
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        with caplog.at_level(logging.WARNING):
+            result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.FAILED
+        assert "context length exceeded (x3)" in caplog.text
+        assert "3 failed request" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_success_with_errors_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """SUCCESS with errors and failed_requests still returns ENDED but logs."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        err = MagicMock()
+        err.message = "partial failure"
+        err.count = 1
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS",
+            output_file="file-ok",
+            errors=[err],
+            failed_requests=2,
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": _make_batch_choice()},
+        })
+        mock_file = MagicMock()
+        mock_file.read.return_value = jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+
+        with caplog.at_level(logging.WARNING):
+            result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert "partial failure" in caplog.text
+        assert "2 failed request" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_success_with_error_file_merges_entries(self) -> None:
+        """output_file (1 ok) + error_file (1 fail) = 2 entries."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS",
+            output_file="file-output",
+            error_file="file-errors",
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        output_jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": _make_batch_choice()},
+        })
+        error_jsonl = json.dumps({
+            "custom_id": "req-2",
+            "response": {
+                "body": {"error": {"message": "context too long"}},
+            },
+        })
+
+        output_file_obj = MagicMock()
+        output_file_obj.read.return_value = output_jsonl.encode("utf-8")
+        error_file_obj = MagicMock()
+        error_file_obj.read.return_value = error_jsonl.encode("utf-8")
+
+        async def _download(file_id: str):
+            if file_id == "file-output":
+                return output_file_obj
+            return error_file_obj
+
+        provider._client.files.download_async = AsyncMock(side_effect=_download)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 2
+        ids = {e.custom_id for e in result.entries}
+        assert ids == {"req-1", "req-2"}
+        # req-1 succeeded, req-2 failed
+        by_id = {e.custom_id: e for e in result.entries}
+        assert by_id["req-1"].succeeded is True
+        assert by_id["req-2"].succeeded is False
+
+    @pytest.mark.asyncio
+    async def test_success_with_error_file_deduplicates(self) -> None:
+        """Same custom_id in both files — output_file entry wins."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS",
+            output_file="file-output",
+            error_file="file-errors",
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        # Both files contain req-1
+        output_jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": _make_batch_choice()},
+        })
+        error_jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {
+                "body": {"error": {"message": "should be ignored"}},
+            },
+        })
+
+        output_file_obj = MagicMock()
+        output_file_obj.read.return_value = output_jsonl.encode("utf-8")
+        error_file_obj = MagicMock()
+        error_file_obj.read.return_value = error_jsonl.encode("utf-8")
+
+        async def _download(file_id: str):
+            if file_id == "file-output":
+                return output_file_obj
+            return error_file_obj
+
+        provider._client.files.download_async = AsyncMock(side_effect=_download)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert len(result.entries) == 1
+        assert result.entries[0].custom_id == "req-1"
+        assert result.entries[0].succeeded is True  # output_file wins
+
+    @pytest.mark.asyncio
+    async def test_success_with_error_file_download_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Error file download raises — output_file entries preserved."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS",
+            output_file="file-output",
+            error_file="file-errors",
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        output_jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": _make_batch_choice()},
+        })
+        output_file_obj = MagicMock()
+        output_file_obj.read.return_value = output_jsonl.encode("utf-8")
+
+        call_count = 0
+
+        async def _download(file_id: str):
+            nonlocal call_count
+            call_count += 1
+            if file_id == "file-errors":
+                raise OSError("download failed")
+            return output_file_obj
+
+        provider._client.files.download_async = AsyncMock(side_effect=_download)
+
+        with caplog.at_level(logging.WARNING):
+            result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 1
+        assert result.entries[0].custom_id == "req-1"
+        assert result.entries[0].succeeded is True
+        assert "failed to download error_file" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_success_with_unset_output_file_returns_failed(self) -> None:
+        """output_file=UNSET (falsy sentinel, not None) detected as missing."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        class _Unset:
+            """Mimic Mistral SDK UNSET sentinel."""
+
+            def __bool__(self) -> bool:
+                return False
+
+        mock_job = _make_mock_batch_job("SUCCESS", output_file=_Unset())
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.FAILED
+        assert result.entries == []
+
+    @pytest.mark.asyncio
+    async def test_success_with_null_output_file_logs_errors(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When output_file is None and errors are present, log the errors."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        err = MagicMock()
+        err.message = "all requests failed"
+        err.count = 10
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS",
+            output_file=None,
+            errors=[err],
+            failed_requests=10,
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        with caplog.at_level(logging.WARNING):
+            result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.FAILED
+        assert "all requests failed (x10)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_error_file_unset_not_downloaded(self) -> None:
+        """UNSET error_file does not trigger download."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        class _Unset:
+            def __bool__(self) -> bool:
+                return False
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS", output_file="file-ok", error_file=_Unset()
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": _make_batch_choice()},
+        })
+        mock_file = MagicMock()
+        mock_file.read.return_value = jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        # Only one download call — for output_file, not error_file
+        provider._client.files.download_async.assert_called_once_with(
+            file_id="file-ok"
+        )
+
+    @pytest.mark.asyncio
+    async def test_error_file_none_not_downloaded(self) -> None:
+        """None error_file does not trigger download."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS", output_file="file-ok", error_file=None
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": _make_batch_choice()},
+        })
+        mock_file = MagicMock()
+        mock_file.read.return_value = jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        provider._client.files.download_async.assert_called_once_with(
+            file_id="file-ok"
+        )
 
 
 # ---------------------------------------------------------------------------

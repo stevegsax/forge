@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import TYPE_CHECKING
@@ -20,6 +21,8 @@ from forge.llm_providers.models import (
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 def _snake_case(name: str) -> str:
@@ -63,6 +66,80 @@ def _messages_to_mistral(messages: list[Message]) -> list[dict]:
         {"role": msg.role, "content": _content_to_mistral(msg.content)}
         for msg in messages
     ]
+
+
+# ---------------------------------------------------------------------------
+# Batch error / file helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_set(value: object) -> bool:
+    """Return True only if *value* is a usable, non-empty string.
+
+    Handles ``None``, the Mistral SDK ``UNSET`` sentinel (which is falsy but
+    ``is not None``), and empty strings.
+    """
+    return bool(value)
+
+
+def _format_batch_errors(errors: list) -> str:
+    """Format a list of ``BatchError`` objects into a human-readable string.
+
+    Each error is rendered as ``"<message>"`` with an ``(xN)`` suffix when
+    ``count > 1``.  Multiple errors are joined with ``"; "``.
+    """
+    parts: list[str] = []
+    for err in errors:
+        message = getattr(err, "message", str(err))
+        count = getattr(err, "count", None)
+        count = count if isinstance(count, int) else 1
+        part = message if count <= 1 else f"{message} (x{count})"
+        parts.append(part)
+    return "; ".join(parts)
+
+
+async def _download_file_content(client: object, file_id: str) -> str:
+    """Download a Mistral file and return its decoded text content."""
+    output_file = await client.files.download_async(file_id=file_id)
+    if hasattr(output_file, "read"):
+        return output_file.read().decode("utf-8")
+    return str(output_file)
+
+
+def _parse_error_file_entries(content: str) -> list[BatchResultEntry]:
+    """Parse error-file JSONL content into ``BatchResultEntry`` objects.
+
+    Each line is expected to be a JSON object with ``custom_id`` and either
+    ``response.body.error`` or a top-level ``error`` key.  Malformed lines
+    are skipped with a warning.
+    """
+    entries: list[BatchResultEntry] = []
+    for line in content.strip().split("\n"):
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("Skipping malformed error-file line: %.120s", line)
+            continue
+
+        custom_id = data.get("custom_id", "unknown")
+
+        # Try response.body.error first, then top-level error
+        error_detail = (
+            data.get("response", {}).get("body", {}).get("error")
+            or data.get("error")
+        )
+        error_str = json.dumps(error_detail) if error_detail else "Unknown error"
+
+        entries.append(
+            BatchResultEntry(
+                custom_id=custom_id,
+                succeeded=False,
+                error=error_str,
+            )
+        )
+    return entries
 
 
 class MistralProvider:
@@ -184,15 +261,41 @@ class MistralProvider:
         }
         poll_status = status_map.get(job.status, BatchPollStatus.IN_PROGRESS)
 
+        # Log batch-level errors and failed request counts for any status
+        if getattr(job, "errors", None):
+            logger.warning(
+                "Batch %s errors: %s",
+                batch_id,
+                _format_batch_errors(job.errors),
+            )
+        if getattr(job, "failed_requests", None) and job.failed_requests > 0:
+            logger.warning(
+                "Batch %s has %d failed request(s)",
+                batch_id,
+                job.failed_requests,
+            )
+
         if poll_status != BatchPollStatus.ENDED:
             return BatchPollResult(status=poll_status)
 
         # Download and parse results
-        output_file = await self._client.files.download_async(file_id=job.output_file)
-        if hasattr(output_file, "read"):
-            content = output_file.read().decode("utf-8")
-        else:
-            content = str(output_file)
+        if not _is_set(job.output_file):
+            error_detail = (
+                _format_batch_errors(job.errors)
+                if getattr(job, "errors", None)
+                else "no output file"
+            )
+            logger.warning(
+                "Batch %s succeeded but output_file is not set: %s",
+                batch_id,
+                error_detail,
+            )
+            return BatchPollResult(
+                status=BatchPollStatus.FAILED,
+                entries=[],
+            )
+
+        content = await _download_file_content(self._client, job.output_file)
         entries: list[BatchResultEntry] = []
         for line in content.strip().split("\n"):
             if not line.strip():
@@ -215,6 +318,26 @@ class MistralProvider:
                         succeeded=False,
                         error=json.dumps(response_body.get("error", "Unknown error")),
                     )
+                )
+
+        # Download and merge error_file entries (if present)
+        if _is_set(getattr(job, "error_file", None)):
+            try:
+                error_content = await _download_file_content(
+                    self._client, job.error_file
+                )
+                error_entries = _parse_error_file_entries(error_content)
+                # Deduplicate: output_file entries take priority
+                existing_ids = {e.custom_id for e in entries}
+                for err_entry in error_entries:
+                    if err_entry.custom_id not in existing_ids:
+                        entries.append(err_entry)
+            except Exception:
+                logger.warning(
+                    "Batch %s: failed to download error_file, "
+                    "output_file entries preserved",
+                    batch_id,
+                    exc_info=True,
                 )
 
         return BatchPollResult(status=BatchPollStatus.ENDED, entries=entries)
