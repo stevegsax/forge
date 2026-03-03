@@ -184,17 +184,14 @@ class TestExecutePollBatchResults:
         assert result.errors_found == 0
 
     @pytest.mark.asyncio
-    async def test_retrieve_failure_logged_no_crash(self) -> None:
+    async def test_retrieve_failure_raises_after_loop(self) -> None:
         provider = _make_mock_provider(poll_error=RuntimeError("network error"))
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
         with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
-            result = await execute_poll_batch_results([job], temporal, _noop_update)
-
-        assert result.batches_checked == 1
-        assert result.signals_sent == 0
-        assert result.errors_found == 0  # Not old enough to be MISSING
+            with pytest.raises(RuntimeError, match="1 error"):
+                await execute_poll_batch_results([job], temporal, _noop_update)
 
     @pytest.mark.asyncio
     async def test_missing_batch_old_job_marks_missing(self) -> None:
@@ -208,9 +205,9 @@ class TestExecutePollBatchResults:
         old_time = datetime.now(UTC) - timedelta(hours=25)
         job = _make_pending_job(created_at=old_time)
         with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
-            result = await execute_poll_batch_results([job], temporal, track_update)
+            with pytest.raises(RuntimeError, match="1 error"):
+                await execute_poll_batch_results([job], temporal, track_update)
 
-        assert result.errors_found == 1
         assert len(updates) == 1
         assert updates[0]["status"] == "missing"
 
@@ -225,11 +222,8 @@ class TestExecutePollBatchResults:
 
         job = _make_pending_job()
         with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
-            result = await execute_poll_batch_results([job], temporal, _noop_update)
-
-        assert result.batches_checked == 1
-        assert result.signals_sent == 0
-        assert result.errors_found == 1
+            with pytest.raises(RuntimeError, match="1 error"):
+                await execute_poll_batch_results([job], temporal, _noop_update)
 
     # -----------------------------------------------------------------------
     # Terminal failure statuses (FAILED / EXPIRED / CANCELED)
@@ -289,10 +283,8 @@ class TestExecutePollBatchResults:
 
         job = _make_pending_job()
         with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
-            result = await execute_poll_batch_results([job], temporal, track_update)
-
-        assert result.signals_sent == 0
-        assert result.errors_found == 1
+            with pytest.raises(RuntimeError, match="1 error"):
+                await execute_poll_batch_results([job], temporal, track_update)
 
         # DB status should still be updated even when signal fails
         assert len(updates) == 1

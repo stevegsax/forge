@@ -87,6 +87,13 @@ def _make_mock_batch_job(
     return job
 
 
+def _make_mock_file(content: str) -> MagicMock:
+    """Build a mock Mistral file download response (async httpx-style)."""
+    mock_file = MagicMock(spec=[])  # spec=[] prevents auto-attribute creation
+    mock_file.aread = AsyncMock(return_value=content.encode("utf-8"))
+    return mock_file
+
+
 def _make_batch_choice(arguments: str = "{}") -> dict:
     """Build a minimal successful Mistral batch response body with a tool call."""
     return {
@@ -576,11 +583,11 @@ class TestSubmitBatch:
         requests = [{"custom_id": "r1", "body": {}}]
         await provider.submit_batch(requests, "codestral-latest")
 
-        provider._client.batch.jobs.create_async.assert_called_once_with(
-            requests=requests,
-            model="codestral-latest",
-            endpoint="/v1/chat/completions",
-        )
+        call_kwargs = provider._client.batch.jobs.create_async.call_args.kwargs
+        assert call_kwargs["model"] == "codestral-latest"
+        assert str(call_kwargs["endpoint"]) == "/v1/chat/completions"
+        assert len(call_kwargs["requests"]) == 1
+        assert call_kwargs["requests"][0].custom_id == "r1"
 
     @pytest.mark.asyncio
     async def test_uses_custom_endpoint(self) -> None:
@@ -594,11 +601,10 @@ class TestSubmitBatch:
         requests = [{"custom_id": "r1", "body": {}}]
         await provider.submit_batch(requests, "pixtral-large-latest", endpoint="/v1/ocr")
 
-        provider._client.batch.jobs.create_async.assert_called_once_with(
-            requests=requests,
-            model="pixtral-large-latest",
-            endpoint="/v1/ocr",
-        )
+        call_kwargs = provider._client.batch.jobs.create_async.call_args.kwargs
+        assert call_kwargs["model"] == "pixtral-large-latest"
+        assert str(call_kwargs["endpoint"]) == "/v1/ocr"
+        assert len(call_kwargs["requests"]) == 1
 
     @pytest.mark.asyncio
     async def test_empty_endpoint_uses_default(self) -> None:
@@ -612,11 +618,10 @@ class TestSubmitBatch:
         requests = [{"custom_id": "r1", "body": {}}]
         await provider.submit_batch(requests, "mistral-large-latest", endpoint="")
 
-        provider._client.batch.jobs.create_async.assert_called_once_with(
-            requests=requests,
-            model="mistral-large-latest",
-            endpoint="/v1/chat/completions",
-        )
+        call_kwargs = provider._client.batch.jobs.create_async.call_args.kwargs
+        assert call_kwargs["model"] == "mistral-large-latest"
+        assert str(call_kwargs["endpoint"]) == "/v1/chat/completions"
+        assert len(call_kwargs["requests"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -711,9 +716,9 @@ class TestPollBatch:
             json.dumps({"custom_id": "req-1", "response": {"body": body_1}}),
             json.dumps({"custom_id": "req-2", "response": {"body": body_2}}),
         ])
-        mock_file = MagicMock()
-        mock_file.read.return_value = jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
 
         result = await provider.poll_batch("batch-1")
 
@@ -741,9 +746,9 @@ class TestPollBatch:
                 }
             },
         })
-        mock_file = MagicMock()
-        mock_file.read.return_value = jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
 
         result = await provider.poll_batch("batch-1")
 
@@ -765,9 +770,9 @@ class TestPollBatch:
             "custom_id": "req-1",
             "response": {"body": {"choices": [{"message": {"tool_calls": []}}]}},
         })
-        mock_file = MagicMock()
-        mock_file.read.return_value = jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
 
         await provider.poll_batch("batch-1")
 
@@ -830,9 +835,9 @@ class TestPollBatch:
             "response": {"body": _make_batch_choice()},
         }
         jsonl = "\n" + json.dumps(entry) + "\n\n"
-        mock_file = MagicMock()
-        mock_file.read.return_value = jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
 
         result = await provider.poll_batch("batch-1")
 
@@ -893,9 +898,9 @@ class TestPollBatch:
             "custom_id": "req-1",
             "response": {"body": _make_batch_choice()},
         })
-        mock_file = MagicMock()
-        mock_file.read.return_value = jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
 
         with caplog.at_level(logging.WARNING):
             result = await provider.poll_batch("batch-1")
@@ -928,15 +933,13 @@ class TestPollBatch:
             },
         })
 
-        output_file_obj = MagicMock()
-        output_file_obj.read.return_value = output_jsonl.encode("utf-8")
-        error_file_obj = MagicMock()
-        error_file_obj.read.return_value = error_jsonl.encode("utf-8")
+        output_mock = _make_mock_file(output_jsonl)
+        error_mock = _make_mock_file(error_jsonl)
 
         async def _download(file_id: str):
             if file_id == "file-output":
-                return output_file_obj
-            return error_file_obj
+                return output_mock
+            return error_mock
 
         provider._client.files.download_async = AsyncMock(side_effect=_download)
 
@@ -976,15 +979,13 @@ class TestPollBatch:
             },
         })
 
-        output_file_obj = MagicMock()
-        output_file_obj.read.return_value = output_jsonl.encode("utf-8")
-        error_file_obj = MagicMock()
-        error_file_obj.read.return_value = error_jsonl.encode("utf-8")
+        output_mock = _make_mock_file(output_jsonl)
+        error_mock = _make_mock_file(error_jsonl)
 
         async def _download(file_id: str):
             if file_id == "file-output":
-                return output_file_obj
-            return error_file_obj
+                return output_mock
+            return error_mock
 
         provider._client.files.download_async = AsyncMock(side_effect=_download)
 
@@ -1013,8 +1014,7 @@ class TestPollBatch:
             "custom_id": "req-1",
             "response": {"body": _make_batch_choice()},
         })
-        output_file_obj = MagicMock()
-        output_file_obj.read.return_value = output_jsonl.encode("utf-8")
+        output_mock = _make_mock_file(output_jsonl)
 
         call_count = 0
 
@@ -1023,7 +1023,7 @@ class TestPollBatch:
             call_count += 1
             if file_id == "file-errors":
                 raise OSError("download failed")
-            return output_file_obj
+            return output_mock
 
         provider._client.files.download_async = AsyncMock(side_effect=_download)
 
@@ -1103,9 +1103,9 @@ class TestPollBatch:
                 "body": {"error": {"message": "invalid request body"}},
             },
         })
-        error_file_obj = MagicMock()
-        error_file_obj.read.return_value = error_jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=error_file_obj)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(error_jsonl)
+        )
 
         result = await provider.poll_batch("batch-1")
 
@@ -1137,9 +1137,9 @@ class TestPollBatch:
             "custom_id": "req-1",
             "response": {"body": _make_batch_choice()},
         })
-        mock_file = MagicMock()
-        mock_file.read.return_value = jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
 
         result = await provider.poll_batch("batch-1")
 
@@ -1164,9 +1164,9 @@ class TestPollBatch:
             "custom_id": "req-1",
             "response": {"body": _make_batch_choice()},
         })
-        mock_file = MagicMock()
-        mock_file.read.return_value = jsonl.encode("utf-8")
-        provider._client.files.download_async = AsyncMock(return_value=mock_file)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
 
         result = await provider.poll_batch("batch-1")
 

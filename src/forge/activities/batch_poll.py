@@ -94,6 +94,7 @@ async def execute_poll_batch_results(
             poll_result = await provider.poll_batch(batch_id)
         except Exception:
             logger.warning("Failed to poll batch %s", batch_id, exc_info=True)
+            errors_found += 1
             age = datetime.now(UTC) - _ensure_utc(created_at)
             if age > _MISSING_THRESHOLD:
                 logger.warning("Batch %s is >24h old and unretrievable, marking MISSING", batch_id)
@@ -103,7 +104,6 @@ async def execute_poll_batch_results(
                     status="missing",
                     error_message="Batch unretrievable after 24h",
                 )
-                errors_found += 1
             continue
 
         # Handle terminal failure statuses — signal the waiting workflow
@@ -179,11 +179,17 @@ async def execute_poll_batch_results(
             status=final_status,
         )
 
-    return BatchPollerResult(
+    result = BatchPollerResult(
         batches_checked=batches_checked,
         signals_sent=signals_sent,
         errors_found=errors_found,
     )
+
+    if errors_found > 0:
+        msg = f"Batch poller completed with {errors_found} error(s) across {batches_checked} job(s)"
+        raise RuntimeError(msg)
+
+    return result
 
 
 def _ensure_utc(dt: datetime) -> datetime:

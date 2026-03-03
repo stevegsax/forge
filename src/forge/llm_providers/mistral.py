@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from forge.llm_providers.models import (
     BatchPollResult,
@@ -101,6 +101,9 @@ def _format_batch_errors(errors: list) -> str:
 async def _download_file_content(client: object, file_id: str) -> str:
     """Download a Mistral file and return its decoded text content."""
     output_file = await client.files.download_async(file_id=file_id)
+    if hasattr(output_file, "aread"):
+        content = await output_file.aread()
+        return content.decode("utf-8")
     if hasattr(output_file, "read"):
         return output_file.read().decode("utf-8")
     return str(output_file)
@@ -219,6 +222,9 @@ class MistralProvider:
 
         input_tokens = response.usage.prompt_tokens if response.usage else 0
         output_tokens = response.usage.completion_tokens if response.usage else 0
+        # Ensure non-None for ProviderResponse (SDK types are Optional)
+        input_tokens = input_tokens or 0
+        output_tokens = output_tokens or 0
 
         return ProviderResponse(
             tool_input=tool_input,
@@ -247,10 +253,14 @@ class MistralProvider:
 
     async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
         """Submit a batch to the Mistral Batch API."""
+        from mistralai.models import BatchRequest
+        from mistralai.types.basemodel import UnrecognizedStr
+
+        typed_requests = [BatchRequest(**r) for r in requests]
         job = await self._client.batch.jobs.create_async(
-            requests=requests,
+            requests=typed_requests,
             model=model,
-            endpoint=endpoint or _DEFAULT_MISTRAL_ENDPOINT,
+            endpoint=UnrecognizedStr(endpoint or _DEFAULT_MISTRAL_ENDPOINT),
         )
         return job.id
 
@@ -291,7 +301,7 @@ class MistralProvider:
         if _is_set(getattr(job, "error_file", None)):
             try:
                 error_content = await _download_file_content(
-                    self._client, job.error_file
+                    self._client, cast("str", job.error_file)
                 )
                 error_entries = _parse_error_file_entries(error_content)
                 entries.extend(error_entries)
@@ -319,7 +329,7 @@ class MistralProvider:
                 entries=entries,
             )
 
-        content = await _download_file_content(self._client, job.output_file)
+        content = await _download_file_content(self._client, cast("str", job.output_file))
         # Output_file entries take priority over error_file entries
         error_ids = {e.custom_id for e in entries}
         for line in content.strip().split("\n"):
