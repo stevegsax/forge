@@ -52,7 +52,7 @@ class OcrSubmitWorkflow:
 
         # Step 2: Start child OcrStoreWorkflow
         store_input = OcrStoreInput(
-            batch_id="",  # will be set after submit
+            batch_id="",  # resolved from BatchResult signal in OcrStoreWorkflow
             request_id="",
             document_id=document_id,
             file_path=input.file_path,

@@ -86,7 +86,7 @@ class OcrStoreWorkflow:
             "model_name": parse_result.model_name,
             "input_tokens": parse_result.input_tokens,
             "output_tokens": parse_result.output_tokens,
-            "batch_id": input.batch_id,
+            "batch_id": result.batch_id,
             "workflow_id": workflow.info().workflow_id,
         })
         store_result = await workflow.execute_activity(
