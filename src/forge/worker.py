@@ -14,6 +14,7 @@ from temporalio.client import (
     Client,
     Schedule,
     ScheduleActionStartWorkflow,
+    ScheduleAlreadyRunningError,
     ScheduleIntervalSpec,
     ScheduleSpec,
     ScheduleState,
@@ -21,7 +22,6 @@ from temporalio.client import (
     ScheduleUpdateInput,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.service import RPCError
 from temporalio.worker import Worker
 
 from forge.activities import (
@@ -119,17 +119,14 @@ async def _ensure_schedule(
     try:
         await client.create_schedule(schedule_id, schedule)
         logger.info("Created schedule %s (interval=%s)", schedule_id, interval)
-    except RPCError as e:
-        if "already exists" in str(e).lower():
-            # Update the existing schedule with the new interval
-            handle = client.get_schedule_handle(schedule_id)
-            async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
-                input.description.schedule.spec = schedule.spec
-                return ScheduleUpdate(schedule=input.description.schedule)
-            await handle.update(_updater)
-            logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
-        else:
-            raise
+    except ScheduleAlreadyRunningError:
+        # Update the existing schedule with the new interval
+        handle = client.get_schedule_handle(schedule_id)
+        async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
+            input.description.schedule.spec = schedule.spec
+            return ScheduleUpdate(schedule=input.description.schedule)
+        await handle.update(_updater)
+        logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
 
 
 async def run_worker(
