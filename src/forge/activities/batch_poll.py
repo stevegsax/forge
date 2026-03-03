@@ -225,20 +225,17 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.poll_batch_results") as span:
-        # Get pending jobs from store
-        try:
-            from forge.store import get_db_path, get_engine, get_pending_batch_jobs
+        # Get pending jobs from store — let DB errors propagate so Temporal
+        # retries on transient failures and surfaces persistent ones.
+        from forge.store import get_db_path, get_engine, get_pending_batch_jobs
 
-            db_path = get_db_path()
-            if db_path is None:
-                span.set_attribute("forge.poll.skipped", True)
-                return BatchPollerResult()
-
-            engine = get_engine(db_path)
-            pending_jobs = get_pending_batch_jobs(engine)
-        except Exception:
-            logger.warning("Failed to query pending batch jobs", exc_info=True)
+        db_path = get_db_path()
+        if db_path is None:
+            span.set_attribute("forge.poll.skipped", True)
             return BatchPollerResult()
+
+        engine = get_engine(db_path)
+        pending_jobs = get_pending_batch_jobs(engine)
 
         if not pending_jobs:
             span.set_attribute("forge.poll.pending_count", 0)

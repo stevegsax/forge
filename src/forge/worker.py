@@ -74,19 +74,19 @@ logger = logging.getLogger(__name__)
 
 
 def _init_store() -> None:
-    """Run database migrations on startup (best-effort)."""
-    try:
-        from forge.store import get_db_path, run_migrations
+    """Run database migrations on startup.
 
-        db_path = get_db_path()
-        if db_path is None:
-            logger.info("Observability store disabled (FORGE_DB_PATH is empty)")
-            return
+    If migrations fail, the database is broken and the worker should not start.
+    """
+    from forge.store import get_db_path, run_migrations
 
-        run_migrations(db_path)
-        logger.info("Database migrations complete: %s", db_path)
-    except Exception:
-        logger.warning("Failed to run database migrations", exc_info=True)
+    db_path = get_db_path()
+    if db_path is None:
+        logger.info("Observability store disabled (FORGE_DB_PATH is empty)")
+        return
+
+    run_migrations(db_path)
+    logger.info("Database migrations complete: %s", db_path)
 
 
 async def _ensure_schedule(
@@ -159,28 +159,22 @@ async def run_worker(
     # Inject Temporal client for poll activity signal delivery
     set_temporal_client(client)
 
-    # Create/update schedules (best-effort)
-    try:
-        await _ensure_schedule(
-            client,
-            schedule_id="forge-batch-poller",
-            workflow_name="BatchPollerWorkflow",
-            workflow_arg=BatchPollerInput(),
-            interval=timedelta(seconds=batch_poll_interval),
-        )
-    except Exception:
-        logger.warning("Failed to create batch poller schedule", exc_info=True)
+    # Create/update schedules — if these fail, the worker is useless
+    await _ensure_schedule(
+        client,
+        schedule_id="forge-batch-poller",
+        workflow_name="BatchPollerWorkflow",
+        workflow_arg=BatchPollerInput(),
+        interval=timedelta(seconds=batch_poll_interval),
+    )
 
-    try:
-        await _ensure_schedule(
-            client,
-            schedule_id="forge-extraction-schedule",
-            workflow_name="ForgeExtractionWorkflow",
-            workflow_arg=ExtractionWorkflowInput(),
-            interval=timedelta(seconds=extraction_interval),
-        )
-    except Exception:
-        logger.warning("Failed to create extraction schedule", exc_info=True)
+    await _ensure_schedule(
+        client,
+        schedule_id="forge-extraction-schedule",
+        workflow_name="ForgeExtractionWorkflow",
+        workflow_arg=ExtractionWorkflowInput(),
+        interval=timedelta(seconds=extraction_interval),
+    )
 
     worker = Worker(
         client,

@@ -996,10 +996,8 @@ class TestPollBatch:
         assert result.entries[0].succeeded is True  # output_file wins
 
     @pytest.mark.asyncio
-    async def test_success_with_error_file_download_failure(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Error file download raises — output_file entries preserved."""
+    async def test_success_with_error_file_download_failure(self) -> None:
+        """Error file download raises — OSError propagates to caller."""
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
@@ -1010,31 +1008,15 @@ class TestPollBatch:
         )
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        output_jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": _make_batch_choice()},
-        })
-        output_mock = _make_mock_file(output_jsonl)
-
-        call_count = 0
-
         async def _download(file_id: str):
-            nonlocal call_count
-            call_count += 1
             if file_id == "file-errors":
                 raise OSError("download failed")
-            return output_mock
+            return _make_mock_file("")  # pragma: no cover
 
         provider._client.files.download_async = AsyncMock(side_effect=_download)
 
-        with caplog.at_level(logging.WARNING):
-            result = await provider.poll_batch("batch-1")
-
-        assert result.status == BatchPollStatus.ENDED
-        assert len(result.entries) == 1
-        assert result.entries[0].custom_id == "req-1"
-        assert result.entries[0].succeeded is True
-        assert "failed to download error_file" in caplog.text
+        with pytest.raises(OSError, match="download failed"):
+            await provider.poll_batch("batch-1")
 
     @pytest.mark.asyncio
     async def test_success_with_unset_output_file_returns_failed(self) -> None:

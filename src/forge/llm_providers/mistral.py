@@ -296,21 +296,16 @@ class MistralProvider:
         if poll_status != BatchPollStatus.ENDED:
             return BatchPollResult(status=poll_status)
 
-        # Download and merge error_file entries (always, before output_file)
+        # Download and merge error_file entries (always, before output_file).
+        # Let download errors propagate — the batch poll activity handles
+        # per-batch failures gracefully (increments errors_found, retries next cycle).
         entries: list[BatchResultEntry] = []
         if _is_set(getattr(job, "error_file", None)):
-            try:
-                error_content = await _download_file_content(
-                    self._client, cast("str", job.error_file)
-                )
-                error_entries = _parse_error_file_entries(error_content)
-                entries.extend(error_entries)
-            except Exception:
-                logger.warning(
-                    "Batch %s: failed to download error_file",
-                    batch_id,
-                    exc_info=True,
-                )
+            error_content = await _download_file_content(
+                self._client, cast("str", job.error_file)
+            )
+            error_entries = _parse_error_file_entries(error_content)
+            entries.extend(error_entries)
 
         # Download and parse output_file results
         if not _is_set(job.output_file):

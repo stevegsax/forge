@@ -296,22 +296,21 @@ async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
     try:
         delete_file_content(engine, content_id)
     except Exception:
-        logger.warning("Failed to delete file content blob %s", content_id, exc_info=True)
+        logger.error("Failed to delete file content blob %s", content_id, exc_info=True)
 
-    # Record batch submission for the poller to find
-    try:
-        from forge.llm_providers import parse_model_id
+    # Record batch submission for the poller to find — if recording fails,
+    # the batch is submitted but untracked. A duplicate on retry is better
+    # than a lost batch.
+    from forge.llm_providers import parse_model_id
 
-        provider_name, _ = parse_model_id(ocr_input.model_name)
-        record_batch_submission(
-            engine,
-            request_id=result.request_id,
-            batch_id=result.batch_id,
-            workflow_id=store_workflow_id,
-            provider=provider_name,
-        )
-    except Exception:
-        logger.warning("Failed to record OCR batch submission", exc_info=True)
+    provider_name, _ = parse_model_id(ocr_input.model_name)
+    record_batch_submission(
+        engine,
+        request_id=result.request_id,
+        batch_id=result.batch_id,
+        workflow_id=store_workflow_id,
+        provider=provider_name,
+    )
 
     return result
 
