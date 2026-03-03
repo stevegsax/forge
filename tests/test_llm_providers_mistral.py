@@ -347,7 +347,7 @@ class TestSubmitBatch:
         await provider.submit_batch(requests, "codestral-latest")
 
         provider._client.batch.jobs.create_async.assert_called_once_with(
-            input_data=requests,
+            requests=requests,
             model="codestral-latest",
             endpoint="/v1/chat/completions",
         )

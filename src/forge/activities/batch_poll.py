@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
+from forge.llm_providers.models import BatchPollStatus
 from forge.models import BatchPollerInput, BatchPollerResult, BatchResult
 
 if TYPE_CHECKING:
@@ -27,6 +28,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MISSING_THRESHOLD = timedelta(hours=24)
+
+_TERMINAL_FAILURE_STATUSES = frozenset({
+    BatchPollStatus.FAILED,
+    BatchPollStatus.EXPIRED,
+    BatchPollStatus.CANCELED,
+})
 
 # ---------------------------------------------------------------------------
 # Module-global Temporal client (set by worker.py before activities run)
@@ -67,7 +74,6 @@ async def execute_poll_batch_results(
         update_status_fn: Callable to update batch job status in the store.
     """
     from forge.llm_providers import get_provider
-    from forge.llm_providers.models import BatchPollStatus
 
     batches_checked = 0
     signals_sent = 0
@@ -100,8 +106,40 @@ async def execute_poll_batch_results(
                 errors_found += 1
             continue
 
-        if poll_result.status != BatchPollStatus.ENDED:
+        # Handle terminal failure statuses — signal the waiting workflow
+        # with an error and update the DB so the poller stops re-polling.
+        if poll_result.status in _TERMINAL_FAILURE_STATUSES:
+            error_msg = f"Batch {batch_id} terminated with status: {poll_result.status.value}"
+            logger.warning(error_msg)
+            signal = BatchResult(
+                request_id=request_id,
+                batch_id=batch_id,
+                error=error_msg,
+                result_type="errored",
+            )
+            try:
+                handle = temporal_client.get_workflow_handle(workflow_id)
+                await handle.signal("batch_result_received", signal)
+                signals_sent += 1
+            except Exception:
+                logger.warning(
+                    "Failed to signal workflow %s for failed batch %s",
+                    workflow_id,
+                    batch_id,
+                    exc_info=True,
+                )
+                errors_found += 1
+
+            _safe_update_status(
+                update_status_fn,
+                request_id=request_id,
+                status=poll_result.status.value,
+                error_message=error_msg,
+            )
             continue
+
+        if poll_result.status != BatchPollStatus.ENDED:
+            continue  # PENDING or IN_PROGRESS — check again next cycle
 
         job_signals = 0
         for entry in poll_result.entries:

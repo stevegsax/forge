@@ -231,6 +231,73 @@ class TestExecutePollBatchResults:
         assert result.signals_sent == 0
         assert result.errors_found == 1
 
+    # -----------------------------------------------------------------------
+    # Terminal failure statuses (FAILED / EXPIRED / CANCELED)
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [BatchPollStatus.FAILED, BatchPollStatus.EXPIRED, BatchPollStatus.CANCELED],
+        ids=["failed", "expired", "canceled"],
+    )
+    async def test_terminal_failure_signals_error_and_updates_status(
+        self, status: BatchPollStatus
+    ) -> None:
+        """Terminal failure statuses should signal the waiting workflow with an
+        error and update the batch_jobs DB status so the poller stops re-polling."""
+        poll_result = ProviderBatchPollResult(status=status)
+        provider = _make_mock_provider(poll_result=poll_result)
+        temporal = _make_temporal_client()
+        updates: list[dict] = []
+
+        def track_update(**kwargs):
+            updates.append(kwargs)
+
+        job = _make_pending_job()
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, track_update)
+
+        # Error signal was sent to the waiting workflow
+        assert result.batches_checked == 1
+        assert result.signals_sent == 1
+        assert result.errors_found == 0
+
+        handle = temporal.get_workflow_handle.return_value
+        handle.signal.assert_called_once()
+        signal = handle.signal.call_args[0][1]
+        assert signal.error is not None
+        assert status.value in signal.error
+        assert signal.result_type == "errored"
+
+        # DB status was updated to the terminal state
+        assert len(updates) == 1
+        assert updates[0]["status"] == status.value
+        assert updates[0]["error_message"] is not None
+
+    @pytest.mark.asyncio
+    async def test_terminal_failure_with_signal_error_increments_errors(self) -> None:
+        """When the workflow signal fails for a terminal batch, errors_found should
+        increment and the DB status should still be updated."""
+        poll_result = ProviderBatchPollResult(status=BatchPollStatus.FAILED)
+        provider = _make_mock_provider(poll_result=poll_result)
+        temporal = _make_temporal_client(signal_error=RuntimeError("workflow gone"))
+        updates: list[dict] = []
+
+        def track_update(**kwargs):
+            updates.append(kwargs)
+
+        job = _make_pending_job()
+        with patch("forge.llm_providers.get_provider", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, track_update)
+
+        assert result.signals_sent == 0
+        assert result.errors_found == 1
+
+        # DB status should still be updated even when signal fails
+        assert len(updates) == 1
+        assert updates[0]["status"] == "failed"
+
     @pytest.mark.asyncio
     async def test_multiple_pending_jobs_all_processed(self) -> None:
         poll_result = ProviderBatchPollResult(
