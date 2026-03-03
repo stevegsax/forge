@@ -18,6 +18,7 @@ from forge.llm_providers.mistral import (
 )
 from forge.llm_providers.models import (
     BatchPollStatus,
+    DocumentContent,
     ImageContent,
     Message,
     TextContent,
@@ -366,6 +367,34 @@ class TestBuildRequestParams:
         assert isinstance(user_msg["content"], list)
         assert user_msg["content"][0]["type"] == "image_url"
         assert "data:image/png;base64," in user_msg["content"][0]["image_url"]
+        assert user_msg["content"][1]["type"] == "text"
+
+    def test_multimodal_document_content(self) -> None:
+        """DocumentContent (e.g. PDF) should use Mistral's document_url type."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        messages = [
+            Message(role="system", content="Extract text from this document."),
+            Message(
+                role="user",
+                content=[
+                    DocumentContent(media_type="application/pdf", data="JVBERi0="),
+                    TextContent(text="Summarize."),
+                ],
+            ),
+        ]
+        params = provider.build_request_params(
+            messages=messages,
+            output_type=None,
+            model="mistral-large-latest",
+            max_tokens=4096,
+        )
+
+        user_msg = params["messages"][1]
+        assert isinstance(user_msg["content"], list)
+        assert user_msg["content"][0]["type"] == "document_url"
+        assert user_msg["content"][0]["document_url"] == "data:application/pdf;base64,JVBERi0="
         assert user_msg["content"][1]["type"] == "text"
 
 
@@ -1052,6 +1081,42 @@ class TestPollBatch:
 
         assert result.status == BatchPollStatus.FAILED
         assert "all requests failed (x10)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_error_file_downloaded_when_output_file_missing(self) -> None:
+        """Error file entries are returned even when output_file is None."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = _make_mock_batch_job(
+            "SUCCESS",
+            output_file=None,
+            error_file="file-errors",
+            errors=[],
+            failed_requests=1,
+        )
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        error_jsonl = json.dumps({
+            "custom_id": "req-1",
+            "response": {
+                "body": {"error": {"message": "invalid request body"}},
+            },
+        })
+        error_file_obj = MagicMock()
+        error_file_obj.read.return_value = error_jsonl.encode("utf-8")
+        provider._client.files.download_async = AsyncMock(return_value=error_file_obj)
+
+        result = await provider.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.FAILED
+        assert len(result.entries) == 1
+        assert result.entries[0].custom_id == "req-1"
+        assert result.entries[0].succeeded is False
+        assert "invalid request body" in result.entries[0].error
+        provider._client.files.download_async.assert_called_once_with(
+            file_id="file-errors"
+        )
 
     @pytest.mark.asyncio
     async def test_error_file_unset_not_downloaded(self) -> None:

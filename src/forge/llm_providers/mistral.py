@@ -46,7 +46,7 @@ def _content_block_to_mistral(block: TextContent | ImageContent | DocumentConten
         return {"type": "image_url", "image_url": data_uri}
     if isinstance(block, DocumentContent):
         data_uri = f"data:{block.media_type};base64,{block.data}"
-        return {"type": "image_url", "image_url": data_uri}
+        return {"type": "document_url", "document_url": data_uri}
     msg = f"Unknown content block type: {type(block)}"
     raise TypeError(msg)
 
@@ -286,7 +286,23 @@ class MistralProvider:
         if poll_status != BatchPollStatus.ENDED:
             return BatchPollResult(status=poll_status)
 
-        # Download and parse results
+        # Download and merge error_file entries (always, before output_file)
+        entries: list[BatchResultEntry] = []
+        if _is_set(getattr(job, "error_file", None)):
+            try:
+                error_content = await _download_file_content(
+                    self._client, job.error_file
+                )
+                error_entries = _parse_error_file_entries(error_content)
+                entries.extend(error_entries)
+            except Exception:
+                logger.warning(
+                    "Batch %s: failed to download error_file",
+                    batch_id,
+                    exc_info=True,
+                )
+
+        # Download and parse output_file results
         if not _is_set(job.output_file):
             error_detail = (
                 _format_batch_errors(job.errors)
@@ -300,17 +316,22 @@ class MistralProvider:
             )
             return BatchPollResult(
                 status=BatchPollStatus.FAILED,
-                entries=[],
+                entries=entries,
             )
 
         content = await _download_file_content(self._client, job.output_file)
-        entries: list[BatchResultEntry] = []
+        # Output_file entries take priority over error_file entries
+        error_ids = {e.custom_id for e in entries}
         for line in content.strip().split("\n"):
             if not line.strip():
                 continue
             entry_data = json.loads(line)
             custom_id = entry_data.get("custom_id", "")
             response_body = entry_data.get("response", {}).get("body", {})
+            if custom_id in error_ids:
+                # Remove the error_file entry; output_file takes priority
+                entries = [e for e in entries if e.custom_id != custom_id]
+                error_ids.discard(custom_id)
             if response_body.get("choices"):
                 entries.append(
                     BatchResultEntry(
@@ -326,26 +347,6 @@ class MistralProvider:
                         succeeded=False,
                         error=json.dumps(response_body.get("error", "Unknown error")),
                     )
-                )
-
-        # Download and merge error_file entries (if present)
-        if _is_set(getattr(job, "error_file", None)):
-            try:
-                error_content = await _download_file_content(
-                    self._client, job.error_file
-                )
-                error_entries = _parse_error_file_entries(error_content)
-                # Deduplicate: output_file entries take priority
-                existing_ids = {e.custom_id for e in entries}
-                for err_entry in error_entries:
-                    if err_entry.custom_id not in existing_ids:
-                        entries.append(err_entry)
-            except Exception:
-                logger.warning(
-                    "Batch %s: failed to download error_file, "
-                    "output_file entries preserved",
-                    batch_id,
-                    exc_info=True,
                 )
 
         return BatchPollResult(status=BatchPollStatus.ENDED, entries=entries)
