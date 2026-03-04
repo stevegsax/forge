@@ -590,21 +590,38 @@ class TestSubmitBatch:
         assert call_kwargs["requests"][0].custom_id == "r1"
 
     @pytest.mark.asyncio
-    async def test_uses_custom_endpoint(self) -> None:
+    async def test_ocr_endpoint_uses_file_upload(self) -> None:
+        """OCR endpoint uses file-based upload instead of inline requests."""
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
+
+        mock_upload = MagicMock()
+        mock_upload.id = "file-upload-123"
+        provider._client.files.upload_async = AsyncMock(return_value=mock_upload)
 
         mock_job = MagicMock()
         mock_job.id = "batch-job-789"
         provider._client.batch.jobs.create_async = AsyncMock(return_value=mock_job)
 
-        requests = [{"custom_id": "r1", "body": {}}]
-        await provider.submit_batch(requests, "pixtral-large-latest", endpoint="/v1/ocr")
+        requests = [{"custom_id": "r1", "body": {"document": {"type": "document_url"}}}]
+        result = await provider.submit_batch(
+            requests, "pixtral-large-latest", endpoint="/v1/ocr"
+        )
 
-        call_kwargs = provider._client.batch.jobs.create_async.call_args.kwargs
-        assert call_kwargs["model"] == "pixtral-large-latest"
-        assert str(call_kwargs["endpoint"]) == "/v1/ocr"
-        assert len(call_kwargs["requests"]) == 1
+        assert result == "batch-job-789"
+
+        # Verify file was uploaded with purpose="batch"
+        provider._client.files.upload_async.assert_called_once()
+        upload_kwargs = provider._client.files.upload_async.call_args.kwargs
+        assert upload_kwargs["purpose"] == "batch"
+        assert upload_kwargs["file"]["file_name"] == "batch.jsonl"
+
+        # Verify batch job was created with input_files (not inline requests)
+        create_kwargs = provider._client.batch.jobs.create_async.call_args.kwargs
+        assert create_kwargs["input_files"] == ["file-upload-123"]
+        assert create_kwargs["model"] == "pixtral-large-latest"
+        assert str(create_kwargs["endpoint"]) == "/v1/ocr"
+        assert "requests" not in create_kwargs
 
     @pytest.mark.asyncio
     async def test_empty_endpoint_uses_default(self) -> None:

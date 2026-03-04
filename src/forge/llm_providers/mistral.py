@@ -252,15 +252,54 @@ class MistralProvider:
         return {"custom_id": request_id, "body": body}
 
     async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
-        """Submit a batch to the Mistral Batch API."""
-        from mistralai.models import BatchRequest
+        """Submit a batch to the Mistral Batch API.
+
+        Uses file-based upload for the OCR endpoint (inline requests are
+        rejected with 400 when the base64 payload is large).  All other
+        endpoints continue to use inline ``requests=``.
+        """
         from mistralai.types.basemodel import UnrecognizedStr
+
+        resolved_endpoint = endpoint or _DEFAULT_MISTRAL_ENDPOINT
+
+        if resolved_endpoint == "/v1/ocr":
+            return await self._submit_batch_via_file(requests, model, resolved_endpoint)
+
+        from mistralai.models import BatchRequest
 
         typed_requests = [BatchRequest(**r) for r in requests]
         job = await self._client.batch.jobs.create_async(
             requests=typed_requests,
             model=model,
-            endpoint=UnrecognizedStr(endpoint or _DEFAULT_MISTRAL_ENDPOINT),
+            endpoint=UnrecognizedStr(resolved_endpoint),
+        )
+        return job.id
+
+    async def _submit_batch_via_file(
+        self, requests: list[dict], model: str, endpoint: str
+    ) -> str:
+        """Submit a batch by uploading a JSONL file.
+
+        Required for the /v1/ocr endpoint where base64 payloads can be
+        too large for inline requests.
+        """
+        from mistralai.types.basemodel import UnrecognizedStr
+
+        # Build JSONL content
+        lines = [json.dumps(r) for r in requests]
+        jsonl_bytes = ("\n".join(lines) + "\n").encode("utf-8")
+
+        # Upload the JSONL file
+        upload_result = await self._client.files.upload_async(
+            file={"file_name": "batch.jsonl", "content": jsonl_bytes},
+            purpose="batch",
+        )
+
+        # Create the batch job referencing the uploaded file
+        job = await self._client.batch.jobs.create_async(
+            input_files=[upload_result.id],
+            model=model,
+            endpoint=UnrecognizedStr(endpoint),
         )
         return job.id
 
