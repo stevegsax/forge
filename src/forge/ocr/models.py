@@ -21,6 +21,8 @@ class OcrSubmitResult(BaseModel):
     request_id: str
     document_id: str
     workflow_id: str
+    chunk_count: int = 1
+    total_pages: int = 0
 
 
 class OcrStoreInput(BaseModel):
@@ -64,3 +66,32 @@ class OcrParseResult(BaseModel):
     model_name: str
     input_tokens: int
     output_tokens: int
+    page_count: int = 0
+
+
+class ChunkRef(BaseModel):
+    """Reference to a single chunk of a split document."""
+
+    content_id: str  # FK to file_content_blobs
+    mime_type: str
+    file_size_bytes: int
+    chunk_index: int  # 0-based sequence number
+    page_start: int  # 1-based first page in this chunk
+    page_end: int  # 1-based last page in this chunk
+
+
+class SplitResult(BaseModel):
+    """Result from split_file_into_chunks activity."""
+
+    chunks: list[ChunkRef]
+    total_pages: int
+    original_content_id: str
+
+
+class OcrReassembleInput(BaseModel):
+    """Input to the reassemble_ocr_chunks activity."""
+
+    document_id: str
+    chunk_document_ids: list[str]  # ordered
+    file_path: str
+    total_pages: int

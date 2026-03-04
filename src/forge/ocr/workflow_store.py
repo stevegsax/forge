@@ -86,6 +86,7 @@ class OcrStoreWorkflow:
             "model_name": parse_result.model_name,
             "input_tokens": parse_result.input_tokens,
             "output_tokens": parse_result.output_tokens,
+            "page_count": parse_result.page_count,
             "batch_id": result.batch_id,
             "workflow_id": workflow.info().workflow_id,
         })

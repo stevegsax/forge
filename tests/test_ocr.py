@@ -13,14 +13,20 @@ from temporalio.worker import Worker
 
 from forge.models import BatchResult
 from forge.ocr.activities import (
+    CHUNK_SIZE_PAGES,
+    MAX_FILE_SIZE_BYTES,
+    MAX_PAGES,
     build_ocr_batch_body,
     build_ocr_messages,
     detect_mime_type,
     execute_parse_ocr_result,
     execute_read_and_store_file,
     execute_read_file,
+    execute_reassemble_ocr_chunks,
+    execute_split_file_into_chunks,
     execute_store_ocr_result,
     execute_submit_ocr_batch,
+    validate_file_size,
 )
 from forge.ocr.models import (
     FileContentRef,
@@ -33,6 +39,7 @@ from forge.ocr.models import (
 )
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.store import (
+    delete_ocr_results,
     get_engine,
     get_file_content,
     get_ocr_result,
@@ -66,6 +73,16 @@ class TestOcrModels:
         assert inp.model_name == "mistral:mistral-ocr-latest"
         assert inp.max_tokens == 16384
         assert inp.document_id == ""
+
+    def test_submit_result_defaults(self) -> None:
+        result = OcrSubmitResult(
+            batch_id="b-1",
+            request_id="r-1",
+            document_id="d-1",
+            workflow_id="wf-1",
+        )
+        assert result.chunk_count == 1
+        assert result.total_pages == 0
 
     def test_submit_input_custom(self) -> None:
         inp = OcrSubmitInput(
@@ -326,6 +343,7 @@ class TestExecuteParseOcrResult:
         assert result.model_name == "mistral-ocr-latest"
         assert result.input_tokens == 2
         assert result.output_tokens == 50000
+        assert result.page_count == 2
 
     def test_single_page(self) -> None:
         raw_json = json.dumps({
@@ -965,3 +983,413 @@ class TestOcrStoreWorkflow:
             with pytest.raises(WorkflowFailureError) as exc_info:
                 await handle.result()
             assert expected_message in str(exc_info.value.cause)
+
+
+# ---------------------------------------------------------------------------
+# validate_file_size
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFileSize:
+    def test_pdf_not_rejected_for_size(self) -> None:
+        """PDFs are never rejected by validate_file_size (they get split instead)."""
+        # Should not raise even for huge size
+        validate_file_size(100 * 1024 * 1024, "application/pdf")
+
+    def test_non_pdf_under_limit_passes(self) -> None:
+        validate_file_size(MAX_FILE_SIZE_BYTES, "image/png")
+
+    def test_non_pdf_over_limit_raises(self) -> None:
+        with pytest.raises(ValueError, match="Non-PDF file"):
+            validate_file_size(MAX_FILE_SIZE_BYTES + 1, "image/png")
+
+
+# ---------------------------------------------------------------------------
+# execute_split_file_into_chunks
+# ---------------------------------------------------------------------------
+
+
+def _create_test_pdf(page_count: int) -> bytes:
+    """Create a minimal PDF with the given number of pages using PyMuPDF."""
+    import fitz
+
+    doc = fitz.open()
+    for i in range(page_count):
+        page = doc.new_page(width=200, height=200)
+        page.insert_text((10, 50), f"Page {i + 1}")
+    pdf_bytes = doc.tobytes()
+    doc.close()
+    return pdf_bytes
+
+
+class TestExecuteSplitFileIntoChunks:
+    def test_non_pdf_single_chunk(self, tmp_path: Path) -> None:
+        """Non-PDF files produce a single chunk reusing the original blob."""
+        engine, _ = _setup_db(tmp_path)
+        content_id = "img-content"
+        data = b"fake image bytes"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=data,
+            mime_type="image/png",
+            file_size_bytes=len(data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "image/png", len(data), engine
+        )
+
+        assert len(result.chunks) == 1
+        assert result.chunks[0].content_id == content_id  # reuses original
+        assert result.chunks[0].chunk_index == 0
+        assert result.chunks[0].page_start == 1
+        assert result.chunks[0].page_end == 1
+        assert result.total_pages == 1
+        assert result.original_content_id == content_id
+
+    def test_non_pdf_over_size_raises(self, tmp_path: Path) -> None:
+        """Non-PDF files exceeding size limit are rejected."""
+        engine, _ = _setup_db(tmp_path)
+        content_id = "big-img"
+        data = b"x" * (MAX_FILE_SIZE_BYTES + 1)
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=data,
+            mime_type="image/png",
+            file_size_bytes=len(data),
+        )
+
+        with pytest.raises(ValueError, match="Non-PDF file"):
+            execute_split_file_into_chunks(
+                content_id, "image/png", len(data), engine
+            )
+
+    def test_small_pdf_single_chunk(self, tmp_path: Path) -> None:
+        """PDFs under cutoffs produce a single chunk reusing the original blob."""
+        engine, _ = _setup_db(tmp_path)
+        pdf_data = _create_test_pdf(10)
+        content_id = "small-pdf"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 1
+        assert result.chunks[0].content_id == content_id  # reuses original
+        assert result.chunks[0].page_start == 1
+        assert result.chunks[0].page_end == 10
+        assert result.total_pages == 10
+        # Original blob should still exist
+        assert get_file_content(engine, content_id) is not None
+
+    def test_boundary_30_pages_single_chunk(self, tmp_path: Path) -> None:
+        """Exactly MAX_PAGES pages stays as a single chunk."""
+        engine, _ = _setup_db(tmp_path)
+        pdf_data = _create_test_pdf(MAX_PAGES)
+        content_id = "boundary-30"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 1
+        assert result.total_pages == MAX_PAGES
+
+    def test_boundary_31_pages_splits(self, tmp_path: Path) -> None:
+        """MAX_PAGES + 1 pages triggers split: 25 + 6."""
+        engine, _ = _setup_db(tmp_path)
+        pdf_data = _create_test_pdf(MAX_PAGES + 1)
+        content_id = "boundary-31"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 2
+        assert result.total_pages == MAX_PAGES + 1
+
+        # First chunk: pages 1-25
+        assert result.chunks[0].page_start == 1
+        assert result.chunks[0].page_end == CHUNK_SIZE_PAGES
+        assert result.chunks[0].chunk_index == 0
+
+        # Second chunk: pages 26-31
+        assert result.chunks[1].page_start == CHUNK_SIZE_PAGES + 1
+        assert result.chunks[1].page_end == MAX_PAGES + 1
+        assert result.chunks[1].chunk_index == 1
+
+    def test_large_pdf_60_pages_3_chunks(self, tmp_path: Path) -> None:
+        """60-page PDF splits into 3 chunks: 25 + 25 + 10."""
+        engine, _ = _setup_db(tmp_path)
+        pdf_data = _create_test_pdf(60)
+        content_id = "large-60"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 3
+        assert result.total_pages == 60
+
+        # Chunk 0: pages 1-25
+        assert result.chunks[0].page_start == 1
+        assert result.chunks[0].page_end == 25
+
+        # Chunk 1: pages 26-50
+        assert result.chunks[1].page_start == 26
+        assert result.chunks[1].page_end == 50
+
+        # Chunk 2: pages 51-60
+        assert result.chunks[2].page_start == 51
+        assert result.chunks[2].page_end == 60
+
+    def test_original_blob_deleted_after_split(self, tmp_path: Path) -> None:
+        """After multi-chunk split, the original blob is deleted."""
+        engine, _ = _setup_db(tmp_path)
+        pdf_data = _create_test_pdf(MAX_PAGES + 1)
+        content_id = "delete-test"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        # Original blob should be deleted
+        assert get_file_content(engine, content_id) is None
+        # Chunk blobs should exist
+        for chunk in result.chunks:
+            assert get_file_content(engine, chunk.content_id) is not None
+
+    def test_original_blob_kept_for_single_chunk(self, tmp_path: Path) -> None:
+        """Single-chunk case preserves the original blob."""
+        engine, _ = _setup_db(tmp_path)
+        pdf_data = _create_test_pdf(5)
+        content_id = "keep-test"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert get_file_content(engine, content_id) is not None
+
+    def test_chunk_pdfs_are_valid(self, tmp_path: Path) -> None:
+        """Each chunk blob is a valid PDF with correct page count."""
+        import fitz
+
+        engine, _ = _setup_db(tmp_path)
+        pdf_data = _create_test_pdf(60)
+        content_id = "valid-chunks"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        expected_pages = [25, 25, 10]
+        for chunk, expected in zip(result.chunks, expected_pages, strict=True):
+            blob = get_file_content(engine, chunk.content_id)
+            assert blob is not None
+            doc = fitz.open(stream=blob["data"], filetype="pdf")
+            assert len(doc) == expected
+            doc.close()
+
+    def test_missing_content_raises(self, tmp_path: Path) -> None:
+        """Raises RuntimeError if content_id not found in DB."""
+        engine, _ = _setup_db(tmp_path)
+
+        with pytest.raises(RuntimeError, match="File content not found"):
+            execute_split_file_into_chunks(
+                "nonexistent", "application/pdf", 1000, engine
+            )
+
+
+# ---------------------------------------------------------------------------
+# execute_reassemble_ocr_chunks
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteReassembleOcrChunks:
+    def _store_chunk_result(
+        self, engine, document_id: str, text: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        save_ocr_result(
+            engine,
+            document_id=document_id,
+            file_path="/tmp/test.pdf",
+            text=text,
+            model_name="mistral-ocr-latest",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            batch_id="batch-1",
+            workflow_id=f"wf-{document_id}",
+        )
+
+    def test_combines_text_in_order(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._store_chunk_result(engine, "doc__chunk_0", "First chunk.", 10, 100)
+        self._store_chunk_result(engine, "doc__chunk_1", "Second chunk.", 20, 200)
+        self._store_chunk_result(engine, "doc__chunk_2", "Third chunk.", 30, 300)
+
+        result = execute_reassemble_ocr_chunks(
+            document_id="doc-combined",
+            chunk_document_ids=["doc__chunk_0", "doc__chunk_1", "doc__chunk_2"],
+            file_path="/tmp/test.pdf",
+            total_pages=60,
+            engine=engine,
+        )
+
+        assert result.text_length == len("First chunk.\n\nSecond chunk.\n\nThird chunk.")
+        assert result.page_count == 60
+        assert result.document_id == "doc-combined"
+
+    def test_sums_tokens(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._store_chunk_result(engine, "tok__chunk_0", "A", 10, 100)
+        self._store_chunk_result(engine, "tok__chunk_1", "B", 20, 200)
+
+        execute_reassemble_ocr_chunks(
+            document_id="tok-combined",
+            chunk_document_ids=["tok__chunk_0", "tok__chunk_1"],
+            file_path="/tmp/test.pdf",
+            total_pages=50,
+            engine=engine,
+        )
+
+        stored = get_ocr_result(engine, "tok-combined")
+        assert stored is not None
+        assert stored["input_tokens"] == 30
+        assert stored["output_tokens"] == 300
+
+    def test_stores_combined_result(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._store_chunk_result(engine, "st__chunk_0", "Hello", 5, 50)
+        self._store_chunk_result(engine, "st__chunk_1", "World", 5, 50)
+
+        execute_reassemble_ocr_chunks(
+            document_id="st-combined",
+            chunk_document_ids=["st__chunk_0", "st__chunk_1"],
+            file_path="/tmp/doc.pdf",
+            total_pages=40,
+            engine=engine,
+        )
+
+        stored = get_ocr_result(engine, "st-combined")
+        assert stored is not None
+        assert stored["text"] == "Hello\n\nWorld"
+        assert stored["page_count"] == 40
+        assert stored["file_path"] == "/tmp/doc.pdf"
+
+    def test_cleans_up_chunk_rows(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._store_chunk_result(engine, "cl__chunk_0", "A", 1, 1)
+        self._store_chunk_result(engine, "cl__chunk_1", "B", 1, 1)
+
+        execute_reassemble_ocr_chunks(
+            document_id="cl-combined",
+            chunk_document_ids=["cl__chunk_0", "cl__chunk_1"],
+            file_path="/tmp/test.pdf",
+            total_pages=50,
+            engine=engine,
+        )
+
+        # Chunk rows should be deleted
+        assert get_ocr_result(engine, "cl__chunk_0") is None
+        assert get_ocr_result(engine, "cl__chunk_1") is None
+        # Combined row should exist
+        assert get_ocr_result(engine, "cl-combined") is not None
+
+    def test_missing_chunk_raises(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._store_chunk_result(engine, "miss__chunk_0", "A", 1, 1)
+
+        with pytest.raises(RuntimeError, match="OCR result not found"):
+            execute_reassemble_ocr_chunks(
+                document_id="miss-combined",
+                chunk_document_ids=["miss__chunk_0", "miss__chunk_1"],
+                file_path="/tmp/test.pdf",
+                total_pages=50,
+                engine=engine,
+            )
+
+
+# ---------------------------------------------------------------------------
+# delete_ocr_results store helper
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteOcrResults:
+    def test_deletes_specified_rows(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        for i in range(3):
+            save_ocr_result(
+                engine,
+                document_id=f"del-{i}",
+                file_path="/tmp/test.pdf",
+                text=f"Text {i}",
+                model_name="model",
+                input_tokens=1,
+                output_tokens=1,
+                batch_id="b-1",
+                workflow_id="wf-1",
+            )
+
+        delete_ocr_results(engine, ["del-0", "del-2"])
+
+        assert get_ocr_result(engine, "del-0") is None
+        assert get_ocr_result(engine, "del-1") is not None
+        assert get_ocr_result(engine, "del-2") is None
+
+    def test_empty_list_no_op(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        # Should not raise
+        delete_ocr_results(engine, [])

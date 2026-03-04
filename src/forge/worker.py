@@ -61,6 +61,8 @@ from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.ocr.activities import (
     parse_ocr_result,
     read_and_store_file_content,
+    reassemble_ocr_chunks,
+    split_file_into_chunks,
     store_ocr_result,
     submit_ocr_batch,
 )
@@ -218,9 +220,11 @@ async def run_worker(
             write_output,
             # OCR activities
             read_and_store_file_content,
+            split_file_into_chunks,
             submit_ocr_batch,
             parse_ocr_result,
             store_ocr_result,
+            reassemble_ocr_chunks,
         ],
         graceful_shutdown_timeout=timedelta(seconds=30),
     )

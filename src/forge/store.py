@@ -593,6 +593,13 @@ def save_ocr_result(
         )
 
 
+def delete_ocr_results(engine: Engine, document_ids: list[str]) -> None:
+    """Delete OCR results by document IDs (chunk cleanup after reassembly)."""
+    t = OcrResult.__table__
+    with engine.begin() as conn:
+        conn.execute(sa.delete(t).where(t.c.document_id.in_(document_ids)))
+
+
 def get_ocr_result(engine: Engine, document_id: str) -> dict | None:
     """Look up an OCR result by document ID."""
     t = OcrResult.__table__
