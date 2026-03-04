@@ -1157,6 +1157,41 @@ class TestPollBatch:
             file_id="file-ok"
         )
 
+    @pytest.mark.asyncio
+    async def test_ocr_response_with_pages_succeeds(self) -> None:
+        """OCR batch responses have 'pages' instead of 'choices'."""
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-ocr-1")
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
+
+        ocr_body = {
+            "pages": [
+                {"markdown": "Page one."},
+                {"markdown": "Page two."},
+            ],
+            "model": "mistral-ocr-latest",
+            "usage_info": {"pages_processed": 2, "doc_size_bytes": 5000},
+        }
+        jsonl = json.dumps({
+            "custom_id": "req-ocr-1",
+            "response": {"body": ocr_body},
+        })
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(jsonl)
+        )
+
+        result = await provider.poll_batch("batch-ocr")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 1
+        assert result.entries[0].custom_id == "req-ocr-1"
+        assert result.entries[0].succeeded is True
+        assert result.entries[0].raw_response_json is not None
+        body = json.loads(result.entries[0].raw_response_json)
+        assert len(body["pages"]) == 2
+
 
 # ---------------------------------------------------------------------------
 # parse_batch_result

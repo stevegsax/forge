@@ -13,6 +13,7 @@ from temporalio.worker import Worker
 
 from forge.models import BatchResult
 from forge.ocr.activities import (
+    build_ocr_batch_body,
     build_ocr_messages,
     detect_mime_type,
     execute_parse_ocr_result,
@@ -62,7 +63,7 @@ def _setup_db(tmp_path: Path):
 class TestOcrModels:
     def test_submit_input_defaults(self) -> None:
         inp = OcrSubmitInput(file_path="/tmp/test.pdf")
-        assert inp.model_name == "mistral:pixtral-large-latest"
+        assert inp.model_name == "mistral:mistral-ocr-latest"
         assert inp.max_tokens == 16384
         assert inp.document_id == ""
 
@@ -168,6 +169,31 @@ class TestBuildOcrMessages:
         assert text_block.text == "Summarize this."
 
 
+class TestBuildOcrBatchBody:
+    def test_image_type(self) -> None:
+        body = build_ocr_batch_body("abc123", "image/png")
+        assert body == {
+            "document": {
+                "type": "image_url",
+                "image_url": "data:image/png;base64,abc123",
+            }
+        }
+
+    def test_document_type(self) -> None:
+        body = build_ocr_batch_body("abc123", "application/pdf")
+        assert body == {
+            "document": {
+                "type": "document_url",
+                "document_url": "data:application/pdf;base64,abc123",
+            }
+        }
+
+    def test_image_jpeg(self) -> None:
+        body = build_ocr_batch_body("data", "image/jpeg")
+        assert body["document"]["type"] == "image_url"
+        assert "data:image/jpeg;base64,data" in body["document"]["image_url"]
+
+
 # ---------------------------------------------------------------------------
 # Testable functions
 # ---------------------------------------------------------------------------
@@ -203,15 +229,11 @@ class TestExecuteSubmitOcrBatch:
     @pytest.mark.asyncio
     async def test_submits_batch(self) -> None:
         mock_provider = MagicMock()
-        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
-        mock_provider.build_batch_request = MagicMock(
-            return_value={"custom_id": "req-1", "params": {}}
-        )
         mock_provider.submit_batch = AsyncMock(return_value="batch-123")
 
         inp = OcrSubmitInput(
             file_path="/tmp/test.pdf",
-            model_name="mistral:pixtral-large-latest",
+            model_name="mistral:mistral-ocr-latest",
             document_id="doc-1",
         )
         file_content = FileContentResult(
@@ -229,18 +251,19 @@ class TestExecuteSubmitOcrBatch:
         assert result.workflow_id == "wf-store-1"
         assert result.request_id  # non-empty UUID
 
-        # Verify provider methods were called
-        mock_provider.build_request_params.assert_called_once()
-        call_kwargs = mock_provider.build_request_params.call_args
-        assert call_kwargs.kwargs.get("output_type") is None
-        mock_provider.build_batch_request.assert_called_once()
+        # Verify OCR body format and endpoint
         mock_provider.submit_batch.assert_called_once()
+        call_args = mock_provider.submit_batch.call_args
+        requests = call_args.args[0]
+        assert len(requests) == 1
+        assert "body" in requests[0]
+        assert "document" in requests[0]["body"]
+        assert requests[0]["body"]["document"]["type"] == "document_url"
+        assert call_args.kwargs.get("endpoint") == "/v1/ocr"
 
     @pytest.mark.asyncio
     async def test_auto_generates_document_id(self) -> None:
         mock_provider = MagicMock()
-        mock_provider.build_request_params = MagicMock(return_value={})
-        mock_provider.build_batch_request = MagicMock(return_value={})
         mock_provider.submit_batch = AsyncMock(return_value="batch-456")
 
         inp = OcrSubmitInput(
@@ -259,78 +282,84 @@ class TestExecuteSubmitOcrBatch:
         assert result.document_id  # auto-generated UUID
         assert result.document_id != ""
 
+    @pytest.mark.asyncio
+    async def test_image_uses_image_url_type(self) -> None:
+        mock_provider = MagicMock()
+        mock_provider.submit_batch = AsyncMock(return_value="batch-789")
+
+        inp = OcrSubmitInput(
+            file_path="/tmp/test.png",
+            model_name="mistral:mistral-ocr-latest",
+            document_id="doc-img",
+        )
+        file_content = FileContentResult(
+            base64_data="aW1hZ2U=",
+            mime_type="image/png",
+            file_size_bytes=5,
+        )
+
+        result = await execute_submit_ocr_batch(
+            inp, file_content, mock_provider, "wf-store-img"
+        )
+        assert result.batch_id == "batch-789"
+
+        requests = mock_provider.submit_batch.call_args.args[0]
+        assert requests[0]["body"]["document"]["type"] == "image_url"
+
 
 class TestExecuteParseOcrResult:
-    def test_parses_mistral_response(self) -> None:
+    def test_parses_ocr_response(self) -> None:
         raw_json = json.dumps({
-            "choices": [
-                {
-                    "message": {
-                        "content": "Extracted document text here.",
-                    }
-                }
+            "pages": [
+                {"markdown": "Page one text."},
+                {"markdown": "Page two text."},
             ],
-            "model": "pixtral-large-latest",
-            "usage": {
-                "prompt_tokens": 500,
-                "completion_tokens": 100,
+            "model": "mistral-ocr-latest",
+            "usage_info": {
+                "pages_processed": 2,
+                "doc_size_bytes": 50000,
             },
         })
 
-        # Mock the provider's parse_batch_result
-        from forge.llm_providers.models import ProviderResponse
+        result = execute_parse_ocr_result(raw_json)
+        assert result.text == "Page one text.\n\nPage two text."
+        assert result.model_name == "mistral-ocr-latest"
+        assert result.input_tokens == 2
+        assert result.output_tokens == 50000
 
-        mock_provider = MagicMock()
-        mock_provider.parse_batch_result = MagicMock(
-            return_value=ProviderResponse(
-                text_content="Extracted document text here.",
-                model_name="pixtral-large-latest",
-                input_tokens=500,
-                output_tokens=100,
-                raw_response_json=raw_json,
-            )
-        )
+    def test_single_page(self) -> None:
+        raw_json = json.dumps({
+            "pages": [{"markdown": "Only page."}],
+            "model": "mistral-ocr-latest",
+            "usage_info": {"pages_processed": 1, "doc_size_bytes": 1000},
+        })
 
-        original_get_provider = None
-        try:
-            # We need to patch the import inside execute_parse_ocr_result
-            import forge.llm_providers as llm_mod
+        result = execute_parse_ocr_result(raw_json)
+        assert result.text == "Only page."
+        assert result.input_tokens == 1
 
-            original_get_provider = llm_mod.get_provider
-            llm_mod.get_provider = MagicMock(return_value=mock_provider)
+    def test_empty_pages_returns_empty_string(self) -> None:
+        raw_json = json.dumps({
+            "pages": [],
+            "model": "mistral-ocr-latest",
+            "usage_info": {},
+        })
 
-            result = execute_parse_ocr_result(raw_json, provider_name="mistral")
-            assert result.text == "Extracted document text here."
-            assert result.model_name == "pixtral-large-latest"
-            assert result.input_tokens == 500
-            assert result.output_tokens == 100
-        finally:
-            if original_get_provider is not None:
-                llm_mod.get_provider = original_get_provider
+        result = execute_parse_ocr_result(raw_json)
+        assert result.text == ""
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
 
-    def test_empty_text_returns_empty_string(self) -> None:
-        from forge.llm_providers.models import ProviderResponse
+    def test_missing_usage_info(self) -> None:
+        raw_json = json.dumps({
+            "pages": [{"markdown": "Some text."}],
+            "model": "mistral-ocr-latest",
+        })
 
-        mock_provider = MagicMock()
-        mock_provider.parse_batch_result = MagicMock(
-            return_value=ProviderResponse(
-                text_content=None,
-                model_name="pixtral-large",
-                input_tokens=10,
-                output_tokens=0,
-                raw_response_json="{}",
-            )
-        )
-
-        import forge.llm_providers as llm_mod
-
-        original = llm_mod.get_provider
-        try:
-            llm_mod.get_provider = MagicMock(return_value=mock_provider)
-            result = execute_parse_ocr_result("{}", provider_name="mistral")
-            assert result.text == ""
-        finally:
-            llm_mod.get_provider = original
+        result = execute_parse_ocr_result(raw_json)
+        assert result.text == "Some text."
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
 
 
 class TestExecuteStoreOcrResult:
@@ -573,7 +602,7 @@ class TestReadAndStoreFileContent:
         # Build the input JSON with file_content_ref instead of file_content
         submit_input = OcrSubmitInput(
             file_path="/tmp/test.pdf",
-            model_name="mistral:pixtral-large-latest",
+            model_name="mistral:mistral-ocr-latest",
             document_id="doc-1",
         )
         input_json = json.dumps({
@@ -588,10 +617,6 @@ class TestReadAndStoreFileContent:
 
         # Mock the provider and store functions
         mock_provider = MagicMock()
-        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
-        mock_provider.build_batch_request = MagicMock(
-            return_value={"custom_id": "req-1", "params": {}}
-        )
         mock_provider.submit_batch = AsyncMock(return_value="batch-123")
 
         import forge.llm_providers as llm_mod
@@ -612,10 +637,11 @@ class TestReadAndStoreFileContent:
             assert result.batch_id == "batch-123"
             assert result.document_id == "doc-1"
 
-            # Verify the provider received base64-encoded data
-            call_args = mock_provider.build_request_params.call_args
-            messages = call_args.kwargs["messages"]
-            assert len(messages) == 2  # system + user
+            # Verify OCR body format and endpoint were used
+            call_args = mock_provider.submit_batch.call_args
+            requests = call_args.args[0]
+            assert "document" in requests[0]["body"]
+            assert call_args.kwargs.get("endpoint") == "/v1/ocr"
         finally:
             llm_mod.get_provider = original_get_provider
             store_mod.get_db_path = original_get_db_path
@@ -644,7 +670,7 @@ class TestReadAndStoreFileContent:
 
         submit_input = OcrSubmitInput(
             file_path="/tmp/test.pdf",
-            model_name="mistral:pixtral-large-latest",
+            model_name="mistral:mistral-ocr-latest",
             document_id="doc-cleanup",
         )
         input_json = json.dumps({
@@ -658,10 +684,6 @@ class TestReadAndStoreFileContent:
         })
 
         mock_provider = MagicMock()
-        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
-        mock_provider.build_batch_request = MagicMock(
-            return_value={"custom_id": "req-1", "params": {}}
-        )
         mock_provider.submit_batch = AsyncMock(return_value="batch-456")
 
         import forge.llm_providers as llm_mod
@@ -698,7 +720,7 @@ class TestSubmitOcrBatchFailureRecording:
     def _build_input_json(self, content_id: str) -> str:
         submit_input = OcrSubmitInput(
             file_path="/tmp/test.pdf",
-            model_name="mistral:pixtral-large-latest",
+            model_name="mistral:mistral-ocr-latest",
             document_id="doc-fail",
         )
         return json.dumps({
@@ -729,8 +751,6 @@ class TestSubmitOcrBatchFailureRecording:
         )
 
         mock_provider = MagicMock()
-        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
-        mock_provider.build_batch_request = MagicMock(return_value={})
         mock_provider.submit_batch = AsyncMock(
             side_effect=RuntimeError("400 Bad Request")
         )
@@ -793,8 +813,6 @@ class TestSubmitOcrBatchFailureRecording:
         )
 
         mock_provider = MagicMock()
-        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
-        mock_provider.build_batch_request = MagicMock(return_value={})
         mock_provider.submit_batch = AsyncMock(
             side_effect=RuntimeError("API exploded")
         )

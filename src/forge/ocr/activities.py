@@ -82,6 +82,16 @@ def build_ocr_messages(
     ]
 
 
+def build_ocr_batch_body(base64_data: str, mime_type: str) -> dict:
+    """Build the request body for the /v1/ocr batch endpoint."""
+    data_uri = f"data:{mime_type};base64,{base64_data}"
+    if mime_type.startswith("image/"):
+        doc: dict = {"type": "image_url", "image_url": data_uri}
+    else:
+        doc = {"type": "document_url", "document_url": data_uri}
+    return {"document": doc}
+
+
 # ---------------------------------------------------------------------------
 # Testable functions
 # ---------------------------------------------------------------------------
@@ -133,24 +143,18 @@ async def execute_submit_ocr_batch(
     provider: LLMProvider,
     workflow_id: str,
 ) -> OcrSubmitResult:
-    """Build multimodal message and submit to batch API."""
+    """Build OCR request body and submit to /v1/ocr batch endpoint."""
     from forge.llm_providers import parse_model_id
 
     document_id = input.document_id or str(uuid.uuid4())
     _, model = parse_model_id(input.model_name)
 
-    messages = build_ocr_messages(file_content.base64_data, file_content.mime_type)
-
-    params = provider.build_request_params(
-        messages=messages,
-        output_type=None,
-        model=model,
-        max_tokens=input.max_tokens,
-    )
-
+    body = build_ocr_batch_body(file_content.base64_data, file_content.mime_type)
     request_id = str(uuid.uuid4())
-    batch_request = provider.build_batch_request(request_id, params)
-    batch_id = await provider.submit_batch([batch_request], model)
+    batch_request = {"custom_id": request_id, "body": body}
+    batch_id = await provider.submit_batch(
+        [batch_request], model, endpoint="/v1/ocr"
+    )
 
     return OcrSubmitResult(
         batch_id=batch_id,
@@ -164,17 +168,23 @@ def execute_parse_ocr_result(
     raw_json: str,
     provider_name: str = "mistral",
 ) -> OcrParseResult:
-    """Parse OCR batch result into extracted text."""
-    from forge.llm_providers import get_provider_by_name
+    """Parse OCR batch result into extracted text.
 
-    provider = get_provider_by_name(provider_name)
-    result = provider.parse_batch_result(raw_json, output_type_name=None)
+    The OCR endpoint returns ``pages[].markdown`` and ``usage_info``
+    instead of the chat-completion format.  ``provider_name`` is kept
+    for signature compatibility but is no longer used.
+    """
+    data = json.loads(raw_json)
+    pages = data.get("pages", [])
+    text = "\n\n".join(page.get("markdown", "") for page in pages)
+    model_name = data.get("model", "")
+    usage = data.get("usage_info", {})
 
     return OcrParseResult(
-        text=result.text_content or "",
-        model_name=result.model_name,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
+        text=text,
+        model_name=model_name,
+        input_tokens=usage.get("pages_processed", 0),
+        output_tokens=usage.get("doc_size_bytes", 0),
     )
 
 

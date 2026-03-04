@@ -337,7 +337,7 @@ class MistralProvider:
                 # Remove the error_file entry; output_file takes priority
                 entries = [e for e in entries if e.custom_id != custom_id]
                 error_ids.discard(custom_id)
-            if response_body.get("choices"):
+            if response_body.get("choices") or response_body.get("pages"):
                 entries.append(
                     BatchResultEntry(
                         custom_id=custom_id,

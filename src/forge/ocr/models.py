@@ -9,7 +9,7 @@ class OcrSubmitInput(BaseModel):
     """Input to the OcrSubmitWorkflow."""
 
     file_path: str
-    model_name: str = "mistral:pixtral-large-latest"
+    model_name: str = "mistral:mistral-ocr-latest"
     max_tokens: int = 16384
     document_id: str = Field(default="", description="Auto-generated if empty.")
 
