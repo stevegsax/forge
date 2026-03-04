@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -91,7 +92,7 @@ def build_ocr_batch_body(base64_data: str, mime_type: str) -> dict:
         doc: dict = {"type": "image_url", "image_url": data_uri}
     else:
         doc = {"type": "document_url", "document_url": data_uri}
-    return {"document": doc}
+    return {"document": doc, "include_image_base64": True}
 
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -107,6 +108,29 @@ def validate_file_size(file_size_bytes: int, mime_type: str) -> None:
             f"{MAX_FILE_SIZE_BYTES} bytes: {file_size_bytes} bytes"
         )
         raise ValueError(msg)
+
+
+# Matches markdown image references like ![alt](img-0.jpeg) or ![alt](img-12.png)
+_IMAGE_REF_PATTERN = re.compile(r"(!\[[^\]]*\])\(([^)]+)\)")
+
+
+def rewrite_image_references(markdown: str, image_mapping: dict[str, str]) -> str:
+    """Rewrite markdown image references to use ocr-image:// URIs.
+
+    Replaces ``![alt](img-0.jpeg)`` with ``![alt](ocr-image://{uuid})``
+    for each image ID found in *image_mapping*.
+    """
+    if not image_mapping:
+        return markdown
+
+    def _replace(match: re.Match) -> str:
+        alt_bracket = match.group(1)
+        image_ref = match.group(2)
+        if image_ref in image_mapping:
+            return f"{alt_bracket}(ocr-image://{image_mapping[image_ref]})"
+        return match.group(0)
+
+    return _IMAGE_REF_PATTERN.sub(_replace, markdown)
 
 
 # ---------------------------------------------------------------------------
@@ -190,10 +214,26 @@ def execute_parse_ocr_result(
     The OCR endpoint returns ``pages[].markdown`` and ``usage_info``
     instead of the chat-completion format.  ``provider_name`` is kept
     for signature compatibility but is no longer used.
+
+    If ``_image_mapping`` is present in the JSON (injected by the batch
+    poller after storing images), image references in the markdown are
+    rewritten from ``img-N.jpeg`` to ``ocr-image://{uuid}``.
     """
     data = json.loads(raw_json)
+
+    # Pop image mapping if present (injected by batch poll activity)
+    image_mapping: dict[str, str] = data.pop("_image_mapping", {})
+    image_ids = list(image_mapping.values())
+
     pages = data.get("pages", [])
-    text = "\n\n".join(page.get("markdown", "") for page in pages)
+    page_texts: list[str] = []
+    for page in pages:
+        md = page.get("markdown", "")
+        if image_mapping:
+            md = rewrite_image_references(md, image_mapping)
+        page_texts.append(md)
+
+    text = "\n\n".join(page_texts)
     model_name = data.get("model", "")
     usage = data.get("usage_info", {})
 
@@ -203,6 +243,8 @@ def execute_parse_ocr_result(
         input_tokens=usage.get("pages_processed", 0),
         output_tokens=usage.get("doc_size_bytes", 0),
         page_count=len(pages),
+        image_count=len(image_ids),
+        image_ids=image_ids,
     )
 
 
@@ -217,6 +259,7 @@ def execute_store_ocr_result(
     batch_id: str,
     workflow_id: str,
     page_count: int = 0,
+    image_ids: list[str] | None = None,
 ) -> OcrStoreResult:
     """Store OCR result in the database."""
     from forge.store import get_db_path, get_engine, save_ocr_result
@@ -242,6 +285,20 @@ def execute_store_ocr_result(
         batch_id=batch_id,
         workflow_id=workflow_id,
     )
+
+    # Best-effort: update document_id on pre-stored OCR images
+    if image_ids:
+        try:
+            from forge.store import update_ocr_images_document_id
+
+            update_ocr_images_document_id(engine, image_ids, document_id)
+        except Exception:
+            logger.warning(
+                "Failed to update document_id on OCR images for %s",
+                document_id,
+                exc_info=True,
+            )
+
     return OcrStoreResult(
         document_id=document_id,
         text_length=len(text),
@@ -366,7 +423,8 @@ def execute_reassemble_ocr_chunks(
 
     Reads each chunk's ocr_results row, joins text, sums tokens,
     stores the combined result under the real document_id, and
-    deletes the chunk rows.
+    deletes the chunk rows.  Also reassigns OCR images from chunk
+    document_ids to the final document_id.
     """
     from forge.store import delete_ocr_results, get_ocr_result, save_ocr_result
 
@@ -403,6 +461,18 @@ def execute_reassemble_ocr_chunks(
         batch_id=batch_id,
         workflow_id=f"reassemble-{document_id}",
     )
+
+    # Best-effort: reassign OCR images from chunk doc IDs to the final doc ID
+    try:
+        from forge.store import reassign_ocr_images_document_id
+
+        reassign_ocr_images_document_id(engine, chunk_document_ids, document_id)
+    except Exception:
+        logger.warning(
+            "Failed to reassign OCR images for document %s",
+            document_id,
+            exc_info=True,
+        )
 
     # Clean up chunk rows
     delete_ocr_results(engine, chunk_document_ids)

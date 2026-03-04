@@ -1,9 +1,9 @@
 @observability @phase-5
 Feature: Observability Store
   The orchestrator persists all LLM interactions, task runs, batch jobs,
-  playbook entries, OCR results, and file content blobs to a SQLite database.
-  Writes are best-effort to avoid blocking task execution. The database path
-  follows the XDG Base Directory Specification.
+  playbook entries, OCR results, OCR images, and file content blobs to a
+  SQLite database. Writes are best-effort to avoid blocking task execution.
+  The database path follows the XDG Base Directory Specification.
 
   # --- Database Location ---
 
@@ -147,6 +147,42 @@ Feature: Observability Store
     Given an OCR result for document "chunk-1"
     When the result is deleted
     Then the row is removed from the table
+
+  # --- OCR Images Table ---
+
+  @critical @ocr
+  Scenario: OCR image is persisted
+    When an OCR image is saved
+    Then a row is created with id, document_id, page_index, original_image_id, data, mime_type, and file_size_bytes
+
+  @standard @ocr
+  Scenario: OCR image document_id defaults to empty string
+    When an OCR image is stored during batch polling
+    Then the document_id is empty because the real document ID is not yet known
+
+  @standard @ocr
+  Scenario: OCR image document_id is updated after result storage
+    Given OCR images with empty document_id
+    When the store activity saves the OCR result with image_ids
+    Then the image rows are updated with the correct document_id
+
+  @standard @ocr
+  Scenario: OCR images are reassigned during chunk reassembly
+    Given OCR images assigned to chunk document IDs
+    When the gather workflow reassembles chunk results
+    Then the image rows are reassigned to the final document_id
+
+  @standard @ocr
+  Scenario: OCR image metadata can be listed without blob data
+    Given a document with 3 stored images
+    When the images are listed for the document
+    Then metadata is returned (id, page_index, mime_type, file_size_bytes)
+    And binary data is not included in the list response
+
+  @standard @ocr
+  Scenario: OCR image bounding box is stored when available
+    When an OCR image with bounding box coordinates is saved
+    Then the row includes top_left_x, top_left_y, bottom_right_x, and bottom_right_y
 
   # --- File Content Blobs Table ---
 

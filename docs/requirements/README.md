@@ -56,9 +56,9 @@ Map scenarios to system capabilities:
 - `@model-routing` — Capability tiers, default models, CLI overrides
 - `@llm-providers` — Provider abstraction, Anthropic/Mistral, feature degradation
 - `@knowledge` — Extraction, playbooks, tag inference, context injection
-- `@ocr` — Document OCR, PDF chunking, blob storage, chunk reassembly
+- `@ocr` — Document OCR, PDF chunking, blob storage, image extraction, chunk reassembly
 - `@cli` — CLI commands, flags, exit codes
-- `@observability` — SQLite store, 6 tables, XDG paths, best-effort writes
+- `@observability` — SQLite store, 7 tables, XDG paths, best-effort writes
 
 ### Cross-Cutting Tags
 
@@ -85,7 +85,7 @@ Map scenarios to system capabilities:
 | `knowledge_management.feature` | Extraction, playbooks, injection | `extraction_workflow.py`, `activities/extraction.py` |
 | `ocr_pipeline.feature` | OCR workflows, PDF chunking, blobs | `ocr/` |
 | `cli.feature` | CLI commands, flags, exit codes | `cli.py` |
-| `observability.feature` | SQLite store, 6 tables, migrations | `store.py` |
+| `observability.feature` | SQLite store, 7 tables, migrations | `store.py` |
 
 ## Conventions
 

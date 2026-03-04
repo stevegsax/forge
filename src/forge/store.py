@@ -162,6 +162,26 @@ class FileContentBlob(Base):
     )
 
 
+class OcrImage(Base):
+    __tablename__ = "ocr_images"
+
+    id: Mapped[str] = mapped_column(sa.String, primary_key=True)
+    document_id: Mapped[str] = mapped_column(sa.String, nullable=False, default="", index=True)
+    page_index: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    original_image_id: Mapped[str] = mapped_column(sa.String, nullable=False)
+    data: Mapped[bytes] = mapped_column(sa.LargeBinary, nullable=False)
+    mime_type: Mapped[str] = mapped_column(sa.String, nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    top_left_x: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    top_left_y: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    bottom_right_x: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    bottom_right_y: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime,
+        default=lambda: datetime.now(UTC),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
@@ -654,3 +674,120 @@ def delete_file_content(engine: Engine, content_id: str) -> None:
     t = FileContentBlob.__table__
     with engine.begin() as conn:
         conn.execute(sa.delete(t).where(t.c.id == content_id))
+
+
+# ---------------------------------------------------------------------------
+# OCR image functions
+# ---------------------------------------------------------------------------
+
+
+def save_ocr_image(
+    engine: Engine,
+    *,
+    image_id: str,
+    document_id: str = "",
+    page_index: int,
+    original_image_id: str,
+    data: bytes,
+    mime_type: str,
+    file_size_bytes: int,
+    top_left_x: int | None = None,
+    top_left_y: int | None = None,
+    bottom_right_x: int | None = None,
+    bottom_right_y: int | None = None,
+) -> None:
+    """Insert a row into the ocr_images table."""
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(OcrImage.__table__).values(
+                id=image_id,
+                document_id=document_id,
+                page_index=page_index,
+                original_image_id=original_image_id,
+                data=data,
+                mime_type=mime_type,
+                file_size_bytes=file_size_bytes,
+                top_left_x=top_left_x,
+                top_left_y=top_left_y,
+                bottom_right_x=bottom_right_x,
+                bottom_right_y=bottom_right_y,
+            )
+        )
+
+
+def update_ocr_images_document_id(
+    engine: Engine,
+    image_ids: list[str],
+    document_id: str,
+) -> None:
+    """Set document_id on ocr_images rows by image UUIDs."""
+    if not image_ids:
+        return
+    t = OcrImage.__table__
+    with engine.begin() as conn:
+        conn.execute(
+            sa.update(t)
+            .where(t.c.id.in_(image_ids))
+            .values(document_id=document_id)
+        )
+
+
+def reassign_ocr_images_document_id(
+    engine: Engine,
+    old_document_ids: list[str],
+    new_document_id: str,
+) -> None:
+    """Bulk reassign images from old document_ids to new_document_id (chunk reassembly)."""
+    if not old_document_ids:
+        return
+    t = OcrImage.__table__
+    with engine.begin() as conn:
+        conn.execute(
+            sa.update(t)
+            .where(t.c.document_id.in_(old_document_ids))
+            .values(document_id=new_document_id)
+        )
+
+
+def get_ocr_images(engine: Engine, document_id: str) -> list[dict]:
+    """List images for a document (metadata only, no blob data)."""
+    t = OcrImage.__table__
+    cols = [
+        t.c.id,
+        t.c.document_id,
+        t.c.page_index,
+        t.c.original_image_id,
+        t.c.mime_type,
+        t.c.file_size_bytes,
+        t.c.top_left_x,
+        t.c.top_left_y,
+        t.c.bottom_right_x,
+        t.c.bottom_right_y,
+        t.c.created_at,
+    ]
+    stmt = sa.select(*cols).where(t.c.document_id == document_id).order_by(t.c.page_index)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def get_ocr_image(engine: Engine, image_id: str) -> dict | None:
+    """Get a single image with blob data."""
+    t = OcrImage.__table__
+    stmt = t.select().where(t.c.id == image_id)
+
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)
+
+
+def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> None:
+    """Delete OCR images by document IDs."""
+    if not document_ids:
+        return
+    t = OcrImage.__table__
+    with engine.begin() as conn:
+        conn.execute(sa.delete(t).where(t.c.document_id.in_(document_ids)))

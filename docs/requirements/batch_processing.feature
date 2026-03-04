@@ -144,6 +144,29 @@ Feature: Batch Processing
     Then entries from both files are parsed
     And output_file entries take priority for duplicate custom_ids
 
+  # --- OCR Image Extraction During Polling ---
+
+  @critical @ocr
+  Scenario: Poller stores extracted images before signaling workflow
+    Given a batch poll result with entries containing extracted OCR images
+    When the poller processes the results
+    Then each image is decoded from base64 and stored in the ocr_images table
+    And an _image_mapping is embedded in the raw_response_json
+    And the signal payload does not contain image base64 data
+
+  @standard @ocr
+  Scenario: Poller provides store_images_fn closure to testable function
+    When the poll_batch_results activity runs
+    Then a store_images_fn closure is built over the database engine
+    And it is passed to execute_poll_batch_results
+
+  @standard @ocr @error-handling
+  Scenario: Image storage failure does not prevent signaling
+    Given the database is unavailable for image storage
+    When the poller attempts to store extracted images
+    Then the error is logged as a warning
+    And the batch result is still signaled to the workflow
+
   # --- Signal-Based Wait ---
 
   @critical @temporal

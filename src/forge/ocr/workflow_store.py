@@ -89,6 +89,7 @@ class OcrStoreWorkflow:
             "page_count": parse_result.page_count,
             "batch_id": result.batch_id,
             "workflow_id": workflow.info().workflow_id,
+            "image_ids": parse_result.image_ids,
         })
         store_result = await workflow.execute_activity(
             "store_ocr_result",

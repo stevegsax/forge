@@ -91,6 +91,19 @@ class BatchPollStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class ExtractedImage(BaseModel):
+    """An image extracted from an OCR response, before storage."""
+
+    original_image_id: str
+    page_index: int
+    image_base64: str
+    mime_type: str = "image/jpeg"
+    top_left_x: int | None = None
+    top_left_y: int | None = None
+    bottom_right_x: int | None = None
+    bottom_right_y: int | None = None
+
+
 class BatchResultEntry(BaseModel):
     """A single result entry from a batch response."""
 
@@ -98,6 +111,7 @@ class BatchResultEntry(BaseModel):
     succeeded: bool
     raw_response_json: str | None = None
     error: str | None = None
+    extracted_images: list[ExtractedImage] = Field(default_factory=list)
 
 
 class BatchPollResult(BaseModel):

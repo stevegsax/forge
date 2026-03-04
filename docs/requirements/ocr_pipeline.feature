@@ -2,8 +2,9 @@
 Feature: OCR Pipeline
   The orchestrator processes documents through a three-workflow OCR pipeline:
   Submit, Store, and Gather. Large PDFs are automatically chunked. File content
-  is stored as blobs to bypass the Temporal 2MB payload limit. Results are
-  persisted to the ocr_results table.
+  is stored as blobs to bypass the Temporal 2MB payload limit. Images are
+  extracted during batch polling, stored in the ocr_images table, and referenced
+  via unique ocr-image:// URIs. Results are persisted to the ocr_results table.
 
   # --- Three-Tier Workflow Architecture ---
 
@@ -124,6 +125,53 @@ Feature: OCR Pipeline
     When a chunk batch is submitted to Mistral
     Then the endpoint is "/v1/ocr" triggering file-based upload
 
+  @standard @batch
+  Scenario: OCR batch body requests image data
+    When the OCR batch body is built
+    Then include_image_base64 is set to true
+    And the Mistral API returns base64-encoded images in pages[].images[]
+
+  # --- Image Extraction ---
+
+  @critical
+  Scenario: Images are extracted from OCR response before Temporal signaling
+    Given an OCR batch result with pages containing images with base64 data
+    When the Mistral provider parses the output file
+    Then images are extracted into ExtractedImage objects
+    And the image_base64 key is deleted from the response body
+    And the raw_response_json stays small enough for the Temporal 2MB payload limit
+
+  @critical
+  Scenario: Extracted images are stored in the database before signaling
+    Given the batch poller receives entries with extracted images
+    When the poller processes the batch results
+    Then each image is decoded from base64 and saved to the ocr_images table
+    And an _image_mapping dict is embedded in the raw_response_json
+    And the mapping keys are original image IDs and values are UUIDs
+
+  @standard
+  Scenario: Image mapping rewrites markdown references during parsing
+    Given a raw OCR response with _image_mapping {"img-0.jpeg": "uuid-abc"}
+    And a page with markdown "![img-0.jpeg](img-0.jpeg)"
+    When the parse activity processes the response
+    Then the markdown is rewritten to "![img-0.jpeg](ocr-image://uuid-abc)"
+    And the parse result includes image_ids ["uuid-abc"] and image_count 1
+
+  @standard @edge-case
+  Scenario: Parsing without image mapping is backward compatible
+    Given a raw OCR response without an _image_mapping key
+    When the parse activity processes the response
+    Then the markdown is returned unchanged
+    And image_ids is empty and image_count is 0
+
+  @standard
+  Scenario: Non-unique image IDs across chunks get unique UUIDs
+    Given chunk A with img-0.jpeg (UUID "aaa") and chunk B with img-0.jpeg (UUID "bbb")
+    When both chunks are parsed
+    Then chunk A markdown references ocr-image://aaa
+    And chunk B markdown references ocr-image://bbb
+    And the UUIDs are globally unique despite identical original IDs
+
   # --- OCR Result Parsing ---
 
   @critical
@@ -165,12 +213,25 @@ Feature: OCR Pipeline
     When the gather workflow reassembles
     Then the total page_count is 60
 
+  @standard
+  Scenario: Reassembly reassigns images from chunk document IDs to final ID
+    Given chunk images stored with chunk document IDs
+    When the gather workflow reassembles the results
+    Then the ocr_images rows are updated to the final document_id
+    And the markdown ocr-image:// URIs remain unchanged
+
   # --- Result Persistence ---
 
   @critical
   Scenario: OCR result is persisted to the ocr_results table
     When the store workflow saves an OCR result
     Then a row is created with document_id, file_path, text, page_count, model_name, and tokens
+
+  @standard
+  Scenario: Store activity updates image document IDs
+    Given images were pre-stored with empty document_id during polling
+    When the store activity saves the OCR result with image_ids
+    Then the ocr_images rows are updated with the document_id
 
   @standard
   Scenario: OCR result document_id is unique

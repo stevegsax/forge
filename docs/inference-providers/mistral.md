@@ -77,6 +77,12 @@ The `endpoint` parameter on `create_async` accepts:
 
 OCR uses model `mistral-ocr-latest` with batch endpoint `/v1/ocr`. Batch OCR offers a 50% cost reduction over synchronous calls.
 
+### Image extraction
+
+The batch body includes `include_image_base64: true` so the API returns images in `pages[].images[]` alongside markdown text. Each image has an `id` (e.g. `img-0.jpeg`), `image_base64` data, and optional bounding box coordinates.
+
+Image IDs are sequential within a single API call but **not unique across chunks** of the same document. The Forge pipeline assigns a UUID to each image during batch polling, strips `image_base64` from the response JSON (to stay under Temporal's 2MB signal limit), and rewrites markdown references from `![alt](img-0.jpeg)` to `![alt](ocr-image://{uuid})`.
+
 ## curl: list batch jobs
 
 ```bash

@@ -68,6 +68,8 @@ class OcrParseResult(BaseModel):
     input_tokens: int
     output_tokens: int
     page_count: int = 0
+    image_count: int = 0
+    image_ids: list[str] = Field(default_factory=list)
 
 
 class ChunkRef(BaseModel):

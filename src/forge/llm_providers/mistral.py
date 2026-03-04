@@ -13,6 +13,7 @@ from forge.llm_providers.models import (
     BatchPollStatus,
     BatchResultEntry,
     DocumentContent,
+    ExtractedImage,
     ImageContent,
     Message,
     ProviderResponse,
@@ -143,6 +144,55 @@ def _parse_error_file_entries(content: str) -> list[BatchResultEntry]:
             )
         )
     return entries
+
+
+def _extract_images_from_response(response_body: dict) -> list[ExtractedImage]:
+    """Extract images from an OCR response and strip base64 data from the body.
+
+    Iterates ``pages[].images[]``, creates ``ExtractedImage`` objects for each
+    image that has ``image_base64`` data, then deletes the ``image_base64`` key
+    from the response dict so the JSON payload stays small for Temporal signals.
+    """
+    extracted: list[ExtractedImage] = []
+    pages = response_body.get("pages", [])
+    for page_index, page in enumerate(pages):
+        for img in page.get("images", []):
+            image_base64 = img.get("image_base64")
+            if not image_base64:
+                continue
+            original_id = img.get("id", f"img-{page_index}.jpeg")
+
+            # Parse bounding box if present
+            top_left_x = None
+            top_left_y = None
+            bottom_right_x = None
+            bottom_right_y = None
+            top_left = img.get("top_left_x"), img.get("top_left_y")
+            bottom_right = img.get("bottom_right_x"), img.get("bottom_right_y")
+            if top_left[0] is not None:
+                top_left_x = top_left[0]
+            if top_left[1] is not None:
+                top_left_y = top_left[1]
+            if bottom_right[0] is not None:
+                bottom_right_x = bottom_right[0]
+            if bottom_right[1] is not None:
+                bottom_right_y = bottom_right[1]
+
+            extracted.append(
+                ExtractedImage(
+                    original_image_id=original_id,
+                    page_index=page_index,
+                    image_base64=image_base64,
+                    top_left_x=top_left_x,
+                    top_left_y=top_left_y,
+                    bottom_right_x=bottom_right_x,
+                    bottom_right_y=bottom_right_y,
+                )
+            )
+            # Strip the heavy base64 data from the response body
+            del img["image_base64"]
+
+    return extracted
 
 
 _DEFAULT_MISTRAL_ENDPOINT = "/v1/chat/completions"
@@ -377,11 +427,14 @@ class MistralProvider:
                 entries = [e for e in entries if e.custom_id != custom_id]
                 error_ids.discard(custom_id)
             if response_body.get("choices") or response_body.get("pages"):
+                # Extract images from OCR responses before serializing
+                extracted = _extract_images_from_response(response_body)
                 entries.append(
                     BatchResultEntry(
                         custom_id=custom_id,
                         succeeded=True,
                         raw_response_json=json.dumps(response_body),
+                        extracted_images=extracted,
                     )
                 )
             else:

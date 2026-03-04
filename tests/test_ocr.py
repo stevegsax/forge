@@ -26,6 +26,7 @@ from forge.ocr.activities import (
     execute_split_file_into_chunks,
     execute_store_ocr_result,
     execute_submit_ocr_batch,
+    rewrite_image_references,
     validate_file_size,
 )
 from forge.ocr.models import (
@@ -42,10 +43,15 @@ from forge.store import (
     delete_ocr_results,
     get_engine,
     get_file_content,
+    get_ocr_image,
+    get_ocr_images,
     get_ocr_result,
+    reassign_ocr_images_document_id,
     run_migrations,
     save_file_content,
+    save_ocr_image,
     save_ocr_result,
+    update_ocr_images_document_id,
 )
 from forge.workflows import FORGE_TASK_QUEUE
 
@@ -193,7 +199,8 @@ class TestBuildOcrBatchBody:
             "document": {
                 "type": "image_url",
                 "image_url": "data:image/png;base64,abc123",
-            }
+            },
+            "include_image_base64": True,
         }
 
     def test_document_type(self) -> None:
@@ -202,7 +209,8 @@ class TestBuildOcrBatchBody:
             "document": {
                 "type": "document_url",
                 "document_url": "data:application/pdf;base64,abc123",
-            }
+            },
+            "include_image_base64": True,
         }
 
     def test_image_jpeg(self) -> None:
@@ -1393,3 +1401,400 @@ class TestDeleteOcrResults:
         engine, _ = _setup_db(tmp_path)
         # Should not raise
         delete_ocr_results(engine, [])
+
+
+# ---------------------------------------------------------------------------
+# rewrite_image_references (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestRewriteImageReferences:
+    def test_single_image(self) -> None:
+        md = "Some text\n![img-0.jpeg](img-0.jpeg)\nMore text"
+        mapping = {"img-0.jpeg": "uuid-aaa"}
+        result = rewrite_image_references(md, mapping)
+        assert "ocr-image://uuid-aaa" in result
+        assert "![img-0.jpeg](ocr-image://uuid-aaa)" in result
+
+    def test_multiple_images(self) -> None:
+        md = "![img-0.jpeg](img-0.jpeg)\n![img-1.png](img-1.png)"
+        mapping = {"img-0.jpeg": "uuid-111", "img-1.png": "uuid-222"}
+        result = rewrite_image_references(md, mapping)
+        assert "![img-0.jpeg](ocr-image://uuid-111)" in result
+        assert "![img-1.png](ocr-image://uuid-222)" in result
+
+    def test_no_images(self) -> None:
+        md = "Plain text with no images."
+        result = rewrite_image_references(md, {"img-0.jpeg": "uuid-aaa"})
+        assert result == md
+
+    def test_empty_mapping(self) -> None:
+        md = "![img-0.jpeg](img-0.jpeg)"
+        result = rewrite_image_references(md, {})
+        assert result == md
+
+    def test_partial_mapping(self) -> None:
+        md = "![img-0.jpeg](img-0.jpeg)\n![img-1.jpeg](img-1.jpeg)"
+        mapping = {"img-0.jpeg": "uuid-only"}
+        result = rewrite_image_references(md, mapping)
+        assert "ocr-image://uuid-only" in result
+        assert "![img-1.jpeg](img-1.jpeg)" in result
+
+    def test_preserves_alt_text(self) -> None:
+        md = "![Chart showing revenue](img-0.jpeg)"
+        mapping = {"img-0.jpeg": "uuid-chart"}
+        result = rewrite_image_references(md, mapping)
+        assert result == "![Chart showing revenue](ocr-image://uuid-chart)"
+
+
+# ---------------------------------------------------------------------------
+# build_ocr_batch_body — include_image_base64
+# ---------------------------------------------------------------------------
+
+
+class TestBuildOcrBatchBodyImageFlag:
+    def test_includes_image_base64_flag(self) -> None:
+        body = build_ocr_batch_body("abc123", "application/pdf")
+        assert body["include_image_base64"] is True
+
+    def test_includes_image_base64_flag_for_images(self) -> None:
+        body = build_ocr_batch_body("abc123", "image/png")
+        assert body["include_image_base64"] is True
+
+
+# ---------------------------------------------------------------------------
+# execute_parse_ocr_result — with image mapping
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteParseOcrResultWithImages:
+    def test_rewrites_image_references(self) -> None:
+        raw_json = json.dumps({
+            "pages": [
+                {
+                    "markdown": "Text ![img-0.jpeg](img-0.jpeg) more",
+                    "images": [{"id": "img-0.jpeg"}],
+                },
+            ],
+            "model": "mistral-ocr-latest",
+            "usage_info": {"pages_processed": 1, "doc_size_bytes": 1000},
+            "_image_mapping": {"img-0.jpeg": "uuid-abc"},
+        })
+
+        result = execute_parse_ocr_result(raw_json)
+        assert "ocr-image://uuid-abc" in result.text
+        assert "img-0.jpeg)" not in result.text
+        assert result.image_count == 1
+        assert result.image_ids == ["uuid-abc"]
+
+    def test_backward_compat_without_image_mapping(self) -> None:
+        raw_json = json.dumps({
+            "pages": [{"markdown": "No images here."}],
+            "model": "mistral-ocr-latest",
+            "usage_info": {"pages_processed": 1, "doc_size_bytes": 500},
+        })
+
+        result = execute_parse_ocr_result(raw_json)
+        assert result.text == "No images here."
+        assert result.image_count == 0
+        assert result.image_ids == []
+
+    def test_multiple_pages_with_images(self) -> None:
+        raw_json = json.dumps({
+            "pages": [
+                {"markdown": "![img-0.jpeg](img-0.jpeg)"},
+                {"markdown": "![img-0.jpeg](img-0.jpeg)"},
+            ],
+            "model": "mistral-ocr-latest",
+            "usage_info": {"pages_processed": 2, "doc_size_bytes": 2000},
+            "_image_mapping": {"img-0.jpeg": "uuid-shared"},
+        })
+
+        result = execute_parse_ocr_result(raw_json)
+        # Both pages should be rewritten with the same UUID
+        assert result.text.count("ocr-image://uuid-shared") == 2
+
+
+# ---------------------------------------------------------------------------
+# execute_store_ocr_result — with image_ids
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteStoreOcrResultWithImages:
+    def test_updates_image_document_ids(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        # Pre-store an image with empty document_id
+        save_ocr_image(
+            engine,
+            image_id="img-uuid-1",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"fake-image-bytes",
+            mime_type="image/jpeg",
+            file_size_bytes=16,
+        )
+
+        import forge.store as store_module
+
+        original_get_db_path = store_module.get_db_path
+        original_get_engine = store_module.get_engine
+        try:
+            store_module.get_db_path = lambda: db_path
+            store_module.get_engine = lambda _path: engine
+
+            execute_store_ocr_result(
+                document_id="doc-with-images",
+                file_path="/tmp/test.pdf",
+                text="Some text",
+                model_name="model",
+                input_tokens=10,
+                output_tokens=5,
+                batch_id="b-1",
+                workflow_id="wf-1",
+                image_ids=["img-uuid-1"],
+            )
+
+            # Verify image document_id was updated
+            img = get_ocr_image(engine, "img-uuid-1")
+            assert img is not None
+            assert img["document_id"] == "doc-with-images"
+        finally:
+            store_module.get_db_path = original_get_db_path
+            store_module.get_engine = original_get_engine
+
+    def test_no_image_ids_is_backward_compatible(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        import forge.store as store_module
+
+        original_get_db_path = store_module.get_db_path
+        original_get_engine = store_module.get_engine
+        try:
+            store_module.get_db_path = lambda: db_path
+            store_module.get_engine = lambda _path: engine
+
+            result = execute_store_ocr_result(
+                document_id="doc-no-images",
+                file_path="/tmp/test.pdf",
+                text="Plain text",
+                model_name="model",
+                input_tokens=10,
+                output_tokens=5,
+                batch_id="b-1",
+                workflow_id="wf-1",
+            )
+            assert result.stored is True
+        finally:
+            store_module.get_db_path = original_get_db_path
+            store_module.get_engine = original_get_engine
+
+
+# ---------------------------------------------------------------------------
+# execute_reassemble_ocr_chunks — image reassignment
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteReassembleOcrChunksWithImages:
+    def test_reassigns_images_to_final_document(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        # Create chunk OCR results
+        for i in range(2):
+            save_ocr_result(
+                engine,
+                document_id=f"chunk-{i}",
+                file_path="/tmp/test.pdf",
+                text=f"Chunk {i} text",
+                model_name="model",
+                input_tokens=10,
+                output_tokens=5,
+                batch_id="b-1",
+                workflow_id="wf-1",
+            )
+            # Pre-store image for each chunk
+            save_ocr_image(
+                engine,
+                image_id=f"img-chunk-{i}",
+                document_id=f"chunk-{i}",
+                page_index=0,
+                original_image_id="img-0.jpeg",
+                data=b"image-bytes",
+                mime_type="image/jpeg",
+                file_size_bytes=11,
+            )
+
+        result = execute_reassemble_ocr_chunks(
+            document_id="final-doc",
+            chunk_document_ids=["chunk-0", "chunk-1"],
+            file_path="/tmp/test.pdf",
+            total_pages=2,
+            engine=engine,
+        )
+        assert result.document_id == "final-doc"
+
+        # Verify images were reassigned
+        images = get_ocr_images(engine, "final-doc")
+        assert len(images) == 2
+
+
+# ---------------------------------------------------------------------------
+# OCR image store CRUD
+# ---------------------------------------------------------------------------
+
+
+class TestOcrImageStore:
+    def test_save_and_get_roundtrip(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        save_ocr_image(
+            engine,
+            image_id="img-001",
+            document_id="doc-x",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"jpeg-bytes-here",
+            mime_type="image/jpeg",
+            file_size_bytes=15,
+            top_left_x=10,
+            top_left_y=20,
+            bottom_right_x=100,
+            bottom_right_y=200,
+        )
+
+        img = get_ocr_image(engine, "img-001")
+        assert img is not None
+        assert img["id"] == "img-001"
+        assert img["document_id"] == "doc-x"
+        assert img["page_index"] == 0
+        assert img["original_image_id"] == "img-0.jpeg"
+        assert img["data"] == b"jpeg-bytes-here"
+        assert img["mime_type"] == "image/jpeg"
+        assert img["file_size_bytes"] == 15
+        assert img["top_left_x"] == 10
+        assert img["bottom_right_y"] == 200
+
+    def test_get_nonexistent(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        assert get_ocr_image(engine, "nonexistent") is None
+
+    def test_update_document_id(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        save_ocr_image(
+            engine,
+            image_id="img-upd-1",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"bytes",
+            mime_type="image/jpeg",
+            file_size_bytes=5,
+        )
+        save_ocr_image(
+            engine,
+            image_id="img-upd-2",
+            page_index=1,
+            original_image_id="img-1.jpeg",
+            data=b"bytes",
+            mime_type="image/jpeg",
+            file_size_bytes=5,
+        )
+
+        update_ocr_images_document_id(engine, ["img-upd-1", "img-upd-2"], "doc-final")
+
+        img1 = get_ocr_image(engine, "img-upd-1")
+        img2 = get_ocr_image(engine, "img-upd-2")
+        assert img1["document_id"] == "doc-final"
+        assert img2["document_id"] == "doc-final"
+
+    def test_update_empty_list_no_op(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        # Should not raise
+        update_ocr_images_document_id(engine, [], "doc-x")
+
+    def test_reassign_document_id(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        save_ocr_image(
+            engine,
+            image_id="img-ra-1",
+            document_id="old-doc-1",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"bytes",
+            mime_type="image/jpeg",
+            file_size_bytes=5,
+        )
+        save_ocr_image(
+            engine,
+            image_id="img-ra-2",
+            document_id="old-doc-2",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"bytes",
+            mime_type="image/jpeg",
+            file_size_bytes=5,
+        )
+
+        reassign_ocr_images_document_id(engine, ["old-doc-1", "old-doc-2"], "new-doc")
+
+        img1 = get_ocr_image(engine, "img-ra-1")
+        img2 = get_ocr_image(engine, "img-ra-2")
+        assert img1["document_id"] == "new-doc"
+        assert img2["document_id"] == "new-doc"
+
+    def test_get_ocr_images_metadata_only(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        save_ocr_image(
+            engine,
+            image_id="img-list-1",
+            document_id="doc-list",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"bytes",
+            mime_type="image/jpeg",
+            file_size_bytes=5,
+        )
+        save_ocr_image(
+            engine,
+            image_id="img-list-2",
+            document_id="doc-list",
+            page_index=1,
+            original_image_id="img-1.jpeg",
+            data=b"bytes2",
+            mime_type="image/png",
+            file_size_bytes=6,
+        )
+
+        images = get_ocr_images(engine, "doc-list")
+        assert len(images) == 2
+        # Should be ordered by page_index
+        assert images[0]["page_index"] == 0
+        assert images[1]["page_index"] == 1
+        # Metadata only — no data column
+        assert "data" not in images[0]
+
+    def test_get_ocr_images_empty(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        assert get_ocr_images(engine, "nonexistent-doc") == []
+
+    def test_default_empty_document_id(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        save_ocr_image(
+            engine,
+            image_id="img-default",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"bytes",
+            mime_type="image/jpeg",
+            file_size_bytes=5,
+        )
+
+        img = get_ocr_image(engine, "img-default")
+        assert img["document_id"] == ""

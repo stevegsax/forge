@@ -12,6 +12,7 @@ import pytest
 from forge.llm_providers.mistral import (
     MistralProvider,
     _download_file_content,
+    _extract_images_from_response,
     _format_batch_errors,
     _is_set,
     _parse_error_file_entries,
@@ -1361,3 +1362,200 @@ class TestParseBatchResult:
         assert result.tool_input == {}
         assert result.model_name == "pixtral-large-latest"
         assert result.input_tokens == 100
+
+
+# ---------------------------------------------------------------------------
+# Tests — _extract_images_from_response
+# ---------------------------------------------------------------------------
+
+
+class TestExtractImagesFromResponse:
+    """Tests for _extract_images_from_response helper."""
+
+    def test_extracts_images_and_strips_base64(self) -> None:
+        response_body = {
+            "pages": [
+                {
+                    "markdown": "Page 1 text",
+                    "images": [
+                        {
+                            "id": "img-0.jpeg",
+                            "image_base64": "aW1hZ2UtZGF0YQ==",
+                            "top_left_x": 10,
+                            "top_left_y": 20,
+                            "bottom_right_x": 100,
+                            "bottom_right_y": 200,
+                        },
+                    ],
+                },
+            ],
+            "model": "mistral-ocr-latest",
+        }
+
+        extracted = _extract_images_from_response(response_body)
+
+        assert len(extracted) == 1
+        assert extracted[0].original_image_id == "img-0.jpeg"
+        assert extracted[0].image_base64 == "aW1hZ2UtZGF0YQ=="
+        assert extracted[0].page_index == 0
+        assert extracted[0].top_left_x == 10
+        assert extracted[0].bottom_right_y == 200
+
+        # Verify base64 was stripped from response body
+        assert "image_base64" not in response_body["pages"][0]["images"][0]
+        # But image id still present
+        assert response_body["pages"][0]["images"][0]["id"] == "img-0.jpeg"
+
+    def test_multiple_pages_multiple_images(self) -> None:
+        response_body = {
+            "pages": [
+                {
+                    "markdown": "Page 1",
+                    "images": [
+                        {"id": "img-0.jpeg", "image_base64": "data0"},
+                        {"id": "img-1.jpeg", "image_base64": "data1"},
+                    ],
+                },
+                {
+                    "markdown": "Page 2",
+                    "images": [
+                        {"id": "img-0.jpeg", "image_base64": "data2"},
+                    ],
+                },
+            ],
+        }
+
+        extracted = _extract_images_from_response(response_body)
+
+        assert len(extracted) == 3
+        assert extracted[0].page_index == 0
+        assert extracted[1].page_index == 0
+        assert extracted[2].page_index == 1
+
+    def test_no_images_returns_empty(self) -> None:
+        response_body = {
+            "pages": [
+                {"markdown": "No images here", "images": []},
+            ],
+        }
+
+        extracted = _extract_images_from_response(response_body)
+        assert extracted == []
+
+    def test_no_pages_returns_empty(self) -> None:
+        response_body = {"choices": [{"message": {"content": "text"}}]}
+        extracted = _extract_images_from_response(response_body)
+        assert extracted == []
+
+    def test_skips_images_without_base64(self) -> None:
+        response_body = {
+            "pages": [
+                {
+                    "markdown": "Page 1",
+                    "images": [
+                        {"id": "img-0.jpeg"},  # no image_base64
+                        {"id": "img-1.jpeg", "image_base64": "data1"},
+                    ],
+                },
+            ],
+        }
+
+        extracted = _extract_images_from_response(response_body)
+        assert len(extracted) == 1
+        assert extracted[0].original_image_id == "img-1.jpeg"
+
+    def test_no_bounding_box_fields(self) -> None:
+        response_body = {
+            "pages": [
+                {
+                    "markdown": "Page 1",
+                    "images": [
+                        {"id": "img-0.jpeg", "image_base64": "data0"},
+                    ],
+                },
+            ],
+        }
+
+        extracted = _extract_images_from_response(response_body)
+        assert len(extracted) == 1
+        assert extracted[0].top_left_x is None
+        assert extracted[0].bottom_right_y is None
+
+
+# ---------------------------------------------------------------------------
+# Tests — poll_batch with image extraction
+# ---------------------------------------------------------------------------
+
+
+class TestPollBatchWithImages:
+    """Test that poll_batch extracts images from OCR responses."""
+
+    @pytest.mark.asyncio
+    async def test_poll_batch_extracts_images(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        # Build OCR response with images
+        ocr_response = {
+            "pages": [
+                {
+                    "markdown": "![img-0.jpeg](img-0.jpeg)",
+                    "images": [
+                        {"id": "img-0.jpeg", "image_base64": "aW1hZ2VieXRlcw=="},
+                    ],
+                },
+            ],
+            "model": "mistral-ocr-latest",
+            "usage_info": {"pages_processed": 1},
+        }
+        output_line = json.dumps({
+            "custom_id": "req-1",
+            "response": {"body": ocr_response},
+        })
+
+        job = _make_mock_batch_job("SUCCESS", output_file="file-out-1")
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=job)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(output_line)
+        )
+
+        result = await provider.poll_batch("batch-img-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 1
+        entry = result.entries[0]
+        assert entry.succeeded is True
+        assert len(entry.extracted_images) == 1
+        assert entry.extracted_images[0].original_image_id == "img-0.jpeg"
+        assert entry.extracted_images[0].image_base64 == "aW1hZ2VieXRlcw=="
+
+        # Verify base64 was stripped from raw_response_json
+        raw = json.loads(entry.raw_response_json)
+        assert "image_base64" not in json.dumps(raw)
+
+    @pytest.mark.asyncio
+    async def test_poll_batch_no_images_backward_compat(self) -> None:
+        provider = MistralProvider.__new__(MistralProvider)
+        provider._client = MagicMock()
+
+        # Build OCR response without images
+        ocr_response = {
+            "pages": [{"markdown": "Just text"}],
+            "model": "mistral-ocr-latest",
+        }
+        output_line = json.dumps({
+            "custom_id": "req-2",
+            "response": {"body": ocr_response},
+        })
+
+        job = _make_mock_batch_job("SUCCESS", output_file="file-out-2")
+        provider._client.batch.jobs.get_async = AsyncMock(return_value=job)
+        provider._client.files.download_async = AsyncMock(
+            return_value=_make_mock_file(output_line)
+        )
+
+        result = await provider.poll_batch("batch-no-img")
+
+        assert result.status == BatchPollStatus.ENDED
+        assert len(result.entries) == 1
+        assert result.entries[0].extracted_images == []
