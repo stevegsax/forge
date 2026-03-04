@@ -79,6 +79,17 @@ def build_file_handler_config(
 # ---------------------------------------------------------------------------
 
 
+def silence_noisy_loggers() -> None:
+    """Suppress known noisy third-party loggers.
+
+    The Mistral SDK's OTel hook tries to JSON-parse multipart file upload
+    bodies, which fails with a warning on every file API call.  This is a
+    Mistral SDK bug (doesn't guard against non-JSON request bodies) and the
+    warnings are harmless.
+    """
+    logging.getLogger("mistralai.extra.observability.otel").setLevel(logging.ERROR)
+
+
 def configure_file_handler(
     log_name: str = "forge",
     log_dir_override: str | Path | None = None,

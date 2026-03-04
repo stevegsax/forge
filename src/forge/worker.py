@@ -145,8 +145,11 @@ async def run_worker(
     if address is None:
         address = os.environ.get("FORGE_TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS)
 
+    from forge.logging_config import silence_noisy_loggers
+
     _init_store()
     init_tracing()
+    silence_noisy_loggers()
 
     connect_kwargs: dict[str, object] = {
         "data_converter": pydantic_data_converter,
