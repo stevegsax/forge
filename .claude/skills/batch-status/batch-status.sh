@@ -24,7 +24,7 @@ case "$cmd" in
     default)
         echo "=== Recent Batch Jobs (last 20) ==="
         sqlite3 -header -column "$DB" "
-            SELECT id, batch_id, provider, status, error_message,
+            SELECT id, COALESCE(batch_id, '(none)') AS batch_id, provider, status, error_message,
                    datetime(created_at) AS created, datetime(updated_at) AS updated
             FROM batch_jobs
             ORDER BY updated_at DESC
@@ -54,7 +54,7 @@ case "$cmd" in
 
     failed)
         sqlite3 -header -column "$DB" "
-            SELECT id, batch_id, provider, error_message,
+            SELECT id, COALESCE(batch_id, '(none)') AS batch_id, provider, error_message,
                    datetime(updated_at) AS updated
             FROM batch_jobs
             WHERE status NOT IN ('submitted', 'succeeded')

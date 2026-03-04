@@ -99,7 +99,7 @@ class BatchJob(Base):
     __tablename__ = "batch_jobs"
 
     id: Mapped[str] = mapped_column(sa.String, primary_key=True)
-    batch_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
+    batch_id: Mapped[str | None] = mapped_column(sa.String, nullable=True, index=True)
     workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
     status: Mapped[str] = mapped_column(sa.String, nullable=False)
     provider: Mapped[str] = mapped_column(sa.String, nullable=False, server_default="anthropic")
@@ -486,6 +486,31 @@ def record_batch_submission(
                 workflow_id=workflow_id,
                 status="submitted",
                 provider=provider,
+            )
+        )
+
+
+def record_batch_failure(
+    engine: Engine,
+    *,
+    request_id: str,
+    workflow_id: str,
+    error_message: str,
+    provider: str = "anthropic",
+) -> None:
+    """Insert a batch job record with status 'failed' and no batch_id.
+
+    Used when the provider API call fails before returning a batch_id.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(BatchJob.__table__).values(
+                id=request_id,
+                batch_id=None,
+                workflow_id=workflow_id,
+                status="failed",
+                provider=provider,
+                error_message=error_message,
             )
         )
 

@@ -688,6 +688,146 @@ class TestReadAndStoreFileContent:
 
 
 # ---------------------------------------------------------------------------
+# submit_ocr_batch — failure recording
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitOcrBatchFailureRecording:
+    """Tests that failed API calls are recorded in the database."""
+
+    def _build_input_json(self, content_id: str) -> str:
+        submit_input = OcrSubmitInput(
+            file_path="/tmp/test.pdf",
+            model_name="mistral:pixtral-large-latest",
+            document_id="doc-fail",
+        )
+        return json.dumps({
+            "submit_input": submit_input.model_dump(),
+            "file_content_ref": {
+                "content_id": content_id,
+                "mime_type": "application/pdf",
+                "file_size_bytes": 14,
+            },
+            "store_workflow_id": "wf-store-fail",
+        })
+
+    @pytest.mark.asyncio
+    async def test_records_failure_on_api_error(self, tmp_path: Path) -> None:
+        """When execute_submit_ocr_batch raises, record_batch_failure is called."""
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        # Pre-store file content
+        content_id = "fail-content-id"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=b"fake pdf bytes",
+            mime_type="application/pdf",
+            file_size_bytes=14,
+        )
+
+        mock_provider = MagicMock()
+        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
+        mock_provider.build_batch_request = MagicMock(return_value={})
+        mock_provider.submit_batch = AsyncMock(
+            side_effect=RuntimeError("400 Bad Request")
+        )
+
+        import forge.llm_providers as llm_mod
+        import forge.store as store_mod
+
+        original_get_provider = llm_mod.get_provider
+        original_get_db_path = store_mod.get_db_path
+        original_get_engine = store_mod.get_engine
+        try:
+            llm_mod.get_provider = MagicMock(return_value=mock_provider)
+            store_mod.get_db_path = lambda: db_path
+            store_mod.get_engine = lambda _path: engine
+
+            from forge.ocr.activities import submit_ocr_batch
+
+            input_json = self._build_input_json(content_id)
+
+            with pytest.raises(RuntimeError, match="400 Bad Request"):
+                await submit_ocr_batch(input_json)
+
+            # Verify a failed record was inserted
+            from forge.store import BatchJob
+
+            t = BatchJob.__table__
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    t.select().where(t.c.status == "failed")
+                ).mappings().all()
+
+            assert len(rows) == 1
+            row = dict(rows[0])
+            assert row["batch_id"] is None
+            assert row["status"] == "failed"
+            assert "400 Bad Request" in row["error_message"]
+            assert row["workflow_id"] == "wf-store-fail"
+            assert row["provider"] == "mistral"
+        finally:
+            llm_mod.get_provider = original_get_provider
+            store_mod.get_db_path = original_get_db_path
+            store_mod.get_engine = original_get_engine
+
+    @pytest.mark.asyncio
+    async def test_original_exception_propagates_when_recording_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """When record_batch_failure itself raises, the original exception still propagates."""
+        db_path = tmp_path / "test.db"
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+
+        content_id = "fail-record-content-id"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=b"fake pdf bytes",
+            mime_type="application/pdf",
+            file_size_bytes=14,
+        )
+
+        mock_provider = MagicMock()
+        mock_provider.build_request_params = MagicMock(return_value={"model": "test"})
+        mock_provider.build_batch_request = MagicMock(return_value={})
+        mock_provider.submit_batch = AsyncMock(
+            side_effect=RuntimeError("API exploded")
+        )
+
+        import forge.llm_providers as llm_mod
+        import forge.store as store_mod
+
+        original_get_provider = llm_mod.get_provider
+        original_get_db_path = store_mod.get_db_path
+        original_get_engine = store_mod.get_engine
+        original_record_failure = store_mod.record_batch_failure
+        try:
+            llm_mod.get_provider = MagicMock(return_value=mock_provider)
+            store_mod.get_db_path = lambda: db_path
+            store_mod.get_engine = lambda _path: engine
+            store_mod.record_batch_failure = MagicMock(
+                side_effect=RuntimeError("DB write failed")
+            )
+
+            from forge.ocr.activities import submit_ocr_batch
+
+            input_json = self._build_input_json(content_id)
+
+            with pytest.raises(RuntimeError, match="API exploded"):
+                await submit_ocr_batch(input_json)
+        finally:
+            llm_mod.get_provider = original_get_provider
+            store_mod.get_db_path = original_get_db_path
+            store_mod.get_engine = original_get_engine
+            store_mod.record_batch_failure = original_record_failure
+
+
+# ---------------------------------------------------------------------------
 # OcrStoreWorkflow — workflow-level tests
 # ---------------------------------------------------------------------------
 

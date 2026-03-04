@@ -9,6 +9,7 @@ from forge.store import (
     get_batch_job,
     get_engine,
     get_pending_batch_jobs,
+    record_batch_failure,
     record_batch_submission,
     run_migrations,
     update_batch_status,
@@ -58,6 +59,31 @@ class TestRecordBatchSubmission:
         job = get_batch_job(engine, "req-002")
         assert job is not None
         assert job["status"] == "submitted"
+
+
+# ---------------------------------------------------------------------------
+# record_batch_failure
+# ---------------------------------------------------------------------------
+
+
+class TestRecordBatchFailure:
+    def test_inserts_failed_record(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        record_batch_failure(
+            engine,
+            request_id="req-fail-001",
+            workflow_id="wf-fail-1",
+            error_message="400 Bad Request: invalid input",
+            provider="mistral",
+        )
+
+        job = get_batch_job(engine, "req-fail-001")
+        assert job is not None
+        assert job["status"] == "failed"
+        assert job["batch_id"] is None
+        assert job["error_message"] == "400 Bad Request: invalid input"
+        assert job["provider"] == "mistral"
+        assert job["workflow_id"] == "wf-fail-1"
 
 
 # ---------------------------------------------------------------------------

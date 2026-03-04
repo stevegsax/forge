@@ -250,13 +250,14 @@ async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
     complex activity input. Loads file bytes from the database,
     base64-encodes in memory, and submits to the provider.
     """
-    from forge.llm_providers import get_provider
+    from forge.llm_providers import get_provider, parse_model_id
     from forge.ocr.models import OcrSubmitInput
     from forge.store import (
         delete_file_content,
         get_db_path,
         get_engine,
         get_file_content,
+        record_batch_failure,
         record_batch_submission,
     )
 
@@ -288,9 +289,25 @@ async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
     )
 
     provider = get_provider(ocr_input.model_name)
-    result = await execute_submit_ocr_batch(
-        ocr_input, file_content, provider, store_workflow_id
-    )
+    provider_name, _ = parse_model_id(ocr_input.model_name)
+
+    try:
+        result = await execute_submit_ocr_batch(
+            ocr_input, file_content, provider, store_workflow_id
+        )
+    except Exception as exc:
+        request_id = str(uuid.uuid4())
+        try:
+            record_batch_failure(
+                engine,
+                request_id=request_id,
+                workflow_id=store_workflow_id,
+                error_message=str(exc),
+                provider=provider_name,
+            )
+        except Exception:
+            logger.error("Failed to record batch failure", exc_info=True)
+        raise
 
     # Clean up the BLOB after successful submission
     try:
@@ -301,9 +318,6 @@ async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
     # Record batch submission for the poller to find — if recording fails,
     # the batch is submitted but untracked. A duplicate on retry is better
     # than a lost batch.
-    from forge.llm_providers import parse_model_id
-
-    provider_name, _ = parse_model_id(ocr_input.model_name)
     record_batch_submission(
         engine,
         request_id=result.request_id,
