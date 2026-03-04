@@ -98,6 +98,13 @@ class OcrStoreWorkflow:
             result_type=OcrStoreResult,
         )
 
+        # Step 4: Signal gather workflow if this is a chunk
+        if input.gather_workflow_id:
+            gather_handle = workflow.get_external_workflow_handle(
+                input.gather_workflow_id,
+            )
+            await gather_handle.signal("chunk_completed", input.document_id)
+
         workflow.logger.info(
             "OcrStore done: document_id=%s text_length=%d",
             store_result.document_id,

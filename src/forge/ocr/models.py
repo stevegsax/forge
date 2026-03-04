@@ -32,6 +32,7 @@ class OcrStoreInput(BaseModel):
     request_id: str
     document_id: str
     file_path: str  # original source file (metadata)
+    gather_workflow_id: str = ""  # if set, signal this workflow on completion
 
 
 class OcrStoreResult(BaseModel):
@@ -93,5 +94,15 @@ class OcrReassembleInput(BaseModel):
 
     document_id: str
     chunk_document_ids: list[str]  # ordered
+    file_path: str
+    total_pages: int
+
+
+class OcrGatherInput(BaseModel):
+    """Input to the OcrGatherWorkflow."""
+
+    document_id: str
+    chunk_document_ids: list[str]  # ordered
+    store_workflow_ids: list[str]  # OcrStoreWorkflow IDs to await
     file_path: str
     total_pages: int

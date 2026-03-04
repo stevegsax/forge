@@ -66,6 +66,7 @@ from forge.ocr.activities import (
     store_ocr_result,
     submit_ocr_batch,
 )
+from forge.ocr.workflow_gather import OcrGatherWorkflow
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.ocr.workflow_submit import OcrSubmitWorkflow
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
@@ -188,6 +189,7 @@ async def run_worker(
             BatchPollerWorkflow,
             OcrSubmitWorkflow,
             OcrStoreWorkflow,
+            OcrGatherWorkflow,
         ],
         activities=[
             assemble_conflict_resolution_context,
