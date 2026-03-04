@@ -135,7 +135,7 @@ async def _ensure_schedule(
 async def run_worker(
     address: str | None = None,
     *,
-    batch_poll_interval: int = 60,
+    batch_poll_interval: int = 600,
     extraction_interval: int = 14400,
     identity: str | None = None,
 ) -> None:

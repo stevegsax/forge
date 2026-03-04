@@ -812,7 +812,7 @@ def run(
 @click.option(
     "--batch-poll-interval",
     type=int,
-    default=60,
+    default=600,
     show_default=True,
     help="Seconds between batch polling runs.",
 )
