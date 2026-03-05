@@ -271,13 +271,13 @@ forge status --workflow-id forge-task-background-task
 
 The `forge start` command launches any registered Temporal workflow by name, without needing a Python script. The worker's `pydantic_data_converter` handles deserialization into the correct Pydantic model on the receiving end.
 
-### Fire-and-forget
+### Start and return immediately
 
 ```bash
 forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}'
 ```
 
-Prints the workflow ID and exits immediately.
+Prints the workflow ID and exits immediately. The workflow runs to completion on the worker.
 
 ### Wait for result
 
@@ -285,7 +285,7 @@ Prints the workflow ID and exits immediately.
 forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}' --wait
 ```
 
-Blocks until the workflow completes and prints the result as JSON.
+Blocks until the workflow completes and prints the `OcrStoreResult` (document_id, text_length, page_count) as JSON.
 
 ### Input from file
 

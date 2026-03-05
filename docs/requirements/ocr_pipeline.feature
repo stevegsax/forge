@@ -12,7 +12,7 @@ Feature: OCR Pipeline
   Scenario: OCR submit workflow orchestrates the pipeline
     Given a document file path and a document ID
     When the OcrSubmitWorkflow runs
-    Then it reads the file, splits into chunks, starts a gather workflow, and submits batches
+    Then it reads the file, splits into chunks, starts child workflows, submits batches, and awaits the final OcrStoreResult
 
   @critical @temporal
   Scenario: OCR store workflow waits for batch result signal

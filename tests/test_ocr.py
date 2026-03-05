@@ -32,11 +32,11 @@ from forge.ocr.activities import (
 from forge.ocr.models import (
     FileContentRef,
     FileContentResult,
+    OcrBatchRef,
     OcrParseResult,
     OcrStoreInput,
     OcrStoreResult,
     OcrSubmitInput,
-    OcrSubmitResult,
 )
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.store import (
@@ -80,15 +80,10 @@ class TestOcrModels:
         assert inp.max_tokens == 16384
         assert inp.document_id == ""
 
-    def test_submit_result_defaults(self) -> None:
-        result = OcrSubmitResult(
-            batch_id="b-1",
-            request_id="r-1",
-            document_id="d-1",
-            workflow_id="wf-1",
-        )
-        assert result.chunk_count == 1
-        assert result.total_pages == 0
+    def test_batch_ref(self) -> None:
+        ref = OcrBatchRef(batch_id="b-1", request_id="r-1")
+        assert ref.batch_id == "b-1"
+        assert ref.request_id == "r-1"
 
     def test_submit_input_custom(self) -> None:
         inp = OcrSubmitInput(
@@ -101,15 +96,10 @@ class TestOcrModels:
         assert inp.max_tokens == 8192
         assert inp.document_id == "doc-123"
 
-    def test_submit_result(self) -> None:
-        result = OcrSubmitResult(
-            batch_id="batch-1",
-            request_id="req-1",
-            document_id="doc-1",
-            workflow_id="wf-1",
-        )
-        assert result.batch_id == "batch-1"
-        assert result.workflow_id == "wf-1"
+    def test_batch_ref_fields(self) -> None:
+        ref = OcrBatchRef(batch_id="batch-1", request_id="req-1")
+        assert ref.batch_id == "batch-1"
+        assert ref.request_id == "req-1"
 
     def test_store_input(self) -> None:
         inp = OcrStoreInput(
@@ -268,12 +258,10 @@ class TestExecuteSubmitOcrBatch:
         )
 
         result = await execute_submit_ocr_batch(
-            inp, file_content, mock_provider, "wf-store-1"
+            inp, file_content, mock_provider
         )
 
         assert result.batch_id == "batch-123"
-        assert result.document_id == "doc-1"
-        assert result.workflow_id == "wf-store-1"
         assert result.request_id  # non-empty UUID
 
         # Verify OCR body format and endpoint
@@ -302,10 +290,10 @@ class TestExecuteSubmitOcrBatch:
         )
 
         result = await execute_submit_ocr_batch(
-            inp, file_content, mock_provider, "wf-store-2"
+            inp, file_content, mock_provider
         )
-        assert result.document_id  # auto-generated UUID
-        assert result.document_id != ""
+        assert result.batch_id == "batch-456"
+        assert result.request_id  # non-empty UUID
 
     @pytest.mark.asyncio
     async def test_image_uses_image_url_type(self) -> None:
@@ -324,7 +312,7 @@ class TestExecuteSubmitOcrBatch:
         )
 
         result = await execute_submit_ocr_batch(
-            inp, file_content, mock_provider, "wf-store-img"
+            inp, file_content, mock_provider
         )
         assert result.batch_id == "batch-789"
 
@@ -661,7 +649,7 @@ class TestReadAndStoreFileContent:
             result = await submit_ocr_batch(input_json)
 
             assert result.batch_id == "batch-123"
-            assert result.document_id == "doc-1"
+            assert result.request_id  # non-empty UUID
 
             # Verify OCR body format and endpoint were used
             call_args = mock_provider.submit_batch.call_args

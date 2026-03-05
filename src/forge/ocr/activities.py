@@ -33,9 +33,9 @@ from forge.ocr.models import (
     ChunkRef,
     FileContentRef,
     FileContentResult,
+    OcrBatchRef,
     OcrParseResult,
     OcrStoreResult,
-    OcrSubmitResult,
     SplitResult,
 )
 
@@ -182,12 +182,10 @@ async def execute_submit_ocr_batch(
     input: OcrSubmitInput,
     file_content: FileContentResult,
     provider: LLMProvider,
-    workflow_id: str,
-) -> OcrSubmitResult:
+) -> OcrBatchRef:
     """Build OCR request body and submit to /v1/ocr batch endpoint."""
     from forge.llm_providers import parse_model_id
 
-    document_id = input.document_id or str(uuid.uuid4())
     _, model = parse_model_id(input.model_name)
 
     body = build_ocr_batch_body(file_content.base64_data, file_content.mime_type)
@@ -197,11 +195,9 @@ async def execute_submit_ocr_batch(
         [batch_request], model, endpoint="/v1/ocr"
     )
 
-    return OcrSubmitResult(
+    return OcrBatchRef(
         batch_id=batch_id,
         request_id=request_id,
-        document_id=document_id,
-        workflow_id=workflow_id,
     )
 
 
@@ -509,7 +505,7 @@ async def read_and_store_file_content(file_path: str) -> FileContentRef:
 
 
 @activity.defn
-async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
+async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     """Activity: submit OCR batch request.
 
     Takes JSON-serialized OcrSubmitInput + FileContentRef to avoid
@@ -559,7 +555,7 @@ async def submit_ocr_batch(input_json: str) -> OcrSubmitResult:
 
     try:
         result = await execute_submit_ocr_batch(
-            ocr_input, file_content, provider, store_workflow_id
+            ocr_input, file_content, provider
         )
     except Exception as exc:
         request_id = str(uuid.uuid4())

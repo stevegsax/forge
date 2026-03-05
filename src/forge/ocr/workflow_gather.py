@@ -1,9 +1,9 @@
 """OcrGatherWorkflow — await chunk completions and reassemble.
 
-Started as an abandoned child of OcrSubmitWorkflow when a document
-is split into multiple chunks.  Each OcrStoreWorkflow signals this
-workflow upon completion.  Once all chunks have reported in, the
-reassemble activity combines results into one.
+Started as a child of OcrSubmitWorkflow when a document is split into
+multiple chunks.  Each OcrStoreWorkflow signals this workflow upon
+completion.  Once all chunks have reported in, the reassemble activity
+combines results into one.
 """
 
 from __future__ import annotations

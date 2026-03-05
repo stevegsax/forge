@@ -14,15 +14,15 @@ class OcrSubmitInput(BaseModel):
     document_id: str = Field(default="", description="Auto-generated if empty.")
 
 
-class OcrSubmitResult(BaseModel):
-    """Result from the OcrSubmitWorkflow."""
+class OcrBatchRef(BaseModel):
+    """Lightweight reference returned by submit_ocr_batch activity.
+
+    Contains only the batch tracking metadata needed by the workflow;
+    callers receive OcrStoreResult once OCR completes.
+    """
 
     batch_id: str
     request_id: str
-    document_id: str
-    workflow_id: str
-    chunk_count: int = 1
-    total_pages: int = 0
 
 
 class OcrStoreInput(BaseModel):

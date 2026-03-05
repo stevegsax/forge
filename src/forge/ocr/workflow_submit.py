@@ -5,7 +5,7 @@ Steps:
 2. Split into chunks (1 chunk for small files, N for large PDFs)
 3. If multi-chunk: start OcrGatherWorkflow (receives completion signals)
 4. For each chunk: start child OcrStoreWorkflow + submit batch request
-5. Return OcrSubmitResult immediately (children run independently)
+5. Await final result (store or gather workflow) and return OcrStoreResult
 """
 
 from __future__ import annotations
@@ -19,10 +19,11 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from forge.ocr.models import (
         FileContentRef,
+        OcrBatchRef,
         OcrGatherInput,
         OcrStoreInput,
+        OcrStoreResult,
         OcrSubmitInput,
-        OcrSubmitResult,
         SplitResult,
     )
 
@@ -37,7 +38,7 @@ class OcrSubmitWorkflow:
     """Submit a document for OCR processing via batch API."""
 
     @workflow.run
-    async def run(self, input: OcrSubmitInput) -> OcrSubmitResult:
+    async def run(self, input: OcrSubmitInput) -> OcrStoreResult:
         document_id = input.document_id or str(workflow.uuid4())
         workflow.logger.info(
             "OcrSubmit started: file=%s document_id=%s",
@@ -78,6 +79,7 @@ class OcrSubmitWorkflow:
         # Step 3: If multi-chunk, start gather workflow first (so store
         # workflows can signal it upon completion)
         gather_workflow_id = ""
+        gather_handle = None
         chunk_document_ids: list[str] = []
         for chunk in split_result.chunks:
             if chunk_count == 1:
@@ -99,14 +101,13 @@ class OcrSubmitWorkflow:
                 "OcrGatherWorkflow",
                 gather_input,
                 id=f"ocr-gather-{document_id}",
-                parent_close_policy=workflow.ParentClosePolicy.ABANDON,
+                parent_close_policy=workflow.ParentClosePolicy.TERMINATE,
+                result_type=OcrStoreResult,
             )
             gather_workflow_id = gather_handle.id
 
         # Step 4: For each chunk, start child OcrStoreWorkflow + submit batch
-        first_store_workflow_id = ""
-        first_batch_id = ""
-        first_request_id = ""
+        store_handle = None
 
         for i, chunk in enumerate(split_result.chunks):
             chunk_doc_id = chunk_document_ids[i]
@@ -123,11 +124,9 @@ class OcrSubmitWorkflow:
                 "OcrStoreWorkflow",
                 store_input,
                 id=f"ocr-store-{chunk_doc_id}",
-                parent_close_policy=workflow.ParentClosePolicy.ABANDON,
+                parent_close_policy=workflow.ParentClosePolicy.TERMINATE,
+                result_type=OcrStoreResult,
             )
-
-            if not first_store_workflow_id:
-                first_store_workflow_id = store_handle.id
 
             # Submit batch request for this chunk
             chunk_ref_dict = {
@@ -142,30 +141,32 @@ class OcrSubmitWorkflow:
                 "file_content_ref": chunk_ref_dict,
                 "store_workflow_id": store_handle.id,
             })
-            result = await workflow.execute_activity(
+            await workflow.execute_activity(
                 "submit_ocr_batch",
                 submit_data,
                 start_to_close_timeout=_SUBMIT_TIMEOUT,
                 retry_policy=_IO_RETRY,
-                result_type=OcrSubmitResult,
+                result_type=OcrBatchRef,
             )
 
-            if not first_batch_id:
-                first_batch_id = result.batch_id
-                first_request_id = result.request_id
+        # Step 5: Await the final result
+        # Multi-chunk: gather workflow combines chunks and returns OcrStoreResult
+        # Single-chunk: store workflow returns OcrStoreResult directly
+        if gather_handle is not None:
+            result = await gather_handle
+        elif store_handle is not None:
+            result = await store_handle
+        else:
+            # No chunks (shouldn't happen, but handle gracefully)
+            result = OcrStoreResult(
+                document_id=document_id, text_length=0, page_count=0, stored=False
+            )
 
         workflow.logger.info(
-            "OcrSubmit done: batch_id=%s document_id=%s chunks=%d",
-            first_batch_id,
-            document_id,
-            chunk_count,
+            "OcrSubmit done: document_id=%s text_length=%d page_count=%d",
+            result.document_id,
+            result.text_length,
+            result.page_count,
         )
 
-        return OcrSubmitResult(
-            batch_id=first_batch_id,
-            request_id=first_request_id,
-            document_id=document_id,
-            workflow_id=first_store_workflow_id,
-            chunk_count=chunk_count,
-            total_pages=split_result.total_pages,
-        )
+        return result
