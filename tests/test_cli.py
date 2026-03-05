@@ -666,12 +666,33 @@ class TestConfigureLogging:
         root = logging.getLogger()
         try:
             assert root.level == logging.DEBUG
+            # At verbosity 0 with file logging active, no stream handler is added.
+            stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
+                               and not hasattr(h, "maxBytes")]
+            assert not stream_handlers
+        finally:
+            # Clean up file handlers to avoid leaking FDs.
+            for h in list(root.handlers):
+                if hasattr(h, "maxBytes"):
+                    root.removeHandler(h)
+                    h.close()
+
+    def test_file_handler_with_verbosity_keeps_console(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When file logging is active and verbosity > 0, console handler is still added."""
+        import logging
+
+        monkeypatch.setenv("FORGE_LOG_DIR", str(tmp_path))
+        configure_logging(1)  # console=INFO
+        root = logging.getLogger()
+        try:
+            assert root.level == logging.DEBUG
             stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
                                and not hasattr(h, "maxBytes")]
             assert stream_handlers
-            assert stream_handlers[0].level == logging.WARNING
+            assert stream_handlers[0].level == logging.INFO
         finally:
-            # Clean up file handlers to avoid leaking FDs.
             for h in list(root.handlers):
                 if hasattr(h, "maxBytes"):
                     root.removeHandler(h)

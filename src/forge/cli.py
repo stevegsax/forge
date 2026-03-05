@@ -461,6 +461,9 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
     Console level is controlled by *verbosity*: 0=WARNING, 1=INFO, 2+=DEBUG.
     A ``RotatingFileHandler`` at DEBUG level is added via
     :func:`forge.logging_config.configure_file_handler` (best-effort).
+
+    When *verbosity* is 0, the console stream handler is omitted if file
+    logging is available — this keeps the worker silent on stdout by default.
     """
     from forge.logging_config import configure_file_handler
 
@@ -470,17 +473,21 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
     root = logging.getLogger()
     root.handlers.clear()
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(console_level)
-    stream_handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-            datefmt="%H:%M:%S",
-        )
-    )
-    root.addHandler(stream_handler)
-
     file_handler = configure_file_handler(log_name=log_name)
+
+    # Only add a console handler when the user explicitly asked for verbosity
+    # or when file logging is unavailable (so messages aren't lost).
+    if verbosity > 0 or file_handler is None:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(console_level)
+        stream_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
+        root.addHandler(stream_handler)
+
     if file_handler is not None:
         root.setLevel(logging.DEBUG)
     else:
