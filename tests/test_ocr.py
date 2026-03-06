@@ -17,6 +17,7 @@ from forge.ocr.activities import (
     MAX_FILE_SIZE_BYTES,
     MAX_PAGES,
     _mime_to_extension,
+    _strip_image_prefix,
     build_ocr_batch_body,
     build_ocr_messages,
     detect_mime_type,
@@ -1809,6 +1810,28 @@ class TestMimeToExtension:
         assert _mime_to_extension("application/x-unknown-thing") == ".bin"
 
 
+class TestStripImagePrefix:
+    def test_valid_jpeg_unchanged(self) -> None:
+        data = b"\xff\xd8\xff\xe0\x00\x10JFIF"
+        assert _strip_image_prefix(data) == data
+
+    def test_valid_png_unchanged(self) -> None:
+        data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
+        assert _strip_image_prefix(data) == data
+
+    def test_strips_data_uri_prefix_from_jpeg(self) -> None:
+        import base64
+
+        prefix_garbage = base64.b64decode("data:image/jpeg;base64,")
+        real_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF rest of image"
+        corrupt = prefix_garbage + real_jpeg
+        assert _strip_image_prefix(corrupt) == real_jpeg
+
+    def test_unknown_data_returned_as_is(self) -> None:
+        data = b"not an image at all"
+        assert _strip_image_prefix(data) == data
+
+
 class TestRewriteOcrUrisToLocal:
     def test_rewrites_matching_uris(self) -> None:
         md = "![chart](ocr-image://abc-123) and ![logo](ocr-image://def-456)"
@@ -1858,16 +1881,20 @@ class TestExecuteExportOcrDocument:
             workflow_id="w-1",
         )
 
-        # Save an image
+        # Save an image with corrupt data-URI prefix (matches existing DB data)
+        import base64 as _b64
+
+        prefix_garbage = _b64.b64decode("data:image/jpeg;base64,")
+        real_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF real image data"
         save_ocr_image(
             engine,
             image_id=image_id,
             document_id=doc_id,
             page_index=0,
             original_image_id="img-0.jpeg",
-            data=b"\x89PNG fake image data",
+            data=prefix_garbage + real_jpeg,
             mime_type="image/jpeg",
-            file_size_bytes=20,
+            file_size_bytes=len(prefix_garbage) + len(real_jpeg),
         )
 
         export_dir = tmp_path / "export"
@@ -1888,10 +1915,10 @@ class TestExecuteExportOcrDocument:
         assert f"![fig]({image_id}.jpeg)" in md_text
         assert "ocr-image://" not in md_text
 
-        # Check image file
+        # Check image file — prefix should be stripped
         img_path = export_dir / f"{image_id}.jpeg"
         assert img_path.exists()
-        assert img_path.read_bytes() == b"\x89PNG fake image data"
+        assert img_path.read_bytes() == real_jpeg
 
     def test_exports_text_only_no_images(self, tmp_path: Path) -> None:
         engine, _ = _setup_db(tmp_path)

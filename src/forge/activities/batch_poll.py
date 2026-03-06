@@ -294,7 +294,11 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
             mapping: dict[str, str] = {}
             for img in images:
                 image_id = str(uuid.uuid4())
-                data = base64.b64decode(img.image_base64)
+                raw_b64 = img.image_base64
+                # Strip data URI prefix if present (e.g. "data:image/jpeg;base64,")
+                if raw_b64.startswith("data:"):
+                    raw_b64 = raw_b64.split(",", 1)[1]
+                data = base64.b64decode(raw_b64)
                 save_ocr_image(
                     engine,
                     image_id=image_id,

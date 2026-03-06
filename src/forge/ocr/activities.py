@@ -147,6 +147,30 @@ def _mime_to_extension(mime_type: str) -> str:
     return ext or ".bin"
 
 
+# JPEG Start-Of-Image marker
+_JPEG_SOI = b"\xff\xd8\xff"
+# PNG signature
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def _strip_image_prefix(data: bytes) -> bytes:
+    """Strip corrupt prefix bytes from image data.
+
+    Early OCR image storage decoded data-URI-prefixed base64 without
+    stripping the ``data:image/...;base64,`` header, producing garbage
+    bytes before the real image start.  This function finds the true
+    image signature and strips the prefix.
+    """
+    if data[:3] == _JPEG_SOI or data[:8] == _PNG_SIG:
+        return data
+    # Try to find the real start
+    for marker in (_JPEG_SOI, _PNG_SIG):
+        idx = data.find(marker)
+        if idx > 0:
+            return data[idx:]
+    return data
+
+
 def rewrite_ocr_uris_to_local(
     markdown: str,
     image_id_to_filename: dict[str, str],
@@ -569,7 +593,9 @@ def execute_export_ocr_document(
         # Load full image blob
         img_full = get_ocr_image(engine, image_id)
         if img_full is not None:
-            (export_path / filename).write_bytes(img_full["data"])
+            (export_path / filename).write_bytes(
+                _strip_image_prefix(img_full["data"])
+            )
 
     # Rewrite URIs and write markdown
     exported_text = rewrite_ocr_uris_to_local(text, id_to_filename)
