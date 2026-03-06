@@ -635,6 +635,26 @@ def get_ocr_result(engine: Engine, document_id: str) -> dict | None:
         return dict(row)
 
 
+def find_ocr_result_by_file_path(engine: Engine, file_path: str) -> dict | None:
+    """Find an OCR result by file_path that is not marked for removal.
+
+    Returns the first matching row as a dict, or None if no qualifying
+    result exists.
+    """
+    t = OcrResult.__table__
+    stmt = (
+        t.select()
+        .where(t.c.file_path == file_path)
+        .where(t.c.marked_for_removal == sa.false())
+        .limit(1)
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)
+
+
 def mark_ocr_for_removal(engine: Engine, document_id: str) -> bool:
     """Set marked_for_removal=True on an OCR result. Returns True if found."""
     t = OcrResult.__table__

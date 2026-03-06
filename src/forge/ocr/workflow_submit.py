@@ -20,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
     from forge.ocr.models import (
         FileContentRef,
         OcrBatchRef,
+        OcrDuplicateCheckResult,
         OcrGatherInput,
         OcrStoreInput,
         OcrStoreResult,
@@ -45,6 +46,30 @@ class OcrSubmitWorkflow:
             input.file_path,
             document_id,
         )
+
+        # Step 0: Duplicate detection for absolute paths
+        if not input.force and input.file_path.startswith("/"):
+            dup_check = await workflow.execute_activity(
+                "check_ocr_duplicate",
+                input.file_path,
+                start_to_close_timeout=_IO_TIMEOUT,
+                retry_policy=_IO_RETRY,
+                result_type=OcrDuplicateCheckResult,
+            )
+            if dup_check.is_duplicate:
+                workflow.logger.info(
+                    "Duplicate document: file=%s existing_document_id=%s",
+                    input.file_path,
+                    dup_check.existing_document_id,
+                )
+                return OcrStoreResult(
+                    document_id=dup_check.existing_document_id,
+                    text_length=0,
+                    page_count=0,
+                    stored=False,
+                    skipped=True,
+                    skip_reason="Duplicate document",
+                )
 
         # Step 1: Read file and store in database (returns lightweight ref)
         file_content_ref = await workflow.execute_activity(

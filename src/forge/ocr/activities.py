@@ -34,6 +34,7 @@ from forge.ocr.models import (
     FileContentRef,
     FileContentResult,
     OcrBatchRef,
+    OcrDuplicateCheckResult,
     OcrExportResult,
     OcrMarkResult,
     OcrParseResult,
@@ -813,6 +814,41 @@ async def export_ocr_document(input_json: str) -> OcrExportResult:
         output_dir=data.get("output_dir", ""),
         engine=engine,
     )
+
+
+def execute_check_ocr_duplicate(
+    file_path: str,
+    engine: Engine,
+) -> OcrDuplicateCheckResult:
+    """Check whether a file has already been successfully OCR'd.
+
+    A file is considered a duplicate if an ``ocr_results`` row exists for
+    the same ``file_path`` and is **not** marked for removal.
+    """
+    from forge.store import find_ocr_result_by_file_path
+
+    row = find_ocr_result_by_file_path(engine, file_path)
+    if row is not None:
+        return OcrDuplicateCheckResult(
+            is_duplicate=True,
+            existing_document_id=row["document_id"],
+        )
+    return OcrDuplicateCheckResult(is_duplicate=False)
+
+
+@activity.defn
+async def check_ocr_duplicate(file_path: str) -> OcrDuplicateCheckResult:
+    """Activity: check if a file has already been successfully OCR'd."""
+    from forge.store import get_db_path, get_engine
+
+    logger.info("Checking for duplicate OCR result: %s", file_path)
+
+    db_path = get_db_path()
+    if db_path is None:
+        return OcrDuplicateCheckResult(is_duplicate=False)
+
+    engine = get_engine(db_path)
+    return execute_check_ocr_duplicate(file_path, engine)
 
 
 @activity.defn

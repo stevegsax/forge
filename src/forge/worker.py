@@ -59,6 +59,7 @@ from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.ocr.activities import (
+    check_ocr_duplicate,
     clear_ocr_removal_mark,
     export_ocr_document,
     mark_ocr_for_removal,
@@ -235,6 +236,7 @@ async def run_worker(
             write_files,
             write_output,
             # OCR activities
+            check_ocr_duplicate,
             clear_ocr_removal_mark,
             export_ocr_document,
             mark_ocr_for_removal,

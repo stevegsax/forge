@@ -21,6 +21,7 @@ from forge.ocr.activities import (
     build_ocr_batch_body,
     build_ocr_messages,
     detect_mime_type,
+    execute_check_ocr_duplicate,
     execute_export_ocr_document,
     execute_parse_ocr_result,
     execute_read_and_store_file,
@@ -37,6 +38,7 @@ from forge.ocr.models import (
     FileContentRef,
     FileContentResult,
     OcrBatchRef,
+    OcrDuplicateCheckResult,
     OcrExportInput,
     OcrExportResult,
     OcrMarkInput,
@@ -50,6 +52,7 @@ from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.store import (
     clear_ocr_removal_mark,
     delete_ocr_results,
+    find_ocr_result_by_file_path,
     get_engine,
     get_file_content,
     get_ocr_image,
@@ -2089,6 +2092,125 @@ class TestClearOcrRemovalMark:
 
         row = get_ocr_result(engine, "doc-default")
         assert row["marked_for_removal"] is False
+
+
+# ---------------------------------------------------------------------------
+# OCR Duplicate Detection — store function
+# ---------------------------------------------------------------------------
+
+
+class TestFindOcrResultByFilePath:
+    def test_finds_existing_result(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        save_ocr_result(
+            engine,
+            document_id="dup-doc-1",
+            file_path="/data/report.pdf",
+            text="some text",
+            page_count=1,
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="w",
+        )
+
+        row = find_ocr_result_by_file_path(engine, "/data/report.pdf")
+        assert row is not None
+        assert row["document_id"] == "dup-doc-1"
+
+    def test_returns_none_when_no_match(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        row = find_ocr_result_by_file_path(engine, "/data/nonexistent.pdf")
+        assert row is None
+
+    def test_excludes_marked_for_removal(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        save_ocr_result(
+            engine,
+            document_id="dup-doc-2",
+            file_path="/data/removed.pdf",
+            text="text",
+            page_count=1,
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="w",
+        )
+        mark_ocr_for_removal(engine, "dup-doc-2")
+
+        row = find_ocr_result_by_file_path(engine, "/data/removed.pdf")
+        assert row is None
+
+
+# ---------------------------------------------------------------------------
+# OCR Duplicate Detection — activity function
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteCheckOcrDuplicate:
+    def test_detects_duplicate(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        save_ocr_result(
+            engine,
+            document_id="dup-act-1",
+            file_path="/data/dup.pdf",
+            text="text",
+            page_count=1,
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="w",
+        )
+
+        result = execute_check_ocr_duplicate("/data/dup.pdf", engine)
+        assert result.is_duplicate is True
+        assert result.existing_document_id == "dup-act-1"
+
+    def test_no_duplicate(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        result = execute_check_ocr_duplicate("/data/new.pdf", engine)
+        assert result.is_duplicate is False
+        assert result.existing_document_id == ""
+
+    def test_ignores_marked_for_removal(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        save_ocr_result(
+            engine,
+            document_id="dup-act-2",
+            file_path="/data/removed.pdf",
+            text="text",
+            page_count=1,
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="w",
+        )
+        mark_ocr_for_removal(engine, "dup-act-2")
+
+        result = execute_check_ocr_duplicate("/data/removed.pdf", engine)
+        assert result.is_duplicate is False
+
+
+# ---------------------------------------------------------------------------
+# OCR Duplicate Detection — model tests
+# ---------------------------------------------------------------------------
+
+
+class TestOcrDuplicateCheckResult:
+    def test_defaults(self) -> None:
+        result = OcrDuplicateCheckResult(is_duplicate=False)
+        assert result.existing_document_id == ""
+
+    def test_duplicate(self) -> None:
+        result = OcrDuplicateCheckResult(
+            is_duplicate=True, existing_document_id="doc-1"
+        )
+        assert result.is_duplicate is True
+        assert result.existing_document_id == "doc-1"
 
 
 # ---------------------------------------------------------------------------

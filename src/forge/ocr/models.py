@@ -12,6 +12,10 @@ class OcrSubmitInput(BaseModel):
     model_name: str = "mistral:mistral-ocr-latest"
     max_tokens: int = 16384
     document_id: str = Field(default="", description="Auto-generated if empty.")
+    force: bool = Field(
+        default=False,
+        description="Skip duplicate detection and re-submit even if already OCR'd.",
+    )
 
 
 class OcrBatchRef(BaseModel):
@@ -42,6 +46,8 @@ class OcrStoreResult(BaseModel):
     text_length: int
     page_count: int = 0
     stored: bool = True
+    skipped: bool = False
+    skip_reason: str = ""
 
 
 class FileContentResult(BaseModel):
@@ -136,6 +142,13 @@ class OcrMarkInput(BaseModel):
     """Input to mark/clear removal workflows. One document per invocation."""
 
     document_id: str
+
+
+class OcrDuplicateCheckResult(BaseModel):
+    """Result from check_ocr_duplicate activity."""
+
+    is_duplicate: bool
+    existing_document_id: str = ""
 
 
 class OcrMarkResult(BaseModel):
