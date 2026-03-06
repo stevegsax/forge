@@ -59,7 +59,9 @@ from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.ocr.activities import (
+    clear_ocr_removal_mark,
     export_ocr_document,
+    mark_ocr_for_removal,
     parse_ocr_result,
     read_and_store_file_content,
     reassemble_ocr_chunks,
@@ -69,6 +71,10 @@ from forge.ocr.activities import (
 )
 from forge.ocr.workflow_export import OcrExportWorkflow
 from forge.ocr.workflow_gather import OcrGatherWorkflow
+from forge.ocr.workflow_mark_removal import (
+    OcrClearRemovalMarkWorkflow,
+    OcrMarkForRemovalWorkflow,
+)
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.ocr.workflow_submit import OcrSubmitWorkflow
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
@@ -196,6 +202,8 @@ async def run_worker(
             OcrStoreWorkflow,
             OcrGatherWorkflow,
             OcrExportWorkflow,
+            OcrMarkForRemovalWorkflow,
+            OcrClearRemovalMarkWorkflow,
         ],
         activities=[
             assemble_conflict_resolution_context,
@@ -227,7 +235,9 @@ async def run_worker(
             write_files,
             write_output,
             # OCR activities
+            clear_ocr_removal_mark,
             export_ocr_document,
+            mark_ocr_for_removal,
             read_and_store_file_content,
             split_file_into_chunks,
             submit_ocr_batch,

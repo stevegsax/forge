@@ -130,3 +130,16 @@ class OcrExportResult(BaseModel):
     export_dir: str
     markdown_path: str
     image_count: int
+
+
+class OcrMarkInput(BaseModel):
+    """Input to mark/clear removal workflows. One document per invocation."""
+
+    document_id: str
+
+
+class OcrMarkResult(BaseModel):
+    """Result from mark/clear removal workflows."""
+
+    document_id: str
+    found: bool

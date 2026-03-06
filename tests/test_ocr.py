@@ -39,6 +39,8 @@ from forge.ocr.models import (
     OcrBatchRef,
     OcrExportInput,
     OcrExportResult,
+    OcrMarkInput,
+    OcrMarkResult,
     OcrParseResult,
     OcrStoreInput,
     OcrStoreResult,
@@ -46,12 +48,14 @@ from forge.ocr.models import (
 )
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.store import (
+    clear_ocr_removal_mark,
     delete_ocr_results,
     get_engine,
     get_file_content,
     get_ocr_image,
     get_ocr_images,
     get_ocr_result,
+    mark_ocr_for_removal,
     reassign_ocr_images_document_id,
     run_migrations,
     save_file_content,
@@ -2011,3 +2015,92 @@ class TestOcrExportModels:
         )
         assert result.document_id == "doc-1"
         assert result.image_count == 3
+
+
+# ---------------------------------------------------------------------------
+# OCR Mark for Removal — store functions
+# ---------------------------------------------------------------------------
+
+
+def _save_test_ocr(engine, doc_id: str) -> None:
+    """Helper to save a minimal OCR result for testing."""
+    save_ocr_result(
+        engine,
+        document_id=doc_id,
+        file_path="/tmp/test.pdf",
+        text="test",
+        page_count=1,
+        model_name="m",
+        input_tokens=0,
+        output_tokens=0,
+        batch_id="b",
+        workflow_id="w",
+    )
+
+
+class TestMarkOcrForRemoval:
+    def test_marks_existing_document(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        _save_test_ocr(engine, "doc-mark-1")
+
+        result = mark_ocr_for_removal(engine, "doc-mark-1")
+        assert result is True
+
+        row = get_ocr_result(engine, "doc-mark-1")
+        assert row is not None
+        assert row["marked_for_removal"] is True
+
+    def test_returns_false_for_missing_document(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        result = mark_ocr_for_removal(engine, "nonexistent")
+        assert result is False
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        _save_test_ocr(engine, "doc-mark-2")
+
+        mark_ocr_for_removal(engine, "doc-mark-2")
+        mark_ocr_for_removal(engine, "doc-mark-2")
+
+        row = get_ocr_result(engine, "doc-mark-2")
+        assert row["marked_for_removal"] is True
+
+
+class TestClearOcrRemovalMark:
+    def test_clears_marked_document(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        _save_test_ocr(engine, "doc-clear-1")
+
+        mark_ocr_for_removal(engine, "doc-clear-1")
+        result = clear_ocr_removal_mark(engine, "doc-clear-1")
+        assert result is True
+
+        row = get_ocr_result(engine, "doc-clear-1")
+        assert row["marked_for_removal"] is False
+
+    def test_returns_false_for_missing_document(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        result = clear_ocr_removal_mark(engine, "nonexistent")
+        assert result is False
+
+    def test_default_is_not_marked(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        _save_test_ocr(engine, "doc-default")
+
+        row = get_ocr_result(engine, "doc-default")
+        assert row["marked_for_removal"] is False
+
+
+# ---------------------------------------------------------------------------
+# OCR Mark for Removal — model tests
+# ---------------------------------------------------------------------------
+
+
+class TestOcrMarkModels:
+    def test_mark_input(self) -> None:
+        inp = OcrMarkInput(document_id="doc-1")
+        assert inp.document_id == "doc-1"
+
+    def test_mark_result(self) -> None:
+        result = OcrMarkResult(document_id="doc-1", found=True)
+        assert result.found is True

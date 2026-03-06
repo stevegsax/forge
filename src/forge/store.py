@@ -143,6 +143,9 @@ class OcrResult(Base):
     output_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     batch_id: Mapped[str] = mapped_column(sa.String, nullable=False)
     workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False)
+    marked_for_removal: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=False, server_default=sa.text("0"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime,
         default=lambda: datetime.now(UTC),
@@ -630,6 +633,30 @@ def get_ocr_result(engine: Engine, document_id: str) -> dict | None:
         if row is None:
             return None
         return dict(row)
+
+
+def mark_ocr_for_removal(engine: Engine, document_id: str) -> bool:
+    """Set marked_for_removal=True on an OCR result. Returns True if found."""
+    t = OcrResult.__table__
+    with engine.begin() as conn:
+        result = conn.execute(
+            sa.update(t)
+            .where(t.c.document_id == document_id)
+            .values(marked_for_removal=True)
+        )
+        return result.rowcount > 0
+
+
+def clear_ocr_removal_mark(engine: Engine, document_id: str) -> bool:
+    """Set marked_for_removal=False on an OCR result. Returns True if found."""
+    t = OcrResult.__table__
+    with engine.begin() as conn:
+        result = conn.execute(
+            sa.update(t)
+            .where(t.c.document_id == document_id)
+            .values(marked_for_removal=False)
+        )
+        return result.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

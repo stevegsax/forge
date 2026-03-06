@@ -35,6 +35,7 @@ from forge.ocr.models import (
     FileContentResult,
     OcrBatchRef,
     OcrExportResult,
+    OcrMarkResult,
     OcrParseResult,
     OcrStoreResult,
     SplitResult,
@@ -812,3 +813,39 @@ async def export_ocr_document(input_json: str) -> OcrExportResult:
         output_dir=data.get("output_dir", ""),
         engine=engine,
     )
+
+
+@activity.defn
+async def mark_ocr_for_removal(document_id: str) -> OcrMarkResult:
+    """Activity: set marked_for_removal=True on an OCR document."""
+    from forge.store import get_db_path, get_engine
+    from forge.store import mark_ocr_for_removal as _mark
+
+    logger.info("Marking OCR document for removal: %s", document_id)
+
+    db_path = get_db_path()
+    if db_path is None:
+        msg = "Cannot mark for removal: database is disabled"
+        raise RuntimeError(msg)
+
+    engine = get_engine(db_path)
+    found = _mark(engine, document_id)
+    return OcrMarkResult(document_id=document_id, found=found)
+
+
+@activity.defn
+async def clear_ocr_removal_mark(document_id: str) -> OcrMarkResult:
+    """Activity: set marked_for_removal=False on an OCR document."""
+    from forge.store import clear_ocr_removal_mark as _clear
+    from forge.store import get_db_path, get_engine
+
+    logger.info("Clearing removal mark on OCR document: %s", document_id)
+
+    db_path = get_db_path()
+    if db_path is None:
+        msg = "Cannot clear removal mark: database is disabled"
+        raise RuntimeError(msg)
+
+    engine = get_engine(db_path)
+    found = _clear(engine, document_id)
+    return OcrMarkResult(document_id=document_id, found=found)
