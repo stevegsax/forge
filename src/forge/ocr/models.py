@@ -108,3 +108,25 @@ class OcrGatherInput(BaseModel):
     store_workflow_ids: list[str]  # OcrStoreWorkflow IDs to await
     file_path: str
     total_pages: int
+
+
+class OcrExportInput(BaseModel):
+    """Input to the OcrExportWorkflow."""
+
+    document_id: str
+    output_dir: str = Field(
+        default="",
+        description=(
+            "Override export directory. Defaults to"
+            " $XDG_DATA_HOME/forge/ocr-export/<document_id>."
+        ),
+    )
+
+
+class OcrExportResult(BaseModel):
+    """Result from the OcrExportWorkflow."""
+
+    document_id: str
+    export_dir: str
+    markdown_path: str
+    image_count: int

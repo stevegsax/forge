@@ -16,9 +16,11 @@ from forge.ocr.activities import (
     CHUNK_SIZE_PAGES,
     MAX_FILE_SIZE_BYTES,
     MAX_PAGES,
+    _mime_to_extension,
     build_ocr_batch_body,
     build_ocr_messages,
     detect_mime_type,
+    execute_export_ocr_document,
     execute_parse_ocr_result,
     execute_read_and_store_file,
     execute_read_file,
@@ -27,12 +29,15 @@ from forge.ocr.activities import (
     execute_store_ocr_result,
     execute_submit_ocr_batch,
     rewrite_image_references,
+    rewrite_ocr_uris_to_local,
     validate_file_size,
 )
 from forge.ocr.models import (
     FileContentRef,
     FileContentResult,
     OcrBatchRef,
+    OcrExportInput,
+    OcrExportResult,
     OcrParseResult,
     OcrStoreInput,
     OcrStoreResult,
@@ -1786,3 +1791,196 @@ class TestOcrImageStore:
 
         img = get_ocr_image(engine, "img-default")
         assert img["document_id"] == ""
+
+
+# ---------------------------------------------------------------------------
+# OCR Export — pure functions
+# ---------------------------------------------------------------------------
+
+
+class TestMimeToExtension:
+    def test_jpeg(self) -> None:
+        assert _mime_to_extension("image/jpeg") == ".jpeg"
+
+    def test_png(self) -> None:
+        assert _mime_to_extension("image/png") == ".png"
+
+    def test_unknown(self) -> None:
+        assert _mime_to_extension("application/x-unknown-thing") == ".bin"
+
+
+class TestRewriteOcrUrisToLocal:
+    def test_rewrites_matching_uris(self) -> None:
+        md = "![chart](ocr-image://abc-123) and ![logo](ocr-image://def-456)"
+        mapping = {"abc-123": "abc-123.jpeg", "def-456": "def-456.png"}
+        result = rewrite_ocr_uris_to_local(md, mapping)
+        assert result == "![chart](abc-123.jpeg) and ![logo](def-456.png)"
+
+    def test_leaves_unknown_uris_unchanged(self) -> None:
+        md = "![x](ocr-image://unknown-id)"
+        result = rewrite_ocr_uris_to_local(md, {})
+        assert result == md
+
+    def test_empty_mapping(self) -> None:
+        md = "![x](ocr-image://abc)"
+        result = rewrite_ocr_uris_to_local(md, {})
+        assert result == md
+
+    def test_no_ocr_uris(self) -> None:
+        md = "![x](https://example.com/img.png)"
+        result = rewrite_ocr_uris_to_local(md, {"abc": "abc.jpeg"})
+        assert result == md
+
+
+# ---------------------------------------------------------------------------
+# OCR Export — testable function
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteExportOcrDocument:
+    def test_exports_text_and_images(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        doc_id = "test-doc-export"
+        image_id = "img-uuid-001"
+
+        # Save OCR result with an ocr-image:// reference
+        save_ocr_result(
+            engine,
+            document_id=doc_id,
+            file_path="/tmp/test.pdf",
+            text=f"Hello\n\n![fig](ocr-image://{image_id})",
+            page_count=1,
+            model_name="mistral-ocr",
+            input_tokens=10,
+            output_tokens=20,
+            batch_id="b-1",
+            workflow_id="w-1",
+        )
+
+        # Save an image
+        save_ocr_image(
+            engine,
+            image_id=image_id,
+            document_id=doc_id,
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"\x89PNG fake image data",
+            mime_type="image/jpeg",
+            file_size_bytes=20,
+        )
+
+        export_dir = tmp_path / "export"
+        result = execute_export_ocr_document(
+            document_id=doc_id,
+            output_dir=str(export_dir),
+            engine=engine,
+        )
+
+        assert result.document_id == doc_id
+        assert result.export_dir == str(export_dir)
+        assert result.image_count == 1
+
+        # Check markdown file
+        md_path = export_dir / f"{doc_id}.md"
+        assert md_path.exists()
+        md_text = md_path.read_text()
+        assert f"![fig]({image_id}.jpeg)" in md_text
+        assert "ocr-image://" not in md_text
+
+        # Check image file
+        img_path = export_dir / f"{image_id}.jpeg"
+        assert img_path.exists()
+        assert img_path.read_bytes() == b"\x89PNG fake image data"
+
+    def test_exports_text_only_no_images(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        doc_id = "text-only-doc"
+        save_ocr_result(
+            engine,
+            document_id=doc_id,
+            file_path="/tmp/test.pdf",
+            text="Just text, no images.",
+            page_count=1,
+            model_name="mistral-ocr",
+            input_tokens=5,
+            output_tokens=10,
+            batch_id="b-2",
+            workflow_id="w-2",
+        )
+
+        export_dir = tmp_path / "export2"
+        result = execute_export_ocr_document(
+            document_id=doc_id,
+            output_dir=str(export_dir),
+            engine=engine,
+        )
+
+        assert result.image_count == 0
+        md_path = export_dir / f"{doc_id}.md"
+        assert md_path.read_text() == "Just text, no images."
+
+    def test_raises_for_missing_document(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        with pytest.raises(RuntimeError, match="No OCR result found"):
+            execute_export_ocr_document(
+                document_id="nonexistent",
+                output_dir=str(tmp_path / "out"),
+                engine=engine,
+            )
+
+    def test_default_xdg_export_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine, _ = _setup_db(tmp_path)
+
+        doc_id = "xdg-test-doc"
+        xdg_data = tmp_path / "xdg_data"
+        monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data))
+
+        save_ocr_result(
+            engine,
+            document_id=doc_id,
+            file_path="/tmp/test.pdf",
+            text="XDG test",
+            page_count=1,
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="w",
+        )
+
+        result = execute_export_ocr_document(
+            document_id=doc_id,
+            output_dir="",
+            engine=engine,
+        )
+
+        expected_dir = xdg_data / "forge" / "ocr-export" / doc_id
+        assert result.export_dir == str(expected_dir)
+        assert (expected_dir / f"{doc_id}.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# OCR Export — model tests
+# ---------------------------------------------------------------------------
+
+
+class TestOcrExportModels:
+    def test_export_input_defaults(self) -> None:
+        inp = OcrExportInput(document_id="doc-1")
+        assert inp.document_id == "doc-1"
+        assert inp.output_dir == ""
+
+    def test_export_result(self) -> None:
+        result = OcrExportResult(
+            document_id="doc-1",
+            export_dir="/tmp/out",
+            markdown_path="/tmp/out/doc-1.md",
+            image_count=3,
+        )
+        assert result.document_id == "doc-1"
+        assert result.image_count == 3

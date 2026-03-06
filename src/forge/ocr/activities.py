@@ -34,6 +34,7 @@ from forge.ocr.models import (
     FileContentRef,
     FileContentResult,
     OcrBatchRef,
+    OcrExportResult,
     OcrParseResult,
     OcrStoreResult,
     SplitResult,
@@ -131,6 +132,40 @@ def rewrite_image_references(markdown: str, image_mapping: dict[str, str]) -> st
         return match.group(0)
 
     return _IMAGE_REF_PATTERN.sub(_replace, markdown)
+
+
+# Matches ocr-image:// URIs in markdown: ![alt](ocr-image://{uuid})
+_OCR_IMAGE_URI_PATTERN = re.compile(r"(!\[[^\]]*\])\(ocr-image://([^)]+)\)")
+
+
+def _mime_to_extension(mime_type: str) -> str:
+    """Convert a MIME type to a file extension (with leading dot)."""
+    ext = mimetypes.guess_extension(mime_type)
+    # mimetypes returns .jpe or .jpg on some platforms for image/jpeg
+    if ext in (".jpe", ".jpg"):
+        return ".jpeg"
+    return ext or ".bin"
+
+
+def rewrite_ocr_uris_to_local(
+    markdown: str,
+    image_id_to_filename: dict[str, str],
+) -> str:
+    """Rewrite ``ocr-image://{uuid}`` references to local filenames.
+
+    Used during export to make the markdown reference exported image files.
+    """
+    if not image_id_to_filename:
+        return markdown
+
+    def _replace(match: re.Match) -> str:
+        alt_bracket = match.group(1)
+        image_id = match.group(2)
+        if image_id in image_id_to_filename:
+            return f"{alt_bracket}({image_id_to_filename[image_id]})"
+        return match.group(0)
+
+    return _OCR_IMAGE_URI_PATTERN.sub(_replace, markdown)
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +515,75 @@ def execute_reassemble_ocr_chunks(
     )
 
 
+def _get_export_dir(document_id: str, output_dir: str) -> Path:
+    """Resolve the export directory for a document.
+
+    If *output_dir* is provided, use it directly. Otherwise default to
+    ``$XDG_DATA_HOME/forge/ocr-export/<document_id>``.
+    """
+    import os
+
+    if output_dir:
+        return Path(output_dir)
+
+    xdg = os.environ.get("XDG_DATA_HOME", "")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "forge" / "ocr-export" / document_id
+
+
+def execute_export_ocr_document(
+    *,
+    document_id: str,
+    output_dir: str,
+    engine: Engine,
+) -> OcrExportResult:
+    """Export OCR text and images to the filesystem.
+
+    Creates a directory containing ``<document_id>.md`` and all associated
+    images with ``ocr-image://`` URIs rewritten to local filenames.
+    """
+    from forge.store import get_ocr_image, get_ocr_images, get_ocr_result
+
+    # Load text
+    ocr_row = get_ocr_result(engine, document_id)
+    if ocr_row is None:
+        msg = f"No OCR result found for document_id={document_id}"
+        raise RuntimeError(msg)
+
+    text: str = ocr_row["text"]
+
+    # Load image metadata
+    image_rows = get_ocr_images(engine, document_id)
+
+    # Build id→filename mapping and write images
+    export_path = _get_export_dir(document_id, output_dir)
+    export_path.mkdir(parents=True, exist_ok=True)
+
+    id_to_filename: dict[str, str] = {}
+    for img_meta in image_rows:
+        image_id: str = img_meta["id"]
+        ext = _mime_to_extension(img_meta["mime_type"])
+        filename = f"{image_id}{ext}"
+        id_to_filename[image_id] = filename
+
+        # Load full image blob
+        img_full = get_ocr_image(engine, image_id)
+        if img_full is not None:
+            (export_path / filename).write_bytes(img_full["data"])
+
+    # Rewrite URIs and write markdown
+    exported_text = rewrite_ocr_uris_to_local(text, id_to_filename)
+    md_path = export_path / f"{document_id}.md"
+    md_path.write_text(exported_text, encoding="utf-8")
+
+    return OcrExportResult(
+        document_id=document_id,
+        export_dir=str(export_path),
+        markdown_path=str(md_path),
+        image_count=len(image_rows),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Imperative shell (Temporal activities)
 # ---------------------------------------------------------------------------
@@ -655,5 +759,30 @@ async def reassemble_ocr_chunks(input_json: str) -> OcrStoreResult:
         chunk_document_ids=data["chunk_document_ids"],
         file_path=data["file_path"],
         total_pages=data["total_pages"],
+        engine=engine,
+    )
+
+
+@activity.defn
+async def export_ocr_document(input_json: str) -> OcrExportResult:
+    """Activity: export OCR text and images to the filesystem.
+
+    Takes JSON with document_id and optional output_dir.
+    Returns OcrExportResult with export paths and image count.
+    """
+    from forge.store import get_db_path, get_engine
+
+    data = json.loads(input_json)
+    logger.info("Exporting OCR document: document_id=%s", data.get("document_id", ""))
+
+    db_path = get_db_path()
+    if db_path is None:
+        msg = "Cannot export: database is disabled"
+        raise RuntimeError(msg)
+
+    engine = get_engine(db_path)
+    return execute_export_ocr_document(
+        document_id=data["document_id"],
+        output_dir=data.get("output_dir", ""),
         engine=engine,
     )
