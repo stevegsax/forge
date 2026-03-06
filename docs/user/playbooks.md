@@ -10,7 +10,7 @@ Each playbook entry has:
 
 ## Creating Playbooks
 
-Playbooks are created by running the `forge extract` command, which reviews completed workflow results and uses an LLM to extract actionable lessons.
+Playbooks are created by running the `forge extract` command, which reviews completed workflow results and uses an LLM to extract actionable lessons. Extraction also runs automatically on a schedule (every 4 hours by default) when the worker is running. The interval is configurable via the `--extraction-interval` flag on `forge worker`.
 
 ```bash
 forge extract                                    # Last 24 hours, up to 10 runs
@@ -21,7 +21,32 @@ forge extract --json                             # Machine-readable output
 
 Extraction skips runs that have already been processed. Each run is only extracted once.
 
-The LLM looks for:
+### What extraction reviews
+
+Extraction reads from the `runs` table in the observability database. Each row represents a completed Forge task workflow execution and contains:
+
+| Column | Description |
+|---|---|
+| `task_id` | The logical task name (e.g., `add-forge-clean`) |
+| `workflow_id` | The Temporal workflow ID |
+| `status` | Final status of the run |
+| `result_json` | Serialized JSON with the full task result |
+| `created_at` | Timestamp |
+
+The extraction LLM receives a summary of each run built from `result_json`, including:
+
+- Task ID and workflow ID
+- Final status (success/failure)
+- Error messages (if any)
+- Per-step results — step IDs, status, and errors
+- Validation results — check name, pass/fail, and summary (e.g., ruff lint failures)
+- Output files — list of files that were generated
+
+Extraction learns from **task execution outcomes** — what succeeded, what failed validation, what required retries — not from the generated code itself or the LLM conversation content.
+
+### What the LLM looks for
+
+The LLM analyzes these run summaries looking for:
 
 - Context that was needed for success
 - Validation failures and how they were resolved
