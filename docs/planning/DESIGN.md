@@ -267,8 +267,8 @@ The plan-then-execute model is simpler, more predictable, and sufficient for tas
 | Observability | OpenTelemetry |
 | Output validation | Pydantic |
 | Package management | uv |
-| LLM providers | Anthropic, OpenAI, Mistral, local models |
-| LLM client library | pydantic-ai |
+| LLM providers | Anthropic, Mistral |
+| LLM client library | anthropic (direct SDK) |
 | Data store / isolation | git, git worktrees |
 | Observability store | SQLite + SQLAlchemy |
 | Schema migrations | Alembic |
@@ -315,7 +315,7 @@ Deliverable: Describe a task where a plan step has independent sub-tasks, Forge 
 
 ### Phase 4: Intelligent Context Assembly (complete)
 
-Automatic context discovery and importance ranking via import graph analysis, PageRank, and token budget management. Replaces manual `context_files` specification with automatic discovery that supplements manual context. See `docs/PHASE4.md` for the full specification.
+Automatic context discovery and importance ranking via import graph analysis, PageRank, and token budget management. Replaces manual `context_files` specification with automatic discovery that supplements manual context. See `docs/planning/PHASE4.md` for the full specification.
 
 By default, only target file contents and the repo map are assembled upfront (progressive disclosure). Dependency file contents and transitive signatures are included only when `--include-deps` is passed. The LLM can pull dependencies on demand via Phase 7's exploration providers.
 
@@ -333,7 +333,7 @@ Deliverable: Run `forge eval-planner --corpus-dir eval/corpus --judge` to evalua
 
 ### Phase 5: Observability Store (complete)
 
-Persist full LLM interaction data to a local SQLite database so operators can inspect prompts, context, token usage, and results for every step of every workflow. Add lightweight statistics to Temporal result payloads. Provide CLI commands for inspecting workflow history and step details. See `docs/PHASE5.md` for the full specification.
+Persist full LLM interaction data to a local SQLite database so operators can inspect prompts, context, token usage, and results for every step of every workflow. Add lightweight statistics to Temporal result payloads. Provide CLI commands for inspecting workflow history and step details. See `docs/planning/PHASE5.md` for the full specification.
 
 Proves out: SQLite observability store, SQLAlchemy ORM, Alembic migrations, best-effort store writes, CLI inspection commands.
 
@@ -341,7 +341,7 @@ Deliverable: Run a multi-step planned workflow, then use `forge status --workflo
 
 ### Phase 6: Knowledge Extraction (complete)
 
-Extract structured lessons from completed workflow results and inject them as playbook entries into future task contexts. Extraction runs as an independent Temporal workflow, producing tagged entries stored in the existing SQLite database. At context assembly time, relevant playbooks are retrieved by tag overlap and injected at priority 5 within the token budget. See `docs/PHASE6.md` for the full specification.
+Extract structured lessons from completed workflow results and inject them as playbook entries into future task contexts. Extraction runs as an independent Temporal workflow, producing tagged entries stored in the existing SQLite database. At context assembly time, relevant playbooks are retrieved by tag overlap and injected at priority 5 within the token budget. See `docs/planning/PHASE6.md` for the full specification.
 
 Proves out: playbook storage, extraction workflow, tag-based retrieval, playbook injection into context assembly, `forge extract` and `forge playbooks` CLI commands.
 
@@ -349,7 +349,7 @@ Deliverable: Run `forge extract` to process completed runs, then verify playbook
 
 ### Phase 7: LLM-Guided Context Exploration
 
-Add an exploration loop before code generation. The LLM requests context from a menu of providers (file reads, code search, symbol lists, import graphs, test execution, linting, git history, repo maps, past runs, playbooks) until it signals readiness. Requests are fulfilled by Temporal activities. A configurable round limit bounds token spend. See `docs/PHASE7.md` for the full specification.
+Add an exploration loop before code generation. The LLM requests context from a menu of providers (file reads, code search, symbol lists, import graphs, test execution, linting, git history, repo maps, past runs, playbooks) until it signals readiness. Requests are fulfilled by Temporal activities. A configurable round limit bounds token spend. See `docs/planning/PHASE7.md` for the full specification.
 
 Proves out: LLM-directed context gathering, provider registry pattern, exploration loop integration into both single-step and planned workflows, `--max-exploration-rounds` and `--no-explore` CLI options.
 
@@ -357,22 +357,30 @@ Deliverable: Run `forge run` with exploration enabled and observe the LLM reques
 
 ### Phase 8: Error-Aware Retries
 
-Feed validation errors back to the LLM on retry so it knows what went wrong. When a step fails validation and retries, the retry prompt includes the validation error output with AST-derived code context around error locations. See `docs/PHASE8.md` for the full specification.
+Feed validation errors back to the LLM on retry so it knows what went wrong. When a step fails validation and retries, the retry prompt includes the validation error output with AST-derived code context around error locations. See `docs/planning/PHASE8.md` for the full specification.
 
 Proves out: error feedback in retry prompts, AST-based context enrichment around error locations, backward-compatible retry fields.
 
 Deliverable: Run `forge run` with a task that fails validation and observe the retry prompt including the previous failure's error output.
 
+### Phase 9: Prompt Caching (complete)
+
+Leverage Anthropic's prompt caching to reduce input token costs. Static context (system prompt, repo map, file contents) is placed in cache-efficient order so repeat LLM calls within a workflow reuse cached prefixes. Cache token usage is tracked in the observability store. See `docs/planning/PHASE9.md` for the full specification.
+
+Proves out: cache control headers, cache-efficient prompt ordering, cache hit tracking.
+
+Deliverable: Run a multi-step task and observe cache read/write token counts in `forge status --verbose`.
+
 ### Phases 10–12, 14 (complete)
 
-- **Phase 10: Fuzzy Edit Matching** — Four-level fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy) for applying LLM-generated edits. See `docs/PHASE10.md`.
-- **Phase 11: Model Routing** — Capability tiers (Reasoning, Generation, Summarization, Classification) mapped to concrete models at dispatch time. See `docs/PHASE11.md`.
-- **Phase 12: Extended Thinking** — Extended thinking support for the planner, with configurable token budget. See `docs/PHASE12.md`.
-- **Phase 14: Batch Processing** — Batch submission via the Anthropic Batch API with a polling workflow. See `docs/PHASE14.md`.
+- **Phase 10: Fuzzy Edit Matching** — Four-level fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy) for applying LLM-generated edits. See `docs/planning/PHASE10.md`.
+- **Phase 11: Model Routing** — Capability tiers (Reasoning, Generation, Summarization, Classification) mapped to concrete models at dispatch time. See `docs/planning/PHASE11.md`.
+- **Phase 12: Extended Thinking** — Extended thinking support for the planner, with configurable token budget. See `docs/planning/PHASE12.md`.
+- **Phase 14: Batch Processing** — Batch submission via the Anthropic Batch API with a polling workflow. See `docs/planning/PHASE14.md`.
 
 ### Release 2 (Future)
 
-- **Phase 13: Tree-Sitter Multi-Language Support** — Replace Python `ast` with tree-sitter for symbol extraction, repo maps, and error context enrichment. Enables non-Python codebases. Deferred until Release 1 is stable. See `docs/PHASE13.md`.
+- **Phase 13: Tree-Sitter Multi-Language Support** — Replace Python `ast` with tree-sitter for symbol extraction, repo maps, and error context enrichment. Enables non-Python codebases. Deferred until Release 1 is stable. See `docs/planning/PHASE13.md`.
 - **Dynamic Task Evolution** — Allow tasks to evolve during execution via `new_tasks_discovered`, `blocked_on_human`, and `blocked_on_sibling` transition signals. See [Plan-Then-Execute vs. Dynamic Task Evolution](#plan-then-execute-vs-dynamic-task-evolution).
 - Multi-provider support.
 - Additional task domains (TypeScript code generation, research, analysis).

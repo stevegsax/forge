@@ -54,6 +54,7 @@ class TaskDomain(StrEnum):
     RESEARCH = "research"
     CODE_REVIEW = "code_review"
     DOCUMENTATION = "documentation"
+    GENERIC = "generic"
     MY_DOMAIN = "my_domain"  # ← add here
 ```
 
@@ -95,8 +96,8 @@ Update the `--domain` choice list and help text:
 ```python
 @click.option(
     "--domain",
-    type=click.Choice(["code_generation", "research", "code_review", "documentation", "my_domain"]),
-    help="Task domain: code_generation, research, code_review, documentation, my_domain.",
+    type=click.Choice(["code_generation", "research", "code_review", "documentation", "generic", "my_domain"]),
+    help="Task domain: code_generation, research, code_review, documentation, generic, my_domain.",
 )
 ```
 

@@ -33,6 +33,10 @@
 - [PHASE13.md](docs/planning/PHASE13.md) — Tree-Sitter Multi-Language Support: replace Python `ast` with tree-sitter for multi-language code analysis (deferred to Release 2).
 - [PHASE14.md](docs/planning/PHASE14.md) — Batch Processing: replace synchronous LLM calls with async batch processing via Anthropic Batch API.
 
+## Behavioral Specifications
+
+- [README.md](docs/requirements/README.md) — BDD requirements framework with Gherkin feature files, tag taxonomy, and capability mappings.
+
 ## Inference Providers
 
 - [mistral.md](docs/inference-providers/mistral.md) — Mistral API reference: authentication, batch API, OCR, SDK usage, and curl examples.

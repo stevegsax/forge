@@ -321,10 +321,10 @@ Forge routes different LLM calls to different model tiers based on the capabilit
 
 | Capability Tier | Default Model | Used For |
 |----------------|---------------|----------|
-| **Reasoning** | `claude-opus-4-6` | Planning, sanity checks, conflict resolution |
-| **Generation** | `claude-sonnet-4-5` | Code/content generation |
-| **Summarization** | `claude-sonnet-4-5` | Knowledge extraction |
-| **Classification** | `claude-haiku-4-5` | Exploration, transition evaluation |
+| **Reasoning** | `anthropic:claude-opus-4-6` | Planning, sanity checks, conflict resolution |
+| **Generation** | `anthropic:claude-sonnet-4-5-20250929` | Code/content generation |
+| **Summarization** | `anthropic:claude-sonnet-4-5-20250929` | Knowledge extraction |
+| **Classification** | `anthropic:claude-haiku-4-5-20251001` | Exploration, transition evaluation |
 
 The plan can override the tier for individual steps via `capability_tier`, so a particularly complex step can use the reasoning tier while simpler steps use the generation tier.
 
@@ -381,6 +381,9 @@ These are the core Pydantic models that flow through the system:
 ```
 src/forge/
 ├── workflows.py              # Temporal workflows (main orchestration)
+├── workflow_blocks.py        # Shared workflow building blocks
+├── batch_poller_workflow.py  # Batch status polling workflow
+├── extraction_workflow.py    # Knowledge extraction workflow
 ├── models.py                 # All Pydantic data models
 ├── llm_client.py             # Anthropic API request construction + response parsing
 ├── providers.py              # Context provider registry (12 providers)
@@ -390,8 +393,12 @@ src/forge/
 ├── git.py                    # Git operations and worktree management
 ├── store.py                  # SQLite observability store
 ├── tracing.py                # OpenTelemetry instrumentation
+├── logging_config.py         # Log file paths and rotation
+├── message_log.py            # API message logging utilities
+├── subprocess_result.py      # Subprocess result models
 │
 ├── activities/
+│   ├── _heartbeat.py         # Heartbeat management for long-running activities
 │   ├── context.py            # Prompt assembly (system + user prompts)
 │   ├── llm.py                # LLM call execution
 │   ├── output.py             # File writing + edit application
@@ -413,11 +420,28 @@ src/forge/
 │   ├── budget.py             # Token budget packing
 │   └── repo_map.py           # Repository structure mapping
 │
-└── eval/
-    ├── runner.py              # Evaluation harness
-    ├── deterministic.py       # Deterministic plan checks
-    ├── judge.py               # LLM-as-judge scoring
-    └── corpus.py              # Test corpus management
+├── eval/
+│   ├── runner.py              # Evaluation harness
+│   ├── deterministic.py       # Deterministic plan checks
+│   ├── judge.py               # LLM-as-judge scoring
+│   ├── models.py              # Evaluation data models
+│   └── corpus.py              # Test corpus management
+│
+├── llm_providers/
+│   ├── protocol.py            # Provider protocol definition
+│   ├── registry.py            # Provider registry and resolution
+│   ├── models.py              # Provider data models
+│   ├── anthropic.py           # Anthropic provider implementation
+│   └── mistral.py             # Mistral provider implementation
+│
+└── ocr/
+    ├── activities.py          # OCR pipeline activities
+    ├── models.py              # OCR data models
+    ├── workflow_submit.py     # Document submission workflow
+    ├── workflow_store.py      # Result storage workflow
+    ├── workflow_gather.py     # Multi-page gathering workflow
+    ├── workflow_export.py     # Document export workflow
+    └── workflow_mark_removal.py # Mark-for-removal workflow
 ```
 
 ---

@@ -80,7 +80,6 @@ Distributed tracing across Temporal activities is available via OpenTelemetry. C
 | Variable | Values | Default |
 |----------|--------|---------|
 | `FORGE_OTEL_EXPORTER` | `console`, `otlp_grpc`, `otlp_http`, `none` | `console` |
-| `FORGE_OTEL_ENDPOINT` | Any URL | Per exporter default |
 
 ## Knowledge Base
 

@@ -133,6 +133,7 @@ forge run --task-file task.json
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--sync/--no-sync` | `--no-sync` | Use synchronous Messages API (`--sync`) or batch mode (`--no-sync`, default) |
+| `--verbose` | off | Show detailed LLM stats and interactions |
 | `--log-messages` | off | Save full API request/response JSON to `messages/` in the worktree |
 
 **Common options:**
@@ -156,7 +157,7 @@ forge worker --temporal-address temporal.example.com:7233
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
-| `--batch-poll-interval` | `60` | Seconds between batch polling runs |
+| `--batch-poll-interval` | `600` | Seconds between batch polling runs |
 | `--extraction-interval` | `14400` | Seconds between knowledge extraction runs (4 hours) |
 | `--worker-identity` | `{pid}@{hostname}` | Custom worker identity reported to Temporal (env: `FORGE_WORKER_IDENTITY`) |
 
@@ -238,4 +239,25 @@ forge playbooks --task-id my-task      # Filter by source task
 | `--task-id` | — | Filter by source task ID |
 | `--limit` | `20` | Max entries to show |
 | `--json` | off | Machine-readable JSON output |
+
+### `forge start`
+
+Start an arbitrary Temporal workflow by name. Useful for launching OCR, batch polling, or other registered workflows without a Python script.
+
+```bash
+forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}'
+forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}' --wait
+forge start BatchPollerWorkflow --wait
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--input-file` | — | Read JSON input from a file instead of the argument |
+| `--id` | auto-generated | Custom workflow ID |
+| `--task-queue` | `forge-task-queue` | Temporal task queue |
+| `--wait` | off | Wait for completion and print result as JSON |
+| `--timeout` | `48` | Execution timeout in hours |
+| `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 

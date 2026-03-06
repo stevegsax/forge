@@ -170,10 +170,11 @@ The planner decomposes the research into steps, each producing markdown files. F
 
 ## Other Domains
 
-Two additional domains are available, both producing markdown output with no code validation:
+Three additional domains are available, all producing markdown output with no code validation:
 
 - `--domain code_review` — The LLM acts as a code review assistant, producing review comments and suggestions.
 - `--domain documentation` — The LLM acts as a documentation assistant, producing guides and reference material.
+- `--domain generic` — A general-purpose domain for tasks that don't fit other categories.
 
 ```bash
 forge run \
@@ -186,14 +187,14 @@ forge run \
 
 ## Domain Comparison
 
-| Behavior | `code_generation` | `research` | `code_review` | `documentation` |
-|----------|-------------------|------------|---------------|-----------------|
-| LLM role | Code generation assistant | Research assistant | Code review assistant | Documentation assistant |
-| Output format | `files` (new) + `edits` (search/replace) | `files` (markdown) | `files` (markdown) | `files` (markdown) |
-| Ruff lint | On | Off | Off | Off |
-| Ruff format | On | Off | Off | Off |
-| Auto-fix | On | Off | Off | Off |
-| Tests | Off (opt-in) | Off | Off | Off |
+| Behavior | `code_generation` | `research` | `code_review` | `documentation` | `generic` |
+|----------|-------------------|------------|---------------|-----------------|-----------|
+| LLM role | Code generation assistant | Research assistant | Code review assistant | Documentation assistant | General-purpose assistant |
+| Output format | `files` (new) + `edits` (search/replace) | `files` (markdown) | `files` (markdown) | `files` (markdown) | `files` (markdown) |
+| Ruff lint | On | Off | Off | Off | Off |
+| Ruff format | On | Off | Off | Off | Off |
+| Auto-fix | On | Off | Off | Off | Off |
+| Tests | Off (opt-in) | Off | Off | Off | Off |
 
 ## Context and Exploration Options
 
