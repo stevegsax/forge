@@ -1,4 +1,4 @@
-# Forge - Worked Examples
+# Forge - Worked LLM Examples
 
 This directory contains worked examples that trace Forge's workflow
 from start to finish. Each example demonstrates how a real task moves
