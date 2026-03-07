@@ -19,6 +19,37 @@ This document describes Forge's task decomposition system: a multi-transform pip
 
 ---
 
+## Graph Semantics
+
+### Root Node
+
+Every `PlanDAG` has exactly one synthetic root node:
+
+- `is_leaf = False`, no incoming `PARENT_CHILD` edge.
+- All first-pass top-level tasks become children of the root.
+- Orphan checks are evaluated relative to this root — every non-root node must be reachable from root via `PARENT_CHILD` edges.
+
+The root node is created automatically during the first-pass decomposition (step 4) and is never presented to the user as a task.
+
+### Edge Direction Conventions
+
+- **`DEPENDS_ON`:** `source` depends on `target`. Target must complete before source starts. Example: edge `(source=B, target=A)` means "B depends on A."
+- **`PARENT_CHILD`:** `source` is the child, `target` is the parent. Example: edge `(source=child_node, target=container_node)` means "child_node is contained by container_node."
+
+### Canonical Parent-Child Representation
+
+`PARENT_CHILD` edges are the source of truth for the parent-child hierarchy. The `children` list on `PlanNode` is a derived convenience field, materialized from edges. Deterministic checks (step 8) validate that `children` lists are consistent with `PARENT_CHILD` edges.
+
+### Structural Invariants
+
+1. Exactly one root node exists.
+2. Every node is reachable from root via `PARENT_CHILD` edges.
+3. All leaves have non-empty `acceptance_criteria` and `execution_type`.
+4. No `DEPENDS_ON` edge may connect a parent to its own descendant (to avoid semantic conflicts with the containment hierarchy).
+5. Cross-workflow child nodes must reference a valid `subplan_id` in their `context` dict once spawned.
+
+---
+
 ## Transform Pipeline
 
 The pipeline is a sequence of Temporal activities connected by a workflow. Each transform is a separate LLM call (or deterministic function) that produces a versioned artifact.
@@ -52,12 +83,12 @@ User Input
   |
   v
 [9. Adversarial Review]   -- 3 judges, 2-of-3 consensus
-  |                          (up to 3 rounds; then escalate)
+  |                          (up to 3 judge_rounds; then escalate)
   v
 [10. User Approval]  -- Present JSON + rendered DAG
 ```
 
-Each transform reads the current plan version, produces a new version, and persists both to the plan database. The workflow is a linear sequence with two loop points: Clarify (steps 2-3) and Review (steps 8-9, up to 3 attempts).
+Each transform reads the current plan version, produces a new version, and persists both to the plan database. The workflow is a linear sequence with two loop points: Clarify (steps 2-3) and Review (steps 8-9). See **Revision Budgets** below for attempt limits.
 
 ---
 
@@ -160,6 +191,8 @@ User request: "write a program that uses WebGPU to draw a rotating cube"
 Classify this request. Return the workflow_type and your confidence (0-1).
 ```
 
+**Persistence:** Classification creates the `plans` record and a minimal skeleton `PlanDAG` (root node only, no children) as `plan_version` v1 with `transform_name = "classify"`. This ensures every transform from this point forward has a valid `PlanDAG` to read and extend.
+
 **Model tier:** CLASSIFICATION (lightweight, fast).
 
 ### 2. Clarify
@@ -216,7 +249,7 @@ The workflow's `decompose.prompt.j2` template provides domain-specific guidance.
 
 **Clarification:** If the LLM encounters ambiguity during splitting, it raises a `ClarificationQuestion` and the workflow pauses.
 
-**Loop termination:** The loop ends when every node is either a leaf (confirmed atomic) or a container whose children are all leaves.
+**Loop termination:** The loop ends when every node is either a leaf (confirmed atomic) or a container whose children are all leaves. Each iteration must make monotonic progress: at least one previously-unconfirmed node must be marked atomic, or the sum of estimated complexities for unresolved nodes must decrease. If no progress is made after 5 consecutive iterations, the workflow escalates to the user.
 
 **Model tier:** REASONING for splitting, CLASSIFICATION for atomicity check.
 
@@ -255,12 +288,23 @@ This can be parallelized — each leaf's criteria generation is independent.
 - All edge references point to existing nodes
 - Every leaf has at least one acceptance criterion
 - Every leaf has an execution_type
-- No orphan nodes (every non-root node has a parent edge)
-- Cross-workflow references are valid
+- Exactly one root node exists (no incoming `PARENT_CHILD` edge)
+- Every non-root node is reachable from root via `PARENT_CHILD` edges
+- `children` lists are consistent with `PARENT_CHILD` edges
+- No `DEPENDS_ON` edge connects a parent to its own descendant
+- Cross-workflow references are valid (child nodes reference a `subplan_id` once spawned)
 - Container nodes have at least 2 children
 - No circular parent-child relationships
 
-If any check fails, the system loops back to step 5 (Recursive Split) with the failure details injected into the prompt. This counts as one of the 3 allowed revision attempts.
+**Failure routing:** If any check fails, the system routes the failure to the appropriate repair step based on the failure class:
+
+| Failure class | Routes to | Examples |
+|---------------|-----------|----------|
+| Structural / splitting | Step 5 (Recursive Split) | Orphan nodes, container with <2 children, missing criteria |
+| Dependency-only | Step 6 (Dependency Analysis) | Cycle in `DEPENDS_ON` edges, parent-descendant dependency |
+| Edge consistency | Step 5 (Recursive Split) | `children` list mismatch, invalid edge references |
+
+Deterministic repair loops use a separate `repair_round` counter (max 5). These do **not** count toward the adversarial review `judge_round` budget.
 
 ### 9. Adversarial Review
 
@@ -328,7 +372,7 @@ If REJECT, list the specific changes required (not suggestions — requirements)
 
 - **2-of-3 APPROVE:** Plan is accepted.
 - **2-of-3 REJECT:** Plan is revised. The system collects all required changes from rejecting judges, feeds them back to step 5 (Recursive Split) as revision instructions, and produces a new plan version.
-- **Up to 3 rounds.** If after 3 rounds judges still reject, the system stops and escalates to the user with the judge feedback.
+- **Up to 3 judge rounds** (`judge_round` counter, max 3). If after 3 rounds judges still reject, the system stops and escalates to the user with the judge feedback. This counter is independent of the `repair_round` counter used by deterministic checks (step 8).
 
 **Model tier:** REASONING for all judges (this is where quality matters most).
 
@@ -355,8 +399,11 @@ Templates are organized in a directory-per-workflow layout using Jinja2:
 ```
 src/forge/workflow_templates/
 ├── _shared/
+│   ├── classify_base.prompt.j2
 │   ├── clarify_base.prompt.j2
 │   ├── goal_base.prompt.j2
+│   ├── decompose_base.prompt.j2
+│   ├── split_base.prompt.j2
 │   ├── criteria_base.prompt.j2
 │   └── judge_base.prompt.j2
 ├── software/
@@ -501,7 +548,7 @@ class DecompositionWorkflow:
         # 4-7. Decompose (with recursive split loop)
         plan = await self._decompose(goal, classification)
 
-        # 8-9. Validate + Review (up to 3 rounds)
+        # 8-9. Validate + Review (repair_round / judge_round budgets)
         plan = await self._validate_and_review(plan)
 
         # 10. User approval
@@ -569,6 +616,13 @@ sub_plan_result = await workflow.execute_child_workflow(
 
 The child workflow goes through the full pipeline including user approval. The parent workflow waits for the child to complete.
 
+**Parent-node state transitions:** When a child sub-plan is spawned, the parent node enters state `blocked_on_subplan`. On child completion:
+
+- **Child approved:** Parent node transitions to `subplan_approved`. The child's `plan_id` is stored in the parent node's `context["subplan_id"]`.
+- **Child rejected:** Parent node transitions to `subplan_rejected`. The parent plan is escalated to the user, who can override or reject the entire parent plan.
+
+**Parallelism:** Multiple cross-workflow nodes within the same parent plan spawn child workflows concurrently. The parent workflow uses `asyncio.gather` (within Temporal's execution model) to wait for all children. The user may have multiple pending sub-plan approvals at once; the CLI surfaces all pending approvals together.
+
 ---
 
 ## DOT Visualization
@@ -615,6 +669,53 @@ Each transform specifies its capability tier. The system resolves the tier to a 
 
 ---
 
+## User Wait Timeout Policy
+
+All human interaction points use the same signal/wait pattern but share a consistent timeout policy:
+
+| Wait point | Timeout | On timeout |
+|------------|---------|------------|
+| Clarification questions (step 2) | 72 hours | Plan status → `timed_out`, workflow terminates |
+| Goal confirmation (step 3) | 72 hours | Plan status → `timed_out`, workflow terminates |
+| Sub-plan approval (step 5, cross-workflow) | 72 hours | Child plan status → `timed_out`, parent node → `subplan_rejected`, parent escalates |
+| Final approval (step 10) | 72 hours | Plan status → `timed_out`, workflow terminates |
+
+In all cases, the Temporal workflow remains durable across worker restarts. If the user returns after a timeout, they must start a new decomposition request.
+
+---
+
+## Versioning Lifecycle
+
+The `PlanDAG` is created as a minimal skeleton (root node only) during classification (step 1). Every subsequent transform reads the current version, mutates, and persists a new version. This ensures all transforms — including early ones — have a valid `PlanDAG` to reference.
+
+| Transform | Version created | Content |
+|-----------|----------------|---------|
+| Classify (step 1) | v1 | Skeleton: root node, workflow_type, no children |
+| Goal Statement (step 3) | v2 | Root node + goal_statement populated |
+| First Pass (step 4) | v3 | Root + 3-7 top-level children |
+| Recursive Split (step 5) | v4..vN | Progressive leaf expansion |
+| Dependency Analysis (step 6) | vN+1 | `DEPENDS_ON` edges added |
+| Acceptance Criteria (step 7) | vN+2 | Criteria populated on all leaves |
+| Deterministic revision (step 8, if needed) | vN+3.. | Structural repairs |
+| Judge revision (step 9, if needed) | vM.. | Revisions from judge feedback |
+
+Version numbers are monotonically increasing per plan. The `parent_version` field links each version to its predecessor. No version is ever mutated after creation.
+
+---
+
+## Revision Budgets
+
+Two independent counters govern revision loops:
+
+| Counter | Max | Incremented by | Routes to |
+|---------|-----|----------------|-----------|
+| `repair_round` | 5 | Deterministic check failure (step 8) | Step 5 or 6 per failure routing matrix |
+| `judge_round` | 3 | Adversarial review consensus = REJECT (step 9) | Step 5 with judge feedback |
+
+If either counter is exhausted, the workflow sets plan status to `escalated` and presents all accumulated feedback to the user.
+
+---
+
 ## Relationship to Existing Planner
 
 This system **replaces** the current planner (`activities/planner.py`). The existing planner's responsibilities map to this design as follows:
@@ -640,7 +741,7 @@ The existing `ForgeTaskWorkflow` execution pipeline (steps, retries, fan-out) re
 ### Unit Tests (Pure Functions)
 
 - Template rendering with various inputs
-- Deterministic check functions (all 9+ checks)
+- Deterministic check functions (all 12 checks)
 - `plan_to_dot()` conversion
 - DAG cycle detection
 - PlanDAG serialization/deserialization
@@ -683,3 +784,18 @@ Extend the existing `eval/` framework:
 4. **Plan resumption.** If the user closes their terminal mid-pipeline, can they resume? Temporal provides durability, but the CLI needs a "resume plan" command.
 
 5. **Plan templates / recipes.** Should common plan shapes (e.g., "build a CRUD app") be pre-defined templates that the decomposition pipeline can start from, similar to Goose's recipe system?
+
+## Resolved Questions
+
+These items were raised during review and have been resolved in this document:
+
+- **Revision-attempt counting:** Two independent counters (`judge_round`, `repair_round`). See **Revision Budgets**.
+- **Root node semantics:** Synthetic root node, always present. See **Graph Semantics**.
+- **Edge direction conventions:** Canonical direction rules defined. See **Graph Semantics**.
+- **Canonical parent-child representation:** `PARENT_CHILD` edges are source of truth; `children` list is derived. See **Graph Semantics**.
+- **Recursive split termination:** Monotonic progress invariant with escalation. See step 5.
+- **Cross-workflow completion contract:** Parent-node state transitions defined. See **Cross-Workflow Sub-Plans**.
+- **Versioning lifecycle:** Skeleton `PlanDAG` created at classification. See **Versioning Lifecycle**.
+- **User wait timeouts:** Consistent policy for all signal/wait points. See **User Wait Timeout Policy**.
+- **Template inventory:** Shared templates list updated to include all base templates.
+- **Deterministic failure routing:** Failure routing matrix added to step 8.
