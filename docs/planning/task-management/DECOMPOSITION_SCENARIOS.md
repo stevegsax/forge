@@ -48,12 +48,15 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     And the result confidence is 1.0
     And no clarification is needed for workflow type
 
-### Scenario: Classification result is persisted
+### Scenario: Classification result is persisted with skeleton PlanDAG
 
     Given a user submits any request
     When the classify_request activity completes
-    Then a plan_version record is created with transform_name "classify"
-    And the plan record status is "draft"
+    Then a plan record is created with status "draft"
+    And a plan_version record is created with transform_name "classify" and version 1
+    And the plan_version contains a minimal PlanDAG with exactly one root node
+    And the root node has is_leaf set to false and no children
+    And the root node has workflow_type set to the classified type
 
 ---
 
@@ -176,10 +179,13 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     And at least one node addresses source gathering
     And at least one node addresses synthesis or analysis
 
-### Scenario: First pass nodes may be non-leaf
+### Scenario: First pass creates children of root node
 
     Given the first_pass_decompose activity has run
-    Then some nodes may have is_leaf set to false
+    Then the existing root node gains 3 to 7 children
+    And PARENT_CHILD edges are created from each child to the root
+    And the root node's children list matches the PARENT_CHILD edges
+    And some child nodes may have is_leaf set to false
     And non-leaf nodes have an empty acceptance_criteria list
     And the pipeline advances to recursive split
 
@@ -202,7 +208,7 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     Given a PlanDAG with a non-leaf node "implement rendering pipeline"
     When the split_node activity runs for that node
     Then the node receives 2 or more children
-    And PARENT_CHILD edges are created from each child to the parent
+    And PARENT_CHILD edges are created with source=child, target=parent for each child
     When the check_atomicity activity runs for each child
     And all children are confirmed atomic
     Then each child has is_leaf set to true
@@ -237,12 +243,20 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     And the user's answer is fed back into the split_node activity
     And splitting resumes
 
-### Scenario: Recursive split terminates
+### Scenario: Recursive split terminates via monotonic progress
 
     Given a PlanDAG with multiple levels of non-leaf nodes
     When the recursive split loop runs
-    Then every pass reduces the number of non-leaf nodes
+    Then every iteration either marks at least one previously-unconfirmed node as atomic
+      or reduces the sum of estimated complexities for unresolved nodes
     And the loop terminates when all nodes are either leaves or containers whose children are all leaves
+
+### Scenario: Recursive split escalates on stall
+
+    Given a PlanDAG with non-leaf nodes
+    And the recursive split loop has run 5 consecutive iterations without progress
+    Then the workflow escalates to the user with a description of the stalled nodes
+    And no further automatic splitting is attempted
 
 ### Scenario: Container nodes have at least 2 children
 
@@ -261,7 +275,8 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 
     Given a PlanDAG with leaf nodes "create database schema" and "implement data access layer"
     When the analyze_dependencies activity runs
-    Then a DEPENDS_ON edge is created from "implement data access layer" to "create database schema"
+    Then a DEPENDS_ON edge is created with source="implement data access layer" and target="create database schema"
+    (meaning "implement data access layer" depends on "create database schema")
     And the edge has a non-empty rationale
     And a plan_version record is created with transform_name "dependency_analysis"
 
@@ -277,8 +292,9 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     Given the analyze_dependencies activity produces edges that form a cycle
     When the deterministic acyclic validation runs
     Then the validation fails
-    And the system loops back to the analyze_dependencies activity with the cycle details
+    And the system loops back to step 6 (dependency analysis) with the cycle details
     And the LLM is instructed to break the cycle
+    And the repair_round counter is incremented
 
 ### Scenario: Dependency edges reference existing nodes only
 
@@ -344,8 +360,13 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
       - All edge references point to existing nodes
       - Every leaf has at least one acceptance criterion
       - Every leaf has an execution_type
-      - Every non-root node has a PARENT_CHILD edge
+      - Exactly one root node exists (no incoming PARENT_CHILD edge)
+      - Every non-root node is reachable from root via PARENT_CHILD edges
+      - children lists are consistent with PARENT_CHILD edges
+      - No DEPENDS_ON edge connects a parent to its own descendant
+      - Cross-workflow child nodes reference a valid subplan_id
       - Container nodes have at least 2 children
+      - No circular parent-child relationships
     When the run_deterministic_checks activity runs
     Then the result has all_passed set to true
     And every check has status "pass"
@@ -367,9 +388,29 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 
 ### Scenario: Orphan node fails validation
 
-    Given a PlanDAG with a node that has no PARENT_CHILD edge and is not the root
+    Given a PlanDAG with a node that is not reachable from the root via PARENT_CHILD edges
     When the run_deterministic_checks activity runs
-    Then the "no_orphans" check has status "fail"
+    Then the "reachable_from_root" check has status "fail"
+    And the check details list the unreachable node_id
+
+### Scenario: Multiple root nodes fails validation
+
+    Given a PlanDAG with two nodes that have no incoming PARENT_CHILD edge
+    When the run_deterministic_checks activity runs
+    Then the "single_root" check has status "fail"
+
+### Scenario: Children list inconsistent with edges fails validation
+
+    Given a PlanDAG where a node's children list includes a node_id
+      but no corresponding PARENT_CHILD edge exists
+    When the run_deterministic_checks activity runs
+    Then the "children_edge_consistency" check has status "fail"
+
+### Scenario: DEPENDS_ON between parent and descendant fails validation
+
+    Given a PlanDAG with a DEPENDS_ON edge from a leaf node to its grandparent container
+    When the run_deterministic_checks activity runs
+    Then the "no_ancestor_dependency" check has status "fail"
 
 ### Scenario: Edge referencing nonexistent node fails
 
@@ -383,12 +424,29 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     When the run_deterministic_checks activity runs
     Then the "container_min_children" check has status "fail"
 
-### Scenario: Deterministic failure triggers revision
+### Scenario: Structural deterministic failure routes to recursive split
 
     Given the run_deterministic_checks activity returns all_passed as false
+    And the failures include "container_min_children" and "reachable_from_root"
     Then the system loops back to step 5 (recursive split) with the failure details
-    And this counts as one of the 3 allowed revision attempts
+    And the repair_round counter is incremented
     And a plan_version record is created with transform_name "deterministic_revision"
+
+### Scenario: Dependency-only deterministic failure routes to dependency analysis
+
+    Given the run_deterministic_checks activity returns all_passed as false
+    And the only failure is "acyclic" (cycle in DEPENDS_ON edges)
+    Then the system loops back to step 6 (dependency analysis) with the cycle details
+    And the repair_round counter is incremented
+    And a plan_version record is created with transform_name "deterministic_revision"
+
+### Scenario: Repair budget exhaustion triggers escalation
+
+    Given the repair_round counter has reached 5
+    And the run_deterministic_checks activity returns all_passed as false
+    Then the workflow sets plan status to "escalated"
+    And the user receives all accumulated failure details
+    And no further automatic repair is attempted
 
 ---
 
@@ -457,19 +515,20 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 
     Given 3 judge activities run concurrently
     And 2 judges return verdict "reject" with required_changes
-    And this is round 1 of 3
+    And this is judge_round 1 of 3
     Then the consensus is REJECTED
     And the required_changes from both rejecting judges are collected
     And the system loops back to step 5 (recursive split) with revision instructions
     And the revision instructions include the collected required_changes
     And a new plan_version is created with transform_name "judge_revision"
-    And the review round counter increments to 2
+    And the judge_round counter increments to 2
+    And the repair_round counter is NOT incremented
 
 ### Scenario: Judges reject through 3 rounds
 
-    Given the judges reject the plan in round 1
-    And the revised plan is rejected again in round 2
-    And the revised plan is rejected again in round 3
+    Given the judges reject the plan in judge_round 1
+    And the revised plan is rejected again in judge_round 2
+    And the revised plan is rejected again in judge_round 3
     Then the workflow stops
     And the plan status is set to "escalated"
     And the user receives all judge feedback from all 3 rounds
@@ -528,6 +587,7 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     Then the workflow.wait_condition raises a timeout
     And the plan status is set to "timed_out"
     And the workflow returns a DecompositionResult with approved set to false
+    And the user must start a new decomposition request to try again
 
 ---
 
@@ -539,15 +599,15 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 ### Scenario: Version chain through the pipeline
 
     Given a user's request goes through the full pipeline
-    Then plan_versions records exist for at least these transform_names:
-      - "classify"
-      - "goal_statement"
-      - "first_pass"
-      - "recursive_split" (one or more)
-      - "dependency_analysis"
-      - "acceptance_criteria"
+    Then plan_versions records exist for at least these transform_names in order:
+      - "classify" (v1, skeleton PlanDAG with root node only)
+      - "goal_statement" (v2, root node + goal populated)
+      - "first_pass" (v3, root + top-level children)
+      - "recursive_split" (one or more versions, progressive leaf expansion)
+      - "dependency_analysis" (DEPENDS_ON edges added)
+      - "acceptance_criteria" (criteria populated on all leaves)
     And each version's parent_version points to the previous version number
-    And version numbers are monotonically increasing
+    And version numbers are monotonically increasing starting from 1
 
 ### Scenario: Judge revision creates additional versions
 
@@ -587,14 +647,37 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     Given a child DecompositionWorkflow is spawned for a research sub-plan
     Then the child workflow goes through all 10 pipeline steps
     And the child workflow pauses for user approval independently
+    And the parent node is in state "blocked_on_subplan"
     And the user must approve the sub-plan before the parent can continue
+
+### Scenario: Approved child sub-plan updates parent node
+
+    Given a child DecompositionWorkflow completes with approved set to true
+    Then the parent node transitions to state "subplan_approved"
+    And the parent node's context["subplan_id"] references the child plan_id
+    And the parent workflow resumes
+
+### Scenario: Rejected child sub-plan escalates parent
+
+    Given a child DecompositionWorkflow completes with approved set to false
+    Then the parent node transitions to state "subplan_rejected"
+    And the parent plan is escalated to the user
+    And the user can override or reject the entire parent plan
+
+### Scenario: Multiple cross-workflow nodes spawn concurrently
+
+    Given a PlanDAG with 3 nodes marked with different workflow_types
+    When the recursive split encounters all 3 cross-workflow nodes
+    Then 3 child DecompositionWorkflows are spawned concurrently
+    And the parent workflow waits for all 3 to complete
+    And the CLI surfaces all pending sub-plan approvals together
 
 ### Scenario: Child sub-plan is stored separately
 
     Given a child DecompositionWorkflow completes
     Then a separate plan record exists in the plans table
     And the child plan's versions are stored independently
-    And the parent plan node references the child plan_id in its context dict
+    And the parent plan node references the child plan_id in its context["subplan_id"]
 
 ---
 
@@ -602,6 +685,18 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 
     Jinja2 templates organized by workflow type provide domain-specific
     prompt guidance for each pipeline step.
+
+### Scenario: Shared template inventory
+
+    Given the workflow_templates/_shared/ directory
+    Then it contains at minimum these base templates:
+      - classify_base.prompt.j2
+      - clarify_base.prompt.j2
+      - goal_base.prompt.j2
+      - decompose_base.prompt.j2
+      - split_base.prompt.j2
+      - criteria_base.prompt.j2
+      - judge_base.prompt.j2
 
 ### Scenario: Template loading by workflow type
 
@@ -722,12 +817,29 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
     And "confirm" questions show yes/no
     And all fields with defaults are pre-populated
 
-### Scenario: Response timeout
+### Scenario: Clarification response timeout
 
-    Given the workflow is waiting for user input
+    Given the workflow is waiting for clarification answers
     And the user does not respond within 72 hours
     Then the workflow.wait_condition raises a timeout
-    And the workflow terminates gracefully with a timeout status
+    And the plan status is set to "timed_out"
+    And the workflow terminates gracefully
+
+### Scenario: Goal confirmation response timeout
+
+    Given the workflow is waiting for goal confirmation
+    And the user does not respond within 72 hours
+    Then the workflow.wait_condition raises a timeout
+    And the plan status is set to "timed_out"
+    And the workflow terminates gracefully
+
+### Scenario: Final approval response timeout
+
+    Given the workflow is waiting for final user approval
+    And the user does not respond within 72 hours
+    Then the workflow.wait_condition raises a timeout
+    And the plan status is set to "timed_out"
+    And the workflow terminates gracefully
 
 ---
 
@@ -757,9 +869,12 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 
     Given a plan goes through the full pipeline
     Then the plan status transitions through:
-      - "draft" (created)
+      - "draft" (created at classification)
       - "reviewing" (entered adversarial review)
-      - "approved" (user approved) OR "rejected" (user rejected) OR "escalated" (judges failed 3 rounds)
+      - "approved" (user approved)
+        OR "rejected" (user rejected)
+        OR "escalated" (judge_round or repair_round budget exhausted)
+        OR "timed_out" (user did not respond within 72 hours)
 
 ### Scenario: Database location follows XDG spec
 
@@ -768,6 +883,27 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 
     Given XDG_STATE_HOME is not set
     Then the plan database is created at "~/.local/state/forge/plans.db"
+
+### Scenario: Idempotent activity retry does not duplicate versions
+
+    Given the persist_plan_version activity succeeds
+    But the Temporal activity acknowledgement fails
+    And Temporal retries the activity with the same input
+    Then the version number is not duplicated
+    And only one plan_version record exists for that version number
+
+### Scenario: Version numbers are monotonic under concurrent writes
+
+    Given two activities attempt to persist plan_versions concurrently
+    Then each receives a unique, monotonically increasing version number
+    And no gaps or duplicates exist in the version sequence
+
+### Scenario: Partial pipeline failure preserves committed versions
+
+    Given a plan has been persisted through version 5
+    And the split_node activity fails fatally on what would be version 6
+    Then versions 1 through 5 remain intact in the database
+    And no partial version 6 record exists
 
 ---
 
@@ -801,6 +937,7 @@ Gherkin-style scenarios for every stage of the decomposition pipeline described 
 ### Scenario: Deterministic check failure does not count toward judge revision limit
 
     Given the deterministic checks fail
-    And the system loops back to recursive split
-    Then this loop does not count toward the 3-round adversarial review limit
-    And the adversarial review round counter remains unchanged
+    And the system loops back to the appropriate repair step
+    Then the repair_round counter is incremented
+    But the judge_round counter remains unchanged
+    And the 3-round adversarial review budget is not affected

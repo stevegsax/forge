@@ -33,6 +33,11 @@
 - [PHASE13.md](docs/planning/PHASE13.md) — Tree-Sitter Multi-Language Support: replace Python `ast` with tree-sitter for multi-language code analysis (deferred to Release 2).
 - [PHASE14.md](docs/planning/PHASE14.md) — Batch Processing: replace synchronous LLM calls with async batch processing via Anthropic Batch API.
 
+## Task Management
+
+- [DECOMPOSITION.md](docs/planning/task-management/DECOMPOSITION.md) — Task decomposition strategy: multi-transform pipeline producing a validated, dependency-ordered DAG of atomic tasks with adversarial review.
+- [DECOMPOSITION_SCENARIOS.md](docs/planning/task-management/DECOMPOSITION_SCENARIOS.md) — Gherkin-style behavioral scenarios for every stage of the decomposition pipeline.
+
 ## Behavioral Specifications
 
 - [README.md](docs/requirements/README.md) — BDD requirements framework with Gherkin feature files, tag taxonomy, and capability mappings.
@@ -40,6 +45,10 @@
 ## Inference Providers
 
 - [mistral.md](docs/inference-providers/mistral.md) — Mistral API reference: authentication, batch API, OCR, SDK usage, and curl examples.
+
+## Worked Examples
+
+- [README.md](docs/llm-examples/README.md) — Worked LLM examples tracing Forge's universal workflow step from context assembly through state transition.
 
 ## Research
 
