@@ -42,21 +42,25 @@ from forge.activities import (
     create_worktree_activity,
     detect_file_conflicts_activity,
     evaluate_transition,
+    fetch_existing_playbooks,
     fetch_extraction_input,
     fulfill_context_requests,
     parse_llm_response,
     poll_batch_results,
     remove_worktree_activity,
     reset_worktree_activity,
+    review_manual_playbook,
     save_extraction_results,
     submit_batch_request,
     validate_output,
+    validate_playbook_entry,
     write_files,
     write_output,
 )
 from forge.activities.batch_poll import set_temporal_client
 from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
+from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.ocr.activities import (
     check_ocr_duplicate,
@@ -198,6 +202,7 @@ async def run_worker(
             ForgeTaskWorkflow,
             ForgeSubTaskWorkflow,
             ForgeExtractionWorkflow,
+            ManualPlaybookWorkflow,
             BatchPollerWorkflow,
             OcrSubmitWorkflow,
             OcrStoreWorkflow,
@@ -224,15 +229,18 @@ async def run_worker(
             create_worktree_activity,
             detect_file_conflicts_activity,
             evaluate_transition,
+            fetch_existing_playbooks,
             fetch_extraction_input,
             fulfill_context_requests,
             parse_llm_response,
             poll_batch_results,
             remove_worktree_activity,
             reset_worktree_activity,
+            review_manual_playbook,
             save_extraction_results,
             submit_batch_request,
             validate_output,
+            validate_playbook_entry,
             write_files,
             write_output,
             # OCR activities

@@ -19,6 +19,8 @@ with workflow.unsafe.imports_passed_through():
         ExtractionWorkflowResult,
         FetchExtractionInput,
         SaveExtractionInput,
+        ValidatePlaybookInput,
+        ValidatePlaybookResult,
         resolve_model,
     )
 
@@ -69,11 +71,23 @@ class ForgeExtractionWorkflow:
             result_type=ExtractionCallResult,
         )
 
-        if call_result.result.entries:
+        # Validate each extracted entry through the shared activity
+        validated_entries = []
+        for entry in call_result.result.entries:
+            v = await workflow.execute_activity(
+                "validate_playbook_entry",
+                ValidatePlaybookInput(raw_json=entry.model_dump_json()),
+                start_to_close_timeout=_FETCH_TIMEOUT,
+                result_type=ValidatePlaybookResult,
+            )
+            if v.valid and v.entry is not None:
+                validated_entries.append(v.entry)
+
+        if validated_entries:
             await workflow.execute_activity(
                 "save_extraction_results",
                 SaveExtractionInput(
-                    entries=call_result.result.entries,
+                    entries=validated_entries,
                     source_workflow_ids=call_result.source_workflow_ids,
                     extraction_workflow_id=workflow.info().workflow_id,
                 ),
@@ -82,6 +96,6 @@ class ForgeExtractionWorkflow:
             )
 
         return ExtractionWorkflowResult(
-            entries_created=len(call_result.result.entries),
+            entries_created=len(validated_entries),
             source_workflow_ids=call_result.source_workflow_ids,
         )

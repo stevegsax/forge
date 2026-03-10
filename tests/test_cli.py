@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
@@ -1670,15 +1670,8 @@ class TestPlaybooksCommand:
         self,
         cli_runner: CliRunner,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
-
-        from forge.models import PlaybookReviewResult
-        from forge.store import get_engine, list_recent_playbooks, run_migrations
-
-        run_migrations(db_path)
+        from forge.models import ManualPlaybookResult, PlaybookEntry
 
         entry_file = tmp_path / "entry.json"
         entry_file.write_text(json.dumps({
@@ -1688,11 +1681,18 @@ class TestPlaybooksCommand:
             "source_task_id": "manual-1",
         }))
 
-        mock_review = PlaybookReviewResult(approved=True)
+        mock_result = ManualPlaybookResult(
+            approved=True,
+            entry=PlaybookEntry(
+                title="Test entry",
+                content="Do the thing.",
+                tags=["test"],
+                source_task_id="manual-1",
+            ),
+        )
         with patch(
-            "forge.activities.playbook_review.review_playbook_entry",
-            new_callable=AsyncMock,
-            return_value=mock_review,
+            "forge.cli._submit_manual_playbook",
+            side_effect=_async_result(mock_result),
         ):
             result = cli_runner.invoke(
                 main, ["playbooks", "add", "--file", str(entry_file)]
@@ -1700,25 +1700,14 @@ class TestPlaybooksCommand:
 
         assert result.exit_code == 0, result.output + (result.stderr or "")
         assert "saved" in result.output.lower()
-
-        engine = get_engine(db_path)
-        entries = list_recent_playbooks(engine, limit=10)
-        assert len(entries) == 1
-        assert entries[0]["title"] == "Test entry"
+        assert "Test entry" in result.output
 
     def test_add_rejected(
         self,
         cli_runner: CliRunner,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
-
-        from forge.models import PlaybookReviewResult
-        from forge.store import get_engine, list_recent_playbooks, run_migrations
-
-        run_migrations(db_path)
+        from forge.models import ManualPlaybookResult
 
         entry_file = tmp_path / "entry.json"
         entry_file.write_text(json.dumps({
@@ -1728,14 +1717,13 @@ class TestPlaybooksCommand:
             "source_task_id": "manual-2",
         }))
 
-        mock_review = PlaybookReviewResult(
+        mock_result = ManualPlaybookResult(
             approved=False,
             rejection_reason="Too vague and not actionable.",
         )
         with patch(
-            "forge.activities.playbook_review.review_playbook_entry",
-            new_callable=AsyncMock,
-            return_value=mock_review,
+            "forge.cli._submit_manual_playbook",
+            side_effect=_async_result(mock_result),
         ):
             result = cli_runner.invoke(
                 main, ["playbooks", "add", "--file", str(entry_file)]
@@ -1744,23 +1732,37 @@ class TestPlaybooksCommand:
         assert result.exit_code == EXIT_FAILURE
         assert "Too vague" in result.stderr
 
-        engine = get_engine(db_path)
-        entries = list_recent_playbooks(engine, limit=10)
-        assert len(entries) == 0
+    def test_add_validation_error(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        from forge.models import ManualPlaybookResult
+
+        entry_file = tmp_path / "bad.json"
+        entry_file.write_text("{not valid json")
+
+        mock_result = ManualPlaybookResult(
+            approved=False,
+            validation_error="Invalid JSON: expected value at line 1 column 2",
+        )
+        with patch(
+            "forge.cli._submit_manual_playbook",
+            side_effect=_async_result(mock_result),
+        ):
+            result = cli_runner.invoke(
+                main, ["playbooks", "add", "--file", str(entry_file)]
+            )
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "Invalid input" in result.stderr
 
     def test_add_with_suggestions(
         self,
         cli_runner: CliRunner,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
-
-        from forge.models import PlaybookReviewResult
-        from forge.store import get_engine, list_recent_playbooks, run_migrations
-
-        run_migrations(db_path)
+        from forge.models import ManualPlaybookResult, PlaybookEntry
 
         entry_file = tmp_path / "entry.json"
         entry_file.write_text(json.dumps({
@@ -1770,55 +1772,26 @@ class TestPlaybooksCommand:
             "source_task_id": "manual-3",
         }))
 
-        mock_review = PlaybookReviewResult(
+        mock_result = ManualPlaybookResult(
             approved=True,
-            suggested_title="Improved title",
-            suggested_tags=["test", "extra"],
+            entry=PlaybookEntry(
+                title="Improved title",
+                content="Original content.",
+                tags=["test", "extra"],
+                source_task_id="manual-3",
+            ),
         )
         with patch(
-            "forge.activities.playbook_review.review_playbook_entry",
-            new_callable=AsyncMock,
-            return_value=mock_review,
+            "forge.cli._submit_manual_playbook",
+            side_effect=_async_result(mock_result),
         ):
             result = cli_runner.invoke(
                 main, ["playbooks", "add", "--file", str(entry_file)]
             )
 
         assert result.exit_code == 0, result.output + (result.stderr or "")
-        assert "Suggestions applied" in result.output
-
-        engine = get_engine(db_path)
-        entries = list_recent_playbooks(engine, limit=10)
-        assert len(entries) == 1
-        assert entries[0]["title"] == "Improved title"
-
-    def test_add_invalid_json(
-        self,
-        cli_runner: CliRunner,
-        tmp_path: Path,
-    ) -> None:
-        entry_file = tmp_path / "bad.json"
-        entry_file.write_text("{not valid json")
-
-        result = cli_runner.invoke(
-            main, ["playbooks", "add", "--file", str(entry_file)]
-        )
-        assert result.exit_code == EXIT_FAILURE
-        assert "Invalid input" in result.stderr
-
-    def test_add_missing_required_fields(
-        self,
-        cli_runner: CliRunner,
-        tmp_path: Path,
-    ) -> None:
-        entry_file = tmp_path / "incomplete.json"
-        entry_file.write_text(json.dumps({"content": "No title field."}))
-
-        result = cli_runner.invoke(
-            main, ["playbooks", "add", "--file", str(entry_file)]
-        )
-        assert result.exit_code == EXIT_FAILURE
-        assert "Invalid input" in result.stderr
+        assert "saved" in result.output.lower()
+        assert "Improved title" in result.output
 
     def test_list_still_works_as_default(
         self,

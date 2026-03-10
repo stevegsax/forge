@@ -34,6 +34,11 @@ from forge.activities.git_activities import (
 from forge.activities.llm import call_llm
 from forge.activities.output import write_files, write_output
 from forge.activities.planner import assemble_planner_context, call_planner
+from forge.activities.playbook_review import (
+    fetch_existing_playbooks,
+    review_manual_playbook,
+    validate_playbook_entry,
+)
 from forge.activities.sanity_check import assemble_sanity_check_context, call_sanity_check
 from forge.activities.transition import evaluate_transition
 from forge.activities.validate import validate_output
@@ -56,15 +61,18 @@ __all__ = [
     "create_worktree_activity",
     "detect_file_conflicts_activity",
     "evaluate_transition",
+    "fetch_existing_playbooks",
     "fetch_extraction_input",
     "fulfill_context_requests",
     "parse_llm_response",
     "poll_batch_results",
     "remove_worktree_activity",
     "reset_worktree_activity",
+    "review_manual_playbook",
     "save_extraction_results",
     "submit_batch_request",
     "validate_output",
+    "validate_playbook_entry",
     "write_files",
     "write_output",
 ]

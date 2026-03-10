@@ -3,12 +3,23 @@
 Follows Function Core / Imperative Shell:
 - Pure functions: build_review_system_prompt, build_review_user_prompt, apply_suggestions
 - Async shell: review_playbook_entry
+- Temporal activities: validate_playbook_entry, fetch_existing_playbooks, review_manual_playbook
 """
 
 from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+
+from temporalio import activity
+
+from forge.models import (  # noqa: TC001 — Temporal needs these at runtime for activity deserialization
+    FetchExistingPlaybooksInput,
+    ReviewManualPlaybookInput,
+    ReviewManualPlaybookResult,
+    ValidatePlaybookInput,
+    ValidatePlaybookResult,
+)
 
 if TYPE_CHECKING:
     from forge.models import PlaybookEntry, PlaybookReviewResult
@@ -97,6 +108,7 @@ def apply_suggestions(entry: PlaybookEntry, review: PlaybookReviewResult) -> Pla
 async def review_playbook_entry(
     entry: PlaybookEntry,
     existing_playbooks: list[dict],
+    model_name: str = "",
 ) -> PlaybookReviewResult:
     """Send a proposed playbook entry to the LLM for review.
 
@@ -107,9 +119,10 @@ async def review_playbook_entry(
     from forge.llm_providers.registry import get_provider, parse_model_id
     from forge.models import CapabilityTier, ModelConfig, PlaybookReviewResult, resolve_model
 
-    model_id = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
-    _, model_name = parse_model_id(model_id)
-    provider = get_provider(model_id)
+    if not model_name:
+        model_name = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
+    _, parsed_model = parse_model_id(model_name)
+    provider = get_provider(model_name)
 
     system_prompt = build_review_system_prompt(existing_playbooks)
     user_prompt = build_review_user_prompt(entry)
@@ -118,9 +131,59 @@ async def review_playbook_entry(
     params = provider.build_request_params(
         messages=messages,
         output_type=PlaybookReviewResult,
-        model=model_name,
+        model=parsed_model,
         max_tokens=1024,
     )
     response = await provider.call(params)
 
     return PlaybookReviewResult.model_validate(response.tool_input)
+
+
+# ---------------------------------------------------------------------------
+# Temporal activities
+# ---------------------------------------------------------------------------
+
+
+@activity.defn
+async def validate_playbook_entry(input: ValidatePlaybookInput) -> ValidatePlaybookResult:
+    """Parse and validate raw JSON against the PlaybookEntry schema."""
+    from pydantic import ValidationError
+
+    from forge.models import PlaybookEntry, ValidatePlaybookResult
+
+    try:
+        entry = PlaybookEntry.model_validate_json(input.raw_json)
+        return ValidatePlaybookResult(valid=True, entry=entry)
+    except (ValidationError, ValueError) as exc:
+        return ValidatePlaybookResult(valid=False, error=str(exc))
+
+
+@activity.defn
+async def fetch_existing_playbooks(input: FetchExistingPlaybooksInput) -> list[dict]:
+    """Query recent playbooks for duplication context."""
+    from forge.store import get_db_path, get_engine, list_recent_playbooks
+
+    db_path = get_db_path()
+    if db_path is None or not db_path.exists():
+        return []
+
+    engine = get_engine(db_path)
+    return list_recent_playbooks(engine, limit=input.limit)
+
+
+@activity.defn
+async def review_manual_playbook(input: ReviewManualPlaybookInput) -> ReviewManualPlaybookResult:
+    """Review a proposed playbook entry via LLM and apply suggestions."""
+    from forge.models import ReviewManualPlaybookResult
+
+    review = await review_playbook_entry(
+        input.entry, input.existing_playbooks, model_name=input.model_name
+    )
+    if not review.approved:
+        return ReviewManualPlaybookResult(
+            approved=False,
+            rejection_reason=review.rejection_reason,
+            final_entry=input.entry,
+        )
+    final_entry = apply_suggestions(input.entry, review)
+    return ReviewManualPlaybookResult(approved=True, final_entry=final_entry)

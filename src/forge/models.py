@@ -477,6 +477,63 @@ class ExtractionResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Manual playbook workflow models
+# ---------------------------------------------------------------------------
+
+
+class ValidatePlaybookInput(BaseModel):
+    """Input for playbook validation activity."""
+
+    raw_json: str = Field(description="Raw JSON string to validate.")
+
+
+class ValidatePlaybookResult(BaseModel):
+    """Result from playbook validation activity."""
+
+    valid: bool
+    error: str = ""
+    entry: PlaybookEntry | None = None
+
+
+class FetchExistingPlaybooksInput(BaseModel):
+    """Input for fetching existing playbooks for duplication context."""
+
+    limit: int = 50
+
+
+class ReviewManualPlaybookInput(BaseModel):
+    """Input for the review activity."""
+
+    entry: PlaybookEntry
+    existing_playbooks: list[dict] = Field(default_factory=list)
+    model_name: str = ""
+
+
+class ReviewManualPlaybookResult(BaseModel):
+    """Output from the review activity."""
+
+    approved: bool
+    rejection_reason: str = ""
+    final_entry: PlaybookEntry
+
+
+class ManualPlaybookInput(BaseModel):
+    """Input for the manual playbook add workflow."""
+
+    raw_json: str = Field(description="Raw JSON string for the playbook entry.")
+    model_routing: ModelConfig = Field(default_factory=ModelConfig)
+
+
+class ManualPlaybookResult(BaseModel):
+    """Result from the manual playbook add workflow."""
+
+    approved: bool
+    rejection_reason: str = ""
+    validation_error: str = ""
+    entry: PlaybookEntry | None = None
+
+
+# ---------------------------------------------------------------------------
 # Conflict resolution models
 # ---------------------------------------------------------------------------
 

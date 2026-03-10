@@ -2,17 +2,31 @@
 
 from __future__ import annotations
 
+import json
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from forge.activities.playbook_review import (
     apply_suggestions,
     build_review_system_prompt,
     build_review_user_prompt,
+    fetch_existing_playbooks,
+    review_manual_playbook,
     review_playbook_entry,
+    validate_playbook_entry,
 )
-from forge.models import PlaybookEntry, PlaybookReviewResult
+from forge.models import (
+    FetchExistingPlaybooksInput,
+    PlaybookEntry,
+    PlaybookReviewResult,
+    ReviewManualPlaybookInput,
+    ValidatePlaybookInput,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -176,3 +190,121 @@ class TestReviewPlaybookEntry:
         assert result.suggested_tags == ["extra-tag"]
         mock_provider.build_request_params.assert_called_once()
         mock_provider.call.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# validate_playbook_entry activity
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePlaybookEntryActivity:
+    @pytest.mark.asyncio
+    async def test_valid_json(self) -> None:
+        raw = json.dumps({
+            "title": "Test",
+            "content": "Content.",
+            "tags": ["test"],
+            "source_task_id": "t1",
+        })
+        result = await validate_playbook_entry(ValidatePlaybookInput(raw_json=raw))
+        assert result.valid is True
+        assert result.entry is not None
+        assert result.entry.title == "Test"
+        assert result.error == ""
+
+    @pytest.mark.asyncio
+    async def test_invalid_json(self) -> None:
+        result = await validate_playbook_entry(
+            ValidatePlaybookInput(raw_json="{not valid json}")
+        )
+        assert result.valid is False
+        assert result.error != ""
+        assert result.entry is None
+
+    @pytest.mark.asyncio
+    async def test_missing_required_fields(self) -> None:
+        raw = json.dumps({"content": "No title."})
+        result = await validate_playbook_entry(ValidatePlaybookInput(raw_json=raw))
+        assert result.valid is False
+        assert "title" in result.error.lower() or "source_task_id" in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# fetch_existing_playbooks activity
+# ---------------------------------------------------------------------------
+
+
+class TestFetchExistingPlaybooksActivity:
+    @pytest.mark.asyncio
+    async def test_no_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_DB_PATH", "")
+        result = await fetch_existing_playbooks(FetchExistingPlaybooksInput(limit=10))
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_with_entries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+
+        from forge.store import get_engine, run_migrations, save_playbooks
+
+        run_migrations(db_path)
+        engine = get_engine(db_path)
+        save_playbooks(engine, [{
+            "title": "Existing lesson",
+            "content": "Do X.",
+            "tags_json": '["python"]',
+            "source_task_id": "t1",
+            "source_workflow_id": "wf-1",
+            "extraction_workflow_id": "extract-1",
+        }])
+
+        result = await fetch_existing_playbooks(FetchExistingPlaybooksInput(limit=10))
+        assert len(result) == 1
+        assert result[0]["title"] == "Existing lesson"
+
+
+# ---------------------------------------------------------------------------
+# review_manual_playbook activity
+# ---------------------------------------------------------------------------
+
+
+class TestReviewManualPlaybookActivity:
+    @pytest.mark.asyncio
+    async def test_approved(self, sample_entry: PlaybookEntry) -> None:
+        mock_review = PlaybookReviewResult(
+            approved=True,
+            suggested_title="Better title",
+        )
+        with patch(
+            "forge.activities.playbook_review.review_playbook_entry",
+            new_callable=AsyncMock,
+            return_value=mock_review,
+        ):
+            result = await review_manual_playbook(
+                ReviewManualPlaybookInput(entry=sample_entry, existing_playbooks=[])
+            )
+
+        assert result.approved is True
+        assert result.final_entry.title == "Better title"
+
+    @pytest.mark.asyncio
+    async def test_rejected(self, sample_entry: PlaybookEntry) -> None:
+        mock_review = PlaybookReviewResult(
+            approved=False,
+            rejection_reason="Duplicate entry.",
+        )
+        with patch(
+            "forge.activities.playbook_review.review_playbook_entry",
+            new_callable=AsyncMock,
+            return_value=mock_review,
+        ):
+            result = await review_manual_playbook(
+                ReviewManualPlaybookInput(entry=sample_entry, existing_playbooks=[])
+            )
+
+        assert result.approved is False
+        assert result.rejection_reason == "Duplicate entry."
+        assert result.final_entry == sample_entry

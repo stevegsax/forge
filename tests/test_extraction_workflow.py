@@ -19,6 +19,8 @@ from forge.models import (
     FetchExtractionInput,
     PlaybookEntry,
     SaveExtractionInput,
+    ValidatePlaybookInput,
+    ValidatePlaybookResult,
 )
 
 TASK_QUEUE = "test-extraction-queue"
@@ -91,6 +93,18 @@ def _make_call_llm(entries: list[PlaybookEntry] | None = None):
     return call_extraction_llm
 
 
+def _make_validate():
+    """Return a validate activity that always passes."""
+    from temporalio import activity
+
+    @activity.defn(name="validate_playbook_entry")
+    async def validate_playbook_entry(input: ValidatePlaybookInput) -> ValidatePlaybookResult:
+        entry = PlaybookEntry.model_validate_json(input.raw_json)
+        return ValidatePlaybookResult(valid=True, entry=entry)
+
+    return validate_playbook_entry
+
+
 def _make_save():
     """Return a save activity that records calls."""
     from temporalio import activity
@@ -120,6 +134,7 @@ class TestForgeExtractionWorkflow:
             activities=[
                 _make_fetch_no_runs(),
                 _make_call_llm(),
+                _make_validate(),
                 save_fn,
             ],
         ):
@@ -143,6 +158,7 @@ class TestForgeExtractionWorkflow:
             activities=[
                 _make_fetch_with_runs(),
                 _make_call_llm(),
+                _make_validate(),
                 save_fn,
             ],
         ):
@@ -167,6 +183,7 @@ class TestForgeExtractionWorkflow:
             activities=[
                 _make_fetch_with_runs(),
                 _make_call_llm(entries=[]),
+                _make_validate(),
                 save_fn,
             ],
         ):

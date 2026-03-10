@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from forge.models import (
         ExtractionWorkflowResult,
         LLMStats,
+        ManualPlaybookResult,
         StepResult,
         SubTaskResult,
         ValidationResult,
@@ -1133,6 +1134,30 @@ def playbooks(
             click.echo("")
 
 
+async def _submit_manual_playbook(
+    temporal_address: str,
+    raw_json: str,
+) -> ManualPlaybookResult:
+    """Submit manual playbook workflow to Temporal and wait for completion."""
+    from uuid import uuid4
+
+    from temporalio.client import Client
+    from temporalio.contrib.pydantic import pydantic_data_converter
+
+    from forge.manual_playbook_workflow import ManualPlaybookWorkflow
+    from forge.models import ManualPlaybookInput
+    from forge.workflows import FORGE_TASK_QUEUE
+
+    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+
+    return await client.execute_workflow(
+        ManualPlaybookWorkflow.run,
+        ManualPlaybookInput(raw_json=raw_json),
+        id=f"forge-manual-playbook-{uuid4().hex[:8]}",
+        task_queue=FORGE_TASK_QUEUE,
+    )
+
+
 @playbooks.command(name="add")
 @click.option(
     "--file",
@@ -1148,7 +1173,14 @@ def playbooks(
     is_flag=True,
     help="Print PlaybookEntry JSON schema and exit.",
 )
-def playbooks_add(file_path: Path | None, show_schema: bool) -> None:
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+    help="Temporal server address.",
+)
+def playbooks_add(file_path: Path | None, show_schema: bool, temporal_address: str) -> None:
     """Add a playbook entry with LLM review."""
     import json as json_mod
 
@@ -1162,66 +1194,28 @@ def playbooks_add(file_path: Path | None, show_schema: bool) -> None:
         click.echo("Either --file or --schema is required.", err=True)
         sys.exit(EXIT_FAILURE)
 
-    # Read and validate JSON
+    raw_json = file_path.read_text()
+
     try:
-        raw = file_path.read_text()
-        entry = PlaybookEntry.model_validate_json(raw)
-    except (json_mod.JSONDecodeError, ValueError) as exc:
-        click.echo(f"Invalid input: {exc}", err=True)
+        result = asyncio.run(_submit_manual_playbook(temporal_address, raw_json))
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+    if result.validation_error:
+        click.echo(f"Invalid input: {result.validation_error}", err=True)
         sys.exit(EXIT_FAILURE)
 
-    from forge.store import (
-        build_playbook_dict,
-        get_db_path,
-        get_engine,
-        list_recent_playbooks,
-        save_playbooks,
-    )
-
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        click.echo("No store available. Run a workflow first.", err=True)
+    if not result.approved:
+        click.echo(f"Rejected: {result.rejection_reason}", err=True)
         sys.exit(EXIT_FAILURE)
-
-    engine = get_engine(db_path)
-
-    # Load existing playbooks for duplication context
-    existing = list_recent_playbooks(engine, limit=50)
-
-    # LLM review
-    from forge.activities.playbook_review import apply_suggestions, review_playbook_entry
-
-    review = asyncio.run(review_playbook_entry(entry, existing))
-
-    if not review.approved:
-        click.echo(f"Rejected: {review.rejection_reason}", err=True)
-        sys.exit(EXIT_FAILURE)
-
-    # Apply suggestions
-    final_entry = apply_suggestions(entry, review)
-
-    changes: list[str] = []
-    if review.suggested_title:
-        changes.append(f"  Title: {entry.title} -> {final_entry.title}")
-    if review.suggested_content:
-        changes.append("  Content updated by reviewer")
-    if review.suggested_tags:
-        changes.append(f"  Tags: {entry.tags} -> {final_entry.tags}")
-    if changes:
-        click.echo("Suggestions applied:")
-        for line in changes:
-            click.echo(line)
-
-    # Save
-    row = build_playbook_dict(final_entry, extraction_workflow_id="manual")
-    save_playbooks(engine, [row])
 
     click.echo("")
     click.echo("Playbook entry saved:")
-    # Re-fetch to get the saved entry with ID and timestamp
-    recent = list_recent_playbooks(engine, limit=1)
-    if recent:
-        click.echo(format_playbook_entry(recent[0]))
+    if result.entry:
+        click.echo(f"  {result.entry.title}")
+        click.echo(f"    Tags: {', '.join(result.entry.tags)}")
+        click.echo(f"    Source: {result.entry.source_task_id}")
 
 
 # ---------------------------------------------------------------------------
