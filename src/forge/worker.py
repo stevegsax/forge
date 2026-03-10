@@ -42,8 +42,10 @@ from forge.activities import (
     create_worktree_activity,
     detect_file_conflicts_activity,
     evaluate_transition,
+    export_single_playbook,
     fetch_existing_playbooks,
     fetch_extraction_input,
+    fetch_playbook_ids,
     fulfill_context_requests,
     parse_llm_response,
     poll_batch_results,
@@ -59,6 +61,7 @@ from forge.activities import (
 )
 from forge.activities.batch_poll import set_temporal_client
 from forge.batch_poller_workflow import BatchPollerWorkflow
+from forge.export_playbook_workflow import ExportPlaybookWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
@@ -202,6 +205,7 @@ async def run_worker(
             ForgeTaskWorkflow,
             ForgeSubTaskWorkflow,
             ForgeExtractionWorkflow,
+            ExportPlaybookWorkflow,
             ManualPlaybookWorkflow,
             BatchPollerWorkflow,
             OcrSubmitWorkflow,
@@ -229,8 +233,10 @@ async def run_worker(
             create_worktree_activity,
             detect_file_conflicts_activity,
             evaluate_transition,
+            export_single_playbook,
             fetch_existing_playbooks,
             fetch_extraction_input,
+            fetch_playbook_ids,
             fulfill_context_requests,
             parse_llm_response,
             poll_batch_results,

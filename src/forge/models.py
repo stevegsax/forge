@@ -481,6 +481,35 @@ class ExtractionResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ExportPlaybookInput(BaseModel):
+    """Input to ExportPlaybookWorkflow."""
+
+    tags: list[str] = Field(default_factory=list)
+    source_task_id: str = ""
+    limit: int = 0  # 0 = no limit
+
+
+class ExportPlaybookResult(BaseModel):
+    """Result from ExportPlaybookWorkflow."""
+
+    entries: list[PlaybookEntry]
+    count: int
+
+
+class FetchPlaybookIdsInput(BaseModel):
+    """Input for fetch_playbook_ids activity."""
+
+    tags: list[str] = Field(default_factory=list)
+    source_task_id: str = ""
+    limit: int = 0
+
+
+class ExportSinglePlaybookInput(BaseModel):
+    """Input for export_single_playbook activity."""
+
+    playbook_id: int
+
+
 class ValidatePlaybookInput(BaseModel):
     """Input for playbook validation activity."""
 

@@ -465,6 +465,65 @@ def list_recent_playbooks(engine: Engine, limit: int = 20) -> list[dict]:
         return [dict(row) for row in rows]
 
 
+def get_playbook_ids(
+    engine: Engine,
+    tags: list[str] | None = None,
+    source_task_id: str = "",
+    limit: int = 0,
+) -> list[int]:
+    """Return matching playbook IDs ordered by recency.
+
+    Filters are AND-combined when both are provided.
+    Tags use OR matching (any tag matches).
+    """
+    t = Playbook.__table__
+
+    if tags:
+        tag_placeholders = ", ".join(f":tag_{i}" for i in range(len(tags)))
+        tag_params: dict[str, object] = {f"tag_{i}": tag for i, tag in enumerate(tags)}
+
+        base_sql = f"""
+            SELECT DISTINCT p.id
+            FROM playbooks p, json_each(p.tags_json) AS t
+            WHERE t.value IN ({tag_placeholders})
+        """
+        if source_task_id:
+            base_sql += " AND p.source_task_id = :source_task_id"
+            tag_params["source_task_id"] = source_task_id
+        base_sql += " ORDER BY p.created_at DESC"
+        if limit > 0:
+            base_sql += " LIMIT :limit"
+            tag_params["limit"] = limit
+
+        query = sa.text(base_sql)
+        with engine.connect() as conn:
+            rows = conn.execute(query, tag_params).all()
+            return [row[0] for row in rows]
+    else:
+        stmt = sa.select(t.c.id)
+        if source_task_id:
+            stmt = stmt.where(t.c.source_task_id == source_task_id)
+        stmt = stmt.order_by(t.c.created_at.desc())
+        if limit > 0:
+            stmt = stmt.limit(limit)
+
+        with engine.connect() as conn:
+            rows = conn.execute(stmt).all()
+            return [row[0] for row in rows]
+
+
+def get_playbook_by_id(engine: Engine, playbook_id: int) -> dict | None:
+    """Fetch a single playbook row by primary key."""
+    t = Playbook.__table__
+    stmt = t.select().where(t.c.id == playbook_id)
+
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)
+
+
 def get_unextracted_runs(engine: Engine, limit: int = 50) -> list[dict]:
     """Query runs that have no corresponding playbook entries.
 

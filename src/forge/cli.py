@@ -42,6 +42,7 @@ from forge.models import (
 if TYPE_CHECKING:
     from forge.eval.models import DeterministicResult, PlanEvalResult
     from forge.models import (
+        ExportPlaybookResult,
         ExtractionWorkflowResult,
         LLMStats,
         ManualPlaybookResult,
@@ -1216,6 +1217,85 @@ def playbooks_add(file_path: Path | None, show_schema: bool, temporal_address: s
         click.echo(f"  {result.entry.title}")
         click.echo(f"    Tags: {', '.join(result.entry.tags)}")
         click.echo(f"    Source: {result.entry.source_task_id}")
+
+
+async def _submit_export_playbooks(
+    temporal_address: str,
+    *,
+    tags: list[str],
+    source_task_id: str,
+    limit: int,
+) -> ExportPlaybookResult:
+    """Submit export playbook workflow to Temporal and wait for completion."""
+    from uuid import uuid4
+
+    from temporalio.client import Client
+    from temporalio.contrib.pydantic import pydantic_data_converter
+
+    from forge.export_playbook_workflow import ExportPlaybookWorkflow
+    from forge.models import ExportPlaybookInput
+    from forge.workflows import FORGE_TASK_QUEUE
+
+    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+
+    return await client.execute_workflow(
+        ExportPlaybookWorkflow.run,
+        ExportPlaybookInput(tags=tags, source_task_id=source_task_id, limit=limit),
+        id=f"forge-export-playbooks-{uuid4().hex[:8]}",
+        task_queue=FORGE_TASK_QUEUE,
+    )
+
+
+@playbooks.command(name="export")
+@click.option("--tag", multiple=True, help="Filter by tag (repeatable, OR match).")
+@click.option("--task-id", "source_task_id", default="", help="Filter by source task ID.")
+@click.option("--limit", default=0, type=int, help="Max entries to export (0 = all).")
+@click.option(
+    "--output",
+    "-o",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write to file instead of stdout.",
+)
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+    help="Temporal server address.",
+)
+def playbooks_export(
+    tag: tuple[str, ...],
+    source_task_id: str,
+    limit: int,
+    output_path: Path | None,
+    temporal_address: str,
+) -> None:
+    """Export playbook entries as PlaybookEntry-compatible JSON."""
+    import json as json_mod
+
+    try:
+        result = asyncio.run(
+            _submit_export_playbooks(
+                temporal_address,
+                tags=list(tag),
+                source_task_id=source_task_id,
+                limit=limit,
+            )
+        )
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+    entries_json = [entry.model_dump() for entry in result.entries]
+    output_text = json_mod.dumps(entries_json, indent=2)
+
+    if output_path:
+        output_path.write_text(output_text + "\n")
+        click.echo(f"Exported {result.count} playbook(s) to {output_path}", err=True)
+    else:
+        click.echo(output_text)
 
 
 # ---------------------------------------------------------------------------

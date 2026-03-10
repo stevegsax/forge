@@ -81,6 +81,33 @@ The `--file` option accepts a JSON file matching the `PlaybookEntry` schema. Bef
 }
 ```
 
+## Exporting Playbooks
+
+Export playbook entries as `PlaybookEntry`-compatible JSON with `forge playbooks export`. The output is directly compatible with `forge playbooks add --file` for round-trip backup and sharing.
+
+```bash
+forge playbooks export                          # Export all playbooks as JSON to stdout
+forge playbooks export --tag python             # Filter by tag
+forge playbooks export --tag python --tag api   # Multiple tags (OR match)
+forge playbooks export --task-id my-task        # Filter by source task ID
+forge playbooks export --limit 10               # Limit entries
+forge playbooks export -o backup.json           # Write to file instead of stdout
+```
+
+The export runs as a Temporal workflow (`ExportPlaybookWorkflow`) that fans out one activity per playbook row for parallel conversion. Each row is converted from DB format to a clean `PlaybookEntry` dict (tags are deserialized from JSON, DB-only fields like `id`, `created_at`, and `extraction_workflow_id` are dropped).
+
+### Round-trip Example
+
+```bash
+forge playbooks export -o playbooks-backup.json
+# ... later, on another machine or after a fresh install ...
+# Re-import each entry (one file per entry, or iterate with jq):
+cat playbooks-backup.json | jq -c '.[]' | while read entry; do
+  echo "$entry" > /tmp/entry.json
+  forge playbooks add --file /tmp/entry.json
+done
+```
+
 ### What Automatic Extraction Reviews
 
 Extraction reads from the `runs` table in the observability database. Each row represents a completed Forge task workflow execution and contains:

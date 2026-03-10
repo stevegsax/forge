@@ -34,6 +34,10 @@ from forge.activities.git_activities import (
 from forge.activities.llm import call_llm
 from forge.activities.output import write_files, write_output
 from forge.activities.planner import assemble_planner_context, call_planner
+from forge.activities.playbook_export import (
+    export_single_playbook,
+    fetch_playbook_ids,
+)
 from forge.activities.playbook_review import (
     fetch_existing_playbooks,
     review_manual_playbook,
@@ -61,8 +65,10 @@ __all__ = [
     "create_worktree_activity",
     "detect_file_conflicts_activity",
     "evaluate_transition",
+    "export_single_playbook",
     "fetch_existing_playbooks",
     "fetch_extraction_input",
+    "fetch_playbook_ids",
     "fulfill_context_requests",
     "parse_llm_response",
     "poll_batch_results",
