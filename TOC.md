@@ -2,7 +2,7 @@
 
 ## User Guides
 
-- [playbooks.md](docs/user/playbooks.md) — How playbooks capture lessons from completed tasks and inject them into future ones.
+- [playbooks.md](docs/user/playbooks.md) — Playbook system: automatic extraction from completed tasks, manual addition with LLM review (`forge playbooks add`), Temporal workflow pipeline, JSON schema, and storage.
 
 ## Planning & Design
 

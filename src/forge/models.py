@@ -443,6 +443,28 @@ class PlaybookEntry(BaseModel):
     )
 
 
+class PlaybookReviewResult(BaseModel):
+    """Structured output from playbook entry review."""
+
+    approved: bool = Field(description="Whether the entry is acceptable for storage.")
+    rejection_reason: str = Field(
+        default="",
+        description="If rejected: why (confusing, incomplete, duplicate, etc.).",
+    )
+    suggested_tags: list[str] = Field(
+        default_factory=list,
+        description="Tags the reviewer recommends adding or correcting.",
+    )
+    suggested_title: str = Field(
+        default="",
+        description="Improved title, or empty if the original is fine.",
+    )
+    suggested_content: str = Field(
+        default="",
+        description="Improved content, or empty if the original is fine.",
+    )
+
+
 class ExtractionResult(BaseModel):
     """Structured output from the knowledge extraction LLM call."""
 

@@ -1072,7 +1072,7 @@ def format_playbook_entry(entry: dict) -> str:
     return "\n".join(lines)
 
 
-@main.command()
+@main.group(invoke_without_command=True)
 @click.option("--tag", multiple=True, help="Filter by tag (repeatable).")
 @click.option("--task-id", "filter_task_id", default=None, help="Filter by source task ID.")
 @click.option(
@@ -1083,13 +1083,18 @@ def format_playbook_entry(entry: dict) -> str:
     help="Max entries to show.",
 )
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+@click.pass_context
 def playbooks(
+    ctx: click.Context,
     tag: tuple[str, ...],
     filter_task_id: str | None,
     limit: int,
     output_json: bool,
 ) -> None:
     """List and inspect playbook entries."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     import json as json_mod
 
     from forge.store import (
@@ -1126,6 +1131,97 @@ def playbooks(
         for entry in entries:
             click.echo(format_playbook_entry(entry))
             click.echo("")
+
+
+@playbooks.command(name="add")
+@click.option(
+    "--file",
+    "-f",
+    "file_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to a JSON file matching the PlaybookEntry schema.",
+)
+@click.option(
+    "--schema",
+    "show_schema",
+    is_flag=True,
+    help="Print PlaybookEntry JSON schema and exit.",
+)
+def playbooks_add(file_path: Path | None, show_schema: bool) -> None:
+    """Add a playbook entry with LLM review."""
+    import json as json_mod
+
+    from forge.models import PlaybookEntry
+
+    if show_schema:
+        click.echo(json_mod.dumps(PlaybookEntry.model_json_schema(), indent=2))
+        return
+
+    if file_path is None:
+        click.echo("Either --file or --schema is required.", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    # Read and validate JSON
+    try:
+        raw = file_path.read_text()
+        entry = PlaybookEntry.model_validate_json(raw)
+    except (json_mod.JSONDecodeError, ValueError) as exc:
+        click.echo(f"Invalid input: {exc}", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    from forge.store import (
+        build_playbook_dict,
+        get_db_path,
+        get_engine,
+        list_recent_playbooks,
+        save_playbooks,
+    )
+
+    db_path = get_db_path()
+    if db_path is None or not db_path.exists():
+        click.echo("No store available. Run a workflow first.", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    engine = get_engine(db_path)
+
+    # Load existing playbooks for duplication context
+    existing = list_recent_playbooks(engine, limit=50)
+
+    # LLM review
+    from forge.activities.playbook_review import apply_suggestions, review_playbook_entry
+
+    review = asyncio.run(review_playbook_entry(entry, existing))
+
+    if not review.approved:
+        click.echo(f"Rejected: {review.rejection_reason}", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    # Apply suggestions
+    final_entry = apply_suggestions(entry, review)
+
+    changes: list[str] = []
+    if review.suggested_title:
+        changes.append(f"  Title: {entry.title} -> {final_entry.title}")
+    if review.suggested_content:
+        changes.append("  Content updated by reviewer")
+    if review.suggested_tags:
+        changes.append(f"  Tags: {entry.tags} -> {final_entry.tags}")
+    if changes:
+        click.echo("Suggestions applied:")
+        for line in changes:
+            click.echo(line)
+
+    # Save
+    row = build_playbook_dict(final_entry, extraction_workflow_id="manual")
+    save_playbooks(engine, [row])
+
+    click.echo("")
+    click.echo("Playbook entry saved:")
+    # Re-fetch to get the saved entry with ID and timestamp
+    recent = list_recent_playbooks(engine, limit=1)
+    if recent:
+        click.echo(format_playbook_entry(recent[0]))
 
 
 # ---------------------------------------------------------------------------
