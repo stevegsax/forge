@@ -1481,6 +1481,65 @@ class TestExtractImagesFromResponse:
         assert extracted[0].top_left_x is None
         assert extracted[0].bottom_right_y is None
 
+    def test_detects_png_mime_type_from_data_uri(self) -> None:
+        """MIME type is parsed from data-URI prefix, not hardcoded to JPEG."""
+        response_body = {
+            "pages": [
+                {
+                    "markdown": "Page 1",
+                    "images": [
+                        {
+                            "id": "img-0.png",
+                            "image_base64": "data:image/png;base64,iVBORw0KGgo=",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        extracted = _extract_images_from_response(response_body)
+        assert len(extracted) == 1
+        assert extracted[0].mime_type == "image/png"
+
+    def test_detects_webp_mime_type_from_data_uri(self) -> None:
+        response_body = {
+            "pages": [
+                {
+                    "markdown": "Page 1",
+                    "images": [
+                        {
+                            "id": "img-0.webp",
+                            "image_base64": "data:image/webp;base64,UklGR...",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        extracted = _extract_images_from_response(response_body)
+        assert len(extracted) == 1
+        assert extracted[0].mime_type == "image/webp"
+
+    def test_defaults_to_jpeg_without_data_uri_prefix(self) -> None:
+        """When no data-URI prefix, falls back to image/jpeg."""
+        response_body = {
+            "pages": [
+                {
+                    "markdown": "Page 1",
+                    "images": [
+                        {
+                            "id": "img-0.jpeg",
+                            "image_base64": "aW1hZ2UtZGF0YQ==",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        extracted = _extract_images_from_response(response_body)
+        assert len(extracted) == 1
+        assert extracted[0].mime_type == "image/jpeg"
+
 
 # ---------------------------------------------------------------------------
 # Tests — poll_batch with image extraction

@@ -295,9 +295,12 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
             for img in images:
                 image_id = str(uuid.uuid4())
                 raw_b64 = img.image_base64
-                # Strip data URI prefix if present (e.g. "data:image/jpeg;base64,")
+                mime_type = img.mime_type
+                # Strip data URI prefix if present (e.g. "data:image/png;base64,")
+                # and extract the real MIME type from the header
                 if raw_b64.startswith("data:"):
-                    raw_b64 = raw_b64.split(",", 1)[1]
+                    header, raw_b64 = raw_b64.split(",", 1)
+                    mime_type = header.split(":")[1].split(";")[0]
                 data = base64.b64decode(raw_b64)
                 save_ocr_image(
                     engine,
@@ -305,7 +308,7 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
                     page_index=img.page_index,
                     original_image_id=img.original_image_id,
                     data=data,
-                    mime_type=img.mime_type,
+                    mime_type=mime_type,
                     file_size_bytes=len(data),
                     top_left_x=img.top_left_x,
                     top_left_y=img.top_left_y,

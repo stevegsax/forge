@@ -162,6 +162,13 @@ def _extract_images_from_response(response_body: dict) -> list[ExtractedImage]:
                 continue
             original_id = img.get("id", f"img-{page_index}.jpeg")
 
+            # Detect MIME type from data-URI prefix if present
+            mime_type = "image/jpeg"  # fallback default
+            if isinstance(image_base64, str) and image_base64.startswith("data:"):
+                # e.g. "data:image/png;base64,..."
+                header = image_base64.split(",", 1)[0]
+                mime_type = header.split(":")[1].split(";")[0]
+
             # Parse bounding box if present
             top_left_x = None
             top_left_y = None
@@ -183,6 +190,7 @@ def _extract_images_from_response(response_body: dict) -> list[ExtractedImage]:
                     original_image_id=original_id,
                     page_index=page_index,
                     image_base64=image_base64,
+                    mime_type=mime_type,
                     top_left_x=top_left_x,
                     top_left_y=top_left_y,
                     bottom_right_x=bottom_right_x,
