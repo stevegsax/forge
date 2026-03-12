@@ -165,6 +165,19 @@ Feature: OCR Pipeline
     And image_ids is empty and image_count is 0
 
   @standard
+  Scenario: Image MIME type is detected from data-URI prefix
+    Given an OCR response with an image containing a "data:image/png;base64,..." value
+    When images are extracted from the response
+    Then the ExtractedImage mime_type is "image/png"
+    And the batch poller stores the image with the detected MIME type
+
+  @standard @edge-case
+  Scenario: Image MIME type defaults to JPEG without data-URI prefix
+    Given an OCR response with an image containing raw base64 without a data-URI prefix
+    When images are extracted from the response
+    Then the ExtractedImage mime_type defaults to "image/jpeg"
+
+  @standard
   Scenario: Non-unique image IDs across chunks get unique UUIDs
     Given chunk A with img-0.jpeg (UUID "aaa") and chunk B with img-0.jpeg (UUID "bbb")
     When both chunks are parsed
