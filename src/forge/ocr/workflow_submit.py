@@ -48,7 +48,7 @@ class OcrSubmitWorkflow:
         )
 
         # Step 0: Duplicate detection for absolute paths
-        if not input.force and input.file_path.startswith("/"):
+        if not input.skip_duplicate_detection and input.file_path.startswith("/"):
             dup_check = await workflow.execute_activity(
                 "check_ocr_duplicate",
                 input.file_path,

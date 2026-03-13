@@ -113,7 +113,7 @@ class TestOcrSyncE2E:
         """Core test logic: submit sync OCR workflow, await result, verify."""
         from forge.store import get_engine, get_ocr_result
 
-        ocr_input = OcrSyncInput(file_path=file_path, force=True)
+        ocr_input = OcrSyncInput(file_path=file_path, skip_duplicate_detection=True)
 
         async with Worker(
             env.client,

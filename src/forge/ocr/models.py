@@ -12,7 +12,7 @@ class OcrSubmitInput(BaseModel):
     model_name: str = "mistral:mistral-ocr-latest"
     max_tokens: int = 16384
     document_id: str = Field(default="", description="Auto-generated if empty.")
-    force: bool = Field(
+    skip_duplicate_detection: bool = Field(
         default=False,
         description="Skip duplicate detection and re-submit even if already OCR'd.",
     )
@@ -164,7 +164,7 @@ class OcrSyncInput(BaseModel):
     file_path: str
     model_name: str = "mistral:mistral-ocr-latest"
     document_id: str = Field(default="", description="Auto-generated if empty.")
-    force: bool = Field(
+    skip_duplicate_detection: bool = Field(
         default=False,
         description="Skip duplicate detection and re-submit even if already OCR'd.",
     )

@@ -453,8 +453,8 @@ class TestOcrSyncWorkflow:
         assert result.page_count == 50
 
     @pytest.mark.asyncio
-    async def test_force_skips_duplicate_check(self, env: WorkflowEnvironment) -> None:
-        """force=True bypasses duplicate detection."""
+    async def test_skip_duplicate_detection_bypasses_check(self, env: WorkflowEnvironment) -> None:
+        """skip_duplicate_detection=True bypasses duplicate detection."""
 
         @activity.defn(name="read_and_store_file_content")
         async def mock_read(_file_path: str) -> FileContentRef:
@@ -496,8 +496,8 @@ class TestOcrSyncWorkflow:
         ):
             result = await env.client.execute_workflow(
                 OcrSyncWorkflow.run,
-                OcrSyncInput(file_path="/tmp/test.pdf", force=True),
-                id="test-ocr-sync-force",
+                OcrSyncInput(file_path="/tmp/test.pdf", skip_duplicate_detection=True),
+                id="test-ocr-sync-skip-dup",
                 task_queue=FORGE_TASK_QUEUE,
             )
 
