@@ -30,4 +30,5 @@ echo "${FILEJSON}"
 temporal workflow start \
   --type OcrSubmitWorkflow \
   --task-queue forge-task-queue \
-  --input "${FILEJSON}"
+  --input "${FILEJSON}" \
+  --await-result

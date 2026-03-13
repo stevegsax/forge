@@ -335,6 +335,10 @@ def execute_store_ocr_result(
             stored=False,
         )
 
+    file_hash = None
+    if file_path and Path(file_path).is_file():
+        file_hash = compute_file_hash(file_path)
+
     engine = get_engine(db_path)
     save_ocr_result(
         engine,
@@ -347,6 +351,7 @@ def execute_store_ocr_result(
         output_tokens=output_tokens,
         batch_id=batch_id,
         workflow_id=workflow_id,
+        file_hash=file_hash,
     )
 
     # Best-effort: update document_id on pre-stored OCR images
@@ -512,6 +517,10 @@ def execute_reassemble_ocr_chunks(
 
     combined_text = "\n\n".join(texts)
 
+    file_hash = None
+    if file_path and Path(file_path).is_file():
+        file_hash = compute_file_hash(file_path)
+
     save_ocr_result(
         engine,
         document_id=document_id,
@@ -523,6 +532,7 @@ def execute_reassemble_ocr_chunks(
         output_tokens=total_output_tokens,
         batch_id=batch_id,
         workflow_id=f"reassemble-{document_id}",
+        file_hash=file_hash,
     )
 
     # Best-effort: reassign OCR images from chunk doc IDs to the final doc ID
@@ -763,6 +773,7 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
                 workflow_id=store_workflow_id,
                 error_message=str(exc),
                 provider=provider_name,
+                file_path=ocr_input.file_path,
             )
         except Exception:
             logger.error("Failed to record batch failure", exc_info=True)
@@ -783,6 +794,7 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
         batch_id=result.batch_id,
         workflow_id=store_workflow_id,
         provider=provider_name,
+        file_path=ocr_input.file_path,
     )
 
     return result
@@ -982,18 +994,33 @@ async def export_ocr_document(input_json: str) -> OcrExportResult:
     )
 
 
+def compute_file_hash(file_path: str) -> str:
+    """Compute SHA-256 hex digest of a file."""
+    import hashlib
+
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
 def execute_check_ocr_duplicate(
     file_path: str,
     engine: Engine,
 ) -> OcrDuplicateCheckResult:
     """Check whether a file has already been successfully OCR'd.
 
-    A file is considered a duplicate if an ``ocr_results`` row exists for
-    the same ``file_path`` and is **not** marked for removal.
+    Computes the SHA-256 hash of the file and checks whether a matching
+    ``ocr_results`` row exists that is **not** marked for removal.
+    The hash is always returned so workflows can thread it through to
+    the save step.
     """
-    from forge.store import find_ocr_result_by_file_path
+    from forge.store import find_ocr_result_by_hash
 
-    row = find_ocr_result_by_file_path(engine, file_path)
+    file_hash = compute_file_hash(file_path)
+
+    row = find_ocr_result_by_hash(engine, file_hash)
     if row is not None:
         return OcrDuplicateCheckResult(
             is_duplicate=True,

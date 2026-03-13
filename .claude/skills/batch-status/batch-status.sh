@@ -54,7 +54,8 @@ case "$cmd" in
 
     failed)
         sqlite3 -header -column "$DB" "
-            SELECT id, COALESCE(batch_id, '(none)') AS batch_id, provider, error_message,
+            SELECT id, COALESCE(batch_id, '(none)') AS batch_id, provider,
+                   COALESCE(file_path, '(unknown)') AS file_path, error_message,
                    datetime(updated_at) AS updated
             FROM batch_jobs
             WHERE status NOT IN ('submitted', 'succeeded')

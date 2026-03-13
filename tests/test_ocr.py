@@ -2149,9 +2149,20 @@ class TestFindOcrResultByFilePath:
 # ---------------------------------------------------------------------------
 
 
+def _test_input_file() -> str:
+    """Return path to a real test file for hash-based duplicate detection tests."""
+    import pathlib
+
+    return str(pathlib.Path(__file__).resolve().parent.parent / "test-inputs" / "2311.06440v1.pdf")
+
+
 class TestExecuteCheckOcrDuplicate:
     def test_detects_duplicate(self, tmp_path: Path) -> None:
+        from forge.ocr.activities import compute_file_hash
+
+        test_file = _test_input_file()
         engine, _ = _setup_db(tmp_path)
+        file_hash = compute_file_hash(test_file)
         save_ocr_result(
             engine,
             document_id="dup-act-1",
@@ -2163,20 +2174,26 @@ class TestExecuteCheckOcrDuplicate:
             output_tokens=0,
             batch_id="b",
             workflow_id="w",
+            file_hash=file_hash,
         )
 
-        result = execute_check_ocr_duplicate("/data/dup.pdf", engine)
+        result = execute_check_ocr_duplicate(str(_test_input_file()), engine)
         assert result.is_duplicate is True
         assert result.existing_document_id == "dup-act-1"
 
     def test_no_duplicate(self, tmp_path: Path) -> None:
         engine, _ = _setup_db(tmp_path)
-        result = execute_check_ocr_duplicate("/data/new.pdf", engine)
+        new_file = tmp_path / "new.pdf"
+        new_file.write_bytes(b"unique content that has no match")
+        result = execute_check_ocr_duplicate(str(new_file), engine)
         assert result.is_duplicate is False
         assert result.existing_document_id == ""
 
     def test_ignores_marked_for_removal(self, tmp_path: Path) -> None:
+        from forge.ocr.activities import compute_file_hash
+
         engine, _ = _setup_db(tmp_path)
+        file_hash = compute_file_hash(str(_test_input_file()))
         save_ocr_result(
             engine,
             document_id="dup-act-2",
@@ -2188,11 +2205,40 @@ class TestExecuteCheckOcrDuplicate:
             output_tokens=0,
             batch_id="b",
             workflow_id="w",
+            file_hash=file_hash,
         )
         mark_ocr_for_removal(engine, "dup-act-2")
 
-        result = execute_check_ocr_duplicate("/data/removed.pdf", engine)
+        result = execute_check_ocr_duplicate(str(_test_input_file()), engine)
         assert result.is_duplicate is False
+
+    def test_detects_duplicate_different_filename(self, tmp_path: Path) -> None:
+        """Same content under a different name is still a duplicate."""
+        import shutil
+
+        from forge.ocr.activities import compute_file_hash
+
+        engine, _ = _setup_db(tmp_path)
+        file_hash = compute_file_hash(str(_test_input_file()))
+        save_ocr_result(
+            engine,
+            document_id="dup-act-3",
+            file_path=str(_test_input_file()),
+            text="text",
+            page_count=1,
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="w",
+            file_hash=file_hash,
+        )
+
+        renamed = tmp_path / "renamed_copy.pdf"
+        shutil.copy2(_test_input_file(), renamed)
+        result = execute_check_ocr_duplicate(str(renamed), engine)
+        assert result.is_duplicate is True
+        assert result.existing_document_id == "dup-act-3"
 
 
 # ---------------------------------------------------------------------------

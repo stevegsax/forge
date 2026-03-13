@@ -103,6 +103,7 @@ class BatchJob(Base):
     workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
     status: Mapped[str] = mapped_column(sa.String, nullable=False)
     provider: Mapped[str] = mapped_column(sa.String, nullable=False, server_default="anthropic")
+    file_path: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime,
@@ -143,6 +144,7 @@ class OcrResult(Base):
     output_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     batch_id: Mapped[str] = mapped_column(sa.String, nullable=False)
     workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False)
+    file_hash: Mapped[str | None] = mapped_column(sa.String, nullable=True, index=True)
     marked_for_removal: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, default=False, server_default=sa.text("0"),
     )
@@ -558,6 +560,7 @@ def record_batch_submission(
     batch_id: str,
     workflow_id: str,
     provider: str = "anthropic",
+    file_path: str | None = None,
 ) -> None:
     """Insert a new batch job record with status 'submitted'."""
     with engine.begin() as conn:
@@ -568,6 +571,7 @@ def record_batch_submission(
                 workflow_id=workflow_id,
                 status="submitted",
                 provider=provider,
+                file_path=file_path,
             )
         )
 
@@ -579,6 +583,7 @@ def record_batch_failure(
     workflow_id: str,
     error_message: str,
     provider: str = "anthropic",
+    file_path: str | None = None,
 ) -> None:
     """Insert a batch job record with status 'failed' and no batch_id.
 
@@ -593,6 +598,7 @@ def record_batch_failure(
                 status="failed",
                 provider=provider,
                 error_message=error_message,
+                file_path=file_path,
             )
         )
 
@@ -657,6 +663,7 @@ def save_ocr_result(
     output_tokens: int,
     batch_id: str,
     workflow_id: str,
+    file_hash: str | None = None,
 ) -> None:
     """Insert a row into the ocr_results table."""
     with engine.begin() as conn:
@@ -671,6 +678,7 @@ def save_ocr_result(
                 output_tokens=output_tokens,
                 batch_id=batch_id,
                 workflow_id=workflow_id,
+                file_hash=file_hash,
             )
         )
 
@@ -704,6 +712,26 @@ def find_ocr_result_by_file_path(engine: Engine, file_path: str) -> dict | None:
     stmt = (
         t.select()
         .where(t.c.file_path == file_path)
+        .where(t.c.marked_for_removal == sa.false())
+        .limit(1)
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)
+
+
+def find_ocr_result_by_hash(engine: Engine, file_hash: str) -> dict | None:
+    """Find an OCR result by SHA-256 file hash that is not marked for removal.
+
+    Returns the first matching row as a dict, or None if no qualifying
+    result exists.
+    """
+    t = OcrResult.__table__
+    stmt = (
+        t.select()
+        .where(t.c.file_hash == file_hash)
         .where(t.c.marked_for_removal == sa.false())
         .limit(1)
     )
