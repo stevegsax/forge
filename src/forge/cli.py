@@ -2,7 +2,7 @@
 
 Provides ``forge run``, ``forge worker``, ``forge status``,
 ``forge eval-planner``, ``forge extract``, ``forge playbooks``,
-and ``forge start`` subcommands.
+``forge start``, and ``forge backfill-hashes`` subcommands.
 
 Follows Function Core / Imperative Shell:
 - Pure functions: format_task_result, format_validation_results,
@@ -1643,3 +1643,55 @@ def start(
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+
+@main.command("backfill-hashes")
+@click.option("--dry-run", is_flag=True, help="Show what would be updated without writing.")
+def backfill_hashes(dry_run: bool) -> None:
+    """Compute SHA-256 hashes for OCR results that are missing them."""
+    from forge.ocr.activities import compute_file_hash
+    from forge.store import (
+        get_db_path,
+        get_engine,
+        get_ocr_results_missing_hash,
+        update_ocr_file_hash,
+    )
+
+    db_path = get_db_path()
+    if db_path is None or not db_path.exists():
+        click.echo("Database not found.", err=True)
+        sys.exit(EXIT_FAILURE)
+
+    engine = get_engine(db_path)
+    rows = get_ocr_results_missing_hash(engine)
+
+    if not rows:
+        click.echo("All OCR results already have hashes.")
+        return
+
+    click.echo(f"Found {len(rows)} result(s) missing hashes.")
+
+    updated = 0
+    skipped = 0
+    for row in rows:
+        file_path = row["file_path"]
+        doc_id = row["document_id"]
+        path = Path(file_path)
+
+        if not path.is_file():
+            click.echo(f"  SKIP {doc_id} — file not found: {file_path}")
+            skipped += 1
+            continue
+
+        file_hash = compute_file_hash(file_path)
+        if dry_run:
+            click.echo(f"  WOULD UPDATE {doc_id} — {file_hash[:16]}… ({file_path})")
+        else:
+            update_ocr_file_hash(engine, doc_id, file_hash)
+            click.echo(f"  UPDATED {doc_id} — {file_hash[:16]}… ({file_path})")
+        updated += 1
+
+    if dry_run:
+        click.echo(f"\nDry run: {updated} would be updated, {skipped} skipped.")
+    else:
+        click.echo(f"\nDone: {updated} updated, {skipped} skipped.")

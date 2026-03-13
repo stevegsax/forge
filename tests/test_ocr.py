@@ -58,12 +58,14 @@ from forge.store import (
     get_ocr_image,
     get_ocr_images,
     get_ocr_result,
+    get_ocr_results_missing_hash,
     mark_ocr_for_removal,
     reassign_ocr_images_document_id,
     run_migrations,
     save_file_content,
     save_ocr_image,
     save_ocr_result,
+    update_ocr_file_hash,
     update_ocr_images_document_id,
 )
 from forge.workflows import FORGE_TASK_QUEUE
@@ -71,6 +73,7 @@ from forge.workflows import FORGE_TASK_QUEUE
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from sqlalchemy.engine import Engine
     from temporalio.testing import WorkflowEnvironment
 
 
@@ -108,6 +111,18 @@ class TestOcrModels:
         assert inp.model_name == "mistral:custom-model"
         assert inp.max_tokens == 8192
         assert inp.document_id == "doc-123"
+
+    def test_submit_input_strips_whitespace(self) -> None:
+        inp = OcrSubmitInput(file_path="  /tmp/test.pdf\n")
+        assert inp.file_path == "/tmp/test.pdf"
+
+    def test_submit_input_rejects_empty_path(self) -> None:
+        with pytest.raises(ValueError, match="file_path must be a non-empty string"):
+            OcrSubmitInput(file_path="")
+
+    def test_submit_input_rejects_whitespace_only_path(self) -> None:
+        with pytest.raises(ValueError, match="file_path must be a non-empty string"):
+            OcrSubmitInput(file_path="\n")
 
     def test_batch_ref_fields(self) -> None:
         ref = OcrBatchRef(batch_id="batch-1", request_id="req-1")
@@ -2272,3 +2287,58 @@ class TestOcrMarkModels:
     def test_mark_result(self) -> None:
         result = OcrMarkResult(document_id="doc-1", found=True)
         assert result.found is True
+
+
+# ---------------------------------------------------------------------------
+# Backfill hash store functions
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillHashFunctions:
+    def _save_result(
+        self,
+        engine: Engine,
+        doc_id: str,
+        file_hash: str | None = None,
+    ) -> None:
+        save_ocr_result(
+            engine,
+            document_id=doc_id,
+            file_path=f"/data/{doc_id}.pdf",
+            text="text",
+            page_count=1,
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="w",
+            file_hash=file_hash,
+        )
+
+    def test_get_results_missing_hash(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._save_result(engine, "has-hash", file_hash="abc123")
+        self._save_result(engine, "no-hash-1")
+        self._save_result(engine, "no-hash-2")
+
+        missing = get_ocr_results_missing_hash(engine)
+        doc_ids = {r["document_id"] for r in missing}
+        assert doc_ids == {"no-hash-1", "no-hash-2"}
+
+    def test_get_results_missing_hash_empty(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._save_result(engine, "has-hash", file_hash="abc123")
+        assert get_ocr_results_missing_hash(engine) == []
+
+    def test_update_ocr_file_hash(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        self._save_result(engine, "doc-1")
+
+        assert update_ocr_file_hash(engine, "doc-1", "newhash") is True
+
+        result = get_ocr_result(engine, "doc-1")
+        assert result["file_hash"] == "newhash"
+
+    def test_update_ocr_file_hash_nonexistent(self, tmp_path: Path) -> None:
+        engine, _ = _setup_db(tmp_path)
+        assert update_ocr_file_hash(engine, "no-such-doc", "hash") is False

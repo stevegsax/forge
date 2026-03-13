@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class OcrSubmitInput(BaseModel):
     """Input to the OcrSubmitWorkflow."""
 
     file_path: str
+
+    @field_validator("file_path")
+    @classmethod
+    def file_path_must_be_nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            msg = "file_path must be a non-empty string"
+            raise ValueError(msg)
+        return v
     model_name: str = "mistral:mistral-ocr-latest"
     max_tokens: int = 16384
     document_id: str = Field(default="", description="Auto-generated if empty.")
@@ -21,12 +30,26 @@ class OcrSubmitInput(BaseModel):
 class OcrBatchRef(BaseModel):
     """Lightweight reference returned by submit_ocr_batch activity.
 
-    Contains only the batch tracking metadata needed by the workflow;
-    callers receive OcrStoreResult once OCR completes.
+    Contains only the batch tracking metadata needed by the workflow.
     """
 
     batch_id: str
     request_id: str
+
+
+class OcrSubmitResult(BaseModel):
+    """Result from OcrSubmitWorkflow — returned immediately after batch submission.
+
+    The workflow does not wait for OCR to complete. Child workflows
+    (OcrStoreWorkflow / OcrGatherWorkflow) continue running independently
+    and will store the results when the batch finishes.
+    """
+
+    document_id: str
+    batch_refs: list[OcrBatchRef] = Field(default_factory=list)
+    chunk_count: int = 0
+    skipped: bool = False
+    skip_reason: str = ""
 
 
 class OcrStoreInput(BaseModel):
@@ -162,6 +185,15 @@ class OcrSyncInput(BaseModel):
     """Input to the OcrSyncWorkflow (synchronous OCR path)."""
 
     file_path: str
+
+    @field_validator("file_path")
+    @classmethod
+    def file_path_must_be_nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            msg = "file_path must be a non-empty string"
+            raise ValueError(msg)
+        return v
     model_name: str = "mistral:mistral-ocr-latest"
     document_id: str = Field(default="", description="Auto-generated if empty.")
     skip_duplicate_detection: bool = Field(

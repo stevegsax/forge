@@ -766,6 +766,30 @@ def clear_ocr_removal_mark(engine: Engine, document_id: str) -> bool:
         return result.rowcount > 0
 
 
+def get_ocr_results_missing_hash(engine: Engine) -> list[dict]:
+    """Return OCR results that have a file_path but no file_hash."""
+    t = OcrResult.__table__
+    stmt = (
+        t.select()
+        .where(t.c.file_hash.is_(None))
+        .where(t.c.file_path.isnot(None))
+    )
+    with engine.connect() as conn:
+        return [dict(row) for row in conn.execute(stmt).mappings()]
+
+
+def update_ocr_file_hash(engine: Engine, document_id: str, file_hash: str) -> bool:
+    """Set file_hash on an OCR result. Returns True if the row was updated."""
+    t = OcrResult.__table__
+    with engine.begin() as conn:
+        result = conn.execute(
+            sa.update(t)
+            .where(t.c.document_id == document_id)
+            .values(file_hash=file_hash)
+        )
+        return result.rowcount > 0
+
+
 # ---------------------------------------------------------------------------
 # File content blob functions
 # ---------------------------------------------------------------------------
