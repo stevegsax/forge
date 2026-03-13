@@ -64,3 +64,26 @@ class LLMProvider(Protocol):
     ) -> ProviderResponse:
         """Parse a single batch result entry into a normalized response."""
         ...
+
+    # --- Synchronous OCR ---
+
+    @property
+    def supports_sync_ocr(self) -> bool:
+        """Whether this provider supports synchronous OCR calls."""
+        ...
+
+    async def call_ocr(
+        self,
+        *,
+        document_data_uri: str,
+        model: str,
+        include_image_base64: bool = True,
+    ) -> dict:
+        """Call the OCR endpoint synchronously and return the response body.
+
+        *document_data_uri* is a ``data:<mime>;base64,<data>`` URI.
+        Returns a dict with the same shape as the batch OCR response
+        (``pages``, ``model``, ``usage_info`` keys) so callers can reuse
+        existing parse logic.
+        """
+        ...

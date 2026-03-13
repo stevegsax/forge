@@ -272,26 +272,34 @@ forge status --workflow-id forge-task-background-task
 
 The `forge start` command launches any registered Temporal workflow by name, without needing a Python script. The worker's `pydantic_data_converter` handles deserialization into the correct Pydantic model on the receiving end.
 
-### Start and return immediately
+### Synchronous OCR (recommended)
+
+```bash
+forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}' --wait
+```
+
+Calls the Mistral OCR API directly and blocks until the result is stored. Returns `OcrStoreResult` (document_id, text_length, page_count) as JSON. Completes in seconds for small documents.
+
+### Batch OCR
 
 ```bash
 forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}'
 ```
 
-Prints the workflow ID and exits immediately. The workflow runs to completion on the worker.
+Submits to the Mistral Batch API and returns immediately. Results arrive asynchronously via the batch poller. Use `--wait` to block until completion (may take minutes to hours).
 
-### Wait for result
+### Start and return immediately
 
 ```bash
-forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}' --wait
+forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}'
 ```
 
-Blocks until the workflow completes and prints the `OcrStoreResult` (document_id, text_length, page_count) as JSON.
+Prints the workflow ID and exits immediately. The workflow runs to completion on the worker.
 
 ### Input from file
 
 ```bash
-forge start OcrSubmitWorkflow --input-file input.json --id my-ocr-run
+forge start OcrSyncWorkflow --input-file input.json --id my-ocr-run
 ```
 
 ### No input

@@ -437,9 +437,10 @@ src/forge/
 └── ocr/
     ├── activities.py          # OCR pipeline activities
     ├── models.py              # OCR data models
-    ├── workflow_submit.py     # Document submission workflow
-    ├── workflow_store.py      # Result storage workflow
-    ├── workflow_gather.py     # Multi-page gathering workflow
+    ├── workflow_sync.py       # Synchronous OCR workflow (direct API call)
+    ├── workflow_submit.py     # Batch OCR submission workflow
+    ├── workflow_store.py      # Batch result storage workflow
+    ├── workflow_gather.py     # Multi-chunk gathering workflow
     ├── workflow_export.py     # Document export workflow
     └── workflow_mark_removal.py # Mark-for-removal workflow
 ```

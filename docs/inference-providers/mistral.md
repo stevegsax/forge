@@ -75,13 +75,18 @@ The `endpoint` parameter on `create_async` accepts:
 
 ## OCR
 
-OCR uses model `mistral-ocr-latest` with batch endpoint `/v1/ocr`. Batch OCR offers a 50% cost reduction over synchronous calls.
+OCR uses model `mistral-ocr-latest`. Two execution paths are available:
+
+- **Synchronous** (`OcrSyncWorkflow`): Calls `client.ocr.process_async()` directly. Results return in seconds. Best for small documents.
+- **Batch** (`OcrSubmitWorkflow`): Submits to the `/v1/ocr` batch endpoint. Results arrive via polling. Batch OCR offers a 50% cost reduction over synchronous calls.
+
+Both paths use `include_image_base64: true` and share the same parse/store logic.
 
 ### Image extraction
 
-The batch body includes `include_image_base64: true` so the API returns images in `pages[].images[]` alongside markdown text. Each image has an `id` (e.g. `img-0.jpeg`), `image_base64` data, and optional bounding box coordinates.
+The response returns images in `pages[].images[]` alongside markdown text. Each image has an `id` (e.g. `img-0.jpeg`), `image_base64` data, and optional bounding box coordinates.
 
-Image IDs are sequential within a single API call but **not unique across chunks** of the same document. The Forge pipeline assigns a UUID to each image during batch polling, strips `image_base64` from the response JSON (to stay under Temporal's 2MB signal limit), and rewrites markdown references from `![alt](img-0.jpeg)` to `![alt](ocr-image://{uuid})`.
+Image IDs are sequential within a single API call but **not unique across chunks** of the same document. The Forge pipeline assigns a UUID to each image (during batch polling or inline in the sync path), strips `image_base64` from the response JSON (to stay under Temporal's 2MB signal limit), and rewrites markdown references from `![alt](img-0.jpeg)` to `![alt](ocr-image://{uuid})`.
 
 ## curl: list batch jobs
 

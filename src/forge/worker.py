@@ -66,6 +66,7 @@ from forge.extraction_workflow import ForgeExtractionWorkflow
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.ocr.activities import (
+    call_ocr_sync,
     check_ocr_duplicate,
     clear_ocr_removal_mark,
     export_ocr_document,
@@ -85,6 +86,7 @@ from forge.ocr.workflow_mark_removal import (
 )
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.ocr.workflow_submit import OcrSubmitWorkflow
+from forge.ocr.workflow_sync import OcrSyncWorkflow
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
@@ -209,6 +211,7 @@ async def run_worker(
             ManualPlaybookWorkflow,
             BatchPollerWorkflow,
             OcrSubmitWorkflow,
+            OcrSyncWorkflow,
             OcrStoreWorkflow,
             OcrGatherWorkflow,
             OcrExportWorkflow,
@@ -250,6 +253,7 @@ async def run_worker(
             write_files,
             write_output,
             # OCR activities
+            call_ocr_sync,
             check_ocr_duplicate,
             clear_ocr_removal_mark,
             export_ocr_document,

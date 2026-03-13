@@ -245,8 +245,9 @@ forge playbooks --task-id my-task      # Filter by source task
 Start an arbitrary Temporal workflow by name. Useful for launching OCR, batch polling, or other registered workflows without a Python script.
 
 ```bash
-forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}'
-forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}' --wait
+forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}'
+forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}' --wait
+forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}' --wait  # batch mode
 forge start BatchPollerWorkflow --wait
 ```
 

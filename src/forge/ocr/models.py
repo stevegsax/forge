@@ -156,3 +156,15 @@ class OcrMarkResult(BaseModel):
 
     document_id: str
     found: bool
+
+
+class OcrSyncInput(BaseModel):
+    """Input to the OcrSyncWorkflow (synchronous OCR path)."""
+
+    file_path: str
+    model_name: str = "mistral:mistral-ocr-latest"
+    document_id: str = Field(default="", description="Auto-generated if empty.")
+    force: bool = Field(
+        default=False,
+        description="Skip duplicate detection and re-submit even if already OCR'd.",
+    )

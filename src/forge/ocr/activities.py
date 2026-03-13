@@ -25,6 +25,7 @@ from temporalio import activity
 
 from forge.llm_providers.models import (
     DocumentContent,
+    ExtractedImage,
     ImageContent,
     Message,
     TextContent,
@@ -43,10 +44,15 @@ from forge.ocr.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy import Engine
 
     from forge.llm_providers.protocol import LLMProvider
     from forge.ocr.models import OcrSubmitInput
+
+    # Callable that stores extracted images and returns {original_id: uuid}
+    StoreImagesFn = Callable[[list[ExtractedImage]], dict[str, str]]
 
 logger = logging.getLogger(__name__)
 
@@ -612,6 +618,65 @@ def execute_export_ocr_document(
     )
 
 
+async def execute_call_ocr_sync(
+    *,
+    base64_data: str,
+    mime_type: str,
+    model_name: str,
+    document_id: str,
+    file_path: str,
+    workflow_id: str,
+    provider: LLMProvider,
+    store_images_fn: StoreImagesFn | None = None,
+) -> OcrStoreResult:
+    """Call OCR synchronously and store the result.
+
+    This replaces the batch-submit → poll → signal → parse → store pipeline
+    with a single direct API call.  Reuses ``execute_parse_ocr_result`` and
+    ``execute_store_ocr_result`` for the parse/store steps.
+
+    *store_images_fn* accepts a list of ``ExtractedImage`` and returns a
+    mapping of ``{original_image_id: stored_uuid}``.  In production this
+    is wired to the database; in tests it can be a stub.
+    """
+    from forge.llm_providers import parse_model_id
+    from forge.llm_providers.mistral import _extract_images_from_response
+
+    _, model = parse_model_id(model_name)
+
+    data_uri = f"data:{mime_type};base64,{base64_data}"
+    response_body = await provider.call_ocr(
+        document_data_uri=data_uri,
+        model=model,
+        include_image_base64=True,
+    )
+
+    # Extract and store images (mirrors batch poller logic)
+    extracted = _extract_images_from_response(response_body)
+    image_mapping: dict[str, str] = {}
+    if extracted and store_images_fn is not None:
+        image_mapping = store_images_fn(extracted)
+
+    # Inject mapping so execute_parse_ocr_result rewrites image refs
+    response_body["_image_mapping"] = image_mapping
+    raw_json = json.dumps(response_body)
+
+    parse_result = execute_parse_ocr_result(raw_json)
+
+    return execute_store_ocr_result(
+        document_id=document_id,
+        file_path=file_path,
+        text=parse_result.text,
+        model_name=parse_result.model_name,
+        input_tokens=parse_result.input_tokens,
+        output_tokens=parse_result.output_tokens,
+        page_count=parse_result.page_count,
+        batch_id="",
+        workflow_id=workflow_id,
+        image_ids=parse_result.image_ids,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Imperative shell (Temporal activities)
 # ---------------------------------------------------------------------------
@@ -736,6 +801,107 @@ async def store_ocr_result(input_json: str) -> OcrStoreResult:
     data = json.loads(input_json)
     logger.info("Storing OCR result: document_id=%s", data.get("document_id", ""))
     return execute_store_ocr_result(**data)
+
+
+@activity.defn
+async def call_ocr_sync(input_json: str) -> OcrStoreResult:
+    """Activity: call OCR synchronously and store the result.
+
+    Replaces the batch-submit → poll → signal → parse → store pipeline
+    with a single direct API call.  Takes JSON with keys:
+
+    - ``file_path``: path to file on disk (used when no content_id)
+    - ``content_id``: blob ID in file_content_blobs (used for chunks)
+    - ``mime_type``: MIME type of the file
+    - ``model_name``: provider:model identifier
+    - ``document_id``: target document ID
+    - ``workflow_id``: calling workflow's ID
+    """
+    from forge.llm_providers import get_provider, parse_model_id
+    from forge.store import (
+        get_db_path,
+        get_engine,
+        get_file_content,
+        save_ocr_image,
+    )
+
+    data = json.loads(input_json)
+    document_id = data["document_id"]
+    file_path = data["file_path"]
+    model_name = data["model_name"]
+    workflow_id = data["workflow_id"]
+    content_id = data.get("content_id", "")
+    mime_type = data.get("mime_type", "")
+
+    logger.info(
+        "Sync OCR: document_id=%s file=%s", document_id, file_path
+    )
+
+    # Load file content — from blob store (chunks) or filesystem
+    if content_id:
+        db_path = get_db_path()
+        if db_path is None:
+            msg = "Cannot load file content: database is disabled"
+            raise RuntimeError(msg)
+        engine = get_engine(db_path)
+        blob = get_file_content(engine, content_id)
+        if blob is None:
+            msg = f"File content not found for content_id={content_id}"
+            raise RuntimeError(msg)
+        b64_data = base64.b64encode(blob["data"]).decode("ascii")
+        mime_type = mime_type or blob["mime_type"]
+    else:
+        file_result = execute_read_file(file_path)
+        b64_data = file_result.base64_data
+        mime_type = mime_type or file_result.mime_type
+
+    provider = get_provider(model_name)
+    _provider_name, _ = parse_model_id(model_name)
+
+    # Build image storage closure (mirrors batch poller pattern)
+    db_path = get_db_path()
+    store_images_fn = None
+    if db_path is not None:
+        engine = get_engine(db_path)
+
+        def _store_images(images: list[ExtractedImage]) -> dict[str, str]:
+            mapping: dict[str, str] = {}
+            for img in images:
+                image_id = str(uuid.uuid4())
+                raw_b64 = img.image_base64
+                img_mime = img.mime_type
+                if raw_b64.startswith("data:"):
+                    header, raw_b64 = raw_b64.split(",", 1)
+                    img_mime = header.split(":")[1].split(";")[0]
+                img_data = base64.b64decode(raw_b64)
+                save_ocr_image(
+                    engine,
+                    image_id=image_id,
+                    page_index=img.page_index,
+                    original_image_id=img.original_image_id,
+                    data=img_data,
+                    mime_type=img_mime,
+                    file_size_bytes=len(img_data),
+                    top_left_x=img.top_left_x,
+                    top_left_y=img.top_left_y,
+                    bottom_right_x=img.bottom_right_x,
+                    bottom_right_y=img.bottom_right_y,
+                )
+                mapping[img.original_image_id] = image_id
+            return mapping
+
+        store_images_fn = _store_images
+
+    return await execute_call_ocr_sync(
+        base64_data=b64_data,
+        mime_type=mime_type,
+        model_name=model_name,
+        document_id=document_id,
+        file_path=file_path,
+        workflow_id=workflow_id,
+        provider=provider,
+        store_images_fn=store_images_fn,
+    )
 
 
 @activity.defn
