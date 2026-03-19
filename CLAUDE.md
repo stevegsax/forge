@@ -18,6 +18,13 @@ See [TOC.md](TOC.md) for a full table of contents covering design docs, phase sp
 - LLM client library: `anthropic`
 - File search: `fd`
 - Content search: `rg` (uses Rust regex syntax)
+- Document conversion: `pandoc`
+- JSON processing: `jq`
+- Markdown querying: `mq` (jq-like syntax for markdown)
+- YAML/INI processing: `yq` (jq-like syntax for YAML and INI)
+- XML processing: `xmlstarlet`
+- HTML querying: `htmlq` (CSS selector syntax)
+- Natural language linting: `textlint`
 - Terminal: `tmux` / `ghostty`
 - Platform: macOS
 
