@@ -37,6 +37,8 @@ from forge.ocr.models import (
     OcrBatchRef,
     OcrDuplicateCheckResult,
     OcrExportResult,
+    OcrJobEntry,
+    OcrListJobsResult,
     OcrMarkResult,
     OcrParseResult,
     OcrStoreResult,
@@ -1078,3 +1080,125 @@ async def clear_ocr_removal_mark(document_id: str) -> OcrMarkResult:
     engine = get_engine(db_path)
     found = _clear(engine, document_id)
     return OcrMarkResult(document_id=document_id, found=found)
+
+
+# ---------------------------------------------------------------------------
+# List OCR jobs
+# ---------------------------------------------------------------------------
+
+
+def execute_list_ocr_jobs(
+    engine: Engine,
+    *,
+    limit: int = 50,
+    status_filter: str = "",
+) -> OcrListJobsResult:
+    """Query OCR submissions grouped by file_path.
+
+    Returns one entry per user submission with aggregate status derived
+    from the underlying batch_jobs rows and document_id from ocr_results
+    when available.
+
+    Status logic:
+    - Any chunk errored -> "errored"
+    - Any chunk still submitted -> "processing"
+    - All chunks succeeded -> "succeeded"
+    - Otherwise -> "unknown"
+    """
+    import sqlalchemy as sa
+
+    from forge.store import BatchJob, OcrResult
+
+    bj = BatchJob.__table__
+    ocr = OcrResult.__table__
+
+    # Aggregate batch_jobs by file_path for mistral provider
+    sub = (
+        sa.select(
+            bj.c.file_path,
+            sa.func.min(bj.c.created_at).label("created_at"),
+            sa.func.count().label("chunk_count"),
+            sa.func.count(sa.case((bj.c.status == "errored", 1))).label("n_errored"),
+            sa.func.count(sa.case((bj.c.status == "submitted", 1))).label("n_submitted"),
+            sa.func.count(sa.case((bj.c.status == "succeeded", 1))).label("n_succeeded"),
+        )
+        .where(bj.c.provider == "mistral")
+        .where(bj.c.file_path.isnot(None))
+        .group_by(bj.c.file_path)
+    ).subquery("agg")
+
+    # Left join with ocr_results to pick up document_id for completed jobs
+    stmt = (
+        sa.select(
+            sub.c.file_path,
+            sub.c.created_at,
+            sub.c.chunk_count,
+            sub.c.n_errored,
+            sub.c.n_submitted,
+            sub.c.n_succeeded,
+            ocr.c.document_id,
+        )
+        .select_from(
+            sub.outerjoin(
+                ocr,
+                sa.and_(
+                    ocr.c.file_path == sub.c.file_path,
+                    ocr.c.marked_for_removal == sa.false(),
+                ),
+            )
+        )
+        .order_by(sub.c.created_at.desc())
+        .limit(limit)
+    )
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+
+    jobs: list[OcrJobEntry] = []
+    for row in rows:
+        if row["n_errored"] > 0:
+            status = "errored"
+        elif row["n_submitted"] > 0:
+            status = "processing"
+        elif row["n_succeeded"] == row["chunk_count"]:
+            status = "succeeded"
+        else:
+            status = "unknown"
+
+        if status_filter and status != status_filter:
+            continue
+
+        jobs.append(OcrJobEntry(
+            file_path=row["file_path"],
+            document_id=row["document_id"] or "",
+            status=status,
+            chunk_count=row["chunk_count"],
+            created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        ))
+
+    return OcrListJobsResult(jobs=jobs, total=len(jobs))
+
+
+@activity.defn
+async def list_ocr_jobs(input_json: str) -> OcrListJobsResult:
+    """Activity: list OCR job submissions grouped by file_path."""
+    from forge.store import get_db_path, get_engine
+
+    data = json.loads(input_json)
+    logger.info(
+        "Listing OCR jobs: limit=%s status_filter=%s",
+        data.get("limit", 50),
+        data.get("status_filter", ""),
+    )
+
+    db_path = get_db_path()
+    if db_path is None:
+        msg = "Cannot list OCR jobs: database is disabled"
+        raise RuntimeError(msg)
+
+    engine = get_engine(db_path)
+    return execute_list_ocr_jobs(
+        engine,
+        limit=data.get("limit", 50),
+        status_filter=data.get("status_filter", ""),
+    )

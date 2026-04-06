@@ -1645,6 +1645,56 @@ def start(
         sys.exit(EXIT_INFRASTRUCTURE_ERROR)
 
 
+@main.command("ocr-jobs")
+@click.option(
+    "--limit",
+    default=50,
+    show_default=True,
+    type=int,
+    help="Maximum number of jobs to return.",
+)
+@click.option(
+    "--status",
+    "status_filter",
+    default="",
+    type=click.Choice(["", "processing", "succeeded", "errored", "unknown"], case_sensitive=False),
+    help="Filter by aggregate status.",
+)
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+    help="Temporal server address.",
+)
+def ocr_jobs(limit: int, status_filter: str, temporal_address: str) -> None:
+    """List OCR job submissions with file path, document ID, status, and timestamp."""
+    import json as json_mod
+
+    from forge.ocr.models import OcrListJobsInput
+
+    wf_input = OcrListJobsInput(limit=limit, status_filter=status_filter)
+
+    try:
+        result = asyncio.run(
+            _start_workflow_and_wait(
+                "OcrListJobsWorkflow",
+                wf_input.model_dump(),
+                workflow_id=f"ocr-list-jobs-{__import__('uuid').uuid4().hex[:8]}",
+                task_queue="forge-task-queue",
+                temporal_address=temporal_address,
+                timeout_hours=1.0,
+            )
+        )
+        if hasattr(result, "model_dump_json"):
+            click.echo(result.model_dump_json(indent=2))
+        else:
+            click.echo(json_mod.dumps(result, indent=2, default=str))
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+
 @main.command("backfill-hashes")
 @click.option("--dry-run", is_flag=True, help="Show what would be updated without writing.")
 def backfill_hashes(dry_run: bool) -> None:

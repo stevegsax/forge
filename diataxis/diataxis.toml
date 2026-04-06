@@ -1,0 +1,656 @@
+[project]
+name = "Forge"
+description = "Human-facing documentation for Forge, a batch-first LLM task orchestrator. Covers the core orchestration pipeline end-to-end, plus extensions (OCR, evaluation, knowledge extraction) that build on the core."
+type = "project-docs"
+audience = "Internal developers who create or debug Forge workflows"
+prerequisites = "Basic understanding of Python, Temporal (https://docs.temporal.io/), LLM prompting, Jinja-style templates, batch processing patterns, and OCR concepts. This documentation assumes familiarity with these foundations and links to official external docs rather than re-explaining them."
+
+# =============================================================================
+# Topic 1: System Overview
+# =============================================================================
+
+[topics.system-overview]
+title = "System Overview"
+description = "What Forge is, the core principles that drive its design, and how the major components fit together."
+complexity = "beginner"
+order = 1
+
+[topics.system-overview.explanation]
+file = "explanation/system-overview.md"
+status = "draft"
+covers = [
+    "What problem Forge solves and why it exists",
+    "The batch-first, document-completion paradigm vs. chat-based orchestrators",
+    "The seven architecture principles and their practical consequences",
+    "How the major components relate: CLI, Temporal workflows, activities, code intelligence, observability store",
+    "The concept of task-agnostic orchestration — same pipeline, different prompts",
+    "Plan-then-execute model vs. future dynamic task evolution",
+]
+detail = """High-level orientation piece. A developer reading this should come away with a mental map of the system — what the moving parts are, what philosophy connects them, and where to look for details. No code, no CLI commands. Diagrams showing component relationships are encouraged."""
+guidance = """This is the first thing a new team member reads. Keep it grounded in 'why' — why batch mode, why document completion, why Temporal, why human-gated merges. Connect each principle to the concrete consequence it has for how the system works. Link to the golden-path tutorial for 'seeing it in action' and to the workflow-step explanation for the central abstraction. Link to Temporal docs (https://docs.temporal.io/) for Temporal background."""
+
+[topics.system-overview.reference]
+file = "reference/system-overview.md"
+status = "draft"
+covers = [
+    "Architecture principles table (principle, consequence, enforcement point)",
+    "Module map — every package and top-level module with a one-line description",
+    "Technology stack table (component, technology, version/source)",
+    "Environment variables table (all FORGE_* and XDG vars, defaults, effects)",
+    "File system layout (config, state, logs, database)",
+]
+detail = """Tabular reference. One table per section. No narrative prose beyond brief introductions to each table."""
+guidance = """Mirror the structure of the codebase — the module map should follow the directory tree. Keep descriptions to one line. Link to topic-specific reference docs for details on each module's contents."""
+
+# =============================================================================
+# Topic 2: Golden Path — End-to-End Walkthrough
+# =============================================================================
+
+[topics.golden-path]
+title = "The Golden Path: A Planned Task End-to-End"
+description = "Step-by-step walkthrough of a planned, multi-step code generation task from CLI submission through committed output."
+complexity = "beginner"
+prerequisites = ["system-overview"]
+order = 2
+
+[topics.golden-path.tutorials]
+file = "tutorials/golden-path.md"
+status = "draft"
+covers = [
+    "Submitting a planned task via the CLI",
+    "Observing the planner decompose the task into steps",
+    "Watching context assembly discover relevant files",
+    "Seeing the exploration loop request additional context",
+    "Examining the assembled prompt sent to the LLM",
+    "Tracing structured output through edit application",
+    "Watching validation run and a retry with error feedback",
+    "Seeing the final commit in the worktree",
+    "Inspecting the run with forge status --verbose",
+]
+detail = """End-to-end narrative walkthrough using a concrete, realistic example (e.g., adding a new CLI command to an existing Python project). Each step shows the actual CLI command or observable output, then briefly states what happened internally. Show results at every step — never more than 2-3 actions without visible output. The tutorial should take ~20 minutes to read and follow."""
+guidance = """This is the single most important document in the set. It is the reader's first hands-on encounter with Forge. Use a concrete example task, not abstract placeholders. Show real CLI output (simplified if needed). After each major phase, include a brief callout like 'For more on how context assembly works, see [Context Assembly](../explanation/context-assembly.md)' — but do NOT explain the internals inline. The tutorial shows what happens; the explanations explain why. Include a 'What you built' section at the end summarizing what was accomplished. Include a 'Where to go next' section linking to the execution-modes explanation and how-to guides."""
+
+# =============================================================================
+# Topic 3: The Universal Workflow Step
+# =============================================================================
+
+[topics.workflow-step]
+title = "The Universal Workflow Step"
+description = "The five-phase pattern (construct, send, receive, serialize, transition) that every operation in Forge follows."
+complexity = "intermediate"
+prerequisites = ["system-overview"]
+order = 3
+
+[topics.workflow-step.explanation]
+file = "explanation/workflow-step.md"
+status = "draft"
+covers = [
+    "Why every operation uses the same five-phase pattern",
+    "How this enables task-agnostic orchestration — new task types need new prompts, not new workflows",
+    "The relationship between Temporal workflows and activities — what runs where and why",
+    "Why the LLM call is stateless and self-contained (batch compatibility, testability, observability)",
+    "How the transition vocabulary (SUCCESS, FAILURE_RETRYABLE, FAILURE_TERMINAL) drives the control loop",
+    "The design decision to keep the orchestrator in control (not the LLM)",
+]
+detail = """Conceptual deep-dive. Explain the 'why' behind the universal workflow step with enough depth that a developer can reason about whether a proposed change fits the pattern or breaks it. Use the analogy of a state machine where prompts and context are the only variables."""
+guidance = """This is the central abstraction of the system. Make the case for why it matters — not just what it is, but what it buys you. Contrast with the chat-loop pattern used by other orchestrators (where the LLM decides what to do next). Link to the reference doc for the precise activity signatures, data models, and timeout policies. Link to the golden-path tutorial for a concrete example."""
+
+[topics.workflow-step.reference]
+file = "reference/workflow-step.md"
+status = "draft"
+covers = [
+    "Activity definitions: name, input type, output type, timeout, retry policy",
+    "Workflow definitions: name, input type, output type, signals, queries",
+    "TransitionSignal enum values and their meanings",
+    "Retry semantics: what happens on FAILURE_RETRYABLE at each level (single-step, planned step, sub-task)",
+    "Core data models: ForgeTaskInput, TaskResult, StepResult, SubTaskResult, LLMCallResult",
+]
+detail = """Tabular reference. One table per activity/workflow definition. Data model tables should list field name, type, required/optional, and description."""
+guidance = """Structure mirrors the code: activities first (in execution order), then workflows, then data models. Use the same names as the source code. Link to the explanation for context on why these boundaries exist."""
+
+# =============================================================================
+# Topic 4: Context Assembly
+# =============================================================================
+
+[topics.context-assembly]
+title = "Context Assembly"
+description = "How Forge builds the prompt sent to the LLM: context discovery, importance ranking, token budget management, the exploration loop, and prompt structure."
+complexity = "intermediate"
+prerequisites = ["workflow-step"]
+order = 4
+
+[topics.context-assembly.explanation]
+file = "explanation/context-assembly.md"
+status = "draft"
+covers = [
+    "The system prompt as a structured document — not a chat transcript",
+    "The eleven sections of the system prompt and why they are ordered that way (cache efficiency)",
+    "How import graph analysis discovers relevant files without manual specification",
+    "How PageRank ranks files by structural importance",
+    "How the token budget packer selects what fits (knapsack-style priority packing)",
+    "Progressive disclosure: why only target files and repo map are included by default",
+    "How the exploration loop lets the LLM pull additional context on demand",
+    "Why exploration rounds are separate document completions (not tool calls within a conversation)",
+    "How error context is injected on retry (AST-derived code snippets around failure locations)",
+]
+detail = """This is the deepest explanation doc in the set — context assembly is Forge's core competency. Walk through the full assembly pipeline from 'task description arrives' to 'prompt is ready to send'. Use the system prompt diagram from ARCHITECTURE.md as a structural backbone. Explain the tradeoffs: why not include everything? Why progressive disclosure? Why PageRank instead of embeddings?"""
+guidance = """This answers the user's question 'how do we decide what context to add to each prompt.' Make the decision chain explicit: what triggers inclusion, what controls priority, what gets cut when the budget is tight. Discuss cache efficiency — why stable content comes first and volatile content (errors) comes last. Link to the reference doc for the full provider list, priority ordering table, and token budget algorithm. Link to the golden-path tutorial for a concrete example of context assembly in action."""
+
+[topics.context-assembly.reference]
+file = "reference/context-assembly.md"
+status = "draft"
+covers = [
+    "System prompt section table: section number, name, source, stability, cache behavior",
+    "Context priority ordering table (1=highest to 6=lowest) with what each level contains",
+    "Exploration provider table: provider name, description, parameters, return format",
+    "Token budget algorithm: inputs, priority order, truncation behavior",
+    "AssembledContext data model fields",
+    "ContextProviderSpec, ContextRequest, ContextResult, ExplorationResponse models",
+    "CLI flags that control context assembly (--include-deps, --no-explore, --max-exploration-rounds, --context-file)",
+]
+detail = """Dense reference. Tables for structured data, brief code examples for provider request/response formats."""
+guidance = """This is the companion to the explanation doc. A developer debugging 'why was file X not included in the prompt' should find their answer here. Structure: prompt sections first, then discovery/ranking, then exploration providers, then CLI controls. Link back to explanation for the 'why' behind each mechanism."""
+
+[topics.context-assembly.howto]
+file = "howto/control-context-assembly.md"
+status = "draft"
+covers = [
+    "How to include specific files as context (--context-file)",
+    "How to include dependency contents upfront (--include-deps)",
+    "How to disable or limit exploration (--no-explore, --max-exploration-rounds)",
+    "How to diagnose why a file was or was not included in the prompt",
+    "How to check token budget utilization for a completed run",
+]
+detail = """Short, task-focused guides. Each section addresses one specific 'I want to...' scenario. Include CLI examples and expected output."""
+guidance = """Assume the reader knows what context assembly is (link to explanation). Focus on the knobs they can turn and how to verify the effect. Include the forge status --verbose output that shows context stats."""
+
+# =============================================================================
+# Topic 5: Task Decomposition and Execution
+# =============================================================================
+
+[topics.task-decomposition]
+title = "Task Decomposition and Execution"
+description = "How Forge decomposes tasks into steps and sub-tasks, the three execution modes, and how fan-out/gather achieves parallelism."
+complexity = "intermediate"
+prerequisites = ["workflow-step", "context-assembly"]
+order = 5
+
+[topics.task-decomposition.explanation]
+file = "explanation/task-decomposition.md"
+status = "draft"
+covers = [
+    "The three execution modes and when to use each (single-step, planned, fan-out)",
+    "How the planner decomposes a task into ordered steps — what inputs it receives, what it produces",
+    "Why planning gets the most expensive models and highest token budgets",
+    "How fan-out dispatches parallel child workflows in separate git worktrees",
+    "How gather collects results, detects file conflicts, and resolves them",
+    "Nested fan-out: recursive decomposition bounded by max_fan_out_depth",
+    "Sanity checks: periodic re-evaluation of the remaining plan",
+    "Git strategy: worktree-per-task isolation, human-gated merges, disposable worktrees",
+    "How the final result is assembled from gathered sub-task outputs",
+]
+detail = """Explain the full lifecycle of a task from submission to final committed result. Cover the 'task decomposition and gathering' and 'how a final answer is created' questions from the user's original request. Use diagrams showing the planner output, step execution, and fan-out/gather flow."""
+guidance = """This answers two of the user's core questions: 'how tasks are decomposed and then gathered together' and 'how a final answer is created.' Make the planner's role clear — it is the critical decision point that bounds everything downstream. Explain conflict resolution as another instance of the universal workflow step (with a specialized prompt). Link to the execution-modes reference for CLI flags and data models. Link to the golden-path tutorial for the planned execution example."""
+
+[topics.task-decomposition.reference]
+file = "reference/task-decomposition.md"
+status = "draft"
+covers = [
+    "Plan data model: Plan, PlanStep, SubTask fields and constraints",
+    "Planner prompt structure and inputs",
+    "Execution mode selection logic (plan flag, sub_tasks presence)",
+    "CLI flags: --plan, --max-fan-out-depth, --sanity-check-interval, --max-retries",
+    "Git worktree lifecycle: creation, branch naming, cleanup",
+    "Conflict resolution inputs and outputs",
+]
+detail = """Tabular reference for plan format, execution mode rules, and CLI controls."""
+guidance = """Structure: plan format first, then execution mode selection, then fan-out mechanics, then CLI flags. A developer reading a plan JSON should be able to look up what each field means here. Link to explanation for the 'why' behind planning decisions."""
+
+[topics.task-decomposition.howto]
+file = "howto/submit-tasks.md"
+status = "draft"
+covers = [
+    "How to submit a single-step task",
+    "How to submit a planned multi-step task",
+    "How to use a JSON task file for complex task definitions",
+    "How to control fan-out depth",
+    "How to configure sanity check intervals",
+    "How to inspect plan output before execution starts",
+]
+detail = """CLI-focused recipe guide. Each section: brief intro, CLI command, expected output. Include the JSON task file format with annotated fields."""
+guidance = """This replaces USAGE.md as the human-facing 'how to use Forge' guide. Link to the reference doc for full flag documentation. Link to the explanation for background on when to use each mode. Do not explain the internals — just show how to do it."""
+
+# =============================================================================
+# Topic 6: Output Processing
+# =============================================================================
+
+[topics.output-processing]
+title = "Output Processing"
+description = "How the LLM's structured response is processed: the LLMResponse schema, edit application with fuzzy matching, and file writing."
+complexity = "intermediate"
+prerequisites = ["workflow-step"]
+order = 6
+
+[topics.output-processing.explanation]
+file = "explanation/output-processing.md"
+status = "draft"
+covers = [
+    "Why Forge uses tool-use for structured output instead of parsing free-form text",
+    "The LLMResponse schema: explanation, files, and edits",
+    "Why edits use search/replace instead of full-file replacement (the D50 decision)",
+    "The four-level edit matching fallback chain and why each level exists",
+    "How edits are applied sequentially — each edit sees the result of the previous one",
+    "How ambiguity (multiple matches) is handled as an error",
+]
+detail = """Focus on the design decisions and tradeoffs. Why search/replace? Why four fallback levels? What goes wrong when the LLM outputs slightly different whitespace? Use concrete examples showing how a search string matches (or fails to match) at each fallback level."""
+guidance = """This is where the 'how prompts produce a final answer' story concludes. Connect back to context assembly (the prompt) and forward to validation (what happens after edits are applied). The fuzzy matching chain is subtle — use side-by-side examples showing an LLM output and how each fallback level handles it. Link to the reference doc for exact matching thresholds and algorithm details."""
+
+[topics.output-processing.reference]
+file = "reference/output-processing.md"
+status = "draft"
+covers = [
+    "LLMResponse, FileOutput, FileEdit, EditOperation model fields",
+    "Edit matching algorithm: exact, whitespace-normalized, indentation-normalized, fuzzy",
+    "Fuzzy match parameters: similarity threshold (60%), uniqueness gap (5%)",
+    "Edit application order and error conditions",
+    "File write behavior: new files vs. existing file edits",
+]
+detail = """Precise technical reference. Algorithm descriptions with thresholds and edge case behavior."""
+guidance = """A developer debugging 'why did this edit fail to apply' should find their answer here. Include the exact matching rules for each fallback level. Link to the explanation for the design rationale."""
+
+# =============================================================================
+# Topic 7: Validation and Retries
+# =============================================================================
+
+[topics.validation-and-retries]
+title = "Validation and Retries"
+description = "How Forge validates LLM output with deterministic checks and feeds errors back to the LLM on retry."
+complexity = "intermediate"
+prerequisites = ["workflow-step", "output-processing"]
+order = 7
+
+[topics.validation-and-retries.explanation]
+file = "explanation/validation-and-retries.md"
+status = "draft"
+covers = [
+    "Why deterministic validation runs before LLM-based review",
+    "The validation pipeline: ruff lint, ruff format, optional test execution",
+    "How validation results map to transition signals (SUCCESS, FAILURE_RETRYABLE, FAILURE_TERMINAL)",
+    "Error-aware retries: why blind retries waste budget",
+    "How the error section is constructed with AST-derived code context",
+    "Cache efficiency: why errors are appended at the end of the system prompt",
+    "Retry semantics at each level: single-step (fresh worktree), planned step (reset uncommitted), sub-task",
+]
+detail = """Connect the validation-retry loop to the broader workflow step pattern. Explain why error feedback dramatically improves fix rates (cite the prior art: Aider, Claude Code, SWE-bench). Show how the AST context extraction works conceptually."""
+guidance = """This is where the 'what happens when things go wrong' story lives. Make the retry semantics crystal clear for each execution mode — developers debugging a stuck workflow need to know exactly what gets reset and what persists. Link to the reference for ValidationResult fields, transition signal definitions, and CLI flags."""
+
+[topics.validation-and-retries.reference]
+file = "reference/validation-and-retries.md"
+status = "draft"
+covers = [
+    "ValidationResult and ValidationConfig model fields",
+    "Validation checks: name, what it runs, pass/fail criteria",
+    "TransitionSignal values and mapping rules",
+    "Error section format: structure, AST context inclusion rules",
+    "CLI flags: --run-ruff-lint, --run-ruff-format, --run-tests, --auto-fix, --max-retries",
+]
+detail = """Tabular reference for validation configuration and error format."""
+guidance = """Structure mirrors the validation pipeline: config first, checks second, transition mapping third, error format fourth, CLI flags last. Link to explanation for design rationale."""
+
+[topics.validation-and-retries.howto]
+file = "howto/configure-validation.md"
+status = "draft"
+covers = [
+    "How to enable or disable specific validation checks",
+    "How to add custom test execution to validation",
+    "How to configure retry limits",
+    "How to inspect validation results for a failed step",
+]
+detail = """Short task-focused sections with CLI examples."""
+guidance = """Link to reference for full flag list. Include forge status output showing validation results."""
+
+# =============================================================================
+# Topic 8: Model Routing and Batch Processing
+# =============================================================================
+
+[topics.llm-dispatch]
+title = "Model Routing and Batch Processing"
+description = "How Forge routes LLM calls to appropriate models via capability tiers, and how batch processing decouples workflow execution from LLM latency."
+complexity = "intermediate"
+prerequisites = ["workflow-step"]
+order = 8
+
+[topics.llm-dispatch.explanation]
+file = "explanation/llm-dispatch.md"
+status = "draft"
+covers = [
+    "Capability tiers: why abstract tiers instead of concrete model names",
+    "The four tiers (reasoning, generation, summarization, classification) and their use cases",
+    "Why planning and conflict resolution get the reasoning tier",
+    "Batch mode: why submit-wait-resume instead of synchronous calls",
+    "The 50% cost reduction from the Anthropic Batch API",
+    "How the batch poller delivers results via Temporal signals",
+    "Why every LLM call must be a self-contained document completion (batch compatibility)",
+    "Prompt caching: cache-efficient ordering and cache control headers",
+]
+detail = """Two related topics unified by the theme of 'how Forge manages LLM calls.' Model routing is about which model; batch processing is about how the call is made. Both are consequences of the batch-first design principle."""
+guidance = """Connect model routing to the planning discussion (why the planner gets premium resources). Connect batch processing to the document-completion paradigm (why stateless calls enable batch mode). Link to the Anthropic Batch API docs (https://docs.anthropic.com/en/docs/build-with-claude/batch-processing) for API details. Link to reference for tier-to-model mapping and batch configuration."""
+
+[topics.llm-dispatch.reference]
+file = "reference/llm-dispatch.md"
+status = "draft"
+covers = [
+    "Capability tier table: tier name, default model, use cases, LLM call sites",
+    "Model override mechanism: per-step capability_tier in plans",
+    "Batch processing: batch_jobs table schema, batch states, signal names",
+    "Batch poller: schedule configuration, poll interval, search attributes",
+    "Prompt caching: cache control header placement, cache token fields in LLMStats",
+    "CLI flags: --sync, --batch-poll-interval, model tier overrides",
+]
+detail = """Tabular reference for model configuration and batch mechanics."""
+guidance = """Structure: model routing first, then batch processing, then prompt caching. Link to explanation for design rationale."""
+
+[topics.llm-dispatch.howto]
+file = "howto/configure-llm-dispatch.md"
+status = "draft"
+covers = [
+    "How to run a task in sync mode (--sync)",
+    "How to check batch job status",
+    "How to configure the batch poll interval",
+    "How to override the model tier for a specific task or step",
+]
+detail = """Short CLI-focused recipes."""
+guidance = """Link to reference for full configuration options. Include examples of forge status output showing batch job states."""
+
+# =============================================================================
+# Topic 9: Observability and Debugging
+# =============================================================================
+
+[topics.observability]
+title = "Observability and Debugging"
+description = "How to inspect, diagnose, and debug Forge workflow execution using the observability store, logs, tracing, and CLI commands."
+complexity = "intermediate"
+prerequisites = ["workflow-step"]
+order = 9
+
+[topics.observability.explanation]
+file = "explanation/observability.md"
+status = "draft"
+covers = [
+    "The observability strategy: SQLite store for heavyweight data, Temporal for lightweight stats",
+    "What is stored and why: full prompts, token usage, latency, context stats",
+    "Best-effort writes: why store failures never block workflow execution",
+    "OpenTelemetry tracing: span hierarchy from pipeline run to individual LLM request",
+    "The execution journal: recording decisions, not just events",
+]
+detail = """Explain the design decisions behind the observability approach. Why SQLite? Why separate from Temporal results? Why best-effort?"""
+guidance = """Keep this focused on the 'why' — the reference and how-to docs cover the 'what' and 'how.' Link to the how-to for practical debugging workflows. Link to the reference for store schema and CLI flags."""
+
+[topics.observability.reference]
+file = "reference/observability.md"
+status = "draft"
+covers = [
+    "SQLite store schema: interactions table, runs table, batch_jobs table",
+    "Alembic migration management",
+    "CLI commands: forge status (all flags and output formats)",
+    "Log files: locations, rotation policy, verbosity levels",
+    "Environment variables: FORGE_DB_PATH, FORGE_LOG_DIR, OTEL_* vars",
+    "API message logging: --log-messages flag, file format and location",
+    "OTel span names and attributes",
+]
+detail = """Complete reference for all observability surfaces. Tables for schemas, CLI flags, env vars."""
+guidance = """Structure: store schema first, then CLI, then logs, then OTel. A developer looking for 'where is X stored' should find it here. Link to explanation for design rationale."""
+
+[topics.observability.howto]
+file = "howto/debug-workflow.md"
+status = "draft"
+covers = [
+    "How to inspect a completed workflow's full history",
+    "How to find what prompt was sent for a specific step",
+    "How to diagnose why a step failed validation",
+    "How to check token budget utilization",
+    "How to read log files for a stuck or slow workflow",
+    "How to enable and read API message logs",
+    "How to use verbose output for real-time debugging",
+]
+detail = """Problem-oriented debugging guide. Each section starts with a symptom ('The workflow failed at step 3') and walks through the diagnostic steps."""
+guidance = """This is the most practically valuable how-to in the set. Developers will reach for this when something breaks. Start with the most common debugging scenarios. Include actual CLI commands and annotated output. Link to reference for full flag documentation."""
+
+# =============================================================================
+# Topic 10: Knowledge Extraction and Playbooks
+# =============================================================================
+
+[topics.knowledge-extraction]
+title = "Knowledge Extraction and Playbooks"
+description = "How Forge extracts lessons from completed work and injects them as playbook entries into future task contexts."
+complexity = "intermediate"
+prerequisites = ["context-assembly"]
+order = 10
+
+[topics.knowledge-extraction.explanation]
+file = "explanation/knowledge-extraction.md"
+status = "draft"
+covers = [
+    "The playbook concept: structured lessons from completed work",
+    "Why extraction runs as an independent workflow (not on the critical path)",
+    "The extraction pipeline: fetch unextracted runs, call LLM, save entries",
+    "Tag inference: how tags are derived deterministically from task metadata",
+    "How playbooks are injected into future task contexts at priority 5",
+    "The feedback loop: system learns from its own failures and successes",
+]
+detail = """Explain how knowledge extraction builds on the core orchestration pipeline — it uses the same universal workflow step pattern (construct, send, receive, serialize, transition). Focus on how this creates a learning feedback loop."""
+guidance = """Frame this as 'how the system gets smarter over time.' Connect to context assembly (playbooks are a context source). Explain that playbooks are an optimization, not a correctness requirement — if the budget is full, they get dropped. Link to reference for schema and CLI. Link to context-assembly explanation for how playbooks fit into the prompt."""
+
+[topics.knowledge-extraction.reference]
+file = "reference/knowledge-extraction.md"
+status = "draft"
+covers = [
+    "Playbook table schema (title, content, tags, source task/workflow IDs)",
+    "Tag inference rules: file extension mapping, keyword mapping, defaults",
+    "ExtractionResult data model",
+    "CLI commands: forge extract, forge playbooks (list, add, show)",
+    "Playbook injection: priority level, token budget behavior",
+]
+detail = """Tabular reference for playbook schema, tag rules, and CLI."""
+guidance = """Structure: schema first, then tag rules, then CLI. Link to explanation for the 'why.' Link to context-assembly reference for how playbooks are packed into the token budget."""
+
+[topics.knowledge-extraction.howto]
+file = "howto/manage-playbooks.md"
+status = "draft"
+covers = [
+    "How to run knowledge extraction on completed workflows",
+    "How to list and inspect existing playbook entries",
+    "How to manually add a playbook entry",
+    "How to verify playbooks appear in future task contexts",
+]
+detail = """Short CLI-focused recipes."""
+guidance = """Link to reference for full CLI documentation. Include expected output."""
+
+# =============================================================================
+# Topic 11: Task Domains
+# =============================================================================
+
+[topics.task-domains]
+title = "Task Domains"
+description = "How Forge parameterizes LLM behavior through task domains — role prompts, output requirements, user prompt templates, and validation defaults."
+complexity = "intermediate"
+prerequisites = ["context-assembly", "validation-and-retries"]
+order = 11
+
+[topics.task-domains.explanation]
+file = "explanation/task-domains.md"
+status = "draft"
+covers = [
+    "What a domain is and what it controls",
+    "How domains achieve task-agnostic orchestration — same pipeline, different prompts",
+    "The four pipeline touchpoints: context assembly, exploration, planner, CLI validation defaults",
+    "Why all domains share the same LLMResponse schema",
+    "The existing domains: code_generation, research, code_review, documentation, generic",
+]
+detail = """Concise explanation connecting domains to the task-agnostic principle. Show how the same workflow step produces different behavior purely through prompt parameterization."""
+guidance = """Keep this focused. The main insight is that domains are prompt configuration, not pipeline configuration. Link to the how-to for adding a new domain. Link to the reference for DomainConfig fields."""
+
+[topics.task-domains.reference]
+file = "reference/task-domains.md"
+status = "draft"
+covers = [
+    "DomainConfig field table: field name, type, purpose, example for each existing domain",
+    "TaskDomain enum values",
+    "Pipeline touchpoints: which code reads which DomainConfig field",
+    "ValidationConfig defaults per domain",
+]
+detail = """Tabular reference for DomainConfig. One row per field, with examples from each existing domain."""
+guidance = """A developer adding a domain should be able to look up exactly what each field does and see examples from existing domains. Link to how-to for step-by-step domain creation."""
+
+[topics.task-domains.howto]
+file = "howto/add-domain.md"
+status = "draft"
+covers = [
+    "How to add a new task domain to Forge",
+    "The four files to modify (models.py, domains.py, tests, CLI)",
+    "How to write domain-specific prompts",
+    "How to configure domain-specific validation defaults",
+    "How to test the new domain",
+]
+detail = """Step-by-step recipe. Follows the structure from ADDING_A_DOMAIN.md but in how-to format (no teaching, assume competence)."""
+guidance = """This is a direct adaptation of docs/planning/ADDING_A_DOMAIN.md into Diataxis how-to format. Assume the reader has read the domains explanation. Link to reference for DomainConfig details. Include the exact files and the order of changes."""
+
+# =============================================================================
+# Topic 12: OCR Pipeline
+# =============================================================================
+
+[topics.ocr-pipeline]
+title = "OCR Pipeline"
+description = "How Forge's OCR pipeline uses the core orchestration primitives to extract text and images from documents via the Mistral API."
+complexity = "advanced"
+prerequisites = ["workflow-step", "llm-dispatch"]
+order = 12
+
+[topics.ocr-pipeline.explanation]
+file = "explanation/ocr-pipeline.md"
+status = "draft"
+covers = [
+    "How the OCR pipeline builds on Forge's core workflow and batch primitives",
+    "The two execution paths: synchronous (OcrSyncWorkflow) and batch (OcrSubmitWorkflow)",
+    "Image extraction and the ocr-image:// URI scheme",
+    "How batch OCR uses Temporal signals — the same pattern as LLM batch processing",
+    "Multi-chunk document gathering (OcrGatherWorkflow)",
+    "SHA-256 duplicate detection for resubmission safety",
+]
+detail = """Frame as 'OCR as an instance of Forge's patterns.' The sync path uses the same workflow-activity pattern. The batch path uses the same submit-wait-signal pattern as LLM batch processing. Don't re-explain these patterns — cross-reference them."""
+guidance = """Lean heavily on cross-links. 'The batch OCR path uses the same signal-based wait pattern as LLM batch processing (see [Batch Processing](llm-dispatch.md)).' Focus on what OCR adds: Mistral API integration, image extraction, URI rewriting, duplicate detection. Link to Mistral API docs (https://docs.mistral.ai/) for API details."""
+
+[topics.ocr-pipeline.reference]
+file = "reference/ocr-pipeline.md"
+status = "draft"
+covers = [
+    "OCR workflow definitions: OcrSyncWorkflow, OcrSubmitWorkflow, OcrStoreWorkflow, OcrGatherWorkflow, OcrExportWorkflow, OcrListJobsWorkflow",
+    "OCR data models: OcrInput, OcrResult, OcrImage, OcrListJobsInput/Result, OcrJobEntry fields",
+    "Database tables: ocr_images, batch_jobs (OCR-specific columns)",
+    "CLI commands for OCR operations (including forge ocr-jobs)",
+    "ocr-image:// URI format and resolution",
+]
+detail = """Tabular reference for OCR-specific workflows, models, and storage."""
+guidance = """Don't duplicate the batch_jobs table reference from the llm-dispatch reference — cross-link to it and note the OCR-specific columns. Focus on what's unique to OCR."""
+
+[topics.ocr-pipeline.howto]
+file = "howto/run-ocr.md"
+status = "draft"
+covers = [
+    "How to run synchronous OCR on a document",
+    "How to submit a document for batch OCR",
+    "How to check batch OCR job status",
+    "How to list all OCR job submissions",
+    "How to export OCR results",
+    "How to handle multi-chunk documents",
+]
+detail = """CLI-focused recipes for OCR operations."""
+guidance = """Link to reference for full CLI documentation. Link to batch processing explanation for how batch OCR works under the hood."""
+
+# =============================================================================
+# Topic 13: Planner Evaluation
+# =============================================================================
+
+[topics.planner-eval]
+title = "Planner Evaluation"
+description = "How to evaluate planner output quality using deterministic structural checks and LLM-as-judge scoring."
+complexity = "advanced"
+prerequisites = ["task-decomposition"]
+order = 13
+
+[topics.planner-eval.explanation]
+file = "explanation/planner-eval.md"
+status = "draft"
+covers = [
+    "Why planner evaluation matters — plan quality bounds everything downstream",
+    "The two evaluation modes: deterministic structural checks and LLM-as-judge",
+    "What deterministic checks verify: file coverage, step ordering, constraint adherence",
+    "How LLM-as-judge scoring works: scoring criteria, judge prompt, score aggregation",
+    "The eval corpus: how test cases are defined and organized",
+]
+detail = """Connect planner evaluation to the principle 'planning is the hard part.' Explain the two-mode approach and why both are needed."""
+guidance = """Keep this concise. The eval framework is a tool, not a core pipeline component. Link to reference for corpus format and scoring details. Link to task-decomposition explanation for why planning quality matters."""
+
+[topics.planner-eval.reference]
+file = "reference/planner-eval.md"
+status = "draft"
+covers = [
+    "Eval corpus format: directory structure, case file schema",
+    "Deterministic check definitions: check name, what it verifies, pass/fail criteria",
+    "LLM-as-judge scoring criteria and score scale",
+    "EvalResult, EvalCase, DeterministicCheckResult model fields",
+    "CLI: forge eval-planner flags and output format",
+]
+detail = """Tabular reference for the evaluation framework."""
+guidance = """Structure: corpus format first, then checks, then scoring, then CLI. A developer creating a new eval case should find the schema here."""
+
+[topics.planner-eval.howto]
+file = "howto/run-evaluations.md"
+status = "draft"
+covers = [
+    "How to run planner evaluations against the eval corpus",
+    "How to create a new eval case",
+    "How to run evaluations with LLM-as-judge scoring",
+    "How to interpret evaluation results",
+]
+detail = """CLI-focused recipes."""
+guidance = """Link to reference for corpus schema and check definitions. Include example eval output."""
+
+# =============================================================================
+# Topic 14: Nushell Integration
+# =============================================================================
+
+[topics.nushell-integration]
+title = "Nushell Integration"
+description = "How to use the Nushell OCR module to perform Forge operations through composable, typed pipeline functions that talk directly to Temporal."
+complexity = "intermediate"
+prerequisites = ["ocr-pipeline"]
+order = 14
+
+[topics.nushell-integration.howto]
+file = "howto/use-nushell-module.md"
+status = "draft"
+covers = [
+    "How to load the OCR module",
+    "How to submit documents for OCR",
+    "How to list and filter OCR jobs",
+    "How to export OCR results",
+    "How to mark and unmark documents for removal",
+    "How to compose operations with pipelines",
+]
+detail = """Task-focused recipes showing nushell commands and pipeline composition. Include concrete examples with expected output shapes."""
+guidance = """Assume the reader knows basic nushell syntax (pipes, where, each). Focus on Forge-specific operations. Show composition patterns: filtering, sorting, batch operations with par-each. Link to reference for full command signatures."""
+
+[topics.nushell-integration.reference]
+file = "reference/nushell-module.md"
+status = "draft"
+covers = [
+    "Module location and loading",
+    "ocr submit: parameters, flags, return type",
+    "ocr list: parameters, flags, return type and column schema",
+    "ocr export doc: parameters, flags, return type",
+    "ocr mark / ocr unmark: parameters, return type",
+    "Prerequisites: temporal CLI, running Forge worker",
+]
+detail = """Tabular reference for each exported command. Include parameter types, defaults, and return record/table schemas."""
+guidance = """Structure mirrors the module: one section per exported command. Use tables for parameter and return type documentation. Link to howto for usage recipes."""

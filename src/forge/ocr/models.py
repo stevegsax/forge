@@ -181,6 +181,33 @@ class OcrMarkResult(BaseModel):
     found: bool
 
 
+class OcrJobEntry(BaseModel):
+    """A single OCR job submission as seen by the user."""
+
+    file_path: str
+    document_id: str = ""
+    status: str = ""  # "processing", "succeeded", "errored", "unknown"
+    chunk_count: int = 1
+    created_at: str = ""
+
+
+class OcrListJobsInput(BaseModel):
+    """Input to the OcrListJobsWorkflow."""
+
+    limit: int = Field(default=50, description="Maximum number of jobs to return.")
+    status_filter: str = Field(
+        default="",
+        description="Filter by aggregate status (processing, succeeded, errored).",
+    )
+
+
+class OcrListJobsResult(BaseModel):
+    """Result from the OcrListJobsWorkflow."""
+
+    jobs: list[OcrJobEntry] = Field(default_factory=list)
+    total: int = 0
+
+
 class OcrSyncInput(BaseModel):
     """Input to the OcrSyncWorkflow (synchronous OCR path)."""
 

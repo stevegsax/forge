@@ -70,6 +70,7 @@ from forge.ocr.activities import (
     check_ocr_duplicate,
     clear_ocr_removal_mark,
     export_ocr_document,
+    list_ocr_jobs,
     mark_ocr_for_removal,
     parse_ocr_result,
     read_and_store_file_content,
@@ -80,6 +81,7 @@ from forge.ocr.activities import (
 )
 from forge.ocr.workflow_export import OcrExportWorkflow
 from forge.ocr.workflow_gather import OcrGatherWorkflow
+from forge.ocr.workflow_list_jobs import OcrListJobsWorkflow
 from forge.ocr.workflow_mark_removal import (
     OcrClearRemovalMarkWorkflow,
     OcrMarkForRemovalWorkflow,
@@ -215,6 +217,7 @@ async def run_worker(
             OcrStoreWorkflow,
             OcrGatherWorkflow,
             OcrExportWorkflow,
+            OcrListJobsWorkflow,
             OcrMarkForRemovalWorkflow,
             OcrClearRemovalMarkWorkflow,
         ],
@@ -253,6 +256,7 @@ async def run_worker(
             write_files,
             write_output,
             # OCR activities
+            list_ocr_jobs,
             call_ocr_sync,
             check_ocr_duplicate,
             clear_ocr_removal_mark,
