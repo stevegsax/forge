@@ -1,0 +1,240 @@
+"""SQLAlchemy ORM and database operations for the playbook service.
+
+Design follows Function Core / Imperative Shell:
+
+- Pure functions: get_db_path, build_entry_dict
+- Imperative shell: get_engine, run_migrations, save_entries,
+  get_entries_by_tags, list_recent_entries, get_entry_by_id,
+  update_entry, check_duplicate
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import sqlalchemy as sa
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
+
+    from pbook.models import PlaybookEntry
+
+
+# ---------------------------------------------------------------------------
+# ORM
+# ---------------------------------------------------------------------------
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Entry(Base):
+    __tablename__ = "entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(sa.String, nullable=False)
+    content: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    tags_json: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    entry_type: Mapped[str] = mapped_column(sa.String, nullable=False, default="curated")
+    source_project: Mapped[str] = mapped_column(sa.String, nullable=False, default="")
+    source_task_id: Mapped[str] = mapped_column(sa.String, nullable=False, default="")
+    needs_review: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=False, server_default=sa.text("0"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pure functions
+# ---------------------------------------------------------------------------
+
+
+def get_db_path() -> Path | None:
+    """Resolve the database path.
+
+    Resolution order:
+
+    1. ``PBOOK_DB_PATH`` environment variable.
+    2. ``$XDG_STATE_HOME/pbook/pbook.db``
+    3. ``~/.local/state/pbook/pbook.db``
+
+    Returns ``None`` if ``PBOOK_DB_PATH`` is set to an empty string (disables store).
+    """
+    env_value = os.environ.get("PBOOK_DB_PATH")
+    if env_value is not None:
+        if env_value == "":
+            return None
+        return Path(env_value)
+
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    if xdg_state:
+        return Path(xdg_state) / "pbook" / "pbook.db"
+
+    return Path.home() / ".local" / "state" / "pbook" / "pbook.db"
+
+
+def build_entry_dict(entry: PlaybookEntry) -> dict:
+    """Convert a PlaybookEntry to a dict suitable for database insertion."""
+    return {
+        "title": entry.title,
+        "content": entry.content,
+        "tags_json": json.dumps(entry.tags),
+        "entry_type": entry.entry_type,
+        "source_project": entry.source_project,
+        "source_task_id": entry.source_task_id,
+        "needs_review": entry.needs_review,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Imperative shell
+# ---------------------------------------------------------------------------
+
+
+def get_engine(db_path: Path) -> Engine:
+    """Create a SQLAlchemy engine with WAL mode for the given database path."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+
+    @sa.event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+
+    return engine
+
+
+def run_migrations(db_path: Path) -> None:
+    """Run Alembic migrations programmatically."""
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_dir = Path(__file__).parent / "alembic"
+    ini_path = alembic_dir / "alembic.ini"
+
+    cfg = Config(str(ini_path))
+    cfg.set_main_option("script_location", str(alembic_dir))
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    command.upgrade(cfg, "head")
+
+
+def save_entries(engine: Engine, entries: list[dict]) -> None:
+    """Bulk insert rows into the entries table."""
+    if not entries:
+        return
+    with engine.begin() as conn:
+        conn.execute(sa.insert(Entry.__table__), entries)
+
+
+def get_entries_by_tags(
+    engine: Engine,
+    tags: list[str],
+    *,
+    limit: int = 10,
+    approved_only: bool = False,
+) -> list[dict]:
+    """Query entries matching any of the given tags, ordered by recency.
+
+    Uses SQLite ``json_each()`` to unnest the ``tags_json`` array and match
+    against the input tags.
+    """
+    if not tags:
+        return []
+
+    tag_placeholders = ", ".join(f":tag_{i}" for i in range(len(tags)))
+    tag_params = {f"tag_{i}": tag for i, tag in enumerate(tags)}
+
+    approved_clause = ""
+    if approved_only:
+        approved_clause = "AND p.needs_review = 0"
+
+    query = sa.text(f"""
+        SELECT DISTINCT p.*
+        FROM entries p, json_each(p.tags_json) AS t
+        WHERE t.value IN ({tag_placeholders})
+        {approved_clause}
+        ORDER BY p.created_at DESC
+        LIMIT :limit
+    """)
+
+    with engine.connect() as conn:
+        rows = conn.execute(query, {**tag_params, "limit": limit}).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def list_recent_entries(engine: Engine, *, limit: int = 20) -> list[dict]:
+    """Query recent entries ordered by creation time descending."""
+    t = Entry.__table__
+    stmt = t.select().order_by(t.c.created_at.desc()).limit(limit)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def get_entry_by_id(engine: Engine, entry_id: int) -> dict | None:
+    """Fetch a single entry row by primary key."""
+    t = Entry.__table__
+    stmt = t.select().where(t.c.id == entry_id)
+
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+        return dict(row) if row else None
+
+
+def update_entry(engine: Engine, entry_id: int, updates: dict) -> None:
+    """Update an entry by primary key with the given field values."""
+    t = Entry.__table__
+    with engine.begin() as conn:
+        conn.execute(t.update().where(t.c.id == entry_id).values(**updates))
+
+
+def delete_entry(engine: Engine, entry_id: int) -> None:
+    """Delete an entry by primary key."""
+    t = Entry.__table__
+    with engine.begin() as conn:
+        conn.execute(t.delete().where(t.c.id == entry_id))
+
+
+def check_duplicate(
+    engine: Engine,
+    title: str,
+    tags: list[str] | None = None,
+) -> list[dict]:
+    """Find entries with similar titles for duplicate detection.
+
+    Uses case-insensitive LIKE matching on title.  If tags are provided,
+    also checks for tag overlap.
+    """
+    t = Entry.__table__
+    stmt = t.select().where(t.c.title.ilike(f"%{title}%")).order_by(t.c.created_at.desc()).limit(10)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+        results = [dict(row) for row in rows]
+
+    if tags and results:
+        tag_set = set(tags)
+        results.sort(
+            key=lambda r: len(tag_set & set(json.loads(r.get("tags_json", "[]")))),
+            reverse=True,
+        )
+
+    return results
