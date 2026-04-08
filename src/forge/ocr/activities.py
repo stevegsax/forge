@@ -619,7 +619,8 @@ def execute_export_ocr_document(
 
     # Rewrite URIs and write markdown
     exported_text = rewrite_ocr_uris_to_local(text, id_to_filename)
-    md_path = export_path / f"{document_id}.md"
+    original_stem = Path(ocr_row["file_path"]).stem if ocr_row.get("file_path") else document_id
+    md_path = export_path / f"{original_stem}.md"
     md_path.write_text(exported_text, encoding="utf-8")
 
     return OcrExportResult(

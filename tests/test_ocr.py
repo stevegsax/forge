@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from temporalio import activity, workflow
 from temporalio.client import WorkflowFailureError
 from temporalio.worker import Worker
 
@@ -35,10 +36,12 @@ from forge.ocr.activities import (
     validate_file_size,
 )
 from forge.ocr.models import (
+    ChunkRef,
     FileContentRef,
     FileContentResult,
     OcrBatchRef,
     OcrDuplicateCheckResult,
+    OcrGatherInput,
     OcrExportInput,
     OcrExportResult,
     OcrMarkInput,
@@ -47,7 +50,10 @@ from forge.ocr.models import (
     OcrStoreInput,
     OcrStoreResult,
     OcrSubmitInput,
+    SplitResult,
 )
+from forge.ocr.workflow_gather import OcrGatherWorkflow
+from forge.ocr.workflow_submit import OcrSubmitWorkflow
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.store import (
     clear_ocr_removal_mark,
@@ -82,6 +88,20 @@ def _setup_db(tmp_path: Path):
     db_path = tmp_path / "test.db"
     run_migrations(db_path)
     return get_engine(db_path), db_path
+
+
+@workflow.defn(name="OcrStoreWorkflow")
+class MockOcrStoreWorkflow:
+    @workflow.run
+    async def run(self, _input: OcrStoreInput) -> OcrStoreResult:
+        return OcrStoreResult(document_id="unused", text_length=0)
+
+
+@workflow.defn(name="OcrGatherWorkflow")
+class MockOcrGatherWorkflow:
+    @workflow.run
+    async def run(self, _input: OcrGatherInput) -> OcrStoreResult:
+        return OcrStoreResult(document_id="unused", text_length=0)
 
 
 # ---------------------------------------------------------------------------
@@ -1010,6 +1030,177 @@ class TestOcrStoreWorkflow:
 
 
 # ---------------------------------------------------------------------------
+# OcrSubmitWorkflow / OcrGatherWorkflow — workflow-level tests
+# ---------------------------------------------------------------------------
+
+
+class TestOcrSubmitWorkflow:
+    @pytest.mark.asyncio
+    async def test_duplicate_short_circuits_before_submission(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        @activity.defn(name="check_ocr_duplicate")
+        async def mock_check_duplicate(_file_path: str) -> OcrDuplicateCheckResult:
+            return OcrDuplicateCheckResult(
+                is_duplicate=True,
+                existing_document_id="existing-doc-123",
+            )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[OcrSubmitWorkflow],
+            activities=[mock_check_duplicate],
+        ):
+            result = await env.client.execute_workflow(
+                OcrSubmitWorkflow.run,
+                OcrSubmitInput(file_path="/tmp/report.pdf"),
+                id="test-ocr-submit-duplicate",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.document_id == "existing-doc-123"
+        assert result.skipped is True
+        assert result.skip_reason == "Duplicate document"
+        assert result.batch_refs == []
+        assert result.chunk_count == 0
+
+    @pytest.mark.asyncio
+    async def test_multi_chunk_starts_gather_and_store_children(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        submitted_payloads: list[dict[str, object]] = []
+
+        @activity.defn(name="check_ocr_duplicate")
+        async def mock_check_duplicate(_file_path: str) -> OcrDuplicateCheckResult:
+            return OcrDuplicateCheckResult(is_duplicate=False)
+
+        @activity.defn(name="read_and_store_file_content")
+        async def mock_read_and_store_file_content(_file_path: str) -> FileContentRef:
+            return FileContentRef(
+                content_id="blob-original",
+                mime_type="application/pdf",
+                file_size_bytes=1024,
+            )
+
+        @activity.defn(name="split_file_into_chunks")
+        async def mock_split_file_into_chunks(_input_json: str) -> SplitResult:
+            return SplitResult(
+                chunks=[
+                    ChunkRef(
+                        content_id="blob-chunk-0",
+                        mime_type="application/pdf",
+                        file_size_bytes=600,
+                        chunk_index=0,
+                        page_start=1,
+                        page_end=25,
+                    ),
+                    ChunkRef(
+                        content_id="blob-chunk-1",
+                        mime_type="application/pdf",
+                        file_size_bytes=424,
+                        chunk_index=1,
+                        page_start=26,
+                        page_end=40,
+                    ),
+                ],
+                total_pages=40,
+                original_content_id="blob-original",
+            )
+
+        @activity.defn(name="submit_ocr_batch")
+        async def mock_submit_ocr_batch(input_json: str) -> OcrBatchRef:
+            payload = json.loads(input_json)
+            submitted_payloads.append(payload)
+            doc_id = payload["submit_input"]["document_id"]
+            return OcrBatchRef(
+                batch_id=f"batch-{doc_id}",
+                request_id=f"req-{doc_id}",
+            )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[OcrSubmitWorkflow, MockOcrStoreWorkflow, MockOcrGatherWorkflow],
+            activities=[
+                mock_check_duplicate,
+                mock_read_and_store_file_content,
+                mock_split_file_into_chunks,
+                mock_submit_ocr_batch,
+            ],
+        ):
+            result = await env.client.execute_workflow(
+                OcrSubmitWorkflow.run,
+                OcrSubmitInput(file_path="/tmp/report.pdf", document_id="doc-abc"),
+                id="test-ocr-submit-multi-chunk",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.document_id == "doc-abc"
+        assert result.chunk_count == 2
+        assert [ref.batch_id for ref in result.batch_refs] == [
+            "batch-doc-abc__chunk_0",
+            "batch-doc-abc__chunk_1",
+        ]
+        assert len(submitted_payloads) == 2
+        assert submitted_payloads[0]["submit_input"]["document_id"] == "doc-abc__chunk_0"
+        assert submitted_payloads[0]["store_workflow_id"] == "ocr-store-doc-abc__chunk_0"
+        assert submitted_payloads[1]["submit_input"]["document_id"] == "doc-abc__chunk_1"
+        assert submitted_payloads[1]["store_workflow_id"] == "ocr-store-doc-abc__chunk_1"
+
+
+class TestOcrGatherWorkflow:
+    @pytest.mark.asyncio
+    async def test_waits_for_all_chunks_before_reassembly(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        captured_reassemble_data: list[dict[str, object]] = []
+
+        @activity.defn(name="reassemble_ocr_chunks")
+        async def mock_reassemble_ocr_chunks(input_json: str) -> OcrStoreResult:
+            captured_reassemble_data.append(json.loads(input_json))
+            return OcrStoreResult(
+                document_id="doc-final",
+                text_length=1234,
+                page_count=40,
+            )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[OcrGatherWorkflow],
+            activities=[mock_reassemble_ocr_chunks],
+        ):
+            handle = await env.client.start_workflow(
+                OcrGatherWorkflow.run,
+                OcrGatherInput(
+                    document_id="doc-final",
+                    chunk_document_ids=["doc-final__chunk_0", "doc-final__chunk_1"],
+                    store_workflow_ids=[],
+                    file_path="/tmp/report.pdf",
+                    total_pages=40,
+                ),
+                id="test-ocr-gather-complete",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            await handle.signal(OcrGatherWorkflow.chunk_completed, "doc-final__chunk_0")
+            await handle.signal(OcrGatherWorkflow.chunk_completed, "doc-final__chunk_1")
+            result = await handle.result()
+
+        assert result.document_id == "doc-final"
+        assert result.text_length == 1234
+        assert captured_reassemble_data == [
+            {
+                "document_id": "doc-final",
+                "chunk_document_ids": ["doc-final__chunk_0", "doc-final__chunk_1"],
+                "file_path": "/tmp/report.pdf",
+                "total_pages": 40,
+            }
+        ]
+
+
+# ---------------------------------------------------------------------------
 # validate_file_size
 # ---------------------------------------------------------------------------
 
@@ -1930,8 +2121,8 @@ class TestExecuteExportOcrDocument:
         assert result.export_dir == str(export_dir)
         assert result.image_count == 1
 
-        # Check markdown file
-        md_path = export_dir / f"{doc_id}.md"
+        # Check markdown file — named after original file stem, not document_id
+        md_path = export_dir / "test.md"
         assert md_path.exists()
         md_text = md_path.read_text()
         assert f"![fig]({image_id}.jpeg)" in md_text
@@ -1967,7 +2158,7 @@ class TestExecuteExportOcrDocument:
         )
 
         assert result.image_count == 0
-        md_path = export_dir / f"{doc_id}.md"
+        md_path = export_dir / "test.md"
         assert md_path.read_text() == "Just text, no images."
 
     def test_raises_for_missing_document(self, tmp_path: Path) -> None:
@@ -2010,7 +2201,7 @@ class TestExecuteExportOcrDocument:
 
         expected_dir = xdg_data / "forge" / "ocr-export" / doc_id
         assert result.export_dir == str(expected_dir)
-        assert (expected_dir / f"{doc_id}.md").exists()
+        assert (expected_dir / "test.md").exists()
 
 
 # ---------------------------------------------------------------------------
