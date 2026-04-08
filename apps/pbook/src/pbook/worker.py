@@ -13,8 +13,12 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from pbook.activities.export import export_single_entry, fetch_entry_ids
+from pbook.activities.extraction import extract_from_experience, save_extracted_entries
 from pbook.activities.retrieval import fetch_candidates
+from pbook.activities.review import fetch_existing_entries, review_entry, validate_entry
 from pbook.workflows.export import ExportWorkflow
+from pbook.workflows.extraction import ExtractionWorkflow
+from pbook.workflows.manual_entry import ManualEntryWorkflow
 from pbook.workflows.retrieval import RetrievalWorkflow
 
 logger = logging.getLogger(__name__)
@@ -32,11 +36,18 @@ async def run_worker(address: str = "localhost:7233") -> None:
         workflows=[
             RetrievalWorkflow,
             ExportWorkflow,
+            ExtractionWorkflow,
+            ManualEntryWorkflow,
         ],
         activities=[
             fetch_candidates,
             fetch_entry_ids,
             export_single_entry,
+            extract_from_experience,
+            save_extracted_entries,
+            validate_entry,
+            fetch_existing_entries,
+            review_entry,
         ],
         graceful_shutdown_timeout=timedelta(seconds=30),
     )

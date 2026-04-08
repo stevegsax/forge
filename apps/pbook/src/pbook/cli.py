@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -258,6 +259,81 @@ def check_duplicate_cmd(title: str, tag: tuple[str, ...]) -> None:
     click.echo(f"Found {len(matches)} potential duplicate(s):")
     click.echo("")
     for entry in matches:
+        click.echo(_format_entry(entry))
+        click.echo("")
+
+
+@main.command()
+@click.option(
+    "--file", "file_path", required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="JSON file with PushExperienceInput data.",
+)
+@click.option(
+    "--temporal-address", default="localhost:7233",
+    help="Temporal server address.",
+)
+def push(file_path: Path, temporal_address: str) -> None:
+    """Push experience data for LLM extraction."""
+    import asyncio
+
+    raw = file_path.read_text()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        click.echo(f"Invalid JSON: {exc}", err=True)
+        sys.exit(1)
+
+    # Normalize: accept a single object or a list
+    if isinstance(data, dict):
+        experiences = [data]
+        project = data.get("project", "")
+    elif isinstance(data, list):
+        experiences = data
+        project = experiences[0].get("project", "") if experiences else ""
+    else:
+        click.echo("Error: expected a JSON object or array.", err=True)
+        sys.exit(1)
+
+    async def _submit():
+        from temporalio.client import Client
+
+        from pbook.worker import PBOOK_TASK_QUEUE
+        from pbook.workflows.extraction import ExtractionWorkflow
+
+        client = await Client.connect(temporal_address)
+        result = await client.execute_workflow(
+            ExtractionWorkflow.run,
+            json.dumps({"experiences": experiences, "project": project}),
+            id=f"pbook-extract-{int(time.time())}",
+            task_queue=PBOOK_TASK_QUEUE,
+        )
+        return result
+
+    try:
+        result = asyncio.run(_submit())
+        count = result.get("entries_created", 0)
+        click.echo(f"Extraction complete: {count} entries created.")
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.option("--limit", default=20, help="Maximum entries to show.")
+def review(limit: int) -> None:
+    """List entries needing review."""
+    engine, _ = _resolve_db()
+    entries = list_recent_entries(engine, limit=limit)
+    needs_review = [e for e in entries if e.get("needs_review")]
+
+    if not needs_review:
+        click.echo("No entries need review.")
+        return
+
+    click.echo(f"{len(needs_review)} entry/entries need review:")
+    click.echo("")
+    for entry in needs_review:
         click.echo(_format_entry(entry))
         click.echo("")
 
