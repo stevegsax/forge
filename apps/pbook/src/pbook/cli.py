@@ -78,6 +78,20 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 
 
+@main.command()
+@click.option(
+    "--temporal-address", default="localhost:7233",
+    help="Temporal server address.",
+)
+def worker(temporal_address: str) -> None:
+    """Start the pbook Temporal worker."""
+    import asyncio
+
+    from pbook.worker import run_worker
+
+    asyncio.run(run_worker(address=temporal_address))
+
+
 @main.command(name="list")
 @click.option("--tag", multiple=True, help="Filter by tag (repeatable, OR match).")
 @click.option("--type", "entry_type", default="", help="Filter by entry type.")
