@@ -7,7 +7,7 @@ Domain: Software architecture — extracting a subsystem from a monolithic Pytho
 
 ## Summary
 
-Extract the playbook subsystem from Forge into an independent, general-purpose knowledge service usable by any project — not just Forge. Exposed via SKILL.md for interactive Claude sessions and Temporal workflows for programmatic access. Own database (SQLite/SQLAlchemy/Alembic), own Temporal worker and queue, own CLI (`pbook`), packaged as a separate Python module. Three content types: pitfall entries (unexpected + actionable, extracted from experience), curated advice (human-submitted general knowledge), and API doc records (brief summary, typed signature, known-good examples from official docs, doc pointer — built incrementally on first use). Namespaced tags with controlled vocabulary. Intent-based retrieval (`create`/`fix`) with token budget. Quality bar: minimal and accurate — better to miss than mislead.
+Extract the playbook subsystem from Forge into an independent, general-purpose knowledge service usable by any project — not just Forge. Exposed via SKILL.md for interactive Claude sessions and Temporal workflows for programmatic access. Own database (SQLite/SQLAlchemy/Alembic), own Temporal worker and queue, own CLI (`pbook`), packaged as a separate Python module. Three content types: pitfall entries (unexpected + actionable, extracted from experience), curated advice (human-submitted general knowledge), and API doc records (brief summary, typed signature, known-good examples from official docs, doc pointer — built incrementally via Firecrawl). Library onboarding produces a progressive disclosure navigation tree from docs. Doc lookup runs as a separate agent thread with potentially cheaper LLM for cost efficiency. Namespaced tags with controlled vocabulary. Intent-based retrieval (`create`/`fix`) with token budget. Quality bar: minimal and accurate — better to miss than mislead.
 
 ## Decision Log
 
@@ -137,53 +137,75 @@ Extract the playbook subsystem from Forge into an independent, general-purpose k
 - **Date**: 2026-04-08
 
 ### DECIDED: Three content types
-- **Decision**: The service stores three distinct types of entries:
-    1. **Pitfalls** — extracted from experience when unexpected things happen. Reactive. "Here's what goes wrong and how to fix it." Tagged with `project:`, `pattern:`. Created via extraction path.
-    2. **Curated advice** — human-submitted general knowledge. Proactive. "Here's a best practice." Tagged with `lang:`, `lib:`, `domain:`. Created via direct submission with LLM review.
-    3. **API doc records** — brief summary, typed method signature, known-good examples from official docs, doc URL pointer. Proactive. "Here's what correct usage looks like." Tagged with `lib:`. Created incrementally on first use.
-- **Rationale**: Pitfalls course-correct away from mistakes. Advice provides best practices. API docs give reference implementations that help the LLM produce correct code on the first try. Good examples are paramount to getting the right answer faster — more valuable per token than explanatory text.
+- **Decision**: Pitfalls (reactive, extracted), curated advice (proactive, human-submitted), API doc records (proactive, reference implementations with examples). Distinct `type` field on entries.
 - **Date**: 2026-04-08
 
-### DECIDED: API doc records are a distinct type, not just entries with code
-- **Decision**: API doc records have structured fields (summary, signature, examples, doc_url) separate from freeform pitfall/advice content. The `type` field on entries distinguishes them for retrieval packing.
-- **Rationale**: API docs serve a fundamentally different purpose from pitfalls. Pitfalls say "don't do X." API docs say "here's how to do Y correctly." They surface at different times (API docs prioritized in `create` mode, pitfalls in `fix` mode) and have different structural needs (signature + examples vs. narrative advice).
+### DECIDED: API doc records are a distinct type
+- **Decision**: Structured fields: summary, signature, examples, doc_url. Separate from freeform pitfall/advice content.
 - **Date**: 2026-04-08
 
 ### DECIDED: Incremental API doc population
-- **Decision**: API docs built incrementally on first encounter with a method, not bulk-indexed. Only methods actually used get documented. Created manually or semi-automated, not auto-created by extraction unless the default behavior was wrong.
-- **Rationale**: Aligns with quality bar. Self-prioritizing — frequently used methods get documented first. Most of a large library will never be encountered.
+- **Decision**: API docs built incrementally on first encounter. Only methods actually used get documented.
+- **Date**: 2026-04-08
+
+### DECIDED: User-initiated doc creation only
+- **Decision**: The LLM never decides on its own to create API doc records. The user explicitly requests it and provides the doc home page URL.
+- **Date**: 2026-04-08
+
+### DECIDED: Firecrawl for doc retrieval
+- **Decision**: The LLM uses the existing Firecrawl MCP to crawl and retrieve documentation pages in markdown format.
+- **Date**: 2026-04-08
+
+### DECIDED: Library onboarding workflow
+- **Decision**: Three-phase: (1) Map — check for llms.txt, build TOC, identify types/enums/exceptions. (2) Seed — crawl tutorials, extract examples, create initial method records. (3) Incremental — add methods as encountered, user can say "read example X from page Y."
+- **Date**: 2026-04-08
+
+### DECIDED: User-directed example extraction
+- **Decision**: User can tell the LLM "read example X from page Y" to extract specific examples.
+- **Date**: 2026-04-08
+
+### DECIDED: Cache page content in database
+- **Decision**: Full Firecrawl markdown content cached in `doc_pages` table. Cache checked before re-crawling. Refresh command available for updates.
+- **Rationale**: Avoids redundant Firecrawl calls, enables local search, instant retrieval. Staleness managed by user-controlled refresh.
+- **Date**: 2026-04-08
+
+### DECIDED: Progressive disclosure navigation tree
+- **Decision**: During ingestion, raw doc pages are processed into a multi-level navigation tree. Each level is a self-contained summary that tells the LLM what it's looking at and how it fits in the larger picture. Levels get progressively more detailed, terminating in the cached page content. LLM-assisted ingestion produces the summaries at each level.
+- **Rationale**: Raw web pages are structured for human scanning, not LLM navigation. The tree lets the LLM efficiently navigate to exactly what it needs without reading irrelevant content. Fits the token budget naturally — higher levels are cheap, full content only loaded when needed.
+- **Date**: 2026-04-08
+
+### DECIDED: Ingestion cost is acceptable
+- **Decision**: LLM calls during ingestion (one per page to produce summaries) are acceptable and not a concern. The investment pays for itself through reduced token cost during later retrieval.
+- **Rationale**: Bounded task — only a small set of libraries will be onboarded (sqlalchemy, pydantic, opentelemetry, temporal, etc.). Same libraries used repeatedly. Full re-scan only needed on major version release. Upfront cost is amortized across many future lookups.
+- **Date**: 2026-04-08
+
+### DECIDED: Doc lookup as separate agent thread
+- **Decision**: Documentation lookup runs as a separate agent thread from the developer thread that needs the answer. The developer thread poses a question ("I'm seeing this error, help!"), the playbook lookup thread navigates the tree, performs multiple round-trips with the database as needed, and returns a consolidated answer. The lookup thread may use a cheaper LLM than the main thinking model for cost efficiency.
+- **Rationale**: Finding the right answer may require several round-trips through the navigation tree — reading level 0, drilling into a section, reading examples, cross-referencing pitfalls. This navigation work shouldn't consume the main thread's context or use the expensive thinking model. The lookup thread's job is retrieval and synthesis, not novel reasoning. Separation keeps the developer thread focused and cost-efficient.
 - **Date**: 2026-04-08
 
 ## Open Threads
 
-### 1. API doc creation workflow
-- **Decided**: Incremental, on first meaningful encounter. Not auto-created unless default failed.
-- **Open**: What triggers creation? Candidates:
-    - Human says "document sqlalchemy create_engine" during a skill session
-    - Skill agent recognizes during task context assembly that a method lacks a doc record and offers to create one
-    - `pbook doc add --lib sqlalchemy --method create_engine` CLI command
-- **Open**: Where do the examples and signature come from? Fetched from official docs URL, provided by the human, or generated by the LLM with human verification?
-- **Open**: What's the structured schema for an API doc record? Proposed:
-    - `library` (required) — e.g., "sqlalchemy"
-    - `method` (required) — fully qualified, e.g., "sqlalchemy.create_engine"
-    - `summary` (required) — 1-2 sentences
-    - `signature` (required) — method signature with type hints
-    - `examples` (required, list) — small set of working code examples
-    - `doc_url` (optional) — pointer to official docs
-    - `version` (optional) — library version the docs apply to
+### 1. Navigation tree depth and structure
+- **Decided**: Progressive disclosure tree, LLM-produced summaries
+- **Open**: How many levels? Proposed three (library → section → method/content), but large libraries might need four. Is this fixed or adaptive per library?
+- **Open**: Data model for the tree — a `doc_nodes` table with parent references and depth? Or a simpler two-table model (library + doc_pages) with the tree structure encoded in a JSON column?
 
-### 2. Retrieval packing priority
-- Three content types competing for token budget
-- **Open**: What's the priority order within a budget? In `create` mode: API docs > curated advice > pitfalls? In `fix` mode: pitfalls > API docs > curated advice?
-- **Open**: Should the consumer be able to override priority (e.g., "give me only pitfalls")?
+### 2. Lookup agent model routing
+- **Decided**: Separate thread, potentially cheaper model
+- **Open**: Which model tier? Forge uses `CapabilityTier` (CLASSIFICATION, SUMMARIZATION, etc.). Does the playbook service define its own tiers, or reuse the shared LLM provider's routing?
+- **Open**: What's the interface between the developer thread and the lookup thread? The developer sends a question + context tags; the lookup thread returns a consolidated answer with citations (which entries/pages it drew from)?
 
-### 3. Eval storage and execution
-- **Open**: Where stored? How executed? Batch vs individual?
+### 3. Retrieval packing priority
+- **Open**: Priority order within token budget across content types and modes
 
-### 4. `pbook` CLI command surface
-- **Open**: Full list TBD. Includes doc management commands.
+### 4. Eval storage and execution
+- **Open**: Where stored, how executed, batch vs individual
 
-### 5. Extraction push schema
+### 5. `pbook` CLI command surface
+- **Open**: Full list TBD. Includes: `skill-prompt`, `add`, `check-duplicate`, `list`, `query`, `update`, `test`, `review`, `approve`, `reject`, `lib init`, `lib refresh`, `doc add`, `doc read`
+
+### 6. Extraction push schema
 - Proposed: `project`, `problem`, `resolution`, `context`, `attempts`, `metadata`
 
 ## Parking Lot
@@ -199,3 +221,4 @@ Extract the playbook subsystem from Forge into an independent, general-purpose k
 - MCP interface (future)
 - House-style examples (deferred)
 - API doc versioning (library major version changes)
+- Lookup thread failure handling (what if the cheaper model can't find the answer?)
