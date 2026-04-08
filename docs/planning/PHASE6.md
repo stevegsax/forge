@@ -45,7 +45,7 @@ The workflow short-circuits if no unextracted runs are found, and skips the save
 
 New `playbooks` table in the existing SQLite database (`$XDG_STATE_HOME/forge/forge.db`):
 
-```
+```text
 class Playbook(Base):
     __tablename__ = "playbooks"
 
@@ -92,7 +92,7 @@ New models in `src/forge/models.py`:
 
 New and modified files:
 
-```
+```text
 src/forge/
 ├── models.py                        # Modified: Phase 6 data models
 ├── store.py                         # Modified: Playbook ORM, store functions

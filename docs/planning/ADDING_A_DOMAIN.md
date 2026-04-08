@@ -124,6 +124,6 @@ When writing a new `DomainConfig`, consider:
 - [ ] Does `output_requirements` tell the LLM which `LLMResponse` fields to use (`files`, `edits`, `explanation`, or a combination)?
 - [ ] Do the three user prompt templates (`user_prompt_template`, `step_user_prompt_template`, `sub_task_user_prompt_template`) give consistent instructions?
 - [ ] Do the step/sub-task templates include `{step_id}`/`{step_description}` and `{sub_task_id}`/`{sub_task_description}` placeholders?
-- [ ] Are `exploration_task_noun` and `exploration_completion_noun` natural-sounding in the phrases "gather the context needed to complete a ___" and "ready for the ___ phase"?
+- [ ] Are `exploration_task_noun` and `exploration_completion_noun` natural-sounding in the phrases "gather the context needed to complete a \_\_\_" and "ready for the \_\_\_ phase"?
 - [ ] Does `planner_domain_instruction` tell the planner what kind of output each step should produce?
 - [ ] Are `validation_defaults` appropriate? (Code linting only makes sense for domains that produce Python files.)

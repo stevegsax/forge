@@ -36,7 +36,7 @@ The deliverable: describe a larger task, Forge plans the steps, executes them in
 
 ### Planned Execution Path
 
-```
+```text
 create_worktree (once)
 assemble_planner_context → call_planner → Plan
 for step in plan.steps:
@@ -52,7 +52,7 @@ All steps done → return TaskResult(SUCCESS)
 
 New models added to `models.py`:
 
-```
+```text
 PlanStep:
     step_id: str
     description: str
@@ -126,7 +126,7 @@ New activities:
 
 New and modified files:
 
-```
+```text
 src/forge/
 ├── models.py                  # Modified: 7 new models, 4 modified
 ├── git.py                     # Modified: reset_worktree, commit message override

@@ -165,7 +165,7 @@ forge playbooks --json                  # Full JSON with content
 
 The default text output shows the title, tags, source task, and creation date:
 
-```
+```text
 Playbooks (2):
 
   [1] Include type stubs for Pydantic models
@@ -185,7 +185,7 @@ Use `--json` to see the full content of each entry.
 
 Playbook extraction runs as a Temporal workflow (`ForgeExtractionWorkflow`) with three activities executed in sequence:
 
-```
+```text
 ForgeExtractionWorkflow
 ├── fetch_extraction_input    (30s timeout)
 │   Query the runs table for unprocessed workflow results.

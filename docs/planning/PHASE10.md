@@ -42,7 +42,7 @@ These failures are wasteful: the LLM produced the correct intent but a trivially
 
 The matching fallback chain in `apply_edits` tries strategies in order of strictness:
 
-```
+```text
 1. Exact match (current behavior)
    content.count(edit.search) == 1
 
@@ -67,7 +67,7 @@ Each level only activates if the previous level found zero matches. If any level
 
 All matching strategies are pure functions in `activities/output.py`:
 
-```
+```python
 def _exact_match(content: str, search: str) -> int | None:
     """Return the start index if search appears exactly once, else None."""
 
@@ -90,7 +90,7 @@ def _fuzzy_match(
 
 The main `apply_edits` function calls these in order:
 
-```
+```python
 def apply_edits(
     original: str,
     edits: list[SearchReplaceEdit],
@@ -103,7 +103,7 @@ def apply_edits(
 
 Each edit application records which matching level succeeded. A new model tracks this:
 
-```
+```python
 class EditMatchResult(BaseModel):
     edit_index: int
     match_level: MatchLevel  # exact, whitespace, indentation, fuzzy
@@ -112,7 +112,7 @@ class EditMatchResult(BaseModel):
 
 `apply_edits` returns a richer result:
 
-```
+```python
 class EditApplicationResult(BaseModel):
     content: str
     match_results: list[EditMatchResult]
@@ -124,7 +124,7 @@ The existing `apply_edits` signature is preserved as the primary interface; a ne
 
 New models in `models.py`:
 
-```
+```python
 class MatchLevel(StrEnum):
     EXACT = "exact"
     WHITESPACE = "whitespace"
@@ -136,7 +136,7 @@ class MatchLevel(StrEnum):
 
 Modified files:
 
-```
+```text
 src/forge/
 ├── models.py                   # Modified: add MatchLevel
 └── activities/

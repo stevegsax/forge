@@ -74,7 +74,7 @@ The implementation detects the model and applies the appropriate thinking config
 
 A new configuration model controls thinking behavior:
 
-```
+```text
 ThinkingConfig:
     enabled: bool = True
     budget_tokens: int = 10000
@@ -91,7 +91,7 @@ When thinking is enabled:
 
 A pure function determines thinking configuration based on the model name:
 
-```
+```python
 def build_thinking_settings(
     model_name: str,
     thinking_config: ThinkingConfig,
@@ -139,7 +139,7 @@ The thinking budget consumes tokens that appear in the API response's `usage` ob
 
 However, for observability, a new optional field tracks thinking-specific usage:
 
-```
+```text
 PlanCallResult:
     ...existing fields...
     thinking_tokens: int = Field(default=0)
@@ -149,7 +149,7 @@ PlanCallResult:
 
 New model in `models.py`:
 
-```
+```python
 class ThinkingConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable extended thinking for planner.")
     budget_tokens: int = Field(default=10000, description="Token budget for thinking (Sonnet).")
@@ -161,7 +161,7 @@ class ThinkingConfig(BaseModel):
 
 Modified models:
 
-```
+```text
 ForgeTaskInput:
     ...existing fields...
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
@@ -175,7 +175,7 @@ PlanCallResult:
 
 Modified files:
 
-```
+```text
 src/forge/
 ├── models.py                   # Modified: ThinkingConfig, PlanCallResult update
 ├── activities/

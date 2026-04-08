@@ -8,13 +8,13 @@ Phase 7 adds an exploration loop before code generation. Instead of the system d
 
 Previous (single-step):
 
-```
+```text
 create_worktree -> assemble_context -> call_llm -> write -> validate -> commit
 ```
 
 New (with exploration):
 
-```
+```text
 create_worktree -> assemble_initial_context
   -> [exploration loop]
     -> call_exploration_llm(context + provider menu) -> ExplorationResponse

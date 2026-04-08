@@ -68,7 +68,7 @@ Three components work together:
 2. **The batch poller** (Temporal Schedule) periodically checks the Anthropic API, finds completed batches, and sends signals to waiting workflows.
 3. **The batch_jobs table** records submissions and outcomes for observability and anomaly detection.
 
-```
+```text
 ┌─────────────────┐     submit      ┌─────────────────┐
 │  Forge Workflow  │───────────────→│  Anthropic Batch │
 │  (Temporal)      │                │  API             │
@@ -292,7 +292,7 @@ A custom search attribute `forge_batch_id` (type: Keyword) is registered on the 
 
 The poller queries Temporal visibility:
 
-```
+```text
 forge_batch_id = "msgbatch_01HkcTjaV5uDC8jWR4ZsDV8d"
 ```
 
@@ -358,7 +358,7 @@ class BatchPollerResult(BaseModel):
 
 New files:
 
-```
+```text
 src/forge/
 ├── batch.py                    # build_anthropic_request, extract_tool_result, OUTPUT_TYPE_REGISTRY
 ├── activities/
@@ -369,7 +369,7 @@ src/forge/
 
 Modified files:
 
-```
+```text
 src/forge/
 ├── models.py                   # New data models (BatchSubmitInput, BatchResult, etc.)
 ├── store.py                    # New BatchJob table, migration

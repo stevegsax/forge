@@ -44,7 +44,7 @@ Phases 1-4 produce workflow results that contain only output files, validation r
 
 **SQLAlchemy models:**
 
-```
+```text
 class Interaction(Base):
     __tablename__ = "interactions"
 
@@ -91,7 +91,7 @@ Imperative shell:
 
 ### Alembic Configuration
 
-```
+```text
 src/forge/
 ├── store.py                    # SQLAlchemy models and store functions
 └── alembic/
@@ -107,7 +107,7 @@ Alembic config resolves the database URL from `get_db_path()`. Migrations run au
 
 Add to `src/forge/models.py`:
 
-```
+```text
 class LLMStats(BaseModel):
     """Lightweight LLM call statistics for Temporal payloads."""
     model_name: str
@@ -165,7 +165,7 @@ The testable functions (`execute_llm_call`, `execute_planner_call`) are unchange
 
 **`forge status`:** New command:
 
-```
+```text
 forge status                              # list recent runs from SQLite
 forge status --workflow-id <id>           # details for a specific run
 forge status --workflow-id <id> --verbose # full prompts from SQLite
@@ -176,7 +176,7 @@ forge status --json                       # machine-readable output
 
 New and modified files:
 
-```
+```text
 src/forge/
 ├── store.py                         # New: SQLAlchemy models, store functions
 ├── alembic/                         # New: Alembic migration configuration

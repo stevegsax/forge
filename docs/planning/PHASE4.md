@@ -52,7 +52,7 @@ The design is informed by research into how production AI coding tools solve con
 
 A new `src/forge/code_intel/` package provides code analysis. All analysis functions are pure (Function Core); file I/O is confined to the activity shell.
 
-```
+```text
 src/forge/code_intel/
 ├── __init__.py          # Public API re-exports
 ├── parser.py            # ast-based import extraction and symbol extraction
@@ -101,7 +101,7 @@ Following Aider's approach, build a file-level graph and run PageRank to identif
 
 **Output model:**
 
-```
+```text
 RankedFile:
     file_path: str                          # Relative to project root
     module_name: str                        # Python module name
@@ -145,7 +145,7 @@ The `ast` module is the right tool here: zero dependencies, full access to Pytho
 
 **Output model:**
 
-```
+```text
 SymbolSummary:
     file_path: str
     module_name: str
@@ -175,7 +175,7 @@ A compressed structural overview of the repository, following the pattern establ
 
 **Format:**
 
-```
+```text
 src/forge/models.py:
 │class TransitionSignal(StrEnum):
 │class ValidationConfig(BaseModel):
@@ -198,7 +198,7 @@ src/forge/worker.py:
 
 **Output model:**
 
-```
+```text
 RepoMap:
     content: str                            # The formatted map text
     files_with_signatures: int              # Files that got signature detail
@@ -225,7 +225,7 @@ Context assembly is a bin-packing problem with a priority ordering (from D14 in 
 
 **Packing algorithm (binary search, following Aider):**
 
-```
+```text
 pack_context(items: list[ContextItem], budget_tokens: int) -> PackedContext:
     1. Sort items by priority (ascending = highest priority first).
     2. Within each priority tier, sort by importance (PageRank score descending).
@@ -242,7 +242,7 @@ pack_context(items: list[ContextItem], budget_tokens: int) -> PackedContext:
 
 **Output model:**
 
-```
+```text
 ContextItem:
     file_path: str
     content: str                            # The text to include in the prompt
@@ -275,7 +275,7 @@ The four existing assembly functions gain an optional automatic context discover
 
 **New assembly flow (when `auto_discover=True`):**
 
-```
+```text
 1. Read manually specified context_files (existing behavior).
 2. If target_files are specified:
    a. Build import graph via grimp.
@@ -298,7 +298,7 @@ By default (`include_dependencies=False`), steps 2d are skipped. This produces l
 
 New models added to `models.py`:
 
-```
+```text
 ContextConfig:
     auto_discover: bool = True              # Enable automatic context discovery
     include_dependencies: bool = False      # Include direct import contents and transitive signatures upfront
@@ -317,7 +317,7 @@ Modified models:
 - `ForgeTaskInput`: no change (`ContextConfig` flows through `TaskDefinition`).
 - `AssembledContext`: added `context_stats: ContextStats | None = None` for observability.
 
-```
+```text
 ContextStats:
     files_discovered: int                   # Files found via import graph
     files_included_full: int                # Files included with full content
@@ -342,7 +342,7 @@ The planner prompt is updated to explain that context is automatically discovere
 
 New and modified files:
 
-```
+```text
 src/forge/
 ├── code_intel/
 │   ├── __init__.py             # New: public API re-exports

@@ -54,7 +54,7 @@ The design document (D10) already specifies capability tiers: Reasoning, Generat
 
 ### Capability Tiers
 
-```
+```text
 CapabilityTier: StrEnum
     REASONING       # Planning, conflict resolution, complex architectural decisions
     GENERATION      # Code generation, test writing, documentation
@@ -74,7 +74,7 @@ CapabilityTier: StrEnum
 
 ### Model Configuration
 
-```
+```text
 ModelConfig:
     reasoning: str = "anthropic:claude-opus-4-6"
     generation: str = "anthropic:claude-sonnet-4-5-20250929"
@@ -88,7 +88,7 @@ The defaults use the current model for GENERATION and SUMMARIZATION (no change),
 
 A new pure function resolves tiers to model names:
 
-```
+```python
 def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
     """Map a capability tier to a concrete model name."""
     return {
@@ -103,7 +103,7 @@ def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
 
 `PlanStep` gains an optional `capability_tier` field:
 
-```
+```python
 class PlanStep(BaseModel):
     ...existing fields...
     capability_tier: CapabilityTier | None = Field(
@@ -118,7 +118,7 @@ When set, the step's LLM call uses the specified tier instead of the default GEN
 
 `ForgeTaskInput` gains a `model_config` field:
 
-```
+```python
 class ForgeTaskInput(BaseModel):
     ...existing fields...
     model_config_: ModelConfig = Field(
@@ -143,7 +143,7 @@ model_name = resolve_model(CapabilityTier.REASONING, input.model_config_)
 
 New models in `models.py`:
 
-```
+```python
 class CapabilityTier(StrEnum):
     REASONING = "reasoning"
     GENERATION = "generation"
@@ -159,7 +159,7 @@ class ModelConfig(BaseModel):
 
 Modified models:
 
-```
+```text
 ForgeTaskInput:
     ...existing fields...
     model_config_: ModelConfig = Field(default_factory=ModelConfig, alias="model_config")
@@ -173,7 +173,7 @@ PlanStep:
 
 Modified files:
 
-```
+```text
 src/forge/
 ├── models.py                   # Modified: CapabilityTier, ModelConfig, PlanStep update
 ├── activities/

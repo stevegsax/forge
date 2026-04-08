@@ -46,7 +46,7 @@ flowchart LR
 
 Every operation in Forge—code generation, planning, exploration, conflict resolution—follows the same five-phase pattern:
 
-```
+```text
 Construct → Send → Receive → Serialize → Transition
 ```
 
@@ -378,7 +378,7 @@ These are the core Pydantic models that flow through the system:
 
 ## Module Map
 
-```
+```text
 src/forge/
 ├── workflows.py              # Temporal workflows (main orchestration)
 ├── workflow_blocks.py        # Shared workflow building blocks

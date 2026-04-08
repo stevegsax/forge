@@ -43,7 +43,7 @@ Attractor is **three specification documents** totaling ~270KB of markdown. Ther
 
 The three specs form a layered stack:
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │  attractor-spec.md (Pipeline Orchestration)      │  ← Highest level
 │  DOT graphs define multi-stage AI workflows      │
@@ -152,7 +152,7 @@ Spec for a multi-provider LLM client library with a unified interface.
 
 **Execution lifecycle:**
 
-```
+```text
 PARSE → VALIDATE → INITIALIZE → EXECUTE → FINALIZE
 ```
 
@@ -188,7 +188,7 @@ The core loop: resolve start node → execute handler → record outcome → app
 
 **Core loop pseudocode** (simplified):
 
-```
+```text
 LOOP:
     check limits (max_turns, max_rounds, abort)
     build LLM request (system prompt + history + tools)
@@ -225,7 +225,7 @@ Environments are composable with decorators: `LoggingExecutionEnvironment(inner)
 
 **Tool output truncation** -- Head/tail split preserving both beginning (imports, headers) and end (results):
 
-```
+```text
 output[0..half] + "[WARNING: truncated, N chars removed]" + output[-half..]
 ```
 
@@ -247,7 +247,7 @@ Default limits: read_file 50K, shell 30K, grep 20K, glob 20K. Character-based tr
 
 **Four layers:**
 
-```
+```text
 Layer 4: High-Level API         generate(), stream(), generate_object()
 Layer 3: Core Client            Client, provider routing, middleware
 Layer 2: Provider Utilities     HTTP helpers, SSE parsing, retry

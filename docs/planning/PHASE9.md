@@ -46,7 +46,7 @@ Reorder prompt sections so the most stable content forms the longest possible ca
 
 **Current order** (single-step with auto-discover):
 
-```
+```text
 1. "You are a code generation assistant."
 2. Task description
 3. Target files list
@@ -61,7 +61,7 @@ Reorder prompt sections so the most stable content forms the longest possible ca
 
 **Optimized order:**
 
-```
+```text
 1. "You are a code generation assistant."
 2. Output requirements (stable across all calls)           ← BREAKPOINT 1
 3. Repository structure
@@ -96,7 +96,7 @@ Option A is preferred for simplicity. Option B is the fallback if automatic plac
 
 Add cache token fields to `LLMCallResult` and `LLMStats`:
 
-```
+```text
 LLMCallResult:
     ...existing fields...
     cache_creation_input_tokens: int = 0
@@ -116,7 +116,7 @@ Apply the same stable-first ordering to step and sub-task prompts:
 
 **Step prompt:**
 
-```
+```text
 1. "You are a code generation assistant."
 2. Output requirements                                     ← BREAKPOINT 1
 3. Overall task description
@@ -133,7 +133,7 @@ Apply the same stable-first ordering to step and sub-task prompts:
 
 Modified models in `models.py`:
 
-```
+```text
 LLMCallResult:
     ...existing fields...
     cache_creation_input_tokens: int = Field(default=0)
@@ -149,7 +149,7 @@ LLMStats:
 
 Modified files:
 
-```
+```text
 src/forge/
 ├── models.py                   # Modified: cache token fields on LLMCallResult, LLMStats
 ├── activities/

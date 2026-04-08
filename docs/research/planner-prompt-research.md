@@ -32,7 +32,7 @@ Simple tasks (typos, single-function additions, tasks with detailed instructions
 
 ### The 5-Phase Plan Mode
 
-```
+```text
 Phase 1: Initial Understanding
   - Explore codebase using up to N parallel Explore subagents
   - Search for existing functions/utilities to reuse
@@ -70,7 +70,7 @@ It operates in **strictly read-only mode** and must end with a "Critical Files f
 
 A lighter-weight loop:
 
-```
+```text
 Repeat until done:
   1. Explore (read-only tools)
   2. Update the plan file with discoveries
@@ -131,7 +131,7 @@ The key planning-relevant instruction:
 
 ### File Exploration Workflow
 
-```
+```text
 1. Think first about ALL the files you will need
 2. Batch all file reads together
 3. Use multi_tool_use.parallel for parallelization
@@ -178,7 +178,7 @@ If the Codebase Investigator sub-agent is enabled:
 > "Formulate a grounded plan based on your research. Share a concise summary of your strategy."
 
 **Phase 3: Execution** (iterative per sub-task)
-```
+```text
 For each sub-task:
   - Plan: Define specific implementation approach and testing strategy
   - Act: Apply targeted, surgical changes
@@ -192,7 +192,7 @@ The validation mandate is strongly emphasized:
 
 When activated via `enter_plan_mode`, the system prompt is **entirely replaced** with planning-specific instructions:
 
-```
+```text
 Phase 1: Requirements Understanding
   - Analyze request, identify core requirements
   - Ask clarifying questions (prefer multiple-choice)
@@ -474,7 +474,7 @@ Beads enables a three-step planning pattern:
 
 The recommended agent integration prompt:
 
-```
+```text
 At the start of each session:
 1. Run `bd ready --json` to see available work
 2. Choose an issue to work on

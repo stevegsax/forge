@@ -34,7 +34,7 @@ The deliverable: describe a task where a plan step has independent sub-tasks, Fo
 
 ### Fan-Out Execution Flow
 
-```
+```text
 Parent workflow encounters step with sub_tasks:
   1. Validate sub-task ID uniqueness
   2. Start child workflows in parallel (one per sub-task)
@@ -65,7 +65,7 @@ Sub-task `output_files` are collected in-memory from `llm_result.response.files`
 
 New models added to `models.py`:
 
-```
+```text
 SubTask:
     sub_task_id: str
     description: str
@@ -162,7 +162,7 @@ The planner system prompt now explains fan-out sub-tasks:
 
 New and modified files:
 
-```
+```text
 src/forge/
 ├── models.py                  # Modified: 5 new models, 3 modified
 ├── workflows.py               # Modified: ForgeSubTaskWorkflow, _run_fan_out_step

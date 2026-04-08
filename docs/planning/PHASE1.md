@@ -44,7 +44,7 @@ A single Temporal workflow (`ForgeTaskWorkflow`) that executes the following act
 
 #### Task and validation
 
-```
+```text
 TaskDefinition:
     task_id: str
     description: str                    # What to produce
@@ -86,7 +86,7 @@ TaskResult:
 
 #### LLM structured output
 
-```
+```text
 FileOutput:
     file_path: str                      # Relative path within the worktree
     content: str                        # Complete file content
@@ -98,7 +98,7 @@ LLMResponse:
 
 #### Inter-activity transport
 
-```
+```text
 AssembledContext:
     task_id: str
     system_prompt: str
@@ -121,7 +121,7 @@ WriteResult:
 
 Temporal activities take a single argument. These models wrap the inputs.
 
-```
+```text
 ForgeTaskInput:                         # Workflow entry point
     task: TaskDefinition
     repo_root: str
@@ -156,7 +156,7 @@ TransitionInput:
 
 #### Git activity I/O models
 
-```
+```text
 CreateWorktreeInput:
     repo_root: str
     task_id: str
@@ -209,7 +209,7 @@ Exporter types: `CONSOLE` (stdout, default), `OTLP_GRPC`, `OTLP_HTTP`, `NONE`. C
 
 ## Project Structure
 
-```
+```text
 forge/
 ├── CLAUDE.md
 ├── pyproject.toml

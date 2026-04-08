@@ -160,7 +160,7 @@ This is the hardest operational problem. Forge runs tasks in parallel across mul
 
 **Proposed architecture:**
 
-```
+```text
 LSPManager (singleton per Forge worker process)
 ├── ServerPool
 │   ├── PyRight server for worktree A  (spawned on demand)
@@ -192,7 +192,7 @@ LSPManager (singleton per Forge worker process)
 
 LSP operations should be **part of the context assembly activity**, not separate activities. The context assembly activity already reads files and computes the import graph. Adding LSP queries (when needed) is a natural extension.
 
-```
+```text
 assemble_context (modified):
   1. Import graph analysis (grimp)           — existing Phase 4
   2. Symbol extraction (ast)                 — existing Phase 4
@@ -212,7 +212,7 @@ validate_output (modified):
 
 New models for LSP integration:
 
-```
+```text
 LSPConfig:
     enabled: bool = False                    # Opt-in for Phase 5
     server_pool_size: int = 4                # Max concurrent LSP servers

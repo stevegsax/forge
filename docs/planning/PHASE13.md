@@ -52,7 +52,7 @@ tree-sitter is the industry standard for multi-language code parsing. It support
 
 A registry maps file extensions to tree-sitter grammars and query files:
 
-```
+```text
 LanguageConfig:
     name: str                    # e.g. "python", "typescript"
     extensions: list[str]        # e.g. [".py", ".pyi"]
@@ -60,7 +60,7 @@ LanguageConfig:
     tag_query: str               # Path to .scm tag query file
 ```
 
-```
+```text
 LANGUAGE_REGISTRY: dict[str, LanguageConfig]
     ".py"  -> python
     ".pyi" -> python
@@ -102,7 +102,7 @@ Example TypeScript tag query (`queries/typescript.scm`):
 
 The `extract_symbols` function gains a multi-language path:
 
-```
+```python
 def extract_symbols(source: str, file_path: str, module_name: str) -> SymbolSummary:
     """Extract symbols using tree-sitter (or ast fallback for Python)."""
     ext = Path(file_path).suffix
@@ -152,7 +152,7 @@ type Config struct:
 
 Phase 8's error context enrichment (`enrich_error_context`) currently uses `ast` to find the enclosing function/class for an error line. With tree-sitter:
 
-```
+```python
 def find_enclosing_scope(source: str, line_number: int, file_path: str) -> str | None:
     """Find the enclosing function/class definition for a given line."""
     ext = Path(file_path).suffix
@@ -178,7 +178,7 @@ def find_enclosing_scope(source: str, line_number: int, file_path: str) -> str |
 
 Tree-sitter parser creation has overhead. A module-level cache holds parsers per language:
 
-```
+```python
 _parser_cache: dict[str, Parser] = {}
 
 def get_parser(language_name: str) -> Parser:
@@ -193,7 +193,7 @@ Similarly, compiled queries are cached per language.
 
 New and modified files:
 
-```
+```text
 src/forge/code_intel/
 ├── __init__.py                 # Modified: re-export new functions
 ├── parser.py                   # Modified: tree-sitter backend, ast fallback

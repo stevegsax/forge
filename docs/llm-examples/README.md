@@ -11,7 +11,7 @@ system in action rather than just reading about it in design docs.
 Each example is self-contained and organized as a sequence of numbered
 step directories:
 
-```
+```text
 example-name/
   README.md              # Overview: what the example demonstrates
   templates/             # Prompt templates used by this example

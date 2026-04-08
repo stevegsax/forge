@@ -4,7 +4,7 @@ Gherkin-format behavioral requirements for the Forge orchestrator. These serve a
 
 ## Directory Structure
 
-```
+```text
 docs/requirements/
 ├── README.md
 ├── task_execution.feature

@@ -59,7 +59,7 @@ Governs how Claude Code approaches software engineering work. Key policies:
 
 ### Tone and Style (`system-prompt-tone-and-style.md`)
 
-```
+```text
 # Tone and style
 - Only use emojis if the user explicitly requests it.
 - Your output will be displayed on a command line interface. Your responses
@@ -146,7 +146,7 @@ Claude Code uses a subagent architecture. Each subagent type has its own system 
 
 A read-only, speed-optimized search specialist:
 
-```
+```text
 You are a file search specialist for Claude Code [...] You excel at
 thoroughly navigating and exploring codebases.
 
@@ -167,7 +167,7 @@ This is a READ-ONLY exploration task. You are STRICTLY PROHIBITED from:
 
 The workhorse subagent for multi-step research and code changes:
 
-```
+```text
 You are an agent for Claude Code [...] Given the user's message, you
 should use the tools available to complete the task. Do what has been
 asked; nothing more, nothing less.

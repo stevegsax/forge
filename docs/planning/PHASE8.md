@@ -46,7 +46,7 @@ This means the LLM retries blind. If a lint error was caused by a missing import
 
 The three context assembly functions gain optional parameters for retry information:
 
-```
+```text
 build_step_system_prompt(
     ...,
     prior_errors: list[ValidationResult] | None = None,
@@ -71,7 +71,7 @@ build_system_prompt_with_context(
 
 When `prior_errors` is non-empty, a "Previous Attempt Errors" section is appended before the Output Requirements section:
 
-```
+```markdown
 ## Previous Attempt Errors (Attempt 2 of 2)
 
 Your previous attempt failed validation. Fix these errors:
@@ -102,7 +102,7 @@ Do NOT repeat the same mistakes. Address each error listed above.
 
 A new pure function `enrich_error_context` in `activities/context.py` reads the target file and uses `ast` to find the enclosing scope for each error line number:
 
-```
+```python
 def enrich_error_context(
     error_output: str,
     file_path: str,
@@ -116,7 +116,7 @@ For test failures, the raw output is included as-is (test output typically alrea
 
 ### Modified Data Models
 
-```
+```text
 AssembleStepContextInput:
     ...existing fields...
     prior_errors: list[ValidationResult] = Field(default_factory=list)
@@ -168,7 +168,7 @@ if signal == TransitionSignal.FAILURE_RETRYABLE:
 
 Modified files:
 
-```
+```text
 src/forge/
 ├── models.py                   # Modified: add prior_errors, attempt, max_attempts to assembly inputs
 ├── activities/
