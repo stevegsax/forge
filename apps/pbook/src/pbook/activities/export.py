@@ -9,8 +9,11 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import json
+import logging
 
 from temporalio import activity
+
+logger = logging.getLogger(__name__)
 
 from pbook.models import PlaybookEntry
 
@@ -65,6 +68,7 @@ async def fetch_entry_ids(input_json: str) -> list[int]:
     from pbook.store import get_entries_by_tags
 
     entries = get_entries_by_tags(engine, tags, limit=limit)
+    logger.info("Fetched %d entry IDs for export (tags=%s)", len(entries), tags)
     return [e["id"] for e in entries]
 
 
@@ -85,4 +89,5 @@ async def export_single_entry(entry_id: int) -> dict:
         msg = f"Entry {entry_id} not found"
         raise RuntimeError(msg)
 
+    logger.debug("Exported entry %d: %s", entry_id, row["title"])
     return db_row_to_entry_dict(row)

@@ -7,11 +7,14 @@ path, runs migrations if needed, and delegates to a store function.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 from pathlib import Path
 
 import click
+
+logger = logging.getLogger(__name__)
 
 from pbook.models import PlaybookEntry
 from pbook.store import (
@@ -70,8 +73,12 @@ def _format_entry(entry: dict) -> str:
 
 
 @click.group()
-def main() -> None:
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
+def main(verbose: bool) -> None:
     """pbook — Knowledge playbook service."""
+    from pbook.log_config import setup_logging
+
+    setup_logging(level=logging.DEBUG if verbose else logging.INFO, console=True)
 
 
 # ---------------------------------------------------------------------------

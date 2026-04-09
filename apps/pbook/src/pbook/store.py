@@ -11,6 +11,7 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,8 @@ from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -77,14 +80,21 @@ def get_db_path() -> Path | None:
     env_value = os.environ.get("PBOOK_DB_PATH")
     if env_value is not None:
         if env_value == "":
+            logger.info("Store disabled (PBOOK_DB_PATH is empty)")
             return None
-        return Path(env_value)
+        path = Path(env_value)
+        logger.debug("DB path from PBOOK_DB_PATH: %s", path)
+        return path
 
     xdg_state = os.environ.get("XDG_STATE_HOME")
     if xdg_state:
-        return Path(xdg_state) / "pbook" / "pbook.db"
+        path = Path(xdg_state) / "pbook" / "pbook.db"
+        logger.debug("DB path from XDG_STATE_HOME: %s", path)
+        return path
 
-    return Path.home() / ".local" / "state" / "pbook" / "pbook.db"
+    path = Path.home() / ".local" / "state" / "pbook" / "pbook.db"
+    logger.debug("DB path (default): %s", path)
+    return path
 
 
 def build_entry_dict(entry: PlaybookEntry) -> dict:
@@ -108,6 +118,7 @@ def build_entry_dict(entry: PlaybookEntry) -> dict:
 def get_engine(db_path: Path) -> Engine:
     """Create a SQLAlchemy engine with WAL mode for the given database path."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.debug("Creating engine for %s", db_path)
     engine = sa.create_engine(f"sqlite:///{db_path}")
 
     @sa.event.listens_for(engine, "connect")
@@ -132,6 +143,7 @@ def run_migrations(db_path: Path) -> None:
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    logger.debug("Running migrations for %s", db_path)
     command.upgrade(cfg, "head")
 
 
@@ -139,6 +151,7 @@ def save_entries(engine: Engine, entries: list[dict]) -> None:
     """Bulk insert rows into the entries table."""
     if not entries:
         return
+    logger.info("Saving %d entries", len(entries))
     with engine.begin() as conn:
         conn.execute(sa.insert(Entry.__table__), entries)
 
@@ -158,6 +171,7 @@ def get_entries_by_tags(
     if not tags:
         return []
 
+    logger.debug("Querying entries by tags=%s limit=%d approved_only=%s", tags, limit, approved_only)
     tag_placeholders = ", ".join(f":tag_{i}" for i in range(len(tags)))
     tag_params = {f"tag_{i}": tag for i, tag in enumerate(tags)}
 
@@ -201,6 +215,7 @@ def get_entry_by_id(engine: Engine, entry_id: int) -> dict | None:
 
 def update_entry(engine: Engine, entry_id: int, updates: dict) -> None:
     """Update an entry by primary key with the given field values."""
+    logger.info("Updating entry %d: %s", entry_id, list(updates.keys()))
     t = Entry.__table__
     with engine.begin() as conn:
         conn.execute(t.update().where(t.c.id == entry_id).values(**updates))
@@ -208,6 +223,7 @@ def update_entry(engine: Engine, entry_id: int, updates: dict) -> None:
 
 def delete_entry(engine: Engine, entry_id: int) -> None:
     """Delete an entry by primary key."""
+    logger.info("Deleting entry %d", entry_id)
     t = Entry.__table__
     with engine.begin() as conn:
         conn.execute(t.delete().where(t.c.id == entry_id))

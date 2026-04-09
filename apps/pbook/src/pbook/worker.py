@@ -34,11 +34,16 @@ def _register_llm_provider() -> None:
 
     provider = get_provider("anthropic:claude-haiku-4-5-20251001")
     set_provider(provider)
+    logger.info("Registered LLM provider: anthropic:claude-haiku-4-5-20251001")
 
 
 async def run_worker(address: str = "localhost:7233") -> None:
     """Connect to Temporal and run the pbook worker."""
+    from pbook.log_config import setup_logging
+
+    setup_logging(console=True)
     _register_llm_provider()
+    logger.info("Connecting to Temporal at %s", address)
     client = await Client.connect(address)
 
     worker = Worker(

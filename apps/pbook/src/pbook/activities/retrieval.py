@@ -9,8 +9,11 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import json
+import logging
 
 from temporalio import activity
+
+logger = logging.getLogger(__name__)
 
 from pbook.models import EntryType, RetrievalMode
 from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES, parse_tag
@@ -114,6 +117,10 @@ def rank_and_pack(
         packed.append(entry)
         total_tokens += entry_tokens
 
+    logger.debug(
+        "Ranked %d candidates, packed %d within %d token budget (%d tokens used)",
+        len(candidates), len(packed), token_budget, total_tokens,
+    )
     return packed, total_tokens
 
 
@@ -132,6 +139,7 @@ async def fetch_candidates(input_json: str) -> list[dict]:
     from pbook.store import get_db_path, get_engine, get_entries_by_tags, run_migrations
 
     inp = RetrievalInput.model_validate_json(input_json)
+    logger.info("Fetching candidates: tags=%s mode=%s", inp.tags, inp.mode)
 
     db_path = get_db_path()
     if db_path is None:
@@ -140,9 +148,11 @@ async def fetch_candidates(input_json: str) -> list[dict]:
     run_migrations(db_path)
     engine = get_engine(db_path)
 
-    return get_entries_by_tags(
+    candidates = get_entries_by_tags(
         engine,
         inp.tags,
         limit=100,  # Over-fetch for ranking
         approved_only=inp.approved_only,
     )
+    logger.info("Found %d candidates", len(candidates))
+    return candidates
