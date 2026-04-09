@@ -1,55 +1,37 @@
-"""Minimal LLM protocol for the playbook service.
+"""LLM integration layer for the playbook service.
 
-Defines the interface that extraction and review activities depend on.
-In Phase 4, this will be replaced by the shared ``sax-llm`` package.
-For now, consumers inject a provider implementation at runtime.
-
-Design follows Function Core / Imperative Shell:
-
-- Pure: build_messages, ExtractionResult, ReviewResult models
-- Protocol: LLMProvider (async call with structured output)
+Re-exports the LLMProvider protocol and ProviderResponse from sax-llm.
+Defines pbook-specific structured output models (ExtractionResult, ReviewResult)
+and a simple provider registry for runtime injection.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
-
 from pydantic import BaseModel, Field
+from sax_llm.models import ProviderResponse, text_messages
+from sax_llm.protocol import LLMProvider
+
+# Re-export for backward compatibility with existing pbook code
+__all__ = [
+    "ExtractionEntry",
+    "ExtractionResult",
+    "LLMProvider",
+    "LLMResponse",
+    "ProviderResponse",
+    "ReviewResult",
+    "build_messages",
+    "get_provider",
+    "reset_provider",
+    "set_provider",
+    "text_messages",
+]
+
 
 # ---------------------------------------------------------------------------
-# LLM protocol — minimal interface for extraction and review
+# Backward-compatible alias
 # ---------------------------------------------------------------------------
 
-
-class LLMResponse(BaseModel):
-    """Normalized response from an LLM call."""
-
-    tool_input: dict = Field(default_factory=dict)
-    model_name: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-
-@runtime_checkable
-class LLMProvider(Protocol):
-    """Minimal LLM provider protocol for pbook.
-
-    Implementations must support:
-
-    1. Building request parameters from messages + output type
-    2. Calling the LLM and returning a normalized response
-    """
-
-    def build_request_params(
-        self,
-        *,
-        messages: list[dict],
-        output_type: type[BaseModel],
-        model: str,
-        max_tokens: int = 4096,
-    ) -> dict: ...
-
-    async def call(self, params: dict) -> LLMResponse: ...
+LLMResponse = ProviderResponse
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +40,7 @@ class LLMProvider(Protocol):
 
 
 def build_messages(system_prompt: str, user_prompt: str) -> list[dict]:
-    """Build a simple system + user message list."""
+    """Build a simple system + user message list (plain dicts)."""
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

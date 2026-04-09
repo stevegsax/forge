@@ -26,8 +26,19 @@ logger = logging.getLogger(__name__)
 PBOOK_TASK_QUEUE = "pbook-task-queue"
 
 
+def _register_llm_provider() -> None:
+    """Register the default LLM provider (Anthropic) for extraction and review."""
+    from sax_llm import get_provider
+
+    from pbook.llm import set_provider
+
+    provider = get_provider("anthropic:claude-haiku-4-5-20251001")
+    set_provider(provider)
+
+
 async def run_worker(address: str = "localhost:7233") -> None:
     """Connect to Temporal and run the pbook worker."""
+    _register_llm_provider()
     client = await Client.connect(address)
 
     worker = Worker(

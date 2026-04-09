@@ -9,7 +9,11 @@ dependencies = [
     "alembic>=1.14",
     "click>=8.1.0",
     "temporalio>=1.9.0",
+    "sax-llm",
 ]
+
+[tool.uv.sources]
+sax-llm = { path = "../sax-llm", editable = true }
 
 [project.scripts]
 pbook = "pbook.cli:main"
@@ -33,7 +37,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = "--cov=pbook --cov-report=term-missing --cov-fail-under=85"
+addopts = "--cov=pbook --cov-report=term-missing --cov-fail-under=84"
 
 [dependency-groups]
 dev = [

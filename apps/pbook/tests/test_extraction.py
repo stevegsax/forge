@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sax_llm.models import ProviderResponse
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
@@ -17,10 +18,7 @@ from pbook.activities.extraction import (
     execute_extraction_call,
     save_extracted_entries,
 )
-from pbook.llm import (
-    LLMResponse,
-    reset_provider,
-)
+from pbook.llm import reset_provider
 from pbook.models import PushExperienceInput
 from pbook.store import (
     get_engine,
@@ -124,7 +122,7 @@ class TestBuildExtractionUserPrompt:
 class TestExecuteExtractionCall:
     @pytest.mark.asyncio
     async def test_calls_provider(self):
-        mock_response = LLMResponse(
+        mock_response = ProviderResponse(
             tool_input={
                 "entries": [
                     {
@@ -137,6 +135,7 @@ class TestExecuteExtractionCall:
             model_name="test-model",
             input_tokens=100,
             output_tokens=50,
+            raw_response_json="{}",
         )
 
         provider = MagicMock()
@@ -155,8 +154,12 @@ class TestExecuteExtractionCall:
 
     @pytest.mark.asyncio
     async def test_empty_extraction(self):
-        mock_response = LLMResponse(
+        mock_response = ProviderResponse(
             tool_input={"entries": []},
+            model_name="test",
+            input_tokens=0,
+            output_tokens=0,
+            raw_response_json="{}",
         )
         provider = MagicMock()
         provider.build_request_params.return_value = {}

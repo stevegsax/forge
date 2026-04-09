@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sax_llm.models import ProviderResponse
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
@@ -20,11 +21,7 @@ from pbook.activities.review import (
     fetch_existing_entries,
     validate_entry,
 )
-from pbook.llm import (
-    LLMResponse,
-    ReviewResult,
-    reset_provider,
-)
+from pbook.llm import ReviewResult, reset_provider
 from pbook.models import PlaybookEntry
 from pbook.store import (
     get_engine,
@@ -151,7 +148,7 @@ class TestApplySuggestions:
 class TestExecuteReviewCall:
     @pytest.mark.asyncio
     async def test_calls_provider(self):
-        mock_response = LLMResponse(
+        mock_response = ProviderResponse(
             tool_input={
                 "approved": True,
                 "rejection_reason": "",
@@ -159,6 +156,10 @@ class TestExecuteReviewCall:
                 "suggested_content": "",
                 "suggested_tags": [],
             },
+            model_name="test",
+            input_tokens=0,
+            output_tokens=0,
+            raw_response_json="{}",
         )
         provider = MagicMock()
         provider.build_request_params.return_value = {}
@@ -169,7 +170,7 @@ class TestExecuteReviewCall:
 
     @pytest.mark.asyncio
     async def test_rejection(self):
-        mock_response = LLMResponse(
+        mock_response = ProviderResponse(
             tool_input={
                 "approved": False,
                 "rejection_reason": "Too generic",
@@ -177,6 +178,10 @@ class TestExecuteReviewCall:
                 "suggested_content": "",
                 "suggested_tags": [],
             },
+            model_name="test",
+            input_tokens=0,
+            output_tokens=0,
+            raw_response_json="{}",
         )
         provider = MagicMock()
         provider.build_request_params.return_value = {}
