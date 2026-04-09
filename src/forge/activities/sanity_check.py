@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sax_llm.models import text_messages
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
@@ -26,7 +27,6 @@ from forge.activities.context import (
     _read_project_instructions,
     build_project_instructions_section,
 )
-from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import (
     AssembleSanityCheckContextInput,
@@ -39,7 +39,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from forge.llm_providers.protocol import LLMProvider
+    from sax_llm.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +165,7 @@ async def execute_sanity_check_call(
 
     Separated from the imperative shell so tests can inject a mock provider.
     """
-    from forge.llm_providers import parse_model_id
+    from sax_llm import parse_model_id
 
     full_model = input.model_name or "claude-sonnet-4-5-20250929"
     _, model = parse_model_id(full_model)
@@ -236,7 +236,8 @@ async def assemble_sanity_check_context(
 @activity.defn
 async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
     """Activity wrapper -- creates a provider and delegates to execute_sanity_check_call."""
-    from forge.llm_providers import get_provider
+    from sax_llm import get_provider
+
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()

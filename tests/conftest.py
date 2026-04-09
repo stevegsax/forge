@@ -15,6 +15,35 @@ if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _register_output_types():
+    """Register Forge's output types with the shared sax-llm registry.
+
+    Required for any test that uses batch parsing or the output type registry.
+    """
+    from sax_llm import register_output_type
+    from sax_llm.registry import reset_output_type_registry
+
+    from forge.eval.models import JudgeVerdict
+    from forge.models import (
+        ConflictResolutionResponse,
+        ExplorationResponse,
+        ExtractionResult,
+        LLMResponse,
+        Plan,
+        SanityCheckResponse,
+    )
+
+    reset_output_type_registry()
+    register_output_type("LLMResponse", LLMResponse)
+    register_output_type("Plan", Plan)
+    register_output_type("ExplorationResponse", ExplorationResponse)
+    register_output_type("SanityCheckResponse", SanityCheckResponse)
+    register_output_type("ConflictResolutionResponse", ConflictResolutionResponse)
+    register_output_type("ExtractionResult", ExtractionResult)
+    register_output_type("JudgeVerdict", JudgeVerdict)
+
+
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def env() -> WorkflowEnvironment:
     from temporalio.contrib.pydantic import pydantic_data_converter
@@ -74,7 +103,7 @@ def build_mock_provider(
     Returns a MagicMock implementing the LLMProvider protocol with
     build_request_params and call methods pre-configured.
     """
-    from forge.llm_providers.models import ProviderResponse
+    from sax_llm.models import ProviderResponse
 
     response = ProviderResponse(
         tool_input=tool_input or {},
@@ -93,6 +122,27 @@ def build_mock_provider(
     provider.build_request_params = MagicMock(return_value={"model": model_name})
     provider.call = AsyncMock(return_value=response)
     return provider
+
+
+@pytest.fixture(autouse=True)
+def dispose_store_engines(monkeypatch: pytest.MonkeyPatch):
+    """Dispose SQLAlchemy engines created via forge.store.get_engine after each test."""
+    import forge.store as store_module
+
+    original_create_engine = store_module.sa.create_engine
+    created_engines = []
+
+    def tracking_create_engine(*args, **kwargs):
+        engine = original_create_engine(*args, **kwargs)
+        created_engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(store_module.sa, "create_engine", tracking_create_engine)
+
+    yield
+
+    for engine in created_engines:
+        engine.dispose()
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent

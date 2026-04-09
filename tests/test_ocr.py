@@ -41,9 +41,9 @@ from forge.ocr.models import (
     FileContentResult,
     OcrBatchRef,
     OcrDuplicateCheckResult,
-    OcrGatherInput,
     OcrExportInput,
     OcrExportResult,
+    OcrGatherInput,
     OcrMarkInput,
     OcrMarkResult,
     OcrParseResult,
@@ -53,8 +53,8 @@ from forge.ocr.models import (
     SplitResult,
 )
 from forge.ocr.workflow_gather import OcrGatherWorkflow
-from forge.ocr.workflow_submit import OcrSubmitWorkflow
 from forge.ocr.workflow_store import OcrStoreWorkflow
+from forge.ocr.workflow_submit import OcrSubmitWorkflow
 from forge.store import (
     clear_ocr_removal_mark,
     delete_ocr_results,

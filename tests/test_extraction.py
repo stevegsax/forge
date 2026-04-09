@@ -265,7 +265,7 @@ class TestCallExtractionLlmModelNameThreading:
         )
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider) as mock_get,
+            patch("sax_llm.get_provider", return_value=provider) as mock_get,
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -303,7 +303,7 @@ class TestCallExtractionLlmModelNameThreading:
         )
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider) as mock_get,
+            patch("sax_llm.get_provider", return_value=provider) as mock_get,
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):

@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sax_llm.models import ExtractedImage
 from temporalio import activity
 from temporalio.worker import Worker
 
-from forge.llm_providers.models import ExtractedImage  # noqa: TC001
 from forge.ocr.activities import execute_call_ocr_sync
 from forge.ocr.models import (
     ChunkRef,
@@ -82,7 +82,7 @@ class TestMistralProviderCallOcr:
     @pytest.mark.asyncio
     async def test_calls_process_async_with_document_url(self) -> None:
         """PDF documents use DocumentURLChunk."""
-        from forge.llm_providers.mistral import MistralProvider
+        from sax_llm.mistral import MistralProvider
 
         provider = MistralProvider.__new__(MistralProvider)
         mock_client = MagicMock()
@@ -105,7 +105,7 @@ class TestMistralProviderCallOcr:
     @pytest.mark.asyncio
     async def test_calls_process_async_with_image_url(self) -> None:
         """Image files use ImageURLChunk."""
-        from forge.llm_providers.mistral import MistralProvider
+        from sax_llm.mistral import MistralProvider
 
         provider = MistralProvider.__new__(MistralProvider)
         mock_client = MagicMock()

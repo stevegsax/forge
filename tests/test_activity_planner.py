@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sax_llm.client import build_thinking_param
 
 from forge.activities.planner import (
     assemble_planner_context,
@@ -13,7 +14,6 @@ from forge.activities.planner import (
     build_planner_user_prompt,
     execute_planner_call,
 )
-from forge.llm_client import build_thinking_param
 from forge.models import (
     AssembleContextInput,
     ContextConfig,
@@ -376,7 +376,7 @@ class TestCallPlannerModelNameThreading:
         )
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider),
+            patch("sax_llm.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -409,7 +409,7 @@ class TestCallPlannerModelNameThreading:
         )
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider),
+            patch("sax_llm.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
@@ -466,7 +466,7 @@ class TestCallPlannerThinkingThreading:
         )
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider),
+            patch("sax_llm.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):

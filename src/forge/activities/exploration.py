@@ -17,11 +17,11 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from sax_llm.models import text_messages
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
 from forge.domains import get_domain_config
-from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import (
     AssembledContext,
@@ -32,7 +32,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from forge.llm_providers.protocol import LLMProvider
+    from sax_llm.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ async def execute_exploration_call(
 
     Separated from the imperative shell so tests can inject a mock provider.
     """
-    from forge.llm_providers import parse_model_id
+    from sax_llm import parse_model_id
 
     system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
     full_model = input.model_name or DEFAULT_EXPLORATION_MODEL
@@ -208,11 +208,12 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
     """Activity: call the exploration LLM to decide what context to request."""
     from pathlib import Path
 
+    from sax_llm import get_provider
+
     from forge.activities.context import (
         _read_project_instructions,
         build_project_instructions_section,
     )
-    from forge.llm_providers import get_provider
     from forge.tracing import get_tracer
 
     tracer = get_tracer()

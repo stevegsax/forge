@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import pytest
-
-from forge.llm_providers.registry import (
+from sax_llm.registry import (
     get_provider,
     get_provider_by_name,
     parse_model_id,
@@ -68,19 +67,19 @@ class TestGetProvider:
         reset_provider_cache()
 
     def test_returns_anthropic_provider_for_bare_name(self) -> None:
-        from forge.llm_providers.anthropic import AnthropicProvider
+        from sax_llm.anthropic import AnthropicProvider
 
         provider = get_provider("claude-sonnet-4-5-20250929")
         assert isinstance(provider, AnthropicProvider)
 
     def test_returns_anthropic_provider_for_prefixed_name(self) -> None:
-        from forge.llm_providers.anthropic import AnthropicProvider
+        from sax_llm.anthropic import AnthropicProvider
 
         provider = get_provider("anthropic:claude-sonnet-4-5-20250929")
         assert isinstance(provider, AnthropicProvider)
 
     def test_returns_mistral_provider(self) -> None:
-        from forge.llm_providers.mistral import MistralProvider
+        from sax_llm.mistral import MistralProvider
 
         provider = get_provider("mistral:mistral-large-latest")
         assert isinstance(provider, MistralProvider)
@@ -124,13 +123,13 @@ class TestGetProviderByName:
         reset_provider_cache()
 
     def test_returns_anthropic_provider(self) -> None:
-        from forge.llm_providers.anthropic import AnthropicProvider
+        from sax_llm.anthropic import AnthropicProvider
 
         provider = get_provider_by_name("anthropic")
         assert isinstance(provider, AnthropicProvider)
 
     def test_returns_mistral_provider(self) -> None:
-        from forge.llm_providers.mistral import MistralProvider
+        from sax_llm.mistral import MistralProvider
 
         provider = get_provider_by_name("mistral")
         assert isinstance(provider, MistralProvider)

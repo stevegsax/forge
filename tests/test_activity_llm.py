@@ -248,7 +248,7 @@ class TestCallLlmModelNameThreading:
         mock_tracer.start_as_current_span.return_value = mock_span
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider),
+            patch("sax_llm.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer", return_value=mock_tracer),
         ):
@@ -280,7 +280,7 @@ class TestCallLlmModelNameThreading:
         mock_tracer.start_as_current_span.return_value = mock_span
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider),
+            patch("sax_llm.get_provider", return_value=provider),
             patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer", return_value=mock_tracer),
         ):

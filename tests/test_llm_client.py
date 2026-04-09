@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel, Field
-
-from forge.llm_client import (
+from sax_llm import get_output_type_registry, register_output_type
+from sax_llm.client import (
     build_batch_request,
     build_messages_params,
     build_system_param,
@@ -16,7 +16,6 @@ from forge.llm_client import (
     build_tool_definition,
     extract_tool_result,
     extract_usage,
-    get_output_type_registry,
     parse_batch_response_json,
 )
 
@@ -293,6 +292,8 @@ class TestBuildBatchRequest:
 
 
 class TestGetOutputTypeRegistry:
+    """Tests rely on session-scoped _register_output_types fixture in conftest."""
+
     def test_contains_all_expected_types(self) -> None:
         registry = get_output_type_registry()
         expected = {
@@ -356,6 +357,8 @@ def _build_message_json(
 
 
 class TestParseBatchResponseJson:
+    """Tests rely on session-scoped _register_output_types fixture in conftest."""
+
     def test_parses_llm_response(self) -> None:
         from forge.models import LLMResponse
 

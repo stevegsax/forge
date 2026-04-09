@@ -6,9 +6,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from forge.llm_providers.anthropic import AnthropicProvider
-from forge.llm_providers.models import (
+from sax_llm.anthropic import AnthropicProvider
+from sax_llm.models import (
     DocumentContent,
     ImageContent,
     Message,

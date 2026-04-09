@@ -37,7 +37,7 @@ def execute_parse_llm_response(
     """
     import json
 
-    from forge.llm_providers import get_provider_by_name
+    from sax_llm import get_provider_by_name
 
     provider = get_provider_by_name(provider_name)
     result = provider.parse_batch_result(raw_json, output_type_name)

@@ -15,18 +15,17 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from sax_llm.models import BatchPollStatus
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
-from forge.llm_providers.models import BatchPollStatus
 from forge.models import BatchPollerInput, BatchPollerResult, BatchResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sax_llm.models import ExtractedImage
     from temporalio.client import Client
-
-    from forge.llm_providers.models import ExtractedImage
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +78,7 @@ async def execute_poll_batch_results(
         store_images_fn: Optional callable to store extracted OCR images.
             Accepts a list of ExtractedImage, returns {original_image_id: uuid} mapping.
     """
-    from forge.llm_providers import get_provider_by_name
+    from sax_llm import get_provider_by_name
 
     batches_checked = 0
     signals_sent = 0

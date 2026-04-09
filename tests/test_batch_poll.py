@@ -6,13 +6,13 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sax_llm.models import BatchPollResult as ProviderBatchPollResult
+from sax_llm.models import BatchPollStatus, BatchResultEntry
 
 from forge.activities.batch_poll import (
     _ensure_utc,
     execute_poll_batch_results,
 )
-from forge.llm_providers.models import BatchPollResult as ProviderBatchPollResult
-from forge.llm_providers.models import BatchPollStatus, BatchResultEntry
 from forge.models import BatchPollerResult
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             result = await execute_poll_batch_results([job], temporal, track_update)
 
         assert result.batches_checked == 1
@@ -160,7 +160,7 @@ class TestExecutePollBatchResults:
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             result = await execute_poll_batch_results([job], temporal, _noop_update)
 
         assert result.signals_sent == 1
@@ -176,7 +176,7 @@ class TestExecutePollBatchResults:
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             result = await execute_poll_batch_results([job], temporal, _noop_update)
 
         assert result.batches_checked == 1
@@ -189,7 +189,7 @@ class TestExecutePollBatchResults:
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             with pytest.raises(RuntimeError, match="1 error"):
                 await execute_poll_batch_results([job], temporal, _noop_update)
 
@@ -204,7 +204,7 @@ class TestExecutePollBatchResults:
 
         old_time = datetime.now(UTC) - timedelta(hours=25)
         job = _make_pending_job(created_at=old_time)
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             with pytest.raises(RuntimeError, match="1 error"):
                 await execute_poll_batch_results([job], temporal, track_update)
 
@@ -221,7 +221,7 @@ class TestExecutePollBatchResults:
         temporal = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
 
         job = _make_pending_job()
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             with pytest.raises(RuntimeError, match="1 error"):
                 await execute_poll_batch_results([job], temporal, _noop_update)
 
@@ -249,7 +249,7 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             result = await execute_poll_batch_results([job], temporal, track_update)
 
         # Error signal was sent to the waiting workflow
@@ -282,7 +282,7 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             with pytest.raises(RuntimeError, match="1 error"):
                 await execute_poll_batch_results([job], temporal, track_update)
 
@@ -304,7 +304,7 @@ class TestExecutePollBatchResults:
             _make_pending_job(request_id="req-2", batch_id="batch-2", workflow_id="wf-2"),
         ]
 
-        with patch("forge.llm_providers.get_provider_by_name", return_value=provider):
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
             result = await execute_poll_batch_results(jobs, temporal, _noop_update)
 
         assert result.batches_checked == 2

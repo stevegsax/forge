@@ -21,15 +21,15 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from temporalio import activity
-
-from forge.llm_providers.models import (
+from sax_llm.models import (
     DocumentContent,
     ExtractedImage,
     ImageContent,
     Message,
     TextContent,
 )
+from temporalio import activity
+
 from forge.ocr.models import (
     ChunkRef,
     FileContentRef,
@@ -48,9 +48,9 @@ from forge.ocr.models import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sax_llm.protocol import LLMProvider
     from sqlalchemy import Engine
 
-    from forge.llm_providers.protocol import LLMProvider
     from forge.ocr.models import OcrSubmitInput
 
     # Callable that stores extracted images and returns {original_id: uuid}
@@ -253,7 +253,7 @@ async def execute_submit_ocr_batch(
     provider: LLMProvider,
 ) -> OcrBatchRef:
     """Build OCR request body and submit to /v1/ocr batch endpoint."""
-    from forge.llm_providers import parse_model_id
+    from sax_llm import parse_model_id
 
     _, model = parse_model_id(input.model_name)
 
@@ -652,8 +652,8 @@ async def execute_call_ocr_sync(
     mapping of ``{original_image_id: stored_uuid}``.  In production this
     is wired to the database; in tests it can be a stub.
     """
-    from forge.llm_providers import parse_model_id
-    from forge.llm_providers.mistral import _extract_images_from_response
+    from sax_llm import parse_model_id
+    from sax_llm.mistral import _extract_images_from_response
 
     _, model = parse_model_id(model_name)
 
@@ -722,7 +722,8 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     complex activity input. Loads file bytes from the database,
     base64-encodes in memory, and submits to the provider.
     """
-    from forge.llm_providers import get_provider, parse_model_id
+    from sax_llm import get_provider, parse_model_id
+
     from forge.ocr.models import OcrSubmitInput
     from forge.store import (
         delete_file_content,
@@ -832,7 +833,8 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
     - ``document_id``: target document ID
     - ``workflow_id``: calling workflow's ID
     """
-    from forge.llm_providers import get_provider, parse_model_id
+    from sax_llm import get_provider, parse_model_id
+
     from forge.store import (
         get_db_path,
         get_engine,

@@ -12,11 +12,13 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from sax_llm.models import text_messages
+
 from forge.eval.models import EvalCase, JudgeCriterion, JudgeVerdict
-from forge.llm_providers.models import text_messages
 
 if TYPE_CHECKING:
-    from forge.llm_providers.protocol import LLMProvider
+    from sax_llm.protocol import LLMProvider
+
     from forge.models import Plan
 
 logger = logging.getLogger(__name__)
@@ -139,7 +141,7 @@ async def execute_judge_call(
 
     Separated from the imperative shell so tests can inject a mock provider.
     """
-    from forge.llm_providers import parse_model_id
+    from sax_llm import parse_model_id
 
     full_model = model_name or DEFAULT_JUDGE_MODEL
     _, model = parse_model_id(full_model)
@@ -183,7 +185,7 @@ async def judge_plan(
     This is the imperative shell entry point — creates the client and
     delegates to pure/testable functions.
     """
-    from forge.llm_providers import get_provider
+    from sax_llm import get_provider
 
     system_prompt = build_judge_system_prompt(case, plan, repo_context)
     user_prompt = build_judge_user_prompt()

@@ -16,10 +16,10 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from sax_llm.models import text_messages
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
-from forge.llm_providers.models import text_messages
 from forge.models import (
     ExtractionCallResult,
     ExtractionInput,
@@ -29,7 +29,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from forge.llm_providers.protocol import LLMProvider
+    from sax_llm.protocol import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +191,9 @@ async def execute_extraction_call(
 
     Separated from the imperative shell so tests can inject a mock provider.
     """
+    from sax_llm import parse_model_id
+
     from forge.activities.llm import DEFAULT_MODEL
-    from forge.llm_providers import parse_model_id
 
     full_model = input.model_name or DEFAULT_MODEL
     _, model = parse_model_id(full_model)
@@ -279,8 +280,9 @@ async def fetch_extraction_input(input: FetchExtractionInput) -> ExtractionInput
 @activity.defn
 async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
     """Activity wrapper — creates provider and delegates to execute_extraction_call."""
+    from sax_llm import get_provider
+
     from forge.activities.llm import DEFAULT_MODEL
-    from forge.llm_providers import get_provider
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()

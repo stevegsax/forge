@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -166,7 +166,7 @@ class TestReviewPlaybookEntry:
     async def test_calls_provider_and_parses_result(
         self, sample_entry: PlaybookEntry
     ) -> None:
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.tool_input = {
             "approved": True,
             "rejection_reason": "",
@@ -175,12 +175,12 @@ class TestReviewPlaybookEntry:
             "suggested_content": "",
         }
 
-        mock_provider = AsyncMock()
+        mock_provider = MagicMock()
         mock_provider.build_request_params.return_value = {"mock": True}
-        mock_provider.call.return_value = mock_response
+        mock_provider.call = AsyncMock(return_value=mock_response)
 
         with patch(
-            "forge.llm_providers.registry.get_provider",
+            "sax_llm.registry.get_provider",
             return_value=mock_provider,
         ):
             result = await review_playbook_entry(sample_entry, [])

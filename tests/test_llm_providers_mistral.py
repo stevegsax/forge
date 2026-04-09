@@ -8,8 +8,7 @@ from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from forge.llm_providers.mistral import (
+from sax_llm.mistral import (
     MistralProvider,
     _download_file_content,
     _extract_images_from_response,
@@ -17,7 +16,7 @@ from forge.llm_providers.mistral import (
     _is_set,
     _parse_error_file_entries,
 )
-from forge.llm_providers.models import (
+from sax_llm.models import (
     BatchPollStatus,
     DocumentContent,
     ImageContent,

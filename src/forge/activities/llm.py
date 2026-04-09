@@ -14,15 +14,15 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from sax_llm.models import text_messages
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
-from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import AssembledContext, LLMCallResult, LLMResponse
 
 if TYPE_CHECKING:
-    from forge.llm_providers.protocol import LLMProvider
+    from sax_llm.protocol import LLMProvider
 
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
 DEFAULT_MAX_TOKENS = 4096
@@ -43,7 +43,7 @@ async def execute_llm_call(
 
     Separated from the imperative shell so tests can inject a mock provider.
     """
-    from forge.llm_providers import parse_model_id
+    from sax_llm import parse_model_id
 
     full_model = context.model_name or DEFAULT_MODEL
     _, model = parse_model_id(full_model)
@@ -85,7 +85,8 @@ async def execute_llm_call(
 @activity.defn
 async def call_llm(context: AssembledContext) -> LLMCallResult:
     """Activity wrapper — creates a provider and delegates to execute_llm_call."""
-    from forge.llm_providers import get_provider
+    from sax_llm import get_provider
+
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()

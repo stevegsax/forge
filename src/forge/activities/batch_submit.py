@@ -14,15 +14,15 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from sax_llm import get_output_type_registry
+from sax_llm.models import text_messages
 from temporalio import activity
 
-from forge.llm_client import get_output_type_registry
-from forge.llm_providers.models import text_messages
 from forge.message_log import write_message_log
 from forge.models import BatchSubmitInput, BatchSubmitResult
 
 if TYPE_CHECKING:
-    from forge.llm_providers.protocol import LLMProvider
+    from sax_llm.protocol import LLMProvider
 
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
 DEFAULT_MAX_TOKENS = 4096
@@ -43,7 +43,7 @@ async def execute_batch_submit(
 
     Separated from the imperative shell so tests can inject a mock provider.
     """
-    from forge.llm_providers import parse_model_id
+    from sax_llm import parse_model_id
 
     output_type = None
     if input.output_type_name:
@@ -103,7 +103,8 @@ def _record_submission(
 @activity.defn
 async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
     """Activity wrapper — creates provider and delegates to execute_batch_submit."""
-    from forge.llm_providers import get_provider
+    from sax_llm import get_provider
+
     from forge.tracing import get_tracer
 
     tracer = get_tracer()
@@ -125,7 +126,7 @@ async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
             }
         )
 
-        from forge.llm_providers import parse_model_id
+        from sax_llm import parse_model_id
 
         provider_name, _ = parse_model_id(input.context.model_name or DEFAULT_MODEL)
         _record_submission(result, input.workflow_id, provider=provider_name)

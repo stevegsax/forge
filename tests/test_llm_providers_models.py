@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from forge.llm_providers.models import (
+from sax_llm.models import (
     DocumentContent,
     ImageContent,
     Message,

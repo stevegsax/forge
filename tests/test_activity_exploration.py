@@ -349,7 +349,7 @@ class TestCallExplorationLlmModelNameThreading:
         )
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider) as mock_get,
+            patch("sax_llm.get_provider", return_value=provider) as mock_get,
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -388,7 +388,7 @@ class TestCallExplorationLlmModelNameThreading:
         )
 
         with (
-            patch("forge.llm_providers.get_provider", return_value=provider) as mock_get,
+            patch("sax_llm.get_provider", return_value=provider) as mock_get,
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()

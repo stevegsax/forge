@@ -115,8 +115,9 @@ async def review_playbook_entry(
     Uses the CLASSIFICATION tier model (Haiku) since this is a
     straightforward accept/reject with light suggestions.
     """
-    from forge.llm_providers.models import text_messages
-    from forge.llm_providers.registry import get_provider, parse_model_id
+    from sax_llm.models import text_messages
+    from sax_llm.registry import get_provider, parse_model_id
+
     from forge.models import CapabilityTier, ModelConfig, PlaybookReviewResult, resolve_model
 
     if not model_name:
