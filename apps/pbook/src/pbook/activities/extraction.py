@@ -14,16 +14,27 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+logger = logging.getLogger(__name__)
+
 from pbook.llm import ExtractionResult, text_messages
-from pbook.models import PushExperienceInput
+from pbook.models import CapabilityTier, ModelConfig, PushExperienceInput, resolve_model
 
 if TYPE_CHECKING:
     from pbook.llm import LLMProvider
+
+
+def _resolve_default_model() -> tuple[str, str]:
+    """Resolve the default model for extraction, returning (provider, model)."""
+    from sax_llm.registry import parse_model_id
+
+    model_id = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
+    return parse_model_id(model_id)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +149,10 @@ async def execute_extraction_call(
     latency_ms = (time.monotonic() - start) * 1000
 
     result = ExtractionResult.model_validate(response.tool_input)
+    logger.info(
+        "Extraction LLM call: %d entries, %d input tokens, %d output tokens, %.0fms",
+        len(result.entries), response.input_tokens, response.output_tokens, latency_ms,
+    )
     return result, response.input_tokens, response.output_tokens, latency_ms
 
 
@@ -161,16 +176,20 @@ async def extract_from_experience(input_json: str) -> str:
     ]
 
     if not experiences:
+        logger.debug("No experiences to extract from")
         return ExtractionResult().model_dump_json()
 
+    logger.info("Extracting from %d experience(s)", len(experiences))
     provider = get_provider()
     system_prompt = build_extraction_system_prompt(experiences)
     user_prompt = build_extraction_user_prompt()
+    _, model = _resolve_default_model()
 
     result, _in_tok, _out_tok, _latency = await execute_extraction_call(
-        system_prompt, user_prompt, provider,
+        system_prompt, user_prompt, provider, model=model,
     )
 
+    logger.info("Extracted %d entries", len(result.entries))
     return result.model_dump_json()
 
 
@@ -189,6 +208,7 @@ async def save_extracted_entries(input_json: str) -> int:
     project = data.get("project", "")
 
     if not entries_raw:
+        logger.debug("No extracted entries to save")
         return 0
 
     db_path = get_db_path()

@@ -15,15 +15,26 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+logger = logging.getLogger(__name__)
+
 from pbook.llm import ReviewResult, text_messages
-from pbook.models import PlaybookEntry
+from pbook.models import CapabilityTier, ModelConfig, PlaybookEntry, resolve_model
 
 if TYPE_CHECKING:
     from pbook.llm import LLMProvider
+
+
+def _resolve_default_model() -> tuple[str, str]:
+    """Resolve the default model for review, returning (provider, model)."""
+    from sax_llm.registry import parse_model_id
+
+    model_id = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
+    return parse_model_id(model_id)
 
 
 # ---------------------------------------------------------------------------
@@ -156,12 +167,14 @@ async def validate_entry(raw_json: str) -> str:
 
     try:
         entry = PlaybookEntry.model_validate_json(raw_json)
+        logger.debug("Entry validated: %s", entry.title)
         return json.dumps({
             "valid": True,
             "entry": entry.model_dump(),
             "error": None,
         })
     except (ValidationError, ValueError) as exc:
+        logger.warning("Entry validation failed: %s", exc)
         return json.dumps({
             "valid": False,
             "entry": None,
@@ -197,8 +210,10 @@ async def review_entry(input_json: str) -> str:
     data = json.loads(input_json)
     entry = PlaybookEntry.model_validate(data["entry"])
     existing = data.get("existing_entries", [])
-    model_name = data.get("model_name", "")
+    _, default_model = _resolve_default_model()
+    model_name = data.get("model_name", "") or default_model
 
+    logger.info("Reviewing entry: %s", entry.title)
     provider = get_provider()
     system_prompt = build_review_system_prompt(existing)
     user_prompt = build_review_user_prompt(entry)
@@ -208,6 +223,7 @@ async def review_entry(input_json: str) -> str:
     )
 
     if not review.approved:
+        logger.info("Entry rejected: %s — %s", entry.title, review.rejection_reason)
         return json.dumps({
             "approved": False,
             "rejection_reason": review.rejection_reason,
@@ -215,6 +231,7 @@ async def review_entry(input_json: str) -> str:
         })
 
     final_entry = apply_suggestions(entry, review)
+    logger.info("Entry approved: %s", final_entry.title)
     return json.dumps({
         "approved": True,
         "rejection_reason": "",
