@@ -19,13 +19,16 @@ from pbook.activities.review import (
     build_review_user_prompt,
     execute_review_call,
     fetch_existing_entries,
+    review_entry,
     validate_entry,
 )
 from pbook.llm import ReviewResult, reset_provider
 from pbook.models import PlaybookEntry
 from pbook.store import (
+    build_entry_dict,
     get_engine,
     run_migrations,
+    save_entries,
 )
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflows.manual_entry import ManualEntryWorkflow
@@ -210,6 +213,118 @@ class TestValidateEntry:
         result = json.loads(await validate_entry("not json"))
         assert result["valid"] is False
         assert result["error"] is not None
+
+
+# ---------------------------------------------------------------------------
+# fetch_existing_entries activity
+# ---------------------------------------------------------------------------
+
+
+class TestFetchExistingEntries:
+    @pytest.mark.asyncio
+    async def test_returns_recent_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+
+        entry = PlaybookEntry(title="Existing", content="Content", tags=["lang:python"])
+        save_entries(engine, [build_entry_dict(entry)])
+
+        result = await fetch_existing_entries(50)
+        assert len(result) == 1
+        assert result[0]["title"] == "Existing"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "nonexistent.db"))
+        result = await fetch_existing_entries(50)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", "")
+        result = await fetch_existing_entries(50)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# review_entry activity
+# ---------------------------------------------------------------------------
+
+
+class TestReviewEntryActivity:
+    @pytest.mark.asyncio
+    async def test_approved_entry(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from pbook.llm import set_provider
+
+        mock_response = ProviderResponse(
+            tool_input={
+                "approved": True,
+                "rejection_reason": "",
+                "suggested_title": "Better Title",
+                "suggested_content": "",
+                "suggested_tags": [],
+            },
+            model_name="test",
+            input_tokens=0,
+            output_tokens=0,
+            raw_response_json="{}",
+        )
+        provider = MagicMock()
+        provider.build_request_params.return_value = {}
+        provider.call = AsyncMock(return_value=mock_response)
+        set_provider(provider)
+
+        input_json = json.dumps({
+            "entry": {
+                "title": "Original",
+                "content": "Some advice",
+                "tags": ["lang:python"],
+            },
+            "existing_entries": [],
+        })
+
+        result = json.loads(await review_entry(input_json))
+        assert result["approved"] is True
+        assert result["final_entry"]["title"] == "Better Title"
+
+    @pytest.mark.asyncio
+    async def test_rejected_entry(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from pbook.llm import set_provider
+
+        mock_response = ProviderResponse(
+            tool_input={
+                "approved": False,
+                "rejection_reason": "Too vague",
+                "suggested_title": "",
+                "suggested_content": "",
+                "suggested_tags": [],
+            },
+            model_name="test",
+            input_tokens=0,
+            output_tokens=0,
+            raw_response_json="{}",
+        )
+        provider = MagicMock()
+        provider.build_request_params.return_value = {}
+        provider.call = AsyncMock(return_value=mock_response)
+        set_provider(provider)
+
+        input_json = json.dumps({
+            "entry": {
+                "title": "Bad",
+                "content": "Write good code",
+                "tags": ["lang:python"],
+            },
+            "existing_entries": [],
+        })
+
+        result = json.loads(await review_entry(input_json))
+        assert result["approved"] is False
+        assert result["rejection_reason"] == "Too vague"
 
 
 # ---------------------------------------------------------------------------

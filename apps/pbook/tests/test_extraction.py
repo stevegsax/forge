@@ -101,6 +101,18 @@ class TestBuildExtractionSystemPrompt:
         assert "Problem A" in prompt
         assert "Problem B" in prompt
 
+    def test_includes_metadata(self):
+        exp = PushExperienceInput(
+            project="forge",
+            problem="Connection error",
+            resolution="Retry with backoff",
+            metadata={"environment": "production", "retry_count": 3},
+        )
+        prompt = build_extraction_system_prompt([exp])
+
+        assert "environment" in prompt
+        assert "production" in prompt
+
 
 # ---------------------------------------------------------------------------
 # build_extraction_user_prompt

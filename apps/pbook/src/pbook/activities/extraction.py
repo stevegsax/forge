@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
-from pbook.llm import ExtractionResult, build_messages
+from pbook.llm import ExtractionResult, text_messages
 from pbook.models import PushExperienceInput
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ async def execute_extraction_call(
     Returns ``(result, input_tokens, output_tokens, latency_ms)``.
     Separated from the imperative shell so tests can inject a mock provider.
     """
-    messages = build_messages(system_prompt, user_prompt)
+    messages = text_messages(system_prompt, user_prompt)
     start = time.monotonic()
 
     params = provider.build_request_params(

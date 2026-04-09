@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
-from pbook.llm import ReviewResult, build_messages
+from pbook.llm import ReviewResult, text_messages
 from pbook.models import PlaybookEntry
 
 if TYPE_CHECKING:
@@ -128,7 +128,7 @@ async def execute_review_call(
 
     Separated from the imperative shell so tests can inject a mock provider.
     """
-    messages = build_messages(system_prompt, user_prompt)
+    messages = text_messages(system_prompt, user_prompt)
 
     params = provider.build_request_params(
         messages=messages,

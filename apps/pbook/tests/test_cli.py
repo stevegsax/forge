@@ -80,6 +80,37 @@ class TestListCommand:
         assert "Python tip" in result.output
         assert "Go tip" not in result.output
 
+    def test_list_filter_by_type(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="Curated tip", entry_type="curated")
+        _seed_entry(engine, title="Pitfall tip", entry_type="pitfall")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["list", "--type", "pitfall"])
+        assert result.exit_code == 0
+        assert "Pitfall tip" in result.output
+        assert "Curated tip" not in result.output
+
+    def test_list_filter_by_project(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="Forge tip", source_project="forge")
+        _seed_entry(engine, title="Other tip", source_project="other")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["list", "--project", "forge"])
+        assert result.exit_code == 0
+        assert "Forge tip" in result.output
+        assert "Other tip" not in result.output
+
+    def test_list_disabled_store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", "")
+        runner = CliRunner()
+        result = runner.invoke(main, ["list"])
+        assert result.exit_code != 0
+        assert "disabled" in result.output.lower() or "disabled" in (result.output + result.output)
+
 
 # ---------------------------------------------------------------------------
 # get command
@@ -96,6 +127,17 @@ class TestGetCommand:
         result = runner.invoke(main, ["get", "1"])
         assert result.exit_code == 0
         assert "Test Entry" in result.output
+
+    def test_get_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["get", "1", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["title"] == "Test Entry"
 
     def test_get_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
@@ -145,6 +187,27 @@ class TestAddCommand:
         assert result.exit_code != 0
         assert "Tag error" in result.output
 
+    def test_add_no_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["add"])
+        assert result.exit_code != 0
+        assert "--file" in result.output or "required" in result.output.lower()
+
+    def test_add_invalid_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        entry_file = tmp_path / "bad.json"
+        entry_file.write_text("not valid json")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--file", str(entry_file)])
+        assert result.exit_code != 0
+        assert "Validation error" in result.output or "error" in result.output.lower()
+
     def test_add_schema(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         runner = CliRunner()
@@ -152,6 +215,68 @@ class TestAddCommand:
         assert result.exit_code == 0
         schema = json.loads(result.output)
         assert "properties" in schema
+
+
+# ---------------------------------------------------------------------------
+# update command
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCommand:
+    def test_update_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="Original Title")
+
+        update_file = tmp_path / "update.json"
+        update_file.write_text(json.dumps({"title": "Updated Title"}))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["update", "1", "--file", str(update_file)])
+        assert result.exit_code == 0
+        assert "Updated entry 1" in result.output
+
+        # Verify the update applied
+        result = runner.invoke(main, ["get", "1", "--json"])
+        data = json.loads(result.output)
+        assert data["title"] == "Updated Title"
+
+    def test_update_tags(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        update_file = tmp_path / "update.json"
+        update_file.write_text(json.dumps({"tags": ["lang:go", "lib:temporal"]}))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["update", "1", "--file", str(update_file)])
+        assert result.exit_code == 0
+
+    def test_update_invalid_tags(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        update_file = tmp_path / "update.json"
+        update_file.write_text(json.dumps({"tags": ["bad-tag"]}))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["update", "1", "--file", str(update_file)])
+        assert result.exit_code != 0
+        assert "Tag error" in result.output
+
+    def test_update_missing_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        update_file = tmp_path / "update.json"
+        update_file.write_text(json.dumps({"title": "New"}))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["update", "999", "--file", str(update_file)])
+        assert result.exit_code != 0
+        assert "not found" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +295,15 @@ class TestApproveReject:
         assert result.exit_code == 0
         assert "Approved" in result.output
 
+    def test_approve_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["approve", "999"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
     def test_reject(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
@@ -183,6 +317,15 @@ class TestApproveReject:
         # Verify deletion
         result = runner.invoke(main, ["get", "1"])
         assert result.exit_code != 0
+
+    def test_reject_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["reject", "999"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +352,35 @@ class TestCheckDuplicate:
         result = runner.invoke(main, ["check-duplicate", "--title", "unique-title"])
         assert result.exit_code == 0
         assert "No duplicates" in result.output
+
+
+# ---------------------------------------------------------------------------
+# review command
+# ---------------------------------------------------------------------------
+
+
+class TestReviewCommand:
+    def test_review_shows_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="Needs review", needs_review=True)
+        _seed_entry(engine, title="Already approved", needs_review=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["review"])
+        assert result.exit_code == 0
+        assert "Needs review" in result.output
+        assert "Already approved" not in result.output
+
+    def test_review_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, needs_review=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["review"])
+        assert result.exit_code == 0
+        assert "No entries need review" in result.output
 
 
 # ---------------------------------------------------------------------------

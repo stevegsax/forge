@@ -19,7 +19,6 @@ __all__ = [
     "LLMResponse",
     "ProviderResponse",
     "ReviewResult",
-    "build_messages",
     "get_provider",
     "reset_provider",
     "set_provider",
@@ -32,19 +31,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 LLMResponse = ProviderResponse
-
-
-# ---------------------------------------------------------------------------
-# Message helpers
-# ---------------------------------------------------------------------------
-
-
-def build_messages(system_prompt: str, user_prompt: str) -> list[dict]:
-    """Build a simple system + user message list (plain dicts)."""
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
 
 
 # ---------------------------------------------------------------------------
