@@ -11,10 +11,17 @@ from temporalio.worker import Worker
 from pbook.activities.retrieval import (
     fetch_candidates,
     rank_and_pack,
+    record_retrieval_event,
     score_entry,
 )
 from pbook.models import PlaybookEntry, RetrievalInput, RetrievalMode
-from pbook.store import build_entry_dict, get_engine, run_migrations, save_entries
+from pbook.store import (
+    build_entry_dict,
+    get_engine,
+    get_entry_by_id,
+    run_migrations,
+    save_entries,
+)
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflows.retrieval import RetrievalWorkflow
 
@@ -150,6 +157,9 @@ class TestRankAndPack:
 # ---------------------------------------------------------------------------
 
 
+_WORKFLOW_ACTIVITIES = [fetch_candidates, record_retrieval_event]
+
+
 class TestRetrievalWorkflow:
     @pytest.mark.asyncio
     async def test_retrieval_returns_entries(
@@ -166,7 +176,7 @@ class TestRetrievalWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=[fetch_candidates],
+            activities=_WORKFLOW_ACTIVITIES,
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,
@@ -195,7 +205,7 @@ class TestRetrievalWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=[fetch_candidates],
+            activities=_WORKFLOW_ACTIVITIES,
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,
@@ -219,7 +229,7 @@ class TestRetrievalWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=[fetch_candidates],
+            activities=_WORKFLOW_ACTIVITIES,
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,
@@ -230,3 +240,31 @@ class TestRetrievalWorkflow:
 
         assert result.entries == []
         assert result.total_candidates == 0
+
+    @pytest.mark.asyncio
+    async def test_retrieval_records_served_entries(
+        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+    ) -> None:
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        save_entries(engine, [
+            _make_entry("Python advice", ["lang:python"]),
+        ])
+
+        async with Worker(
+            env.client,
+            task_queue=PBOOK_TASK_QUEUE,
+            workflows=[RetrievalWorkflow],
+            activities=_WORKFLOW_ACTIVITIES,
+        ):
+            result = await env.client.execute_workflow(
+                RetrievalWorkflow.run,
+                RetrievalInput(tags=["lang:python"], token_budget=5000),
+                id="test-retrieval-record",
+                task_queue=PBOOK_TASK_QUEUE,
+            )
+
+        assert len(result.entries) == 1
+        entry_id = result.entries[0]["id"]
+        entry = get_entry_by_id(engine, entry_id)
+        assert entry["retrieval_count"] == 1

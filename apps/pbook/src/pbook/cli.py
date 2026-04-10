@@ -25,6 +25,7 @@ from pbook.store import (
     get_engine,
     get_entry_by_id,
     list_recent_entries,
+    record_feedback,
     run_migrations,
     save_entries,
     update_entry,
@@ -355,6 +356,28 @@ def migrate() -> None:
 
     run_migrations(db_path)
     click.echo(f"Migrations complete: {db_path}")
+
+
+@main.command()
+@click.argument("entry_id", type=int)
+@click.option("--helpful", "is_helpful", flag_value=True, default=None, help="Mark entry as helpful.")
+@click.option("--harmful", "is_helpful", flag_value=False, help="Mark entry as harmful.")
+@click.option("--context", default="", help="Why the entry was helpful or harmful.")
+def feedback(entry_id: int, is_helpful: bool | None, context: str) -> None:
+    """Record feedback on a retrieved entry."""
+    if is_helpful is None:
+        click.echo("Error: specify --helpful or --harmful.", err=True)
+        sys.exit(1)
+
+    engine, _ = _resolve_db()
+    existing = get_entry_by_id(engine, entry_id)
+    if existing is None:
+        click.echo(f"Entry {entry_id} not found.", err=True)
+        sys.exit(1)
+
+    record_feedback(engine, entry_id, helpful=is_helpful)
+    label = "helpful" if is_helpful else "harmful"
+    click.echo(f"Recorded {label} feedback for entry {entry_id}: {existing['title']}")
 
 
 @main.command(name="skill-prompt")

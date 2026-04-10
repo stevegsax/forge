@@ -130,6 +130,29 @@ def rank_and_pack(
 
 
 @activity.defn
+async def record_retrieval_event(entry_ids_json: str) -> None:
+    """Record that entries were served in a retrieval result.
+
+    Accepts JSON-serialized list of entry IDs.  Increments retrieval_count
+    for each entry.  Failures are logged but do not propagate.
+    """
+    from pbook.store import get_db_path, get_engine, record_retrieval, run_migrations
+
+    entry_ids = json.loads(entry_ids_json)
+    if not entry_ids:
+        return
+
+    db_path = get_db_path()
+    if db_path is None:
+        return
+
+    run_migrations(db_path)
+    engine = get_engine(db_path)
+    record_retrieval(engine, entry_ids)
+    logger.info("Recorded retrieval for %d entries", len(entry_ids))
+
+
+@activity.defn
 async def fetch_candidates(input_json: str) -> list[dict]:
     """Fetch candidate entries matching the query tags.
 

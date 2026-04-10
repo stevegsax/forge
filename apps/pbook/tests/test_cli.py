@@ -398,6 +398,52 @@ class TestMigrate:
 
 
 # ---------------------------------------------------------------------------
+# feedback
+# ---------------------------------------------------------------------------
+
+
+class TestFeedback:
+    def test_helpful(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["feedback", "1", "--helpful"])
+        assert result.exit_code == 0
+        assert "helpful" in result.output
+
+    def test_harmful(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["feedback", "1", "--harmful"])
+        assert result.exit_code == 0
+        assert "harmful" in result.output
+
+    def test_missing_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["feedback", "1"])
+        assert result.exit_code != 0
+        assert "--helpful" in result.output or "--harmful" in result.output
+
+    def test_missing_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["feedback", "999", "--helpful"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+
+# ---------------------------------------------------------------------------
 # skill-prompt
 # ---------------------------------------------------------------------------
 
