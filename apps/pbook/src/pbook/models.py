@@ -96,6 +96,20 @@ class RetrievalResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Feedback
+# ---------------------------------------------------------------------------
+
+
+class FeedbackInput(BaseModel):
+    """Input for recording feedback on a retrieved playbook entry."""
+
+    entry_id: int
+    helpful: bool
+    source_project: str = ""
+    context: str = Field(default="", description="Why the entry was helpful or harmful")
+
+
+# ---------------------------------------------------------------------------
 # Push API — experience data for extraction
 # ---------------------------------------------------------------------------
 

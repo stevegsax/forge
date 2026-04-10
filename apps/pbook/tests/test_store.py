@@ -13,6 +13,8 @@ from pbook.store import (
     get_entries_by_tags,
     get_entry_by_id,
     list_recent_entries,
+    record_feedback,
+    record_retrieval,
     save_entries,
     update_entry,
 )
@@ -248,3 +250,94 @@ class TestDuplicateChecking:
         assert len(matches) == 2
         # Entry with more tag overlap should come first
         assert matches[0]["title"] == "SQLAlchemy tip A"
+
+
+# ---------------------------------------------------------------------------
+# Feedback counters
+# ---------------------------------------------------------------------------
+
+
+class TestFeedbackCounters:
+    def test_new_entry_has_zero_counters(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+        ])
+        entry = list_recent_entries(engine)[0]
+        assert entry["helpful_count"] == 0
+        assert entry["harmful_count"] == 0
+        assert entry["retrieval_count"] == 0
+
+    def test_record_retrieval_increments(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+        ])
+        entry_id = list_recent_entries(engine)[0]["id"]
+
+        record_retrieval(engine, [entry_id])
+        assert get_entry_by_id(engine, entry_id)["retrieval_count"] == 1
+
+        record_retrieval(engine, [entry_id])
+        assert get_entry_by_id(engine, entry_id)["retrieval_count"] == 2
+
+    def test_record_retrieval_bulk(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(title="A", content="a", tags=["lang:python"])),
+            build_entry_dict(PlaybookEntry(title="B", content="b", tags=["lang:python"])),
+        ])
+        entries = list_recent_entries(engine)
+        ids = [e["id"] for e in entries]
+
+        record_retrieval(engine, ids)
+        for eid in ids:
+            assert get_entry_by_id(engine, eid)["retrieval_count"] == 1
+
+    def test_record_retrieval_empty_list(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_retrieval(engine, [])  # Should not raise
+
+    def test_record_feedback_helpful(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+        ])
+        entry_id = list_recent_entries(engine)[0]["id"]
+
+        record_feedback(engine, entry_id, helpful=True)
+        entry = get_entry_by_id(engine, entry_id)
+        assert entry["helpful_count"] == 1
+        assert entry["harmful_count"] == 0
+
+    def test_record_feedback_harmful(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+        ])
+        entry_id = list_recent_entries(engine)[0]["id"]
+
+        record_feedback(engine, entry_id, helpful=False)
+        entry = get_entry_by_id(engine, entry_id)
+        assert entry["helpful_count"] == 0
+        assert entry["harmful_count"] == 1
+
+    def test_record_feedback_accumulates(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+        ])
+        entry_id = list_recent_entries(engine)[0]["id"]
+
+        record_feedback(engine, entry_id, helpful=True)
+        record_feedback(engine, entry_id, helpful=True)
+        record_feedback(engine, entry_id, helpful=False)
+
+        entry = get_entry_by_id(engine, entry_id)
+        assert entry["helpful_count"] == 2
+        assert entry["harmful_count"] == 1
+
+    def test_record_feedback_missing_entry(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        # Should not raise — UPDATE on non-existent row is a no-op
+        record_feedback(engine, 999, helpful=True)

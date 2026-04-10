@@ -50,6 +50,15 @@ class Entry(Base):
     needs_review: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, default=False, server_default=sa.text("0"),
     )
+    helpful_count: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default=sa.text("0"),
+    )
+    harmful_count: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default=sa.text("0"),
+    )
+    retrieval_count: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default=sa.text("0"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime,
         default=lambda: datetime.now(UTC),
@@ -227,6 +236,31 @@ def delete_entry(engine: Engine, entry_id: int) -> None:
     t = Entry.__table__
     with engine.begin() as conn:
         conn.execute(t.delete().where(t.c.id == entry_id))
+
+
+def record_retrieval(engine: Engine, entry_ids: list[int]) -> None:
+    """Bulk increment retrieval_count for the given entry IDs."""
+    if not entry_ids:
+        return
+    logger.info("Recording retrieval for %d entries", len(entry_ids))
+    t = Entry.__table__
+    with engine.begin() as conn:
+        conn.execute(
+            t.update()
+            .where(t.c.id.in_(entry_ids))
+            .values(retrieval_count=t.c.retrieval_count + 1),
+        )
+
+
+def record_feedback(engine: Engine, entry_id: int, *, helpful: bool) -> None:
+    """Increment helpful_count or harmful_count for a single entry."""
+    t = Entry.__table__
+    col = t.c.helpful_count if helpful else t.c.harmful_count
+    logger.info("Recording %s feedback for entry %d", "helpful" if helpful else "harmful", entry_id)
+    with engine.begin() as conn:
+        conn.execute(
+            t.update().where(t.c.id == entry_id).values(**{col.name: col + 1}),
+        )
 
 
 def check_duplicate(
