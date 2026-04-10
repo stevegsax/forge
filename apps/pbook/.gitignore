@@ -1,3 +1,6 @@
+.envrc
+diataxis/_build
+
 # Python
 __pycache__/
 *.py[cod]
@@ -32,3 +35,4 @@ htmlcov/
 
 # Python version
 .python-version
+
