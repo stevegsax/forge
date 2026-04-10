@@ -63,6 +63,17 @@ from forge.activities.batch_poll import set_temporal_client
 from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.export_playbook_workflow import ExportPlaybookWorkflow
 from forge.extraction_workflow import ForgeExtractionWorkflow
+
+try:
+    from forge.activities.ingestion import prepare_transcript
+    from forge.ingestion_workflow import BatchIngestionWorkflow, TranscriptIngestionWorkflow
+
+    _INGESTION_AVAILABLE = True
+except ImportError:
+    _INGESTION_AVAILABLE = False
+    prepare_transcript = None  # type: ignore[assignment]
+    BatchIngestionWorkflow = None  # type: ignore[assignment,misc]
+    TranscriptIngestionWorkflow = None  # type: ignore[assignment,misc]
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.ocr.activities import (
@@ -137,6 +148,16 @@ def _register_output_types() -> None:
     register_output_type("ConflictResolutionResponse", ConflictResolutionResponse)
     register_output_type("ExtractionResult", ExtractionResult)
     register_output_type("JudgeVerdict", JudgeVerdict)
+
+    try:
+        from pbook.ingestion_prompts import TranscriptAnalysisResult
+
+        register_output_type("TranscriptAnalysisResult", TranscriptAnalysisResult)
+    except ImportError:
+        logger.warning(
+            "pbook not installed — TranscriptAnalysisResult output type not registered. "
+            "Ingestion workflows will not be available."
+        )
 
 
 async def _ensure_schedule(
@@ -230,73 +251,88 @@ async def run_worker(
         interval=timedelta(seconds=extraction_interval),
     )
 
+    workflows: list[type] = [
+        ForgeTaskWorkflow,
+        ForgeSubTaskWorkflow,
+        ForgeExtractionWorkflow,
+        ExportPlaybookWorkflow,
+        ManualPlaybookWorkflow,
+        BatchPollerWorkflow,
+        OcrSubmitWorkflow,
+        OcrSyncWorkflow,
+        OcrStoreWorkflow,
+        OcrGatherWorkflow,
+        OcrExportWorkflow,
+        OcrListJobsWorkflow,
+        OcrMarkForRemovalWorkflow,
+        OcrClearRemovalMarkWorkflow,
+    ]
+    if _INGESTION_AVAILABLE:
+        assert TranscriptIngestionWorkflow is not None
+        assert BatchIngestionWorkflow is not None
+        workflows.extend([TranscriptIngestionWorkflow, BatchIngestionWorkflow])
+    else:
+        logger.warning(
+            "pbook not installed — ingestion workflows skipped at worker registration"
+        )
+
+    activities: list = [
+        assemble_conflict_resolution_context,
+        assemble_context,
+        assemble_exploration_context,
+        assemble_planner_context,
+        assemble_sanity_check_context,
+        assemble_step_context,
+        assemble_sub_task_context,
+        call_conflict_resolution,
+        call_exploration_llm,
+        call_extraction_llm,
+        call_llm,
+        call_planner,
+        call_sanity_check,
+        commit_changes_activity,
+        create_worktree_activity,
+        detect_file_conflicts_activity,
+        evaluate_transition,
+        export_single_playbook,
+        fetch_existing_playbooks,
+        fetch_extraction_input,
+        fetch_playbook_ids,
+        fulfill_context_requests,
+        parse_llm_response,
+        poll_batch_results,
+        remove_worktree_activity,
+        reset_worktree_activity,
+        review_manual_playbook,
+        save_extraction_results,
+        submit_batch_request,
+        validate_output,
+        validate_playbook_entry,
+        write_files,
+        write_output,
+        # OCR activities
+        list_ocr_jobs,
+        call_ocr_sync,
+        check_ocr_duplicate,
+        clear_ocr_removal_mark,
+        export_ocr_document,
+        mark_ocr_for_removal,
+        read_and_store_file_content,
+        split_file_into_chunks,
+        submit_ocr_batch,
+        parse_ocr_result,
+        store_ocr_result,
+        reassemble_ocr_chunks,
+    ]
+    if _INGESTION_AVAILABLE:
+        assert prepare_transcript is not None
+        activities.append(prepare_transcript)
+
     worker = Worker(
         client,
         task_queue=FORGE_TASK_QUEUE,
-        workflows=[
-            ForgeTaskWorkflow,
-            ForgeSubTaskWorkflow,
-            ForgeExtractionWorkflow,
-            ExportPlaybookWorkflow,
-            ManualPlaybookWorkflow,
-            BatchPollerWorkflow,
-            OcrSubmitWorkflow,
-            OcrSyncWorkflow,
-            OcrStoreWorkflow,
-            OcrGatherWorkflow,
-            OcrExportWorkflow,
-            OcrListJobsWorkflow,
-            OcrMarkForRemovalWorkflow,
-            OcrClearRemovalMarkWorkflow,
-        ],
-        activities=[
-            assemble_conflict_resolution_context,
-            assemble_context,
-            assemble_exploration_context,
-            assemble_planner_context,
-            assemble_sanity_check_context,
-            assemble_step_context,
-            assemble_sub_task_context,
-            call_conflict_resolution,
-            call_exploration_llm,
-            call_extraction_llm,
-            call_llm,
-            call_planner,
-            call_sanity_check,
-            commit_changes_activity,
-            create_worktree_activity,
-            detect_file_conflicts_activity,
-            evaluate_transition,
-            export_single_playbook,
-            fetch_existing_playbooks,
-            fetch_extraction_input,
-            fetch_playbook_ids,
-            fulfill_context_requests,
-            parse_llm_response,
-            poll_batch_results,
-            remove_worktree_activity,
-            reset_worktree_activity,
-            review_manual_playbook,
-            save_extraction_results,
-            submit_batch_request,
-            validate_output,
-            validate_playbook_entry,
-            write_files,
-            write_output,
-            # OCR activities
-            list_ocr_jobs,
-            call_ocr_sync,
-            check_ocr_duplicate,
-            clear_ocr_removal_mark,
-            export_ocr_document,
-            mark_ocr_for_removal,
-            read_and_store_file_content,
-            split_file_into_chunks,
-            submit_ocr_batch,
-            parse_ocr_result,
-            store_ocr_result,
-            reassemble_ocr_chunks,
-        ],
+        workflows=workflows,
+        activities=activities,
         graceful_shutdown_timeout=timedelta(seconds=30),
     )
 

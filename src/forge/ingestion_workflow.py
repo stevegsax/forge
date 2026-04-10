@@ -1,0 +1,244 @@
+"""Temporal workflows for ingesting Claude Code transcripts.
+
+Orchestrates transcript analysis via forge's batch API, then feeds
+identified experiences into pbook's extraction pipeline cross-queue.
+
+TranscriptIngestionWorkflow: processes a single session
+BatchIngestionWorkflow: fans out to process multiple sessions
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import timedelta
+
+from temporalio import workflow
+from temporalio.common import RetryPolicy
+
+with workflow.unsafe.imports_passed_through():
+    from forge.models import (
+        AssembledContext,
+        BatchResult,
+        CapabilityTier,
+        ModelConfig,
+        ParsedLLMResponse,
+        ThinkingConfig,
+        resolve_model,
+    )
+
+PBOOK_TASK_QUEUE = "pbook-task-queue"
+
+_PREPARE_TIMEOUT = timedelta(seconds=120)
+_SAVE_TIMEOUT = timedelta(seconds=30)
+
+_RETRY = RetryPolicy(maximum_attempts=2)
+
+
+@workflow.defn
+class TranscriptIngestionWorkflow:
+    """Ingest a single Claude Code transcript and extract playbook entries.
+
+    Uses forge's batch API for the analysis LLM call, then calls
+    pbook's ExtractionWorkflow cross-queue for the extraction pipeline.
+
+    Input JSON: {"path": str, "project": str, "session_id": str}
+    Output: {"experiences_found": int, "entries_created": int, "session_id": str}
+    """
+
+    def __init__(self) -> None:
+        self._batch_results: list[BatchResult] = []
+
+    @workflow.signal
+    async def batch_result_received(self, result: BatchResult) -> None:
+        self._batch_results.append(result)
+
+    @workflow.run
+    async def run(self, input_json: str) -> dict:
+        from forge.workflow_blocks import batch_submit_and_wait
+
+        data = json.loads(input_json)
+        session_id = data.get("session_id", "")
+
+        # Step 1: Read, parse, and render transcript
+        prepared_json = await workflow.execute_activity(
+            "prepare_transcript",
+            input_json,
+            start_to_close_timeout=_PREPARE_TIMEOUT,
+            retry_policy=_RETRY,
+            result_type=str,
+        )
+
+        prepared = json.loads(prepared_json)
+        if not prepared.get("transcript_text") or prepared.get("message_count", 0) < 3:
+            return {
+                "experiences_found": 0,
+                "entries_created": 0,
+                "session_id": session_id,
+            }
+
+        # Step 2: Submit analysis to batch API. Use the SUMMARIZATION tier
+        # (Sonnet by default) — transcript analysis is a summarization-like
+        # task, and this keeps ingestion off the more expensive generation
+        # tier even if someone overrides it to Opus in ModelConfig.
+        model_name = resolve_model(CapabilityTier.SUMMARIZATION, ModelConfig())
+
+        context = AssembledContext(
+            task_id=f"ingest-{session_id}",
+            system_prompt=prepared["system_prompt"],
+            user_prompt=prepared["user_prompt"],
+            model_name=model_name,
+        )
+
+        parsed: ParsedLLMResponse = await batch_submit_and_wait(
+            self._batch_results,
+            context,
+            "TranscriptAnalysisResult",
+            thinking=ThinkingConfig(),
+            max_tokens=4096,
+        )
+
+        # Step 3: Parse analysis result into experiences
+        try:
+            analysis = json.loads(parsed.parsed_json)
+        except json.JSONDecodeError:
+            workflow.logger.error(
+                "Malformed LLM response for session %s: %s",
+                session_id,
+                parsed.parsed_json[:200],
+            )
+            return {
+                "experiences_found": 0,
+                "entries_created": 0,
+                "session_id": session_id,
+                "error": "malformed_llm_response",
+            }
+        experiences = analysis.get("experiences", [])
+
+        if not experiences:
+            # Record session as ingested with 0 results via pbook cross-queue
+            await workflow.execute_activity(
+                "record_ingested_session",
+                json.dumps({
+                    "session_id": session_id,
+                    "project_name": prepared.get("project", ""),
+                    "experiences_found": 0,
+                    "entries_created": 0,
+                }),
+                task_queue=PBOOK_TASK_QUEUE,
+                start_to_close_timeout=_SAVE_TIMEOUT,
+                result_type=type(None),
+            )
+            return {
+                "experiences_found": 0,
+                "entries_created": 0,
+                "session_id": session_id,
+            }
+
+        # Step 4: Convert to PushExperienceInput format and call
+        # pbook's ExtractionWorkflow cross-queue
+        project = prepared.get("project", "")
+        push_experiences = [
+            {
+                "project": project,
+                "problem": exp["problem"],
+                "resolution": exp["resolution"],
+                "context": exp.get("context", ""),
+                "metadata": {"source": "claude-code-transcript", "session_id": session_id},
+            }
+            for exp in experiences
+        ]
+
+        run_suffix = workflow.uuid4().hex[:8]
+        extraction_result = await workflow.execute_child_workflow(
+            "ExtractionWorkflow",
+            json.dumps({"experiences": push_experiences, "project": project}),
+            task_queue=PBOOK_TASK_QUEUE,
+            id=f"pbook-extract-ingest-{session_id}-{run_suffix}",
+        )
+
+        entries_created = extraction_result.get("entries_created", 0)
+
+        # Step 5: Record session as ingested
+        await workflow.execute_activity(
+            "record_ingested_session",
+            json.dumps({
+                "session_id": session_id,
+                "project_name": project,
+                "experiences_found": len(experiences),
+                "entries_created": entries_created,
+            }),
+            task_queue=PBOOK_TASK_QUEUE,
+            start_to_close_timeout=_SAVE_TIMEOUT,
+            result_type=type(None),
+        )
+
+        return {
+            "experiences_found": len(experiences),
+            "entries_created": entries_created,
+            "session_id": session_id,
+        }
+
+
+@workflow.defn
+class BatchIngestionWorkflow:
+    """Fan out to process multiple Claude Code transcript sessions.
+
+    Input JSON: {"sessions": [{"path": str, "project": str, "session_id": str}, ...]}
+    Output: {
+        "sessions_processed": int,
+        "total_experiences": int,
+        "total_entries_created": int,
+        "per_session": [{"session_id": str, "experiences_found": int, "entries_created": int}, ...],
+    }
+    """
+
+    @workflow.run
+    async def run(self, input_json: str) -> dict:
+        data = json.loads(input_json)
+        sessions = data.get("sessions", [])
+
+        if not sessions:
+            return {
+                "sessions_processed": 0,
+                "total_experiences": 0,
+                "total_entries_created": 0,
+                "per_session": [],
+            }
+
+        # Fan out: start a child workflow per session. Append a short
+        # UUID suffix so re-ingesting the same session never collides
+        # with a previous run's workflow ID.
+        run_suffix = workflow.uuid4().hex[:8]
+        handles = []
+        for session in sessions:
+            handle = await workflow.start_child_workflow(
+                TranscriptIngestionWorkflow.run,
+                json.dumps(session),
+                id=f"ingest-session-{session['session_id']}-{run_suffix}",
+            )
+            handles.append(handle)
+
+        # Gather results
+        results = []
+        for handle in handles:
+            try:
+                result = await handle.result()
+                results.append(result)
+            except Exception as exc:
+                workflow.logger.warning("Session ingestion failed: %s", exc)
+                results.append({
+                    "experiences_found": 0,
+                    "entries_created": 0,
+                    "session_id": "",
+                    "error": str(exc),
+                })
+
+        total_exp = sum(r.get("experiences_found", 0) for r in results)
+        total_entries = sum(r.get("entries_created", 0) for r in results)
+
+        return {
+            "sessions_processed": len(results),
+            "total_experiences": total_exp,
+            "total_entries_created": total_entries,
+            "per_session": results,
+        }

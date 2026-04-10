@@ -19,10 +19,12 @@ dependencies = [
     "alembic>=1.14",
     "pymupdf>=1.27.2",
     "sax-llm",
+    "pbook",
 ]
 
 [tool.uv.sources]
 sax-llm = { path = "../sax-llm", editable = true }
+pbook = { path = "../pbook", editable = true }
 
 [project.scripts]
 forge = "forge.cli:main"
