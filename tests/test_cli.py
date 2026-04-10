@@ -2030,3 +2030,303 @@ class TestStartCommand:
             wf_id = call_kwargs["workflow_id"]
             assert wf_id.startswith("ocrsubmitworkflow-")
             assert len(wf_id) == len("ocrsubmitworkflow-") + 8
+
+
+# ---------------------------------------------------------------------------
+# Ingest command tests
+# ---------------------------------------------------------------------------
+
+
+def _make_session_info(
+    session_id: str,
+    *,
+    project_name: str = "forge",
+    path: str = "",
+    size_bytes: int = 20480,
+):
+    """Build a pbook SessionInfo for testing without needing a real JSONL file."""
+    from pbook.transcript import SessionInfo
+
+    return SessionInfo(
+        path=path or f"/tmp/fake/{session_id}.jsonl",
+        session_id=session_id,
+        project_dir_name="-tmp-fake",
+        project_name=project_name,
+        size_bytes=size_bytes,
+    )
+
+
+class TestFormatIngestDryRun:
+    """Tests for the pure format_ingest_dry_run helper."""
+
+    def test_empty_list(self) -> None:
+        from forge.cli import format_ingest_dry_run
+
+        output = format_ingest_dry_run([])
+        assert "Found 0 session(s)" in output
+        assert "0.0 MB" in output
+
+    def test_single_session_shows_detail(self) -> None:
+        from forge.cli import format_ingest_dry_run
+
+        sessions = [_make_session_info("abcdef1234567890", size_bytes=15 * 1024)]
+        output = format_ingest_dry_run(sessions)
+        assert "Found 1 session(s)" in output
+        assert "forge: 1 session(s)" in output
+        # Small groups (<=3) show a per-session line
+        assert "abcdef123456" in output
+
+    def test_large_group_hides_detail(self) -> None:
+        from forge.cli import format_ingest_dry_run
+
+        sessions = [_make_session_info(f"sess-{i:04d}") for i in range(10)]
+        output = format_ingest_dry_run(sessions)
+        assert "forge: 10 session(s)" in output
+        # Per-session detail should NOT appear for groups > 3
+        assert "sess-0000" not in output
+
+    def test_groups_by_project(self) -> None:
+        from forge.cli import format_ingest_dry_run
+
+        sessions = [
+            _make_session_info("s1", project_name="forge"),
+            _make_session_info("s2", project_name="pbook"),
+            _make_session_info("s3", project_name="pbook"),
+        ]
+        output = format_ingest_dry_run(sessions)
+        assert "forge: 1 session(s)" in output
+        assert "pbook: 2 session(s)" in output
+
+
+class TestFormatIngestResult:
+    """Tests for the pure format_ingest_result helper."""
+
+    def test_full_result(self) -> None:
+        from forge.cli import format_ingest_result
+
+        output = format_ingest_result(
+            {
+                "sessions_processed": 3,
+                "total_experiences": 7,
+                "total_entries_created": 5,
+            }
+        )
+        assert "3 sessions processed" in output
+        assert "7 experiences found" in output
+        assert "5 entries created" in output
+
+    def test_missing_keys_default_to_zero(self) -> None:
+        from forge.cli import format_ingest_result
+
+        output = format_ingest_result({})
+        assert "0 sessions processed" in output
+        assert "0 experiences found" in output
+        assert "0 entries created" in output
+
+
+class TestIngestCommand:
+    """End-to-end tests for `forge ingest` via CliRunner."""
+
+    def test_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["ingest", "--help"])
+        assert result.exit_code == 0
+        assert "--all" in result.output
+        assert "--dry-run" in result.output
+        assert "--force" in result.output
+        assert "--project" in result.output
+
+    def test_no_args_shows_error(self, cli_runner: CliRunner) -> None:
+        # Prevent the "already ingested" filter from hitting a real pbook DB.
+        with patch("pbook.store.get_db_path", return_value=None):
+            result = cli_runner.invoke(main, ["ingest"])
+        assert result.exit_code == EXIT_FAILURE
+        assert "TRANSCRIPT_PATH" in result.stderr or "--all" in result.stderr
+
+    def test_dry_run_all_with_no_sessions(self, cli_runner: CliRunner) -> None:
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=[]),
+            patch("pbook.store.get_db_path", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["ingest", "--all", "--dry-run"])
+        assert result.exit_code == 0
+        assert "No sessions found" in result.output
+
+    def test_dry_run_all_with_sessions(self, cli_runner: CliRunner) -> None:
+        sessions = [
+            _make_session_info("aaaabbbbccccdddd", project_name="forge"),
+            _make_session_info("eeeeffff00001111", project_name="pbook"),
+        ]
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=sessions),
+            patch("pbook.store.get_db_path", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["ingest", "--all", "--dry-run"])
+        assert result.exit_code == 0
+        assert "Found 2 session(s)" in result.output
+        assert "forge: 1 session(s)" in result.output
+        assert "pbook: 1 session(s)" in result.output
+
+    def test_dry_run_single_path(
+        self, cli_runner: CliRunner, tmp_path: pathlib.Path
+    ) -> None:
+        fake = tmp_path / "sess-xyz.jsonl"
+        fake.write_text('{"type": "user", "sessionId": "sess-xyz"}\n')
+        with patch("pbook.store.get_db_path", return_value=None):
+            result = cli_runner.invoke(
+                main, ["ingest", str(fake), "--project", "demo", "--dry-run"]
+            )
+        assert result.exit_code == 0
+        assert "Found 1 session(s)" in result.output
+        assert "demo:" in result.output
+
+    def test_project_filter_applied_with_all(
+        self, cli_runner: CliRunner
+    ) -> None:
+        sessions = [
+            _make_session_info("s1", project_name="forge"),
+            _make_session_info("s2", project_name="pbook"),
+        ]
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=sessions),
+            patch("pbook.store.get_db_path", return_value=None),
+        ):
+            result = cli_runner.invoke(
+                main, ["ingest", "--all", "--project", "forge", "--dry-run"]
+            )
+        assert result.exit_code == 0
+        assert "Found 1 session(s)" in result.output
+        assert "pbook:" not in result.output
+
+    def test_already_ingested_filter_skips_sessions(
+        self, cli_runner: CliRunner
+    ) -> None:
+        """When pbook's store reports a session is ingested, it should be skipped."""
+        sessions = [
+            _make_session_info("already-done"),
+            _make_session_info("new-one"),
+        ]
+
+        fake_db = pathlib.Path("/tmp/pretend-pbook.db")
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=sessions),
+            patch("pbook.store.get_db_path", return_value=fake_db),
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pbook.store.get_engine", return_value=MagicMock()),
+            patch(
+                "pbook.store.get_ingested_session_ids",
+                return_value={"already-done"},
+            ),
+        ):
+            result = cli_runner.invoke(main, ["ingest", "--all", "--dry-run"])
+
+        assert result.exit_code == 0
+        assert "Skipping 1 already-ingested session(s)" in result.output
+        assert "Found 1 session(s)" in result.output
+
+    def test_force_skips_already_ingested_filter(
+        self, cli_runner: CliRunner
+    ) -> None:
+        """--force bypasses the already-ingested query entirely."""
+        sessions = [_make_session_info("already-done")]
+
+        mock_get_ids = MagicMock()
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=sessions),
+            patch("pbook.store.get_ingested_session_ids", mock_get_ids),
+        ):
+            result = cli_runner.invoke(
+                main, ["ingest", "--all", "--force", "--dry-run"]
+            )
+
+        assert result.exit_code == 0
+        mock_get_ids.assert_not_called()
+        assert "Found 1 session(s)" in result.output
+
+    def test_submission_happy_path(self, cli_runner: CliRunner) -> None:
+        sessions = [_make_session_info("s1"), _make_session_info("s2")]
+        mock_submit = MagicMock()
+        mock_submit.side_effect = _async_result(
+            {
+                "sessions_processed": 2,
+                "total_experiences": 4,
+                "total_entries_created": 3,
+                "per_session": [],
+            }
+        )
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=sessions),
+            patch("pbook.store.get_db_path", return_value=None),
+            patch("forge.cli._submit_ingestion", mock_submit),
+        ):
+            result = cli_runner.invoke(main, ["ingest", "--all"])
+
+        assert result.exit_code == 0
+        assert "Submitting 2 session(s)" in result.output
+        assert "2 sessions processed" in result.output
+        assert "4 experiences found" in result.output
+        assert "3 entries created" in result.output
+
+        # Verify the payload passed to _submit_ingestion
+        call_args = mock_submit.call_args
+        _temporal_address, session_dicts = call_args.args
+        assert len(session_dicts) == 2
+        assert session_dicts[0]["session_id"] == "s1"
+        assert session_dicts[0]["project"] == "forge"
+
+    def test_submission_json_output(self, cli_runner: CliRunner) -> None:
+        sessions = [_make_session_info("s1")]
+        mock_submit = MagicMock()
+        mock_submit.side_effect = _async_result(
+            {
+                "sessions_processed": 1,
+                "total_experiences": 0,
+                "total_entries_created": 0,
+            }
+        )
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=sessions),
+            patch("pbook.store.get_db_path", return_value=None),
+            patch("forge.cli._submit_ingestion", mock_submit),
+        ):
+            result = cli_runner.invoke(main, ["ingest", "--all", "--json"])
+
+        assert result.exit_code == 0
+        # The output contains a "Submitting..." line followed by an
+        # indented JSON block. Strip the first line and parse the rest.
+        lines = result.output.splitlines()
+        json_start = next(i for i, ln in enumerate(lines) if ln.startswith("{"))
+        payload = json.loads("\n".join(lines[json_start:]))
+        assert payload["sessions_processed"] == 1
+
+    def test_submission_infrastructure_error(self, cli_runner: CliRunner) -> None:
+        sessions = [_make_session_info("s1")]
+
+        async def _raise(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("Temporal unreachable")
+
+        with (
+            patch("pbook.transcript.discover_sessions", return_value=sessions),
+            patch("pbook.store.get_db_path", return_value=None),
+            patch("forge.cli._submit_ingestion", side_effect=_raise),
+        ):
+            result = cli_runner.invoke(main, ["ingest", "--all"])
+
+        assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
+        assert "Temporal unreachable" in result.stderr
+
+    def test_pbook_not_installed_error(self, cli_runner: CliRunner) -> None:
+        """If pbook can't be imported, we fail fast with a friendly message."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "pbook.transcript" or name.startswith("pbook."):
+                raise ImportError("No module named 'pbook'")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(builtins, "__import__", side_effect=fake_import):
+            result = cli_runner.invoke(main, ["ingest", "--all"])
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "pbook is not installed" in result.stderr

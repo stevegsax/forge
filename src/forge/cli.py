@@ -1056,6 +1056,242 @@ def extract(
 
 
 # ---------------------------------------------------------------------------
+# Ingest command — submit Claude Code transcripts to BatchIngestionWorkflow
+# ---------------------------------------------------------------------------
+
+
+def format_ingest_dry_run(sessions: list) -> str:
+    """Format a list of pbook SessionInfo objects for dry-run display.
+
+    Groups by project and shows counts + total size. For small groups
+    (<=3 sessions) each session is listed with its id prefix and size.
+    """
+    total_mb = sum(s.size_bytes for s in sessions) / 1024 / 1024
+    lines = [f"Found {len(sessions)} session(s) to ingest ({total_mb:.1f} MB):", ""]
+
+    by_project: dict[str, list] = {}
+    for s in sessions:
+        by_project.setdefault(s.project_name, []).append(s)
+
+    for proj_name, proj_sessions in sorted(by_project.items()):
+        proj_mb = sum(s.size_bytes for s in proj_sessions) / 1024 / 1024
+        lines.append(
+            f"  {proj_name}: {len(proj_sessions)} session(s), {proj_mb:.1f} MB"
+        )
+        if len(proj_sessions) <= 3:
+            for s in proj_sessions:
+                size_kb = s.size_bytes / 1024
+                lines.append(f"    {s.session_id[:12]}...  {size_kb:.0f} KB")
+
+    return "\n".join(lines)
+
+
+def format_ingest_result(result: dict) -> str:
+    """Format a BatchIngestionWorkflow result dict for human-readable output."""
+    return (
+        f"Ingestion complete: "
+        f"{result.get('sessions_processed', 0)} sessions processed, "
+        f"{result.get('total_experiences', 0)} experiences found, "
+        f"{result.get('total_entries_created', 0)} entries created."
+    )
+
+
+async def _submit_ingestion(
+    temporal_address: str,
+    session_dicts: list[dict],
+) -> dict:
+    """Submit BatchIngestionWorkflow to Temporal and wait for completion."""
+    import time
+
+    from temporalio.client import Client
+    from temporalio.contrib.pydantic import pydantic_data_converter
+
+    from forge.workflows import FORGE_TASK_QUEUE
+
+    client = await Client.connect(
+        temporal_address, data_converter=pydantic_data_converter
+    )
+
+    import json as json_mod
+
+    return await client.execute_workflow(
+        "BatchIngestionWorkflow",
+        json_mod.dumps({"sessions": session_dicts}),
+        id=f"forge-batch-ingest-{int(time.time())}",
+        task_queue=FORGE_TASK_QUEUE,
+    )
+
+
+@main.command()
+@click.argument(
+    "transcript_path",
+    required=False,
+    type=click.Path(exists=True, path_type=Path),
+)
+@click.option(
+    "--all",
+    "ingest_all",
+    is_flag=True,
+    help="Discover and ingest all sessions from ~/.claude/projects/.",
+)
+@click.option(
+    "--project",
+    default="",
+    help="Filter discovered sessions by project name (with --all).",
+)
+@click.option(
+    "--min-size",
+    default=10240,
+    show_default=True,
+    type=int,
+    help="Minimum session file size in bytes (discovery only).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show sessions that would be ingested without submitting.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Reprocess sessions that pbook has already recorded as ingested.",
+)
+@click.option("--json", "output_json", is_flag=True, help="Output result as JSON.")
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+    help="Temporal server address.",
+)
+def ingest(
+    transcript_path: Path | None,
+    ingest_all: bool,
+    project: str,
+    min_size: int,
+    dry_run: bool,
+    force: bool,
+    output_json: bool,
+    temporal_address: str,
+) -> None:
+    """Ingest Claude Code conversation transcripts into pbook.
+
+    Submits Claude Code JSONL session files to the BatchIngestionWorkflow,
+    which uses forge's batch LLM path to analyze each transcript and
+    forwards extracted experiences to pbook's ExtractionWorkflow.
+
+    \b
+    Single session:
+        forge ingest ~/.claude/projects/<id>/session.jsonl
+
+    \b
+    All sessions (discovered from ~/.claude/projects/):
+        forge ingest --all
+        forge ingest --all --project forge
+        forge ingest --all --dry-run
+    """
+    # pbook is an optional dependency for ingestion; fail fast with a
+    # clear message rather than an ImportError stack trace.
+    try:
+        from pbook.transcript import (
+            SessionInfo,
+            discover_sessions,
+            infer_project_name,
+        )
+    except ImportError:
+        click.echo(
+            "Error: pbook is not installed. Install it to use 'forge ingest'.",
+            err=True,
+        )
+        sys.exit(EXIT_FAILURE)
+
+    if not transcript_path and not ingest_all:
+        click.echo(
+            "Error: provide a TRANSCRIPT_PATH or use --all.", err=True
+        )
+        sys.exit(EXIT_FAILURE)
+
+    # Build the list of sessions to ingest
+    if ingest_all:
+        sessions = discover_sessions(min_size=min_size)
+        if project:
+            sessions = [s for s in sessions if s.project_name == project]
+    else:
+        assert transcript_path is not None
+        path = transcript_path
+        proj = project or infer_project_name(path.parent.name)
+        sessions = [
+            SessionInfo(
+                path=str(path),
+                session_id=path.stem,
+                project_dir_name=path.parent.name,
+                project_name=proj,
+                size_bytes=path.stat().st_size,
+            )
+        ]
+
+    if not sessions:
+        click.echo("No sessions found.")
+        return
+
+    # Filter out already-ingested sessions by querying pbook's store
+    # directly. This skips the Temporal round-trip for sessions we
+    # already have results for. If pbook's store is unavailable we
+    # assume nothing is ingested rather than failing.
+    if not force:
+        try:
+            from pbook.store import get_db_path as pbook_get_db_path
+            from pbook.store import get_engine as pbook_get_engine
+            from pbook.store import get_ingested_session_ids
+
+            pbook_db = pbook_get_db_path()
+            if pbook_db is not None and pbook_db.exists():
+                engine = pbook_get_engine(pbook_db)
+                ingested_ids = get_ingested_session_ids(engine)
+                before = len(sessions)
+                sessions = [s for s in sessions if s.session_id not in ingested_ids]
+                skipped = before - len(sessions)
+                if skipped:
+                    click.echo(f"Skipping {skipped} already-ingested session(s).")
+        except Exception as exc:
+            click.echo(
+                f"Warning: could not query pbook for ingested sessions: {exc}",
+                err=True,
+            )
+
+    if not sessions:
+        click.echo(
+            "All sessions have been ingested. Use --force to reprocess."
+        )
+        return
+
+    # Dry-run path: describe what would happen and exit
+    if dry_run:
+        click.echo(format_ingest_dry_run(sessions))
+        return
+
+    # Build the payload and submit
+    session_dicts = [
+        {"path": s.path, "project": s.project_name, "session_id": s.session_id}
+        for s in sessions
+    ]
+
+    try:
+        click.echo(f"Submitting {len(sessions)} session(s) for ingestion...")
+        result = asyncio.run(_submit_ingestion(temporal_address, session_dicts))
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+    if output_json:
+        import json as json_mod
+
+        click.echo(json_mod.dumps(result, indent=2))
+    else:
+        click.echo(format_ingest_result(result))
+
+
+# ---------------------------------------------------------------------------
 # Playbooks command (Phase 6)
 # ---------------------------------------------------------------------------
 
