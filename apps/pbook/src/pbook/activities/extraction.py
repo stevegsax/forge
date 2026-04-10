@@ -252,3 +252,30 @@ async def save_extracted_entries(input_json: str) -> int:
 
     save_entries(engine, entry_dicts)
     return len(entry_dicts)
+
+
+@activity.defn
+async def record_ingested_session(input_json: str) -> None:
+    """Record that a Claude Code session has been ingested.
+
+    Accepts JSON with keys: session_id, project_name, experiences_found, entries_created.
+    Called cross-queue from forge's IngestionWorkflow.
+    """
+    from pbook.store import get_db_path, get_engine, record_ingested_session as _record, run_migrations
+
+    data = json.loads(input_json)
+    session_id = data["session_id"]
+
+    db_path = get_db_path()
+    if db_path is None:
+        return
+
+    run_migrations(db_path)
+    engine = get_engine(db_path)
+    _record(
+        engine,
+        session_id=session_id,
+        project_name=data.get("project_name", ""),
+        experiences_found=data.get("experiences_found", 0),
+        entries_created=data.get("entries_created", 0),
+    )

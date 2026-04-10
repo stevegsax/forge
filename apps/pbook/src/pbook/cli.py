@@ -434,6 +434,152 @@ def prune(
         click.echo(f"\nMarked {len(candidates)} entry/entries for review.")
 
 
+@main.command()
+@click.argument(
+    "transcript_path", required=False,
+    type=click.Path(exists=True, path_type=Path),
+)
+@click.option("--all", "ingest_all", is_flag=True, help="Discover and ingest all sessions.")
+@click.option("--project", default="", help="Filter by project (with --all) or override.")
+@click.option("--min-size", default=10240, type=int, help="Minimum session file size in bytes.")
+@click.option("--dry-run", is_flag=True, help="Show sessions/stats without ingesting.")
+@click.option("--force", is_flag=True, help="Reprocess already-ingested sessions.")
+@click.option(
+    "--temporal-address", default="localhost:7233",
+    help="Temporal server address.",
+)
+def ingest(
+    transcript_path: Path | None,
+    ingest_all: bool,
+    project: str,
+    min_size: int,
+    dry_run: bool,
+    force: bool,
+    temporal_address: str,
+) -> None:
+    """Ingest Claude Code conversation transcripts.
+
+    Analyzes JSONL session files to identify unexpected problems and
+    their resolutions, then extracts them as playbook entries.
+
+    LLM analysis is routed through forge's batch API.
+
+    \b
+    Single session:
+        pbook ingest ~/.claude/projects/<id>/session.jsonl
+
+    All sessions:
+        pbook ingest --all
+        pbook ingest --all --project forge
+        pbook ingest --all --dry-run
+    """
+    import asyncio
+
+    from pbook.transcript import discover_sessions, parse_jsonl_file, render_transcript
+
+    if not transcript_path and not ingest_all:
+        click.echo("Error: provide a TRANSCRIPT_PATH or use --all.", err=True)
+        sys.exit(1)
+
+    # Discover sessions
+    if ingest_all:
+        sessions = discover_sessions(min_size=min_size)
+        if project:
+            sessions = [s for s in sessions if s.project_name == project]
+    else:
+        from pbook.transcript import SessionInfo, infer_project_name
+
+        path = transcript_path
+        assert path is not None
+        session_id = path.stem
+        proj = project or infer_project_name(path.parent.name)
+        sessions = [SessionInfo(
+            path=str(path),
+            session_id=session_id,
+            project_dir_name=path.parent.name,
+            project_name=proj,
+            size_bytes=path.stat().st_size,
+        )]
+
+    if not sessions:
+        click.echo("No sessions found.")
+        return
+
+    # Filter already-ingested sessions
+    if not force:
+        engine, _ = _resolve_db()
+        from pbook.store import get_ingested_session_ids
+
+        ingested = get_ingested_session_ids(engine)
+        before = len(sessions)
+        sessions = [s for s in sessions if s.session_id not in ingested]
+        skipped = before - len(sessions)
+        if skipped:
+            click.echo(f"Skipping {skipped} already-ingested session(s).")
+
+    if not sessions:
+        click.echo("All sessions have been ingested. Use --force to reprocess.")
+        return
+
+    # Dry-run: show session info
+    if dry_run:
+        total_mb = sum(s.size_bytes for s in sessions) / 1024 / 1024
+        click.echo(f"Found {len(sessions)} session(s) to ingest ({total_mb:.1f} MB):")
+        click.echo("")
+
+        # Group by project
+        by_project: dict[str, list] = {}
+        for s in sessions:
+            by_project.setdefault(s.project_name, []).append(s)
+
+        for proj_name, proj_sessions in sorted(by_project.items()):
+            proj_mb = sum(s.size_bytes for s in proj_sessions) / 1024 / 1024
+            click.echo(f"  {proj_name}: {len(proj_sessions)} session(s), {proj_mb:.1f} MB")
+
+            if len(proj_sessions) <= 3:
+                for s in proj_sessions:
+                    transcript = parse_jsonl_file(Path(s.path))
+                    rendered = render_transcript(transcript)
+                    click.echo(
+                        f"    {s.session_id[:8]}... "
+                        f"{len(transcript.messages)} msgs, "
+                        f"{len(rendered)} chars rendered"
+                    )
+
+        return
+
+    # Submit to forge's task queue via Temporal
+    session_dicts = [
+        {"path": s.path, "project": s.project_name, "session_id": s.session_id}
+        for s in sessions
+    ]
+
+    async def _submit() -> dict:
+        from temporalio.client import Client
+
+        client = await Client.connect(temporal_address)
+        result = await client.execute_workflow(
+            "BatchIngestionWorkflow",
+            json.dumps({"sessions": session_dicts}),
+            id=f"pbook-batch-ingest-{int(time.time())}",
+            task_queue="forge-task-queue",
+        )
+        return result
+
+    try:
+        click.echo(f"Submitting {len(sessions)} session(s) for ingestion...")
+        result = asyncio.run(_submit())
+        click.echo(
+            f"Ingestion complete: "
+            f"{result.get('sessions_processed', 0)} sessions processed, "
+            f"{result.get('total_experiences', 0)} experiences found, "
+            f"{result.get('total_entries_created', 0)} entries created."
+        )
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
 @main.command(name="skill-prompt")
 @click.option("--operation", default="add", help="Operation to get instructions for.")
 def skill_prompt(operation: str) -> None:

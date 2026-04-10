@@ -37,6 +37,22 @@ class Base(DeclarativeBase):
     pass
 
 
+class IngestedSession(Base):
+    __tablename__ = "ingested_sessions"
+
+    session_id: Mapped[str] = mapped_column(sa.Text, primary_key=True)
+    project_name: Mapped[str] = mapped_column(sa.Text, nullable=False, default="")
+    ingested_at: Mapped[datetime] = mapped_column(
+        sa.DateTime, default=lambda: datetime.now(UTC),
+    )
+    experiences_found: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default=sa.text("0"),
+    )
+    entries_created: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default=sa.text("0"),
+    )
+
+
 class Entry(Base):
     __tablename__ = "entries"
 
@@ -303,6 +319,37 @@ def check_duplicate(
         )
 
     return results
+
+
+def get_ingested_session_ids(engine: Engine) -> set[str]:
+    """Return the set of session IDs that have already been ingested."""
+    t = IngestedSession.__table__
+    with engine.connect() as conn:
+        rows = conn.execute(sa.select(t.c.session_id)).all()
+        return {row[0] for row in rows}
+
+
+def record_ingested_session(
+    engine: Engine,
+    session_id: str,
+    project_name: str = "",
+    experiences_found: int = 0,
+    entries_created: int = 0,
+) -> None:
+    """Record that a session has been ingested."""
+    logger.info(
+        "Recording ingested session %s: %d experiences, %d entries",
+        session_id, experiences_found, entries_created,
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(IngestedSession.__table__).values(
+                session_id=session_id,
+                project_name=project_name,
+                experiences_found=experiences_found,
+                entries_created=entries_created,
+            ),
+        )
 
 
 def find_semantic_duplicates(
