@@ -74,7 +74,32 @@ def score_entry(
         if entry_type == EntryType.PITFALL:
             score += 1.0
 
+    # Helpfulness signal from feedback counters
+    score += _helpfulness_adjustment(entry)
+
     return score
+
+
+_MIN_RETRIEVALS_FOR_SIGNAL = 3
+_HELPFULNESS_WEIGHT = 2.0
+
+
+def _helpfulness_adjustment(entry: dict) -> float:
+    """Compute a score adjustment based on feedback counters.
+
+    Requires at least ``_MIN_RETRIEVALS_FOR_SIGNAL`` retrievals before
+    applying any adjustment.  Returns a value in the range
+    ``[-_HELPFULNESS_WEIGHT, +_HELPFULNESS_WEIGHT]``.  Entries without
+    feedback data receive no adjustment (backward compatible).
+    """
+    retrievals = entry.get("retrieval_count", 0)
+    if retrievals < _MIN_RETRIEVALS_FOR_SIGNAL:
+        return 0.0
+
+    helpful = entry.get("helpful_count", 0)
+    harmful = entry.get("harmful_count", 0)
+    ratio = (helpful - harmful) / retrievals
+    return ratio * _HELPFULNESS_WEIGHT
 
 
 def _tag_namespace(tag: str) -> str:

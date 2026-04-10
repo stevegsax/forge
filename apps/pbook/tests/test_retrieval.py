@@ -110,6 +110,53 @@ class TestScoreEntry:
         pitfall_score = score_entry(pitfall, {"project:forge"}, RetrievalMode.FIX)
         assert pitfall_score > curated_score
 
+    def test_helpful_entry_boosted(self):
+        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        no_feedback = {**base}
+        helpful = {**base, "helpful_count": 5, "harmful_count": 0, "retrieval_count": 5}
+
+        base_score = score_entry(no_feedback, {"lang:python"}, RetrievalMode.CREATE)
+        boosted_score = score_entry(helpful, {"lang:python"}, RetrievalMode.CREATE)
+        assert boosted_score > base_score
+
+    def test_harmful_entry_penalized(self):
+        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        no_feedback = {**base}
+        harmful = {**base, "helpful_count": 0, "harmful_count": 5, "retrieval_count": 5}
+
+        base_score = score_entry(no_feedback, {"lang:python"}, RetrievalMode.CREATE)
+        penalized_score = score_entry(harmful, {"lang:python"}, RetrievalMode.CREATE)
+        assert penalized_score < base_score
+
+    def test_insufficient_retrievals_ignored(self):
+        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        no_feedback = {**base}
+        # Only 2 retrievals — below threshold of 3
+        few = {**base, "helpful_count": 2, "harmful_count": 0, "retrieval_count": 2}
+
+        base_score = score_entry(no_feedback, {"lang:python"}, RetrievalMode.CREATE)
+        few_score = score_entry(few, {"lang:python"}, RetrievalMode.CREATE)
+        assert base_score == few_score
+
+    def test_mixed_feedback(self):
+        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        no_feedback = {**base}
+        mixed = {**base, "helpful_count": 3, "harmful_count": 1, "retrieval_count": 5}
+
+        base_score = score_entry(no_feedback, {"lang:python"}, RetrievalMode.CREATE)
+        mixed_score = score_entry(mixed, {"lang:python"}, RetrievalMode.CREATE)
+        # Net positive (3-1)/5 = 0.4 ratio → should boost
+        assert mixed_score > base_score
+
+    def test_zero_counters_unchanged(self):
+        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        no_counters = {**base}
+        zero_counters = {**base, "helpful_count": 0, "harmful_count": 0, "retrieval_count": 0}
+
+        score_without = score_entry(no_counters, {"lang:python"}, RetrievalMode.CREATE)
+        score_with = score_entry(zero_counters, {"lang:python"}, RetrievalMode.CREATE)
+        assert score_without == score_with
+
 
 # ---------------------------------------------------------------------------
 # rank_and_pack
