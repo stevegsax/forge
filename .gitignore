@@ -49,3 +49,8 @@ ocr-output.txt
 
 sample-flows/**/*.svg
 .DS_Store
+
+# Runtime artifacts
+.coverage
+forge.db
+.firecrawl/
