@@ -238,6 +238,16 @@ def delete_entry(engine: Engine, entry_id: int) -> None:
         conn.execute(t.delete().where(t.c.id == entry_id))
 
 
+def list_all_entries(engine: Engine) -> list[dict]:
+    """Fetch all entries including feedback counters for maintenance analysis."""
+    t = Entry.__table__
+    stmt = t.select().order_by(t.c.created_at.desc())
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+
 def record_retrieval(engine: Engine, entry_ids: list[int]) -> None:
     """Bulk increment retrieval_count for the given entry IDs."""
     if not entry_ids:

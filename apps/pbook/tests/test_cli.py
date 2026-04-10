@@ -12,7 +12,15 @@ if TYPE_CHECKING:
 
 from pbook.cli import main
 from pbook.models import PlaybookEntry
-from pbook.store import build_entry_dict, get_engine, run_migrations, save_entries
+from pbook.store import (
+    build_entry_dict,
+    get_engine,
+    get_entry_by_id,
+    record_feedback,
+    record_retrieval,
+    run_migrations,
+    save_entries,
+)
 
 
 def _setup_db(tmp_path: Path):
@@ -441,6 +449,72 @@ class TestFeedback:
         result = runner.invoke(main, ["feedback", "999", "--helpful"])
         assert result.exit_code != 0
         assert "not found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# prune
+# ---------------------------------------------------------------------------
+
+
+class TestPrune:
+    def test_dry_run_lists_candidates(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="Harmful entry")
+        # Make it harmful: 6/10 retrievals marked harmful
+        record_retrieval(engine, [1])
+        for _ in range(9):
+            record_retrieval(engine, [1])
+        for _ in range(6):
+            record_feedback(engine, 1, helpful=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["prune", "--dry-run"])
+        assert result.exit_code == 0
+        assert "Harmful entry" in result.output
+        assert "harmful ratio" in result.output
+
+        # Verify entry was NOT modified (dry run)
+        entry = get_entry_by_id(engine, 1)
+        assert entry["needs_review"] is False
+
+    def test_apply_marks_for_review(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="Harmful entry")
+        for _ in range(10):
+            record_retrieval(engine, [1])
+        for _ in range(6):
+            record_feedback(engine, 1, helpful=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["prune", "--apply"])
+        assert result.exit_code == 0
+        assert "Marked" in result.output
+
+        entry = get_entry_by_id(engine, 1)
+        assert entry["needs_review"] is True
+        tags = json.loads(entry["tags_json"])
+        assert "pattern:prune-candidate" in tags
+
+    def test_no_candidates(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["prune", "--dry-run"])
+        assert result.exit_code == 0
+        assert "No prune candidates" in result.output
+
+    def test_missing_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["prune"])
+        assert result.exit_code != 0
+        assert "--dry-run" in result.output or "--apply" in result.output
 
 
 # ---------------------------------------------------------------------------

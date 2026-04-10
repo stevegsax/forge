@@ -380,6 +380,60 @@ def feedback(entry_id: int, is_helpful: bool | None, context: str) -> None:
     click.echo(f"Recorded {label} feedback for entry {entry_id}: {existing['title']}")
 
 
+@main.command()
+@click.option("--dry-run", is_flag=True, default=False, help="List candidates without changing anything.")
+@click.option("--apply", is_flag=True, default=False, help="Mark candidates for review.")
+@click.option("--min-retrievals", default=5, help="Minimum retrievals for harmful ratio check.")
+@click.option("--max-harmful-ratio", default=0.5, type=float, help="Harmful ratio threshold.")
+@click.option("--max-stale-days", default=180, type=int, help="Days before unretrieved entry is stale.")
+def prune(
+    dry_run: bool,
+    apply: bool,
+    min_retrievals: int,
+    max_harmful_ratio: float,
+    max_stale_days: int,
+) -> None:
+    """Identify entries that should be pruned."""
+    if not dry_run and not apply:
+        click.echo("Error: specify --dry-run or --apply.", err=True)
+        sys.exit(1)
+
+    engine, _ = _resolve_db()
+
+    from pbook.activities.maintenance import identify_prune_candidates
+    from pbook.store import list_all_entries
+
+    all_entries = list_all_entries(engine)
+    candidates = identify_prune_candidates(
+        all_entries,
+        min_retrievals=min_retrievals,
+        max_harmful_ratio=max_harmful_ratio,
+        max_stale_days=max_stale_days,
+    )
+
+    if not candidates:
+        click.echo("No prune candidates found.")
+        return
+
+    click.echo(f"Found {len(candidates)} prune candidate(s):")
+    click.echo("")
+    for entry in candidates:
+        click.echo(f"  [{entry['id']}] {entry['title']}")
+        click.echo(f"    Reason: {entry['prune_reason']}")
+
+    if apply:
+        for entry in candidates:
+            entry_id = entry["id"]
+            existing_tags = json.loads(entry.get("tags_json", "[]"))
+            if "pattern:prune-candidate" not in existing_tags:
+                existing_tags.append("pattern:prune-candidate")
+            update_entry(engine, entry_id, {
+                "needs_review": True,
+                "tags_json": json.dumps(existing_tags),
+            })
+        click.echo(f"\nMarked {len(candidates)} entry/entries for review.")
+
+
 @main.command(name="skill-prompt")
 @click.option("--operation", default="add", help="Operation to get instructions for.")
 def skill_prompt(operation: str) -> None:
