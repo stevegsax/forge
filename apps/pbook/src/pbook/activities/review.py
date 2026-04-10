@@ -197,6 +197,29 @@ async def fetch_existing_entries(limit: int = 50) -> list[dict]:
 
 
 @activity.defn
+async def find_duplicates(input_json: str) -> list[dict]:
+    """Find semantic duplicates for a proposed entry.
+
+    Accepts JSON with keys: embedding (bytes), threshold (float).
+    """
+    from pbook.store import find_semantic_duplicates, get_db_path, get_engine, run_migrations
+
+    import base64
+
+    data = json.loads(input_json)
+    embedding = base64.b64decode(data["embedding"])
+    threshold = data.get("threshold", 0.85)
+
+    db_path = get_db_path()
+    if db_path is None or not db_path.exists():
+        return []
+
+    run_migrations(db_path)
+    engine = get_engine(db_path)
+    return find_semantic_duplicates(engine, embedding, threshold=threshold)
+
+
+@activity.defn
 async def review_entry(input_json: str) -> str:
     """Review a proposed entry via LLM and apply suggestions.
 
@@ -222,18 +245,30 @@ async def review_entry(input_json: str) -> str:
         system_prompt, user_prompt, provider, model=model_name,
     )
 
+    import base64
+
+    def _serialize_entry(e: PlaybookEntry) -> dict:
+        d = e.model_dump()
+        if d.get("embedding") is not None:
+            d["embedding"] = base64.b64encode(d["embedding"]).decode("ascii")
+        return d
+
     if not review.approved:
         logger.info("Entry rejected: %s — %s", entry.title, review.rejection_reason)
         return json.dumps({
             "approved": False,
             "rejection_reason": review.rejection_reason,
-            "final_entry": entry.model_dump(),
+            "final_entry": _serialize_entry(entry),
         })
 
     final_entry = apply_suggestions(entry, review)
     logger.info("Entry approved: %s", final_entry.title)
+
+    # Preserve the embedding if it was already computed
+    final_entry.embedding = entry.embedding
+
     return json.dumps({
         "approved": True,
         "rejection_reason": "",
-        "final_entry": final_entry.model_dump(),
+        "final_entry": _serialize_entry(final_entry),
     })

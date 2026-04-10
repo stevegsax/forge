@@ -39,6 +39,9 @@ def db_row_to_entry_dict(row: dict) -> dict:
         source_project=row.get("source_project", ""),
         source_task_id=row.get("source_task_id", ""),
         needs_review=row.get("needs_review", False),
+        helpful_count=row.get("helpful_count", 0),
+        harmful_count=row.get("harmful_count", 0),
+        retrieval_count=row.get("retrieval_count", 0),
     ).model_dump()
 
 

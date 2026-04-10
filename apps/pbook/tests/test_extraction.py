@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -243,11 +244,15 @@ class TestExtractionWorkflow:
                 ]
             })
 
+        @activity.defn(name="compute_embedding")
+        async def mock_compute_embedding(text: str) -> str:
+            return base64.b64encode(b"fake-embedding").decode("ascii")
+
         async with Worker(
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ExtractionWorkflow],
-            activities=[mock_extract, save_extracted_entries],
+            activities=[mock_extract, save_extracted_entries, mock_compute_embedding],
         ):
             result = await env.client.execute_workflow(
                 ExtractionWorkflow.run,
@@ -266,6 +271,11 @@ class TestExtractionWorkflow:
             )
 
         assert result["entries_created"] == 1
+        
+        # Verify embedding was saved
+        engine = get_engine(tmp_path / "test.db")
+        entries = list_recent_entries(engine)
+        assert entries[0]["embedding"] == b"fake-embedding"
 
     @pytest.mark.asyncio
     async def test_extraction_empty_experiences(
@@ -298,11 +308,15 @@ class TestExtractionWorkflow:
         async def mock_extract_empty(input_json: str) -> str:
             return json.dumps({"entries": []})
 
+        @activity.defn(name="compute_embedding")
+        async def mock_compute_embedding(text: str) -> str:
+            return ""
+
         async with Worker(
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ExtractionWorkflow],
-            activities=[mock_extract_empty],
+            activities=[mock_extract_empty, mock_compute_embedding],
         ):
             result = await env.client.execute_workflow(
                 ExtractionWorkflow.run,

@@ -68,6 +68,7 @@ class Entry(Base):
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
+    embedding: Mapped[bytes | None] = mapped_column(sa.LargeBinary, nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +117,10 @@ def build_entry_dict(entry: PlaybookEntry) -> dict:
         "source_project": entry.source_project,
         "source_task_id": entry.source_task_id,
         "needs_review": entry.needs_review,
+        "helpful_count": entry.helpful_count,
+        "harmful_count": entry.harmful_count,
+        "retrieval_count": entry.retrieval_count,
+        "embedding": entry.embedding,
     }
 
 
@@ -298,3 +303,56 @@ def check_duplicate(
         )
 
     return results
+
+
+def find_semantic_duplicates(
+    engine: Engine,
+    query_embedding: bytes,
+    *,
+    threshold: float = 0.85,
+    limit: int = 5,
+) -> list[dict]:
+    """Find entries with high semantic similarity to the given embedding.
+
+    Calculates cosine similarity in Python using the ``embedding`` column.
+    """
+    from pbook.embeddings import cosine_similarity
+
+    t = Entry.__table__
+    stmt = t.select().where(t.c.embedding.is_not(None))
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+
+    results: list[dict] = []
+    for row in rows:
+        sim = cosine_similarity(query_embedding, row["embedding"])
+        if sim >= threshold:
+            results.append({**dict(row), "similarity": sim})
+
+    results.sort(key=lambda x: x["similarity"], reverse=True)
+    return results[:limit]
+
+
+def semantic_search(
+    engine: Engine,
+    query_embedding: bytes,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    """Rank all entries by semantic similarity to the query embedding."""
+    from pbook.embeddings import cosine_similarity
+
+    t = Entry.__table__
+    stmt = t.select().where(t.c.embedding.is_not(None))
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+
+    scored: list[tuple[float, dict]] = []
+    for row in rows:
+        sim = cosine_similarity(query_embedding, row["embedding"])
+        scored.append((sim, dict(row)))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [row for _sim, row in scored[:limit]]

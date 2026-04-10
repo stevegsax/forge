@@ -94,14 +94,6 @@ class TestScoreEntry:
         )
         assert extracted_score > general_score
 
-    def test_api_doc_boost_in_create(self):
-        curated = {"tags_json": '["lib:sqlalchemy"]', "entry_type": "curated"}
-        api_doc = {"tags_json": '["lib:sqlalchemy"]', "entry_type": "api_doc"}
-
-        curated_score = score_entry(curated, {"lib:sqlalchemy"}, RetrievalMode.CREATE)
-        api_doc_score = score_entry(api_doc, {"lib:sqlalchemy"}, RetrievalMode.CREATE)
-        assert api_doc_score > curated_score
-
     def test_pitfall_boost_in_fix(self):
         curated = {"tags_json": '["project:forge"]', "entry_type": "curated"}
         pitfall = {"tags_json": '["project:forge"]', "entry_type": "pitfall"}

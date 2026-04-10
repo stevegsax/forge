@@ -4,11 +4,10 @@ pbook is a knowledge management service that stores, retrieves, and curates acti
 
 ## What It Does
 
-pbook manages three types of knowledge entries:
+pbook manages two types of knowledge entries:
 
 - **Pitfalls** — specific, unexpected situations extracted from real project experience. Created automatically when a client pushes experience data through the extraction workflow.
 - **Curated advice** — general best practices submitted by humans. Reviewed by an LLM for quality before storage.
-- **API doc records** — library documentation with method signatures and working examples. Built incrementally as methods are encountered.
 
 All entries are tagged with namespaced tags (`lang:python`, `lib:sqlalchemy`, `project:forge`) and retrieved via a token-budgeted query that ranks results by relevance to the caller's context.
 

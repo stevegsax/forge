@@ -6,7 +6,6 @@ import pytest
 from pydantic import ValidationError
 
 from pbook.models import (
-    ApiDocRecord,
     CapabilityTier,
     EntryType,
     ModelConfig,
@@ -26,7 +25,6 @@ class TestEntryType:
     def test_values(self):
         assert EntryType.PITFALL == "pitfall"
         assert EntryType.CURATED == "curated"
-        assert EntryType.API_DOC == "api_doc"
 
 
 # ---------------------------------------------------------------------------
@@ -68,35 +66,6 @@ class TestPlaybookEntry:
         json_str = entry.model_dump_json()
         restored = PlaybookEntry.model_validate_json(json_str)
         assert restored == entry
-
-
-# ---------------------------------------------------------------------------
-# ApiDocRecord
-# ---------------------------------------------------------------------------
-
-
-class TestApiDocRecord:
-    def test_minimal(self):
-        record = ApiDocRecord(
-            library="sqlalchemy",
-            method="sqlalchemy.create_engine",
-            summary="Create a database engine.",
-            signature="def create_engine(url: str, **kwargs) -> Engine",
-        )
-        assert record.library == "sqlalchemy"
-        assert record.examples == []
-        assert record.doc_url == ""
-
-    def test_with_examples(self):
-        record = ApiDocRecord(
-            library="pydantic",
-            method="pydantic.BaseModel",
-            summary="Base class for data validation.",
-            signature="class BaseModel",
-            examples=["class User(BaseModel):\n    name: str"],
-            doc_url="https://docs.pydantic.dev/latest/",
-        )
-        assert len(record.examples) == 1
 
 
 # ---------------------------------------------------------------------------

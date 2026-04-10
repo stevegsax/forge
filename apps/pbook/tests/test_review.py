@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -349,6 +350,14 @@ class TestManualEntryWorkflow:
                 "final_entry": data["entry"],
             })
 
+        @activity.defn(name="compute_embedding")
+        async def mock_compute_embedding(text: str) -> str:
+            return base64.b64encode(b"fake-embedding").decode("ascii")
+
+        @activity.defn(name="find_duplicates")
+        async def mock_find_duplicates(input_json: str) -> list:
+            return []
+
         raw_json = json.dumps({
             "title": "Good entry",
             "content": "Useful advice",
@@ -364,6 +373,8 @@ class TestManualEntryWorkflow:
                 fetch_existing_entries,
                 mock_review,
                 save_extracted_entries,
+                mock_compute_embedding,
+                mock_find_duplicates,
             ],
         ):
             result = await env.client.execute_workflow(
@@ -391,6 +402,14 @@ class TestManualEntryWorkflow:
                 "final_entry": {},
             })
 
+        @activity.defn(name="compute_embedding")
+        async def mock_compute_embedding(text: str) -> str:
+            return base64.b64encode(b"fake-embedding").decode("ascii")
+
+        @activity.defn(name="find_duplicates")
+        async def mock_find_duplicates(input_json: str) -> list:
+            return []
+
         raw_json = json.dumps({
             "title": "Bad entry",
             "content": "Write clean code",
@@ -406,6 +425,8 @@ class TestManualEntryWorkflow:
                 fetch_existing_entries,
                 mock_reject,
                 save_extracted_entries,
+                mock_compute_embedding,
+                mock_find_duplicates,
             ],
         ):
             result = await env.client.execute_workflow(

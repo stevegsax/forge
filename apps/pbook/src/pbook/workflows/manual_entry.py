@@ -40,7 +40,25 @@ class ManualEntryWorkflow:
 
         entry = validation["entry"]
 
-        # Step 2: Fetch existing entries for duplication context
+        # Step 2: Compute embedding for the proposed entry
+        text_to_embed = f"{entry['title']}\n{entry['content']}"
+        entry_embedding = await workflow.execute_activity(
+            "compute_embedding",
+            text_to_embed,
+            start_to_close_timeout=timedelta(seconds=60),
+            result_type=str,
+        )
+        entry["embedding"] = entry_embedding
+
+        # Step 3: Find semantic duplicates to prevent context collapse (ACE)
+        duplicates = await workflow.execute_activity(
+            "find_duplicates",
+            json.dumps({"embedding": entry_embedding, "threshold": 0.85}),
+            start_to_close_timeout=_FETCH_TIMEOUT,
+            result_type=list,
+        )
+
+        # Step 4: Fetch recent entries for broader context
         existing = await workflow.execute_activity(
             "fetch_existing_entries",
             50,
@@ -48,10 +66,17 @@ class ManualEntryWorkflow:
             result_type=list,
         )
 
-        # Step 3: LLM review
+        # Combine duplicates and existing entries for the reviewer
+        # Prioritize duplicates in the review context
+        context_entries = duplicates + [
+            e for e in existing 
+            if e["id"] not in {d["id"] for d in duplicates}
+        ]
+
+        # Step 5: LLM review
         review_input = json.dumps({
             "entry": entry,
-            "existing_entries": existing,
+            "existing_entries": context_entries[:50],  # Keep within context limits
         })
         review_json = await workflow.execute_activity(
             "review_entry",
@@ -68,7 +93,7 @@ class ManualEntryWorkflow:
                 "rejection_reason": review["rejection_reason"],
             }
 
-        # Step 4: Save the reviewed entry
+        # Step 6: Save the reviewed entry
         final_entry = review["final_entry"]
         save_input = json.dumps({
             "entries": [final_entry],

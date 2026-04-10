@@ -47,7 +47,18 @@ class ExtractionWorkflow:
         if not entries:
             return {"entries_created": 0}
 
-        # Step 2: Save entries with needs_review=True
+        # Step 2: Generate embeddings for each entry in parallel
+        # ACE requires semantic de-duplication and vector search
+        for entry in entries:
+            text_to_embed = f"{entry['title']}\n{entry['content']}"
+            entry["embedding"] = await workflow.execute_activity(
+                "compute_embedding",
+                text_to_embed,
+                start_to_close_timeout=timedelta(seconds=60),
+                result_type=str,
+            )
+
+        # Step 3: Save entries with needs_review=True
         save_input = json.dumps({"entries": entries, "project": project})
         count = await workflow.execute_activity(
             "save_extracted_entries",

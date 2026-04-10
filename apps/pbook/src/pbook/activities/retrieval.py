@@ -53,15 +53,12 @@ def score_entry(
     entry_type = entry.get("entry_type", "curated")
 
     if mode == RetrievalMode.CREATE:
-        # Boost general knowledge and API docs
+        # Boost general knowledge
         general_overlap = sum(
             1 for t in entry_tags & query_tags
             if _tag_namespace(t) in GENERAL_NAMESPACES
         )
         score += general_overlap * 0.5
-
-        if entry_type == EntryType.API_DOC:
-            score += 1.0
 
     elif mode == RetrievalMode.FIX:
         # Boost project-specific and pitfalls

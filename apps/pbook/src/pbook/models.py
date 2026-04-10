@@ -22,7 +22,6 @@ class EntryType(StrEnum):
 
     PITFALL = "pitfall"       # Extracted from experience — unexpected + actionable
     CURATED = "curated"       # Human-submitted general advice
-    API_DOC = "api_doc"       # Library documentation record
 
 
 # ---------------------------------------------------------------------------
@@ -33,8 +32,7 @@ class EntryType(StrEnum):
 class PlaybookEntry(BaseModel):
     """A single playbook entry — the universal write model.
 
-    Covers all three content types.  For API_DOC entries the ``content``
-    field holds the structured ApiDocRecord serialized as JSON.
+    Covers both content types.
     """
 
     title: str
@@ -44,25 +42,10 @@ class PlaybookEntry(BaseModel):
     source_project: str = ""
     source_task_id: str = ""
     needs_review: bool = False
-
-
-# ---------------------------------------------------------------------------
-# API documentation record
-# ---------------------------------------------------------------------------
-
-
-class ApiDocRecord(BaseModel):
-    """Structured API documentation for a single library method.
-
-    Stored as the ``content`` of a PlaybookEntry with entry_type=API_DOC.
-    """
-
-    library: str               # e.g. "sqlalchemy"
-    method: str                # Fully qualified, e.g. "sqlalchemy.create_engine"
-    summary: str               # 1-2 sentences
-    signature: str             # Method signature with type hints
-    examples: list[str] = Field(default_factory=list)
-    doc_url: str = ""
+    helpful_count: int = 0
+    harmful_count: int = 0
+    retrieval_count: int = 0
+    embedding: bytes | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +56,7 @@ class ApiDocRecord(BaseModel):
 class RetrievalMode(StrEnum):
     """Intent mode for retrieval ranking."""
 
-    CREATE = "create"   # Boosts general knowledge + API docs
+    CREATE = "create"   # Boosts general knowledge
     FIX = "fix"         # Boosts project-specific pitfalls
 
 
@@ -143,8 +126,8 @@ class CapabilityTier(StrEnum):
 
 _DEFAULT_TIER_MODELS: dict[CapabilityTier, str] = {
     CapabilityTier.REASONING: "anthropic:claude-opus-4-6",
-    CapabilityTier.GENERATION: "anthropic:claude-sonnet-4-5-20250929",
-    CapabilityTier.SUMMARIZATION: "anthropic:claude-sonnet-4-5-20250929",
+    CapabilityTier.GENERATION: "anthropic:claude-sonnet-4-6",
+    CapabilityTier.SUMMARIZATION: "anthropic:claude-sonnet-4-6",
     CapabilityTier.CLASSIFICATION: "anthropic:claude-haiku-4-5-20251001",
 }
 

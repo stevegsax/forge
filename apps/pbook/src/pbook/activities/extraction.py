@@ -194,6 +194,21 @@ async def extract_from_experience(input_json: str) -> str:
 
 
 @activity.defn
+async def compute_embedding(text: str) -> str:
+    """Generate an embedding for the given text using OpenAI.
+
+    Returns a base64-encoded string (JSON-safe) rather than raw bytes.
+    Decode with ``base64.b64decode()`` at the DB boundary.
+    """
+    import base64
+
+    from pbook.embeddings import get_embedding
+
+    raw = await get_embedding(text)
+    return base64.b64encode(raw).decode("ascii")
+
+
+@activity.defn
 async def save_extracted_entries(input_json: str) -> int:
     """Save extracted entries to the store with needs_review=True.
 
@@ -218,8 +233,12 @@ async def save_extracted_entries(input_json: str) -> int:
     run_migrations(db_path)
     engine = get_engine(db_path)
 
+    import base64
+
     entry_dicts = []
     for raw in entries_raw:
+        raw_embedding = raw.get("embedding")
+        embedding = base64.b64decode(raw_embedding) if raw_embedding else None
         entry = PlaybookEntry(
             title=raw["title"],
             content=raw["content"],
@@ -227,6 +246,7 @@ async def save_extracted_entries(input_json: str) -> int:
             entry_type=EntryType.PITFALL,
             source_project=project,
             needs_review=True,
+            embedding=embedding,
         )
         entry_dicts.append(build_entry_dict(entry))
 

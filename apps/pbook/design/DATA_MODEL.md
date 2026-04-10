@@ -85,18 +85,8 @@ Used for all three content types. Validated on ingestion.
 | `source_task_id` | str | `""` | Client's task identifier |
 | `needs_review` | bool | `False` | Set `True` for LLM-extracted entries |
 
-### ApiDocRecord (structured content for api_doc entries)
+## Tag system
 
-| Field | Type | Default | Notes |
-|-------|------|---------|-------|
-| `library` | str | required | e.g., `"sqlalchemy"` |
-| `method` | str | required | Fully qualified, e.g., `"sqlalchemy.create_engine"` |
-| `summary` | str | required | 1-2 sentences |
-| `signature` | str | required | With type hints |
-| `examples` | list[str] | `[]` | Working code examples |
-| `doc_url` | str | `""` | Link to official docs |
-
-### PushExperienceInput (extraction input)
 
 What clients send when pushing experience data for LLM extraction.
 
@@ -124,6 +114,17 @@ Tags use `namespace:value` format. Five namespaces in two tiers:
 
 - `project:` — source project identifier
 - `pattern:` — lesson type: `failure-pattern`, `retry-pattern`, `success-pattern`
+
+### Validation
+
+- `parse_tag(tag)` raises `ValueError` if the tag lacks a colon, has an empty value, or uses an unrecognized namespace.
+- `validate_tags(tags)` returns a list of error messages (empty list means all valid).
+- The CLI rejects entries with invalid tags on `add` and `update`.
+
+### Inference
+
+`infer_tags_from_context(file_extensions, description)` derives tags automatically from file extensions and description keywords. Returns a sorted, deduplicated list.
+ `success-pattern`
 
 ### Validation
 

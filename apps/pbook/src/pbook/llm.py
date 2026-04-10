@@ -44,6 +44,7 @@ class ExtractionEntry(BaseModel):
     title: str
     content: str
     tags: list[str] = Field(default_factory=list)
+    embedding: bytes | None = None
 
 
 class ExtractionResult(BaseModel):
@@ -60,6 +61,14 @@ class ReviewResult(BaseModel):
     suggested_title: str = ""
     suggested_content: str = ""
     suggested_tags: list[str] = Field(default_factory=list)
+
+
+class ConsolidationResult(BaseModel):
+    """Structured output from the consolidation LLM call."""
+
+    merged_title: str
+    merged_content: str
+    merged_tags: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
