@@ -25,6 +25,7 @@ with workflow.unsafe.imports_passed_through():
         ThinkingConfig,
         resolve_model,
     )
+    from forge.workflow_blocks import batch_submit_and_wait
 
 PBOOK_TASK_QUEUE = "pbook-task-queue"
 
@@ -54,8 +55,6 @@ class TranscriptIngestionWorkflow:
 
     @workflow.run
     async def run(self, input_json: str) -> dict:
-        from forge.workflow_blocks import batch_submit_and_wait
-
         data = json.loads(input_json)
         session_id = data.get("session_id", "")
 
