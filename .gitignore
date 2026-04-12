@@ -54,3 +54,6 @@ sample-flows/**/*.svg
 .coverage
 forge.db
 .firecrawl/
+
+# Diataxis generated output
+diataxis/_build/

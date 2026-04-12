@@ -240,6 +240,50 @@ forge playbooks --task-id my-task      # Filter by source task
 | `--limit` | `20` | Max entries to show |
 | `--json` | off | Machine-readable JSON output |
 
+### `forge ingest`
+
+Ingest Claude Code conversation transcripts into pbook's knowledge store. Reads JSONL session files, analyzes them via the batch API, and hands extracted experiences to pbook's ExtractionWorkflow cross-queue.
+
+```bash
+forge ingest ~/.claude/projects/<id>/session.jsonl          # Single session
+forge ingest --all                                          # All sessions from ~/.claude/projects/
+forge ingest --all --project forge                          # Filter by project name
+forge ingest --all --dry-run                                # Preview without submitting
+forge ingest --all --force                                  # Reprocess already-ingested sessions
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--all` | off | Discover and ingest all sessions from `~/.claude/projects/` |
+| `--project` | — | Filter by project name (with `--all`) or override (with path) |
+| `--min-size` | `10240` | Minimum session file size in bytes (discovery only) |
+| `--dry-run` | off | Preview sessions without submitting |
+| `--force` | off | Reprocess already-ingested sessions |
+| `--json` | off | Machine-readable JSON output |
+| `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
+
+Requires pbook to be installed. Sessions already recorded in pbook's `ingested_sessions` table are skipped unless `--force` is passed.
+
+### `forge ocr-jobs`
+
+List OCR job submissions with file path, document ID, status, and timestamp.
+
+```bash
+forge ocr-jobs                         # List recent OCR jobs
+forge ocr-jobs --status succeeded      # Filter by status
+forge ocr-jobs --limit 10              # Limit results
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--limit` | `50` | Maximum number of jobs to return |
+| `--status` | — | Filter by status: `processing`, `succeeded`, `errored`, `unknown` |
+| `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
+
 ### `forge start`
 
 Start an arbitrary Temporal workflow by name. Useful for launching OCR, batch polling, or other registered workflows without a Python script.
