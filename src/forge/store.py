@@ -49,6 +49,38 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Custom SQLAlchemy types
+# ---------------------------------------------------------------------------
+
+
+class UTCDateTime(sa.types.TypeDecorator):
+    """Always-UTC DateTime column type.
+
+    SQLite cannot preserve tzinfo on DateTime columns, so we normalize
+    to UTC on the way in (stripping tz for storage) and re-attach UTC
+    on the way out. Naive inputs are assumed to already be UTC, per
+    project convention. Callers always receive tz-aware UTC datetimes.
+    """
+
+    impl = sa.DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is not None:
+            return value.astimezone(UTC).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+
+# ---------------------------------------------------------------------------
 # SQLAlchemy models
 # ---------------------------------------------------------------------------
 
@@ -76,7 +108,7 @@ class Interaction(Base):
     cache_creation_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     cache_read_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
 
@@ -90,7 +122,7 @@ class Run(Base):
     status: Mapped[str] = mapped_column(sa.String, nullable=False)
     result_json: Mapped[str] = mapped_column(sa.Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
 
@@ -104,13 +136,14 @@ class BatchJob(Base):
     status: Mapped[str] = mapped_column(sa.String, nullable=False)
     provider: Mapped[str] = mapped_column(sa.String, nullable=False, server_default="anthropic")
     file_path: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    document_id: Mapped[str | None] = mapped_column(sa.String, nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
 
@@ -126,7 +159,7 @@ class Playbook(Base):
     source_workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False)
     extraction_workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
 
@@ -149,7 +182,7 @@ class OcrResult(Base):
         sa.Boolean, nullable=False, default=False, server_default=sa.text("0"),
     )
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
 
@@ -162,7 +195,7 @@ class FileContentBlob(Base):
     mime_type: Mapped[str] = mapped_column(sa.String, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
 
@@ -182,7 +215,7 @@ class OcrImage(Base):
     bottom_right_x: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     bottom_right_y: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime,
+        UTCDateTime,
         default=lambda: datetime.now(UTC),
     )
 
@@ -561,8 +594,14 @@ def record_batch_submission(
     workflow_id: str,
     provider: str = "anthropic",
     file_path: str | None = None,
+    document_id: str | None = None,
 ) -> None:
-    """Insert a new batch job record with status 'submitted'."""
+    """Insert a new batch job record with status 'submitted'.
+
+    ``document_id`` groups chunks of a single submission together so
+    that the list_ocr_jobs query can distinguish resubmissions of the
+    same file. Defaults to ``request_id`` when not supplied.
+    """
     with engine.begin() as conn:
         conn.execute(
             sa.insert(BatchJob.__table__).values(
@@ -572,6 +611,7 @@ def record_batch_submission(
                 status="submitted",
                 provider=provider,
                 file_path=file_path,
+                document_id=document_id or request_id,
             )
         )
 
@@ -584,10 +624,13 @@ def record_batch_failure(
     error_message: str,
     provider: str = "anthropic",
     file_path: str | None = None,
+    document_id: str | None = None,
 ) -> None:
     """Insert a batch job record with status 'failed' and no batch_id.
 
     Used when the provider API call fails before returning a batch_id.
+    ``document_id`` groups chunks of a single submission together; see
+    ``record_batch_submission``.
     """
     with engine.begin() as conn:
         conn.execute(
@@ -599,6 +642,7 @@ def record_batch_failure(
                 provider=provider,
                 error_message=error_message,
                 file_path=file_path,
+                document_id=document_id or request_id,
             )
         )
 

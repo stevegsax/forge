@@ -173,6 +173,7 @@ class OcrSubmitWorkflow:
                 ).model_dump(),
                 "file_content_ref": chunk_ref_dict,
                 "store_workflow_id": store_handle.id,
+                "root_document_id": document_id,
             })
             batch_ref = await workflow.execute_activity(
                 "submit_ocr_batch",

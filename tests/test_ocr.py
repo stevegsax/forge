@@ -24,6 +24,7 @@ from forge.ocr.activities import (
     detect_mime_type,
     execute_check_ocr_duplicate,
     execute_export_ocr_document,
+    execute_list_ocr_jobs,
     execute_parse_ocr_result,
     execute_read_and_store_file,
     execute_read_file,
@@ -851,6 +852,9 @@ class TestSubmitOcrBatchFailureRecording:
             assert "400 Bad Request" in row["error_message"]
             assert row["workflow_id"] == "wf-store-fail"
             assert row["provider"] == "mistral"
+            # document_id flows through either from root_document_id in the
+            # submit JSON, or (as here) from ocr_input.document_id as fallback.
+            assert row["document_id"] == "doc-fail"
         finally:
             llm_mod.get_provider = original_get_provider
             store_mod.get_db_path = original_get_db_path
@@ -2533,3 +2537,488 @@ class TestBackfillHashFunctions:
     def test_update_ocr_file_hash_nonexistent(self, tmp_path: Path) -> None:
         engine, _ = _setup_db(tmp_path)
         assert update_ocr_file_hash(engine, "no-such-doc", "hash") is False
+
+
+# ---------------------------------------------------------------------------
+# execute_list_ocr_jobs
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteListOcrJobs:
+    """Tests for the OCR job list query — grouping, sort, filter, join."""
+
+    def _insert_batch_row(
+        self,
+        engine: Engine,
+        *,
+        request_id: str,
+        document_id: str,
+        file_path: str | None,
+        status: str,
+        created_at,
+        provider: str = "mistral",
+        batch_id: str | None = "b-1",
+    ) -> None:
+        """Directly insert a batch_jobs row with explicit timestamp."""
+        import sqlalchemy as sa
+
+        from forge.store import BatchJob
+
+        with engine.begin() as conn:
+            conn.execute(
+                sa.insert(BatchJob.__table__).values(
+                    id=request_id,
+                    batch_id=batch_id,
+                    workflow_id=f"wf-{request_id}",
+                    status=status,
+                    provider=provider,
+                    file_path=file_path,
+                    document_id=document_id,
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+            )
+
+    def test_single_submission_single_chunk_succeeded(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-1",
+            document_id="doc-1",
+            file_path="/data/a.pdf",
+            status="succeeded",
+            created_at=ts,
+        )
+        save_ocr_result(
+            engine,
+            document_id="doc-1",
+            file_path="/data/a.pdf",
+            text="content",
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b-1",
+            workflow_id="wf-req-1",
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert len(result.jobs) == 1
+        job = result.jobs[0]
+        assert job.file_path == "/data/a.pdf"
+        assert job.document_id == "doc-1"
+        assert job.status == "succeeded"
+        assert job.chunk_count == 1
+
+    def test_multi_chunk_single_submission(self, tmp_path: Path) -> None:
+        """All chunks of one submission collapse to a single row."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        base = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        for i in range(3):
+            self._insert_batch_row(
+                engine,
+                request_id=f"req-{i}",
+                document_id="doc-multi",
+                file_path="/data/multi.pdf",
+                status="succeeded",
+                created_at=base,
+            )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].chunk_count == 3
+        assert result.jobs[0].status == "succeeded"
+
+    def test_resubmission_appears_as_distinct_row(self, tmp_path: Path) -> None:
+        """Errored original and its resubmission each occupy their own row."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+
+        # Original errored submission
+        self._insert_batch_row(
+            engine,
+            request_id="req-old",
+            document_id="doc-old",
+            file_path="/data/same.pdf",
+            status="errored",
+            created_at=datetime(2026, 4, 13, 9, 0, 0, tzinfo=UTC),
+        )
+        # Resubmission — still processing
+        self._insert_batch_row(
+            engine,
+            request_id="req-new",
+            document_id="doc-new",
+            file_path="/data/same.pdf",
+            status="submitted",
+            created_at=datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC),
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 2
+        # Newest first (sorted by MAX(created_at) DESC)
+        assert result.jobs[0].document_id == "doc-new"
+        assert result.jobs[0].status == "processing"
+        assert result.jobs[1].document_id == "doc-old"
+        assert result.jobs[1].status == "errored"
+
+    def test_resubmission_old_errored_unaffected_by_new_success(
+        self, tmp_path: Path
+    ) -> None:
+        """A successful resubmission does NOT mark the old errored row as succeeded."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-old",
+            document_id="doc-old",
+            file_path="/data/same.pdf",
+            status="errored",
+            created_at=datetime(2026, 4, 13, 9, 0, 0, tzinfo=UTC),
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-new",
+            document_id="doc-new",
+            file_path="/data/same.pdf",
+            status="succeeded",
+            created_at=datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC),
+        )
+        save_ocr_result(
+            engine,
+            document_id="doc-new",
+            file_path="/data/same.pdf",
+            text="ok",
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b-new",
+            workflow_id="wf-new",
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        doc_ids_by_status = {job.status: job.document_id for job in result.jobs}
+        assert doc_ids_by_status["errored"] == "doc-old"
+        assert doc_ids_by_status["succeeded"] == "doc-new"
+        assert result.total == 2
+
+    def test_status_filter_errored_only(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-ok",
+            document_id="doc-ok",
+            file_path="/data/a.pdf",
+            status="succeeded",
+            created_at=ts,
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-err",
+            document_id="doc-err",
+            file_path="/data/b.pdf",
+            status="errored",
+            created_at=ts,
+        )
+
+        result = execute_list_ocr_jobs(engine, status_filter="errored")
+
+        assert result.total == 1
+        assert result.jobs[0].document_id == "doc-err"
+        assert result.jobs[0].status == "errored"
+
+    def test_sort_order_newest_first(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-old",
+            document_id="doc-old",
+            file_path="/data/old.pdf",
+            status="succeeded",
+            created_at=datetime(2026, 4, 10, 10, 0, 0, tzinfo=UTC),
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-new",
+            document_id="doc-new",
+            file_path="/data/new.pdf",
+            status="succeeded",
+            created_at=datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC),
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-mid",
+            document_id="doc-mid",
+            file_path="/data/mid.pdf",
+            status="succeeded",
+            created_at=datetime(2026, 4, 12, 10, 0, 0, tzinfo=UTC),
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        ids = [job.document_id for job in result.jobs]
+        assert ids == ["doc-new", "doc-mid", "doc-old"]
+
+    def test_limit_respected(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        base = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        for i in range(5):
+            self._insert_batch_row(
+                engine,
+                request_id=f"req-{i}",
+                document_id=f"doc-{i}",
+                file_path=f"/data/f{i}.pdf",
+                status="succeeded",
+                created_at=base,
+            )
+
+        result = execute_list_ocr_jobs(engine, limit=2)
+
+        assert len(result.jobs) == 2
+        assert result.total == 2
+
+    def test_excludes_marked_for_removal_results(self, tmp_path: Path) -> None:
+        """ocr_results rows marked for removal are excluded from the join.
+
+        The batch_jobs row still shows up (so the user can see the submission
+        happened), but the document_id field falls back to the batch_jobs
+        document_id since the ocr_results join is filtered out.
+        """
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-1",
+            document_id="doc-removed",
+            file_path="/data/x.pdf",
+            status="succeeded",
+            created_at=ts,
+        )
+        save_ocr_result(
+            engine,
+            document_id="doc-removed",
+            file_path="/data/x.pdf",
+            text="content",
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b-1",
+            workflow_id="wf-req-1",
+        )
+        mark_ocr_for_removal(engine, "doc-removed")
+
+        result = execute_list_ocr_jobs(engine)
+
+        # The batch_jobs row is still listed (submission history)
+        assert result.total == 1
+        # document_id falls back to the batch_jobs submission_document_id
+        # since the ocr_results row was filtered out by marked_for_removal.
+        assert result.jobs[0].document_id == "doc-removed"
+
+    def test_excludes_non_mistral_provider(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-mistral",
+            document_id="doc-m",
+            file_path="/data/m.pdf",
+            status="succeeded",
+            created_at=ts,
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-anthropic",
+            document_id="doc-a",
+            file_path="/data/a.pdf",
+            status="succeeded",
+            created_at=ts,
+            provider="anthropic",
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].document_id == "doc-m"
+
+    def test_excludes_rows_without_file_path(self, tmp_path: Path) -> None:
+        """Generic batch submissions (no file_path) must not appear."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-ocr",
+            document_id="doc-ocr",
+            file_path="/data/x.pdf",
+            status="succeeded",
+            created_at=ts,
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-generic",
+            document_id="doc-generic",
+            file_path=None,
+            status="succeeded",
+            created_at=ts,
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].document_id == "doc-ocr"
+
+    def test_mixed_chunk_statuses_any_errored(self, tmp_path: Path) -> None:
+        """If any chunk errored, the submission is 'errored'."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        base = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-0",
+            document_id="doc-mix",
+            file_path="/data/mix.pdf",
+            status="succeeded",
+            created_at=base,
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-1",
+            document_id="doc-mix",
+            file_path="/data/mix.pdf",
+            status="errored",
+            created_at=base,
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].status == "errored"
+        assert result.jobs[0].chunk_count == 2
+
+    def test_mixed_chunk_statuses_any_submitted_is_processing(
+        self, tmp_path: Path
+    ) -> None:
+        """If any chunk is still submitted (and none errored), status is 'processing'."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        base = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-0",
+            document_id="doc-proc",
+            file_path="/data/proc.pdf",
+            status="succeeded",
+            created_at=base,
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-1",
+            document_id="doc-proc",
+            file_path="/data/proc.pdf",
+            status="submitted",
+            created_at=base,
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].status == "processing"
+
+    def test_created_at_is_tz_aware_utc(self, tmp_path: Path) -> None:
+        """created_at must be emitted with an explicit UTC tz suffix.
+
+        Without this, downstream tools parsing the naive ISO string
+        (e.g. nushell `into datetime`) interpret the value as local
+        time and shift it by the local UTC offset, causing timestamps
+        to appear hours in the future.
+        """
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 17, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-tz",
+            document_id="doc-tz",
+            file_path="/data/tz.pdf",
+            status="succeeded",
+            created_at=ts,
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        emitted = result.jobs[0].created_at
+        # Must carry explicit UTC offset so clients parse correctly.
+        assert emitted.endswith("+00:00") or emitted.endswith("Z"), (
+            f"created_at lacks tz suffix: {emitted!r}"
+        )
+        # And must round-trip back to the same instant.
+        parsed = datetime.fromisoformat(emitted)
+        assert parsed.tzinfo is not None
+        assert parsed == ts
+
+    def test_batch_job_row_read_is_tz_aware_utc(self, tmp_path: Path) -> None:
+        """Direct BatchJob row reads return tz-aware UTC datetimes.
+
+        This validates the UTCDateTime TypeDecorator at the column level,
+        not just through the list_ocr_jobs serialization layer.
+        """
+        from datetime import UTC, datetime
+
+        from forge.store import get_batch_job
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 17, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-direct",
+            document_id="doc-direct",
+            file_path="/data/direct.pdf",
+            status="succeeded",
+            created_at=ts,
+        )
+
+        job = get_batch_job(engine, "req-direct")
+        assert job is not None
+        assert job["created_at"].tzinfo == UTC
+        assert job["created_at"] == ts
+        assert job["updated_at"].tzinfo == UTC

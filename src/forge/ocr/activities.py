@@ -737,6 +737,7 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     data = json.loads(input_json)
     ocr_input = OcrSubmitInput.model_validate(data["submit_input"])
     store_workflow_id = data["store_workflow_id"]
+    root_document_id = data.get("root_document_id") or ocr_input.document_id
 
     # Load file content from database
     db_path = get_db_path()
@@ -778,6 +779,7 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
                 error_message=str(exc),
                 provider=provider_name,
                 file_path=ocr_input.file_path,
+                document_id=root_document_id,
             )
         except Exception:
             logger.error("Failed to record batch failure", exc_info=True)
@@ -799,6 +801,7 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
         workflow_id=store_workflow_id,
         provider=provider_name,
         file_path=ocr_input.file_path,
+        document_id=root_document_id,
     )
 
     return result
@@ -1096,17 +1099,22 @@ def execute_list_ocr_jobs(
     limit: int = 50,
     status_filter: str = "",
 ) -> OcrListJobsResult:
-    """Query OCR submissions grouped by file_path.
+    """Query OCR submissions grouped by document_id.
 
-    Returns one entry per user submission with aggregate status derived
-    from the underlying batch_jobs rows and document_id from ocr_results
-    when available.
+    Returns one entry per submission — distinct from chunking, and
+    distinct from resubmissions of the same file_path. Aggregate
+    status is derived from the underlying batch_jobs rows, and the
+    ocr_results row is joined on document_id when available.
 
     Status logic:
     - Any chunk errored -> "errored"
     - Any chunk still submitted -> "processing"
     - All chunks succeeded -> "succeeded"
     - Otherwise -> "unknown"
+
+    Resubmissions each get a distinct row in the output — the old
+    errored submission and the new one are both visible, so logs can
+    be reviewed and the old row can be cleaned up later.
     """
     import sqlalchemy as sa
 
@@ -1115,11 +1123,14 @@ def execute_list_ocr_jobs(
     bj = BatchJob.__table__
     ocr = OcrResult.__table__
 
-    # Aggregate batch_jobs by file_path for mistral provider
+    # Aggregate batch_jobs by document_id (the submission-level grouper)
+    # plus file_path so we can surface both in the output without a
+    # second join. All chunks of one submission share both values.
     sub = (
         sa.select(
+            bj.c.document_id,
             bj.c.file_path,
-            sa.func.min(bj.c.created_at).label("created_at"),
+            sa.func.max(bj.c.created_at).label("created_at"),
             sa.func.count().label("chunk_count"),
             sa.func.count(sa.case((bj.c.status == "errored", 1))).label("n_errored"),
             sa.func.count(sa.case((bj.c.status == "submitted", 1))).label("n_submitted"),
@@ -1127,25 +1138,29 @@ def execute_list_ocr_jobs(
         )
         .where(bj.c.provider == "mistral")
         .where(bj.c.file_path.isnot(None))
-        .group_by(bj.c.file_path)
+        .where(bj.c.document_id.isnot(None))
+        .group_by(bj.c.document_id, bj.c.file_path)
     ).subquery("agg")
 
-    # Left join with ocr_results to pick up document_id for completed jobs
+    # Left join ocr_results on document_id (unique), so resubmissions
+    # pick up only their own completed row. Rows marked for removal
+    # are excluded so soft-deleted submissions don't bleed through.
     stmt = (
         sa.select(
+            sub.c.document_id.label("submission_document_id"),
             sub.c.file_path,
             sub.c.created_at,
             sub.c.chunk_count,
             sub.c.n_errored,
             sub.c.n_submitted,
             sub.c.n_succeeded,
-            ocr.c.document_id,
+            ocr.c.document_id.label("result_document_id"),
         )
         .select_from(
             sub.outerjoin(
                 ocr,
                 sa.and_(
-                    ocr.c.file_path == sub.c.file_path,
+                    ocr.c.document_id == sub.c.document_id,
                     ocr.c.marked_for_removal == sa.false(),
                 ),
             )
@@ -1171,9 +1186,18 @@ def execute_list_ocr_jobs(
         if status_filter and status != status_filter:
             continue
 
+        # Prefer the ocr_results document_id (confirms a stored result),
+        # but fall back to the batch_jobs document_id for in-flight or
+        # errored submissions so callers can still reference the row.
+        document_id = (
+            row["result_document_id"] or row["submission_document_id"] or ""
+        )
+
+        # BatchJob.created_at uses the UTCDateTime type decorator, so
+        # the value here is already a tz-aware UTC datetime.
         jobs.append(OcrJobEntry(
             file_path=row["file_path"],
-            document_id=row["document_id"] or "",
+            document_id=document_id,
             status=status,
             chunk_count=row["chunk_count"],
             created_at=row["created_at"].isoformat() if row["created_at"] else "",
