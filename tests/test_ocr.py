@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from temporalio import activity, workflow
@@ -686,20 +686,18 @@ class TestReadAndStoreFileContent:
         mock_provider = MagicMock()
         mock_provider.submit_batch = AsyncMock(return_value="batch-123")
 
-        import forge.llm_providers as llm_mod
         import forge.store as store_mod
 
-        original_get_provider = llm_mod.get_provider
         original_get_db_path = store_mod.get_db_path
         original_get_engine = store_mod.get_engine
         try:
-            llm_mod.get_provider = MagicMock(return_value=mock_provider)
             store_mod.get_db_path = lambda: db_path
             store_mod.get_engine = lambda _path: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
-            result = await submit_ocr_batch(input_json)
+            with patch("sax_llm.get_provider", return_value=mock_provider):
+                result = await submit_ocr_batch(input_json)
 
             assert result.batch_id == "batch-123"
             assert result.request_id  # non-empty UUID
@@ -710,7 +708,6 @@ class TestReadAndStoreFileContent:
             assert "document" in requests[0]["body"]
             assert call_args.kwargs.get("endpoint") == "/v1/ocr"
         finally:
-            llm_mod.get_provider = original_get_provider
             store_mod.get_db_path = original_get_db_path
             store_mod.get_engine = original_get_engine
 
@@ -755,25 +752,22 @@ class TestReadAndStoreFileContent:
         mock_provider = MagicMock()
         mock_provider.submit_batch = AsyncMock(return_value="batch-456")
 
-        import forge.llm_providers as llm_mod
         import forge.store as store_mod
 
-        original_get_provider = llm_mod.get_provider
         original_get_db_path = store_mod.get_db_path
         original_get_engine = store_mod.get_engine
         try:
-            llm_mod.get_provider = MagicMock(return_value=mock_provider)
             store_mod.get_db_path = lambda: db_path
             store_mod.get_engine = lambda _path: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
-            await submit_ocr_batch(input_json)
+            with patch("sax_llm.get_provider", return_value=mock_provider):
+                await submit_ocr_batch(input_json)
 
             # Verify the BLOB was deleted after successful submission
             assert get_file_content(engine, content_id) is None
         finally:
-            llm_mod.get_provider = original_get_provider
             store_mod.get_db_path = original_get_db_path
             store_mod.get_engine = original_get_engine
 
@@ -824,14 +818,11 @@ class TestSubmitOcrBatchFailureRecording:
         mock_provider = MagicMock()
         mock_provider.submit_batch = AsyncMock(side_effect=RuntimeError("400 Bad Request"))
 
-        import forge.llm_providers as llm_mod
         import forge.store as store_mod
 
-        original_get_provider = llm_mod.get_provider
         original_get_db_path = store_mod.get_db_path
         original_get_engine = store_mod.get_engine
         try:
-            llm_mod.get_provider = MagicMock(return_value=mock_provider)
             store_mod.get_db_path = lambda: db_path
             store_mod.get_engine = lambda _path: engine
 
@@ -839,7 +830,10 @@ class TestSubmitOcrBatchFailureRecording:
 
             input_json = self._build_input_json(content_id)
 
-            with pytest.raises(RuntimeError, match="400 Bad Request"):
+            with (
+                patch("sax_llm.get_provider", return_value=mock_provider),
+                pytest.raises(RuntimeError, match="400 Bad Request"),
+            ):
                 await submit_ocr_batch(input_json)
 
             # Verify a failed record was inserted
@@ -860,7 +854,6 @@ class TestSubmitOcrBatchFailureRecording:
             # submit JSON, or (as here) from ocr_input.document_id as fallback.
             assert row["document_id"] == "doc-fail"
         finally:
-            llm_mod.get_provider = original_get_provider
             store_mod.get_db_path = original_get_db_path
             store_mod.get_engine = original_get_engine
 
@@ -883,27 +876,28 @@ class TestSubmitOcrBatchFailureRecording:
         mock_provider = MagicMock()
         mock_provider.submit_batch = AsyncMock(side_effect=RuntimeError("API exploded"))
 
-        import forge.llm_providers as llm_mod
         import forge.store as store_mod
 
-        original_get_provider = llm_mod.get_provider
         original_get_db_path = store_mod.get_db_path
         original_get_engine = store_mod.get_engine
         original_record_failure = store_mod.record_batch_failure
         try:
-            llm_mod.get_provider = MagicMock(return_value=mock_provider)
             store_mod.get_db_path = lambda: db_path
             store_mod.get_engine = lambda _path: engine
-            store_mod.record_batch_failure = MagicMock(side_effect=RuntimeError("DB write failed"))
+            store_mod.record_batch_failure = MagicMock(
+                side_effect=RuntimeError("DB write failed")
+            )
 
             from forge.ocr.activities import submit_ocr_batch
 
             input_json = self._build_input_json(content_id)
 
-            with pytest.raises(RuntimeError, match="API exploded"):
+            with (
+                patch("sax_llm.get_provider", return_value=mock_provider),
+                pytest.raises(RuntimeError, match="API exploded"),
+            ):
                 await submit_ocr_batch(input_json)
         finally:
-            llm_mod.get_provider = original_get_provider
             store_mod.get_db_path = original_get_db_path
             store_mod.get_engine = original_get_engine
             store_mod.record_batch_failure = original_record_failure
