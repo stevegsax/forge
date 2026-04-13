@@ -63,12 +63,14 @@ class OcrGatherWorkflow:
         )
 
         # Reassemble chunk results into a single OCR result
-        reassemble_data = json.dumps({
-            "document_id": input.document_id,
-            "chunk_document_ids": input.chunk_document_ids,
-            "file_path": input.file_path,
-            "total_pages": input.total_pages,
-        })
+        reassemble_data = json.dumps(
+            {
+                "document_id": input.document_id,
+                "chunk_document_ids": input.chunk_document_ids,
+                "file_path": input.file_path,
+                "total_pages": input.total_pages,
+            }
+        )
         result = await workflow.execute_activity(
             "reassemble_ocr_chunks",
             reassemble_data,

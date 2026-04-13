@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from forge.models import BatchJobStatus
+
 if TYPE_CHECKING:
     from sqlalchemy import Engine
 
@@ -179,7 +181,10 @@ class OcrResult(Base):
     workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False)
     file_hash: Mapped[str | None] = mapped_column(sa.String, nullable=True, index=True)
     marked_for_removal: Mapped[bool] = mapped_column(
-        sa.Boolean, nullable=False, default=False, server_default=sa.text("0"),
+        sa.Boolean,
+        nullable=False,
+        default=False,
+        server_default=sa.text("0"),
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
@@ -608,7 +613,7 @@ def record_batch_submission(
                 id=request_id,
                 batch_id=batch_id,
                 workflow_id=workflow_id,
-                status="submitted",
+                status=BatchJobStatus.SUBMITTED,
                 provider=provider,
                 file_path=file_path,
                 document_id=document_id or request_id,
@@ -638,7 +643,7 @@ def record_batch_failure(
                 id=request_id,
                 batch_id=None,
                 workflow_id=workflow_id,
-                status="failed",
+                status=BatchJobStatus.FAILED,
                 provider=provider,
                 error_message=error_message,
                 file_path=file_path,
@@ -651,17 +656,23 @@ def update_batch_status(
     engine: Engine,
     *,
     request_id: str,
-    status: str,
+    status: BatchJobStatus | str,
     error_message: str | None = None,
 ) -> None:
-    """Update batch job status and timestamp."""
+    """Update batch job status and timestamp.
+
+    Accepts either a ``BatchJobStatus`` member or its string value. Unknown
+    strings raise ``ValueError`` — this is the system-boundary validation
+    point that prevents garbage statuses from reaching the DB.
+    """
+    validated = BatchJobStatus(status)
     t = BatchJob.__table__
     with engine.begin() as conn:
         conn.execute(
             sa.update(t)
             .where(t.c.id == request_id)
             .values(
-                status=status,
+                status=validated,
                 error_message=error_message,
                 updated_at=datetime.now(UTC),
             )
@@ -671,7 +682,7 @@ def update_batch_status(
 def get_pending_batch_jobs(engine: Engine) -> list[dict]:
     """Query batch jobs with status 'submitted', ordered by created_at."""
     t = BatchJob.__table__
-    stmt = t.select().where(t.c.status == "submitted").order_by(t.c.created_at)
+    stmt = t.select().where(t.c.status == BatchJobStatus.SUBMITTED).order_by(t.c.created_at)
 
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
@@ -791,9 +802,7 @@ def mark_ocr_for_removal(engine: Engine, document_id: str) -> bool:
     t = OcrResult.__table__
     with engine.begin() as conn:
         result = conn.execute(
-            sa.update(t)
-            .where(t.c.document_id == document_id)
-            .values(marked_for_removal=True)
+            sa.update(t).where(t.c.document_id == document_id).values(marked_for_removal=True)
         )
         return result.rowcount > 0
 
@@ -803,9 +812,7 @@ def clear_ocr_removal_mark(engine: Engine, document_id: str) -> bool:
     t = OcrResult.__table__
     with engine.begin() as conn:
         result = conn.execute(
-            sa.update(t)
-            .where(t.c.document_id == document_id)
-            .values(marked_for_removal=False)
+            sa.update(t).where(t.c.document_id == document_id).values(marked_for_removal=False)
         )
         return result.rowcount > 0
 
@@ -813,11 +820,7 @@ def clear_ocr_removal_mark(engine: Engine, document_id: str) -> bool:
 def get_ocr_results_missing_hash(engine: Engine) -> list[dict]:
     """Return OCR results that have a file_path but no file_hash."""
     t = OcrResult.__table__
-    stmt = (
-        t.select()
-        .where(t.c.file_hash.is_(None))
-        .where(t.c.file_path.isnot(None))
-    )
+    stmt = t.select().where(t.c.file_hash.is_(None)).where(t.c.file_path.isnot(None))
     with engine.connect() as conn:
         return [dict(row) for row in conn.execute(stmt).mappings()]
 
@@ -827,9 +830,7 @@ def update_ocr_file_hash(engine: Engine, document_id: str, file_hash: str) -> bo
     t = OcrResult.__table__
     with engine.begin() as conn:
         result = conn.execute(
-            sa.update(t)
-            .where(t.c.document_id == document_id)
-            .values(file_hash=file_hash)
+            sa.update(t).where(t.c.document_id == document_id).values(file_hash=file_hash)
         )
         return result.rowcount > 0
 
@@ -927,11 +928,7 @@ def update_ocr_images_document_id(
         return
     t = OcrImage.__table__
     with engine.begin() as conn:
-        conn.execute(
-            sa.update(t)
-            .where(t.c.id.in_(image_ids))
-            .values(document_id=document_id)
-        )
+        conn.execute(sa.update(t).where(t.c.id.in_(image_ids)).values(document_id=document_id))
 
 
 def reassign_ocr_images_document_id(

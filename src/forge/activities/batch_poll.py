@@ -19,7 +19,12 @@ from sax_llm.models import BatchPollStatus
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
-from forge.models import BatchPollerInput, BatchPollerResult, BatchResult
+from forge.models import (
+    BatchJobStatus,
+    BatchPollerInput,
+    BatchPollerResult,
+    BatchResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -31,11 +36,13 @@ logger = logging.getLogger(__name__)
 
 _MISSING_THRESHOLD = timedelta(hours=24)
 
-_TERMINAL_FAILURE_STATUSES = frozenset({
-    BatchPollStatus.FAILED,
-    BatchPollStatus.EXPIRED,
-    BatchPollStatus.CANCELED,
-})
+_TERMINAL_FAILURE_STATUSES = frozenset(
+    {
+        BatchPollStatus.FAILED,
+        BatchPollStatus.EXPIRED,
+        BatchPollStatus.CANCELED,
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Module-global Temporal client (set by worker.py before activities run)
@@ -106,7 +113,7 @@ async def execute_poll_batch_results(
                 _safe_update_status(
                     update_status_fn,
                     request_id=request_id,
-                    status="missing",
+                    status=BatchJobStatus.MISSING,
                     error_message="Batch unretrievable after 24h",
                 )
             continue
@@ -135,10 +142,13 @@ async def execute_poll_batch_results(
                 )
                 errors_found += 1
 
+            # BatchPollStatus.FAILED/EXPIRED/CANCELED values match the
+            # corresponding BatchJobStatus members by string value, so the
+            # raw .value is valid for the store column.
             _safe_update_status(
                 update_status_fn,
                 request_id=request_id,
-                status=poll_result.status.value,
+                status=BatchJobStatus(poll_result.status.value),
                 error_message=error_msg,
             )
             continue
@@ -195,7 +205,12 @@ async def execute_poll_batch_results(
                 )
                 errors_found += 1
 
-        final_status = "succeeded" if job_signals > 0 else "errored"
+        # On signal delivery we advance the row to STORING — not SUCCEEDED.
+        # SUCCEEDED is reserved for the downstream store workflow to write
+        # after it has actually committed its output (e.g. ocr_results row).
+        # This prevents the list view from showing "done" for a submission
+        # whose store step later failed or is still in progress.
+        final_status = BatchJobStatus.STORING if job_signals > 0 else BatchJobStatus.ERRORED
         _safe_update_status(
             update_status_fn,
             request_id=request_id,
@@ -226,7 +241,7 @@ def _safe_update_status(
     update_fn: Callable[..., None],
     *,
     request_id: str,
-    status: str,
+    status: BatchJobStatus | str,
     error_message: str | None = None,
 ) -> None:
     """Best-effort status update. Never raises (D42)."""
@@ -272,7 +287,7 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
         def update_status_fn(
             *,
             request_id: str,
-            status: str,
+            status: BatchJobStatus | str,
             error_message: str | None = None,
         ) -> None:
             update_batch_status(

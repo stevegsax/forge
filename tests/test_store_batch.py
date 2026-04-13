@@ -107,6 +107,21 @@ class TestUpdateBatchStatus:
         assert job is not None
         assert job["status"] == "succeeded"
 
+    def test_update_rejects_unknown_status(self, tmp_path: Path) -> None:
+        """Unknown status strings must raise at the boundary — no silent writes."""
+        import pytest
+
+        engine, _ = _setup_db(tmp_path)
+        record_batch_submission(
+            engine,
+            request_id="req-validate",
+            batch_id="msgbatch_v",
+            workflow_id="wf-v",
+        )
+
+        with pytest.raises(ValueError):
+            update_batch_status(engine, request_id="req-validate", status="not_a_real_status")
+
     def test_update_with_error_message(self, tmp_path: Path) -> None:
         engine, _ = _setup_db(tmp_path)
         record_batch_submission(

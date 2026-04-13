@@ -6,7 +6,7 @@
 #
 #   ocr submit ./doc.pdf
 #   ocr submit --sync ./receipt.png
-#   ocr list | where status == "succeeded" | each { |r| ocr export doc $r.document_id }
+#   ocr list | where status == "succeeded" | get document_id | each {|id| ocr export $id }
 #   ocr list | where file_path =~ "signed" | sort-by file_path
 #   ls *.pdf | par-each { |f| ocr submit $f.name }
 #   ocr mark a1b2c3d4-...
@@ -83,7 +83,7 @@ export def list [
 
 # Export OCR results (text and images) to disk.
 # Returns a record with export_dir, markdown_path, image_count.
-export def "export doc" [
+export def export [
     document_id: string            # Document to export
     --output-dir (-o): directory   # Override export directory
 ]: nothing -> record {

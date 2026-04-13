@@ -13,7 +13,7 @@ from forge.activities.batch_poll import (
     _ensure_utc,
     execute_poll_batch_results,
 )
-from forge.models import BatchPollerResult
+from forge.models import BatchJobStatus, BatchPollerResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -34,7 +34,7 @@ def _make_pending_job(
         "batch_id": batch_id,
         "workflow_id": workflow_id,
         "created_at": created_at or datetime.now(UTC),
-        "status": "submitted",
+        "status": BatchJobStatus.SUBMITTED,
         "provider": provider,
     }
 
@@ -50,8 +50,7 @@ def _make_mock_provider(
         provider.poll_batch = AsyncMock(side_effect=poll_error)
     else:
         provider.poll_batch = AsyncMock(
-            return_value=poll_result
-            or ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
+            return_value=poll_result or ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
         )
     return provider
 
@@ -140,9 +139,11 @@ class TestExecutePollBatchResults:
         assert signal_args[0][0] == "batch_result_received"
         assert signal_args[0][1].raw_response_json == '{"text": "hi"}'
 
-        # Verify status update
+        # Verify status update: the poller only advances to STORING on
+        # signal delivery. SUCCEEDED is written later by OcrStoreWorkflow
+        # after it commits to ocr_results.
         assert len(updates) == 1
-        assert updates[0]["status"] == "succeeded"
+        assert updates[0]["status"] == BatchJobStatus.STORING
 
     @pytest.mark.asyncio
     async def test_errored_entry_sends_error_signal(self) -> None:
@@ -209,7 +210,7 @@ class TestExecutePollBatchResults:
                 await execute_poll_batch_results([job], temporal, track_update)
 
         assert len(updates) == 1
-        assert updates[0]["status"] == "missing"
+        assert updates[0]["status"] == BatchJobStatus.MISSING
 
     @pytest.mark.asyncio
     async def test_signal_delivery_failure_increments_errors(self) -> None:
@@ -264,9 +265,10 @@ class TestExecutePollBatchResults:
         assert status.value in signal.error
         assert signal.result_type == "errored"
 
-        # DB status was updated to the terminal state
+        # DB status was updated to the terminal state. BatchPollStatus
+        # values equal BatchJobStatus values for the three terminal failures.
         assert len(updates) == 1
-        assert updates[0]["status"] == status.value
+        assert updates[0]["status"] == BatchJobStatus(status.value)
         assert updates[0]["error_message"] is not None
 
     @pytest.mark.asyncio
@@ -286,9 +288,10 @@ class TestExecutePollBatchResults:
             with pytest.raises(RuntimeError, match="1 error"):
                 await execute_poll_batch_results([job], temporal, track_update)
 
-        # DB status should still be updated even when signal fails
+        # DB status should still be updated even when signal fails.
+        # BatchPollStatus.FAILED maps to BatchJobStatus.FAILED.
         assert len(updates) == 1
-        assert updates[0]["status"] == "failed"
+        assert updates[0]["status"] == BatchJobStatus.FAILED
 
     @pytest.mark.asyncio
     async def test_multiple_pending_jobs_all_processed(self) -> None:

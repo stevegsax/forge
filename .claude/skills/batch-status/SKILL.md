@@ -62,7 +62,11 @@ The Forge database must exist. The script resolves the path using:
 
 After running the script, provide a brief summary:
 
-- Total batch jobs by status (submitted, succeeded, failed, expired, etc.)
+- Total batch jobs by status. Valid values are `submitted`, `storing`,
+    `succeeded`, `errored`, `failed`, `expired`, `canceled`, `missing`.
+    Note: `storing` means the provider completed the batch and the
+    downstream store workflow is writing results — it is NOT terminal.
+    A row still in `storing` long after creation is stuck.
 - How many OCR results have been stored
 - Any failed or errored jobs with their error messages
 - Whether pending jobs exist that haven't completed yet

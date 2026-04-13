@@ -1030,14 +1030,53 @@ class ExtractionWorkflowResult(BaseModel):
 
 
 class BatchJobStatus(StrEnum):
-    """Status of a batch job in the Anthropic Message Batches API."""
+    """Lifecycle state of a batch_jobs row.
+
+    Happy path: SUBMITTED -> STORING -> SUCCEEDED.
+
+    Failure paths:
+    - FAILED: provider API refused the submission before returning a batch_id.
+    - ERRORED: per-entry failure from the provider, or the parse/store step
+      raised after signal delivery.
+    - EXPIRED / CANCELED: terminal provider states propagated from
+      BatchPollStatus.
+    - MISSING: batch unretrievable after 24h; the poller gave up.
+    """
 
     SUBMITTED = "submitted"
+    """Row created; batch in flight at the provider, waiting for completion."""
+
+    STORING = "storing"
+    """Provider reported the batch complete and the poller delivered the
+    result signal to the waiting workflow. Parse + write to ``ocr_results``
+    (or the equivalent consumer for non-OCR batches) is in progress. A row
+    stuck in this state past the store workflow's retry budget is a genuine
+    failure."""
+
     SUCCEEDED = "succeeded"
+    """End-to-end complete: the downstream consumer (e.g. OcrStoreWorkflow)
+    has committed its output. Only the consumer writes this value, and only
+    after its write succeeds."""
+
     ERRORED = "errored"
+    """Per-entry failure from the provider, or the parse/store step raised
+    after signal delivery."""
+
+    FAILED = "failed"
+    """Provider API refused the submission before returning a batch_id.
+    Written by ``record_batch_failure`` when the submit activity raises."""
+
     EXPIRED = "expired"
+    """Provider marked the batch as expired. Written from
+    ``poll_result.status.value`` in the poller's terminal-failure branch."""
+
     CANCELED = "canceled"
+    """Provider marked the batch as canceled. Written from
+    ``poll_result.status.value`` in the poller's terminal-failure branch."""
+
     MISSING = "missing"
+    """Batch unretrievable after 24h. The poller gave up and marked the row
+    so it stops being re-polled."""
 
 
 class BatchSubmitInput(BaseModel):

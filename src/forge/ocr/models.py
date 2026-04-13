@@ -2,7 +2,32 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, Field, field_validator
+
+
+class OcrJobDerivedStatus(StrEnum):
+    """Aggregated OCR job status as shown by ``ocr list``.
+
+    Derived from the underlying ``BatchJobStatus`` values of a submission's
+    chunks. See ``execute_list_ocr_jobs`` for the derivation rules. This is
+    a display-level label, distinct from ``BatchJobStatus`` which is the
+    DB-level per-chunk state.
+    """
+
+    PROCESSING = "processing"
+    """At least one chunk is still SUBMITTED or STORING — not done yet."""
+
+    SUCCEEDED = "succeeded"
+    """Every chunk reached BatchJobStatus.SUCCEEDED."""
+
+    ERRORED = "errored"
+    """At least one chunk is in ERRORED / FAILED / EXPIRED / CANCELED /
+    MISSING."""
+
+    UNKNOWN = "unknown"
+    """Chunks are in a combination that doesn't match any rule above."""
 
 
 class OcrSubmitInput(BaseModel):
@@ -18,6 +43,7 @@ class OcrSubmitInput(BaseModel):
             msg = "file_path must be a non-empty string"
             raise ValueError(msg)
         return v
+
     model_name: str = "mistral:mistral-ocr-latest"
     max_tokens: int = 16384
     document_id: str = Field(default="", description="Auto-generated if empty.")
@@ -146,8 +172,7 @@ class OcrExportInput(BaseModel):
     output_dir: str = Field(
         default="",
         description=(
-            "Override export directory. Defaults to"
-            " $XDG_DATA_HOME/forge/ocr-export/<document_id>."
+            "Override export directory. Defaults to $XDG_DATA_HOME/forge/ocr-export/<document_id>."
         ),
     )
 
@@ -159,6 +184,7 @@ class OcrExportResult(BaseModel):
     export_dir: str
     markdown_path: str
     image_count: int
+    status: str = "exported"
 
 
 class OcrMarkInput(BaseModel):
@@ -182,11 +208,15 @@ class OcrMarkResult(BaseModel):
 
 
 class OcrJobEntry(BaseModel):
-    """A single OCR job submission as seen by the user."""
+    """A single OCR job submission as seen by the user.
+
+    ``status`` values are ``OcrJobDerivedStatus`` members, serialized as
+    their string value for JSON compatibility.
+    """
 
     file_path: str
     document_id: str = ""
-    status: str = ""  # "processing", "succeeded", "errored", "unknown"
+    status: str = ""
     chunk_count: int = 1
     created_at: str = ""
 
@@ -221,6 +251,7 @@ class OcrSyncInput(BaseModel):
             msg = "file_path must be a non-empty string"
             raise ValueError(msg)
         return v
+
     model_name: str = "mistral:mistral-ocr-latest"
     document_id: str = Field(default="", description="Auto-generated if empty.")
     skip_duplicate_detection: bool = Field(

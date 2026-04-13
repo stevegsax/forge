@@ -89,6 +89,7 @@ from forge.ocr.activities import (
     split_file_into_chunks,
     store_ocr_result,
     submit_ocr_batch,
+    update_batch_job_status,
 )
 from forge.ocr.workflow_export import OcrExportWorkflow
 from forge.ocr.workflow_gather import OcrGatherWorkflow
@@ -193,9 +194,11 @@ async def _ensure_schedule(
     except ScheduleAlreadyRunningError:
         # Update the existing schedule with the new interval
         handle = client.get_schedule_handle(schedule_id)
+
         async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
             input.description.schedule.spec = schedule.spec
             return ScheduleUpdate(schedule=input.description.schedule)
+
         await handle.update(_updater)
         logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
 
@@ -272,9 +275,7 @@ async def run_worker(
         assert BatchIngestionWorkflow is not None
         workflows.extend([TranscriptIngestionWorkflow, BatchIngestionWorkflow])
     else:
-        logger.warning(
-            "pbook not installed — ingestion workflows skipped at worker registration"
-        )
+        logger.warning("pbook not installed — ingestion workflows skipped at worker registration")
 
     activities: list = [
         assemble_conflict_resolution_context,
@@ -322,6 +323,7 @@ async def run_worker(
         submit_ocr_batch,
         parse_ocr_result,
         store_ocr_result,
+        update_batch_job_status,
         reassemble_ocr_chunks,
     ]
     if _INGESTION_AVAILABLE:

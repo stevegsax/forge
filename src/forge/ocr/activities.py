@@ -37,6 +37,7 @@ from forge.ocr.models import (
     OcrBatchRef,
     OcrDuplicateCheckResult,
     OcrExportResult,
+    OcrJobDerivedStatus,
     OcrJobEntry,
     OcrListJobsResult,
     OcrMarkResult,
@@ -260,9 +261,7 @@ async def execute_submit_ocr_batch(
     body = build_ocr_batch_body(file_content.base64_data, file_content.mime_type)
     request_id = str(uuid.uuid4())
     batch_request = {"custom_id": request_id, "body": body}
-    batch_id = await provider.submit_batch(
-        [batch_request], model, endpoint="/v1/ocr"
-    )
+    batch_id = await provider.submit_batch([batch_request], model, endpoint="/v1/ocr")
 
     return OcrBatchRef(
         batch_id=batch_id,
@@ -591,8 +590,13 @@ def execute_export_ocr_document(
     # Load text
     ocr_row = get_ocr_result(engine, document_id)
     if ocr_row is None:
-        msg = f"No OCR result found for document_id={document_id}"
-        raise RuntimeError(msg)
+        return OcrExportResult(
+            document_id=document_id,
+            export_dir="",
+            markdown_path="",
+            image_count=0,
+            status="not_found",
+        )
 
     text: str = ocr_row["text"]
 
@@ -613,9 +617,7 @@ def execute_export_ocr_document(
         # Load full image blob
         img_full = get_ocr_image(engine, image_id)
         if img_full is not None:
-            (export_path / filename).write_bytes(
-                _strip_image_prefix(img_full["data"])
-            )
+            (export_path / filename).write_bytes(_strip_image_prefix(img_full["data"]))
 
     # Rewrite URIs and write markdown
     exported_text = rewrite_ocr_uris_to_local(text, id_to_filename)
@@ -766,9 +768,7 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     provider_name, _ = parse_model_id(ocr_input.model_name)
 
     try:
-        result = await execute_submit_ocr_batch(
-            ocr_input, file_content, provider
-        )
+        result = await execute_submit_ocr_batch(ocr_input, file_content, provider)
     except Exception as exc:
         request_id = str(uuid.uuid4())
         try:
@@ -823,6 +823,41 @@ async def store_ocr_result(input_json: str) -> OcrStoreResult:
 
 
 @activity.defn
+async def update_batch_job_status(input_json: str) -> None:
+    """Activity: update the status column of a batch_jobs row.
+
+    Called by OcrStoreWorkflow (and any other consumer) to promote a row
+    to ``SUCCEEDED`` after its downstream write completes, or to
+    ``ERRORED`` when the parse/store step fails after signal delivery.
+
+    Input JSON keys: ``request_id``, ``status``, optional ``error_message``.
+    ``status`` must be a valid ``BatchJobStatus`` value — ``update_batch_status``
+    raises ``ValueError`` on unknown strings.
+    """
+    from forge.models import BatchJobStatus
+    from forge.store import get_db_path, get_engine, update_batch_status
+
+    data = json.loads(input_json)
+    db_path = get_db_path()
+    if db_path is None:
+        logger.warning("Skipping batch job status update: database is disabled")
+        return
+
+    engine = get_engine(db_path)
+    update_batch_status(
+        engine,
+        request_id=data["request_id"],
+        status=BatchJobStatus(data["status"]),
+        error_message=data.get("error_message"),
+    )
+    logger.info(
+        "Updated batch_jobs status: request_id=%s status=%s",
+        data["request_id"],
+        data["status"],
+    )
+
+
+@activity.defn
 async def call_ocr_sync(input_json: str) -> OcrStoreResult:
     """Activity: call OCR synchronously and store the result.
 
@@ -853,9 +888,7 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
     content_id = data.get("content_id", "")
     mime_type = data.get("mime_type", "")
 
-    logger.info(
-        "Sync OCR: document_id=%s file=%s", document_id, file_path
-    )
+    logger.info("Sync OCR: document_id=%s file=%s", document_id, file_path)
 
     # Load file content — from blob store (chunks) or filesystem
     if content_id:
@@ -1118,6 +1151,7 @@ def execute_list_ocr_jobs(
     """
     import sqlalchemy as sa
 
+    from forge.models import BatchJobStatus
     from forge.store import BatchJob, OcrResult
 
     bj = BatchJob.__table__
@@ -1132,9 +1166,15 @@ def execute_list_ocr_jobs(
             bj.c.file_path,
             sa.func.max(bj.c.created_at).label("created_at"),
             sa.func.count().label("chunk_count"),
-            sa.func.count(sa.case((bj.c.status == "errored", 1))).label("n_errored"),
-            sa.func.count(sa.case((bj.c.status == "submitted", 1))).label("n_submitted"),
-            sa.func.count(sa.case((bj.c.status == "succeeded", 1))).label("n_succeeded"),
+            sa.func.count(sa.case((bj.c.status == BatchJobStatus.ERRORED, 1))).label("n_errored"),
+            sa.func.count(sa.case((bj.c.status == BatchJobStatus.FAILED, 1))).label("n_failed"),
+            sa.func.count(sa.case((bj.c.status == BatchJobStatus.SUBMITTED, 1))).label(
+                "n_submitted"
+            ),
+            sa.func.count(sa.case((bj.c.status == BatchJobStatus.STORING, 1))).label("n_storing"),
+            sa.func.count(sa.case((bj.c.status == BatchJobStatus.SUCCEEDED, 1))).label(
+                "n_succeeded"
+            ),
         )
         .where(bj.c.provider == "mistral")
         .where(bj.c.file_path.isnot(None))
@@ -1152,7 +1192,9 @@ def execute_list_ocr_jobs(
             sub.c.created_at,
             sub.c.chunk_count,
             sub.c.n_errored,
+            sub.c.n_failed,
             sub.c.n_submitted,
+            sub.c.n_storing,
             sub.c.n_succeeded,
             ocr.c.document_id.label("result_document_id"),
         )
@@ -1174,14 +1216,16 @@ def execute_list_ocr_jobs(
 
     jobs: list[OcrJobEntry] = []
     for row in rows:
-        if row["n_errored"] > 0:
-            status = "errored"
-        elif row["n_submitted"] > 0:
-            status = "processing"
+        # Derive list-level status from chunk-level BatchJobStatus counts.
+        # See OcrJobDerivedStatus in forge.ocr.models for the label vocabulary.
+        if row["n_errored"] > 0 or row["n_failed"] > 0:
+            status = OcrJobDerivedStatus.ERRORED.value
+        elif row["n_submitted"] > 0 or row["n_storing"] > 0:
+            status = OcrJobDerivedStatus.PROCESSING.value
         elif row["n_succeeded"] == row["chunk_count"]:
-            status = "succeeded"
+            status = OcrJobDerivedStatus.SUCCEEDED.value
         else:
-            status = "unknown"
+            status = OcrJobDerivedStatus.UNKNOWN.value
 
         if status_filter and status != status_filter:
             continue
@@ -1189,19 +1233,19 @@ def execute_list_ocr_jobs(
         # Prefer the ocr_results document_id (confirms a stored result),
         # but fall back to the batch_jobs document_id for in-flight or
         # errored submissions so callers can still reference the row.
-        document_id = (
-            row["result_document_id"] or row["submission_document_id"] or ""
-        )
+        document_id = row["result_document_id"] or row["submission_document_id"] or ""
 
         # BatchJob.created_at uses the UTCDateTime type decorator, so
         # the value here is already a tz-aware UTC datetime.
-        jobs.append(OcrJobEntry(
-            file_path=row["file_path"],
-            document_id=document_id,
-            status=status,
-            chunk_count=row["chunk_count"],
-            created_at=row["created_at"].isoformat() if row["created_at"] else "",
-        ))
+        jobs.append(
+            OcrJobEntry(
+                file_path=row["file_path"],
+                document_id=document_id,
+                status=status,
+                chunk_count=row["chunk_count"],
+                created_at=row["created_at"].isoformat() if row["created_at"] else "",
+            )
+        )
 
     return OcrListJobsResult(jobs=jobs, total=len(jobs))
 

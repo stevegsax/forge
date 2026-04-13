@@ -101,9 +101,10 @@
 | Field | Type | Description |
 |---|---|---|
 | `document_id` | `str` | The exported document ID. |
-| `export_dir` | `str` | Absolute path to the export directory. |
-| `markdown_path` | `str` | Absolute path to the exported markdown file. |
+| `export_dir` | `str` | Absolute path to the export directory. Empty string when `status` is `not_found`. |
+| `markdown_path` | `str` | Absolute path to the exported markdown file. Empty string when `status` is `not_found`. |
 | `image_count` | `int` | Number of images written to disk. |
+| `status` | `str` | `exported` on success, `not_found` when no OCR result exists for the document. |
 
 ### OcrBatchRef
 
@@ -162,9 +163,29 @@
 | `chunk_count` | `int` | Number of batch chunks for this submission. |
 | `created_at` | `str` | ISO 8601 timestamp of the earliest chunk submission. |
 
-Status is derived from the underlying `batch_jobs` rows for a given file path:
-any chunk errored means `errored`; any chunk still submitted means `processing`;
-all chunks succeeded means `succeeded`.
+Status is a two-layer model:
+
+- **Chunk-level** (`batch_jobs.status`, values in `BatchJobStatus`) tracks the
+    lifecycle of a single batch row through `submitted` → `storing` →
+    `succeeded`, plus failure states (`errored`, `failed`, `expired`,
+    `canceled`, `missing`). See
+    [llm-dispatch.md](llm-dispatch.md#batch-job-states) for each state's
+    precise meaning.
+- **Aggregate-level** (`OcrJobEntry.status`, values in `OcrJobDerivedStatus`)
+    collapses the chunks of a submission into a single display label shown by
+    `ocr list`: `processing`, `succeeded`, `errored`, or `unknown`.
+
+Derivation rules:
+
+- Any chunk in `errored` / `failed` → the aggregate is `errored`.
+- Otherwise, any chunk still in `submitted` or `storing` → `processing`.
+- All chunks in `succeeded` → `succeeded`.
+- Otherwise → `unknown`.
+
+Note that `succeeded` at the aggregate level is only reached after every
+chunk's `ocr_results` row has been committed — the `storing` chunk-level
+state keeps the submission in `processing` until the store workflow finishes
+writing.
 
 
 ## Database Tables

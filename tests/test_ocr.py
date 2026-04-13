@@ -306,9 +306,7 @@ class TestExecuteSubmitOcrBatch:
             file_size_bytes=4,
         )
 
-        result = await execute_submit_ocr_batch(
-            inp, file_content, mock_provider
-        )
+        result = await execute_submit_ocr_batch(inp, file_content, mock_provider)
 
         assert result.batch_id == "batch-123"
         assert result.request_id  # non-empty UUID
@@ -338,9 +336,7 @@ class TestExecuteSubmitOcrBatch:
             file_size_bytes=4,
         )
 
-        result = await execute_submit_ocr_batch(
-            inp, file_content, mock_provider
-        )
+        result = await execute_submit_ocr_batch(inp, file_content, mock_provider)
         assert result.batch_id == "batch-456"
         assert result.request_id  # non-empty UUID
 
@@ -360,9 +356,7 @@ class TestExecuteSubmitOcrBatch:
             file_size_bytes=5,
         )
 
-        result = await execute_submit_ocr_batch(
-            inp, file_content, mock_provider
-        )
+        result = await execute_submit_ocr_batch(inp, file_content, mock_provider)
         assert result.batch_id == "batch-789"
 
         requests = mock_provider.submit_batch.call_args.args[0]
@@ -371,17 +365,19 @@ class TestExecuteSubmitOcrBatch:
 
 class TestExecuteParseOcrResult:
     def test_parses_ocr_response(self) -> None:
-        raw_json = json.dumps({
-            "pages": [
-                {"markdown": "Page one text."},
-                {"markdown": "Page two text."},
-            ],
-            "model": "mistral-ocr-latest",
-            "usage_info": {
-                "pages_processed": 2,
-                "doc_size_bytes": 50000,
-            },
-        })
+        raw_json = json.dumps(
+            {
+                "pages": [
+                    {"markdown": "Page one text."},
+                    {"markdown": "Page two text."},
+                ],
+                "model": "mistral-ocr-latest",
+                "usage_info": {
+                    "pages_processed": 2,
+                    "doc_size_bytes": 50000,
+                },
+            }
+        )
 
         result = execute_parse_ocr_result(raw_json)
         assert result.text == "Page one text.\n\nPage two text."
@@ -391,22 +387,26 @@ class TestExecuteParseOcrResult:
         assert result.page_count == 2
 
     def test_single_page(self) -> None:
-        raw_json = json.dumps({
-            "pages": [{"markdown": "Only page."}],
-            "model": "mistral-ocr-latest",
-            "usage_info": {"pages_processed": 1, "doc_size_bytes": 1000},
-        })
+        raw_json = json.dumps(
+            {
+                "pages": [{"markdown": "Only page."}],
+                "model": "mistral-ocr-latest",
+                "usage_info": {"pages_processed": 1, "doc_size_bytes": 1000},
+            }
+        )
 
         result = execute_parse_ocr_result(raw_json)
         assert result.text == "Only page."
         assert result.input_tokens == 1
 
     def test_empty_pages_returns_empty_string(self) -> None:
-        raw_json = json.dumps({
-            "pages": [],
-            "model": "mistral-ocr-latest",
-            "usage_info": {},
-        })
+        raw_json = json.dumps(
+            {
+                "pages": [],
+                "model": "mistral-ocr-latest",
+                "usage_info": {},
+            }
+        )
 
         result = execute_parse_ocr_result(raw_json)
         assert result.text == ""
@@ -414,10 +414,12 @@ class TestExecuteParseOcrResult:
         assert result.output_tokens == 0
 
     def test_missing_usage_info(self) -> None:
-        raw_json = json.dumps({
-            "pages": [{"markdown": "Some text."}],
-            "model": "mistral-ocr-latest",
-        })
+        raw_json = json.dumps(
+            {
+                "pages": [{"markdown": "Some text."}],
+                "model": "mistral-ocr-latest",
+            }
+        )
 
         result = execute_parse_ocr_result(raw_json)
         assert result.text == "Some text."
@@ -668,15 +670,17 @@ class TestReadAndStoreFileContent:
             model_name="mistral:mistral-ocr-latest",
             document_id="doc-1",
         )
-        input_json = json.dumps({
-            "submit_input": submit_input.model_dump(),
-            "file_content_ref": {
-                "content_id": content_id,
-                "mime_type": "application/pdf",
-                "file_size_bytes": len(test_data),
-            },
-            "store_workflow_id": "wf-store-1",
-        })
+        input_json = json.dumps(
+            {
+                "submit_input": submit_input.model_dump(),
+                "file_content_ref": {
+                    "content_id": content_id,
+                    "mime_type": "application/pdf",
+                    "file_size_bytes": len(test_data),
+                },
+                "store_workflow_id": "wf-store-1",
+            }
+        )
 
         # Mock the provider and store functions
         mock_provider = MagicMock()
@@ -736,15 +740,17 @@ class TestReadAndStoreFileContent:
             model_name="mistral:mistral-ocr-latest",
             document_id="doc-cleanup",
         )
-        input_json = json.dumps({
-            "submit_input": submit_input.model_dump(),
-            "file_content_ref": {
-                "content_id": content_id,
-                "mime_type": "application/pdf",
-                "file_size_bytes": len(test_data),
-            },
-            "store_workflow_id": "wf-store-cleanup",
-        })
+        input_json = json.dumps(
+            {
+                "submit_input": submit_input.model_dump(),
+                "file_content_ref": {
+                    "content_id": content_id,
+                    "mime_type": "application/pdf",
+                    "file_size_bytes": len(test_data),
+                },
+                "store_workflow_id": "wf-store-cleanup",
+            }
+        )
 
         mock_provider = MagicMock()
         mock_provider.submit_batch = AsyncMock(return_value="batch-456")
@@ -786,15 +792,17 @@ class TestSubmitOcrBatchFailureRecording:
             model_name="mistral:mistral-ocr-latest",
             document_id="doc-fail",
         )
-        return json.dumps({
-            "submit_input": submit_input.model_dump(),
-            "file_content_ref": {
-                "content_id": content_id,
-                "mime_type": "application/pdf",
-                "file_size_bytes": 14,
-            },
-            "store_workflow_id": "wf-store-fail",
-        })
+        return json.dumps(
+            {
+                "submit_input": submit_input.model_dump(),
+                "file_content_ref": {
+                    "content_id": content_id,
+                    "mime_type": "application/pdf",
+                    "file_size_bytes": 14,
+                },
+                "store_workflow_id": "wf-store-fail",
+            }
+        )
 
     @pytest.mark.asyncio
     async def test_records_failure_on_api_error(self, tmp_path: Path) -> None:
@@ -814,9 +822,7 @@ class TestSubmitOcrBatchFailureRecording:
         )
 
         mock_provider = MagicMock()
-        mock_provider.submit_batch = AsyncMock(
-            side_effect=RuntimeError("400 Bad Request")
-        )
+        mock_provider.submit_batch = AsyncMock(side_effect=RuntimeError("400 Bad Request"))
 
         import forge.llm_providers as llm_mod
         import forge.store as store_mod
@@ -841,9 +847,7 @@ class TestSubmitOcrBatchFailureRecording:
 
             t = BatchJob.__table__
             with engine.connect() as conn:
-                rows = conn.execute(
-                    t.select().where(t.c.status == "failed")
-                ).mappings().all()
+                rows = conn.execute(t.select().where(t.c.status == "failed")).mappings().all()
 
             assert len(rows) == 1
             row = dict(rows[0])
@@ -861,9 +865,7 @@ class TestSubmitOcrBatchFailureRecording:
             store_mod.get_engine = original_get_engine
 
     @pytest.mark.asyncio
-    async def test_original_exception_propagates_when_recording_fails(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_original_exception_propagates_when_recording_fails(self, tmp_path: Path) -> None:
         """When record_batch_failure itself raises, the original exception still propagates."""
         db_path = tmp_path / "test.db"
         run_migrations(db_path)
@@ -879,9 +881,7 @@ class TestSubmitOcrBatchFailureRecording:
         )
 
         mock_provider = MagicMock()
-        mock_provider.submit_batch = AsyncMock(
-            side_effect=RuntimeError("API exploded")
-        )
+        mock_provider.submit_batch = AsyncMock(side_effect=RuntimeError("API exploded"))
 
         import forge.llm_providers as llm_mod
         import forge.store as store_mod
@@ -894,9 +894,7 @@ class TestSubmitOcrBatchFailureRecording:
             llm_mod.get_provider = MagicMock(return_value=mock_provider)
             store_mod.get_db_path = lambda: db_path
             store_mod.get_engine = lambda _path: engine
-            store_mod.record_batch_failure = MagicMock(
-                side_effect=RuntimeError("DB write failed")
-            )
+            store_mod.record_batch_failure = MagicMock(side_effect=RuntimeError("DB write failed"))
 
             from forge.ocr.activities import submit_ocr_batch
 
@@ -925,6 +923,7 @@ class TestOcrStoreWorkflow:
         from temporalio import activity
 
         captured_store_data: list[str] = []
+        captured_status_updates: list[dict] = []
 
         @activity.defn(name="parse_ocr_result")
         async def mock_parse_ocr_result(_raw_json: str) -> OcrParseResult:
@@ -940,11 +939,19 @@ class TestOcrStoreWorkflow:
             captured_store_data.append(store_data)
             return OcrStoreResult(document_id="doc-1", text_length=14)
 
+        @activity.defn(name="update_batch_job_status")
+        async def mock_update_batch_job_status(input_json: str) -> None:
+            captured_status_updates.append(json.loads(input_json))
+
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
             workflows=[OcrStoreWorkflow],
-            activities=[mock_parse_ocr_result, mock_store_ocr_result],
+            activities=[
+                mock_parse_ocr_result,
+                mock_store_ocr_result,
+                mock_update_batch_job_status,
+            ],
         ):
             handle = await env.client.start_workflow(
                 OcrStoreWorkflow.run,
@@ -978,6 +985,82 @@ class TestOcrStoreWorkflow:
         stored = json.loads(captured_store_data[0])
         assert stored["batch_id"] == "real-batch-id-from-poller"
 
+        # After store succeeds, the workflow promotes the batch_jobs row
+        # from STORING to SUCCEEDED via update_batch_job_status.
+        assert len(captured_status_updates) == 1
+        assert captured_status_updates[0]["request_id"] == "req-1"
+        assert captured_status_updates[0]["status"] == "succeeded"
+
+    @pytest.mark.asyncio
+    async def test_store_failure_marks_batch_job_errored(self, env: WorkflowEnvironment) -> None:
+        """If the store activity raises, the workflow must mark the batch_jobs
+        row ERRORED before propagating, so the list view doesn't leave it
+        stuck in STORING."""
+        from temporalio import activity
+
+        captured_status_updates: list[dict] = []
+
+        @activity.defn(name="parse_ocr_result")
+        async def mock_parse_ocr_result(_raw_json: str) -> OcrParseResult:
+            return OcrParseResult(
+                text="text",
+                model_name="pixtral-large-latest",
+                input_tokens=10,
+                output_tokens=5,
+            )
+
+        @activity.defn(name="store_ocr_result")
+        async def mock_store_ocr_result(_store_data: str) -> OcrStoreResult:
+            msg = "disk full"
+            raise RuntimeError(msg)
+
+        @activity.defn(name="update_batch_job_status")
+        async def mock_update_batch_job_status(input_json: str) -> None:
+            captured_status_updates.append(json.loads(input_json))
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[OcrStoreWorkflow],
+            activities=[
+                mock_parse_ocr_result,
+                mock_store_ocr_result,
+                mock_update_batch_job_status,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                OcrStoreWorkflow.run,
+                OcrStoreInput(
+                    batch_id="",
+                    request_id="req-err",
+                    document_id="doc-err",
+                    file_path="/tmp/test.pdf",
+                ),
+                id="test-ocr-store-errored",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            await handle.signal(
+                OcrStoreWorkflow.batch_result_received,
+                BatchResult(
+                    request_id="req-err",
+                    batch_id="batch-err",
+                    raw_response_json='{"choices": []}',
+                    result_type="succeeded",
+                ),
+            )
+
+            with pytest.raises(WorkflowFailureError):
+                await handle.result()
+
+        assert len(captured_status_updates) == 1
+        assert captured_status_updates[0]["request_id"] == "req-err"
+        assert captured_status_updates[0]["status"] == "errored"
+        # Temporal wraps the underlying RuntimeError in an ActivityError,
+        # so the message we record is the outer wrapper — we just want a
+        # non-empty error_message captured on the row.
+        assert captured_status_updates[0]["error_message"]
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("signal_kwargs", "expected_message"),
@@ -1000,12 +1083,21 @@ class TestOcrStoreWorkflow:
         signal_kwargs: dict,
         expected_message: str,
     ) -> None:
-        """BatchResult with error or missing response JSON raises ApplicationError."""
+        """BatchResult with error or missing response JSON raises ApplicationError
+        and marks the batch_jobs row ERRORED."""
+        from temporalio import activity
+
+        captured_status_updates: list[dict] = []
+
+        @activity.defn(name="update_batch_job_status")
+        async def mock_update_batch_job_status(input_json: str) -> None:
+            captured_status_updates.append(json.loads(input_json))
+
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
             workflows=[OcrStoreWorkflow],
-            activities=[],
+            activities=[mock_update_batch_job_status],
         ):
             handle = await env.client.start_workflow(
                 OcrStoreWorkflow.run,
@@ -1031,6 +1123,12 @@ class TestOcrStoreWorkflow:
             with pytest.raises(WorkflowFailureError) as exc_info:
                 await handle.result()
             assert expected_message in str(exc_info.value.cause)
+
+        # The workflow must promote STORING -> ERRORED before re-raising,
+        # so the list view doesn't leave this row stuck.
+        assert len(captured_status_updates) == 1
+        assert captured_status_updates[0]["request_id"] == "req-err"
+        assert captured_status_updates[0]["status"] == "errored"
 
 
 # ---------------------------------------------------------------------------
@@ -1155,9 +1253,7 @@ class TestOcrSubmitWorkflow:
 
 class TestOcrGatherWorkflow:
     @pytest.mark.asyncio
-    async def test_waits_for_all_chunks_before_reassembly(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_waits_for_all_chunks_before_reassembly(self, env: WorkflowEnvironment) -> None:
         captured_reassemble_data: list[dict[str, object]] = []
 
         @activity.defn(name="reassemble_ocr_chunks")
@@ -1255,9 +1351,7 @@ class TestExecuteSplitFileIntoChunks:
             file_size_bytes=len(data),
         )
 
-        result = execute_split_file_into_chunks(
-            content_id, "image/png", len(data), engine
-        )
+        result = execute_split_file_into_chunks(content_id, "image/png", len(data), engine)
 
         assert len(result.chunks) == 1
         assert result.chunks[0].content_id == content_id  # reuses original
@@ -1281,9 +1375,7 @@ class TestExecuteSplitFileIntoChunks:
         )
 
         with pytest.raises(ValueError, match="Non-PDF file"):
-            execute_split_file_into_chunks(
-                content_id, "image/png", len(data), engine
-            )
+            execute_split_file_into_chunks(content_id, "image/png", len(data), engine)
 
     def test_small_pdf_single_chunk(self, tmp_path: Path) -> None:
         """PDFs under cutoffs produce a single chunk reusing the original blob."""
@@ -1428,9 +1520,7 @@ class TestExecuteSplitFileIntoChunks:
             file_size_bytes=len(pdf_data),
         )
 
-        execute_split_file_into_chunks(
-            content_id, "application/pdf", len(pdf_data), engine
-        )
+        execute_split_file_into_chunks(content_id, "application/pdf", len(pdf_data), engine)
 
         assert get_file_content(engine, content_id) is not None
 
@@ -1466,9 +1556,7 @@ class TestExecuteSplitFileIntoChunks:
         engine, _ = _setup_db(tmp_path)
 
         with pytest.raises(RuntimeError, match="File content not found"):
-            execute_split_file_into_chunks(
-                "nonexistent", "application/pdf", 1000, engine
-            )
+            execute_split_file_into_chunks("nonexistent", "application/pdf", 1000, engine)
 
 
 # ---------------------------------------------------------------------------
@@ -1680,17 +1768,19 @@ class TestBuildOcrBatchBodyImageFlag:
 
 class TestExecuteParseOcrResultWithImages:
     def test_rewrites_image_references(self) -> None:
-        raw_json = json.dumps({
-            "pages": [
-                {
-                    "markdown": "Text ![img-0.jpeg](img-0.jpeg) more",
-                    "images": [{"id": "img-0.jpeg"}],
-                },
-            ],
-            "model": "mistral-ocr-latest",
-            "usage_info": {"pages_processed": 1, "doc_size_bytes": 1000},
-            "_image_mapping": {"img-0.jpeg": "uuid-abc"},
-        })
+        raw_json = json.dumps(
+            {
+                "pages": [
+                    {
+                        "markdown": "Text ![img-0.jpeg](img-0.jpeg) more",
+                        "images": [{"id": "img-0.jpeg"}],
+                    },
+                ],
+                "model": "mistral-ocr-latest",
+                "usage_info": {"pages_processed": 1, "doc_size_bytes": 1000},
+                "_image_mapping": {"img-0.jpeg": "uuid-abc"},
+            }
+        )
 
         result = execute_parse_ocr_result(raw_json)
         assert "ocr-image://uuid-abc" in result.text
@@ -1699,11 +1789,13 @@ class TestExecuteParseOcrResultWithImages:
         assert result.image_ids == ["uuid-abc"]
 
     def test_backward_compat_without_image_mapping(self) -> None:
-        raw_json = json.dumps({
-            "pages": [{"markdown": "No images here."}],
-            "model": "mistral-ocr-latest",
-            "usage_info": {"pages_processed": 1, "doc_size_bytes": 500},
-        })
+        raw_json = json.dumps(
+            {
+                "pages": [{"markdown": "No images here."}],
+                "model": "mistral-ocr-latest",
+                "usage_info": {"pages_processed": 1, "doc_size_bytes": 500},
+            }
+        )
 
         result = execute_parse_ocr_result(raw_json)
         assert result.text == "No images here."
@@ -1711,15 +1803,17 @@ class TestExecuteParseOcrResultWithImages:
         assert result.image_ids == []
 
     def test_multiple_pages_with_images(self) -> None:
-        raw_json = json.dumps({
-            "pages": [
-                {"markdown": "![img-0.jpeg](img-0.jpeg)"},
-                {"markdown": "![img-0.jpeg](img-0.jpeg)"},
-            ],
-            "model": "mistral-ocr-latest",
-            "usage_info": {"pages_processed": 2, "doc_size_bytes": 2000},
-            "_image_mapping": {"img-0.jpeg": "uuid-shared"},
-        })
+        raw_json = json.dumps(
+            {
+                "pages": [
+                    {"markdown": "![img-0.jpeg](img-0.jpeg)"},
+                    {"markdown": "![img-0.jpeg](img-0.jpeg)"},
+                ],
+                "model": "mistral-ocr-latest",
+                "usage_info": {"pages_processed": 2, "doc_size_bytes": 2000},
+                "_image_mapping": {"img-0.jpeg": "uuid-shared"},
+            }
+        )
 
         result = execute_parse_ocr_result(raw_json)
         # Both pages should be rewritten with the same UUID
@@ -2165,19 +2259,22 @@ class TestExecuteExportOcrDocument:
         md_path = export_dir / "test.md"
         assert md_path.read_text() == "Just text, no images."
 
-    def test_raises_for_missing_document(self, tmp_path: Path) -> None:
+    def test_returns_not_found_for_missing_document(self, tmp_path: Path) -> None:
         engine, _ = _setup_db(tmp_path)
 
-        with pytest.raises(RuntimeError, match="No OCR result found"):
-            execute_export_ocr_document(
-                document_id="nonexistent",
-                output_dir=str(tmp_path / "out"),
-                engine=engine,
-            )
+        result = execute_export_ocr_document(
+            document_id="nonexistent",
+            output_dir=str(tmp_path / "out"),
+            engine=engine,
+        )
 
-    def test_default_xdg_export_dir(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        assert result.status == "not_found"
+        assert result.document_id == "nonexistent"
+        assert result.export_dir == ""
+        assert result.markdown_path == ""
+        assert result.image_count == 0
+
+    def test_default_xdg_export_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         engine, _ = _setup_db(tmp_path)
 
         doc_id = "xdg-test-doc"
@@ -2462,9 +2559,7 @@ class TestOcrDuplicateCheckResult:
         assert result.existing_document_id == ""
 
     def test_duplicate(self) -> None:
-        result = OcrDuplicateCheckResult(
-            is_duplicate=True, existing_document_id="doc-1"
-        )
+        result = OcrDuplicateCheckResult(is_duplicate=True, existing_document_id="doc-1")
         assert result.is_duplicate is True
         assert result.existing_document_id == "doc-1"
 
@@ -2672,9 +2767,7 @@ class TestExecuteListOcrJobs:
         assert result.jobs[1].document_id == "doc-old"
         assert result.jobs[1].status == "errored"
 
-    def test_resubmission_old_errored_unaffected_by_new_success(
-        self, tmp_path: Path
-    ) -> None:
+    def test_resubmission_old_errored_unaffected_by_new_success(self, tmp_path: Path) -> None:
         """A successful resubmission does NOT mark the old errored row as succeeded."""
         from datetime import UTC, datetime
 
@@ -2929,9 +3022,7 @@ class TestExecuteListOcrJobs:
         assert result.jobs[0].status == "errored"
         assert result.jobs[0].chunk_count == 2
 
-    def test_mixed_chunk_statuses_any_submitted_is_processing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_mixed_chunk_statuses_any_submitted_is_processing(self, tmp_path: Path) -> None:
         """If any chunk is still submitted (and none errored), status is 'processing'."""
         from datetime import UTC, datetime
 
@@ -2959,6 +3050,78 @@ class TestExecuteListOcrJobs:
 
         assert result.total == 1
         assert result.jobs[0].status == "processing"
+
+    def test_storing_chunk_derives_to_processing(self, tmp_path: Path) -> None:
+        """A chunk in STORING (post-Mistral, pre-store) surfaces as 'processing'."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-storing",
+            document_id="doc-storing",
+            file_path="/data/storing.pdf",
+            status="storing",
+            created_at=ts,
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].status == "processing"
+
+    def test_mixed_succeeded_and_storing_is_processing(self, tmp_path: Path) -> None:
+        """One chunk SUCCEEDED + another STORING -> still 'processing'."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        base = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-0",
+            document_id="doc-half",
+            file_path="/data/half.pdf",
+            status="succeeded",
+            created_at=base,
+        )
+        self._insert_batch_row(
+            engine,
+            request_id="req-1",
+            document_id="doc-half",
+            file_path="/data/half.pdf",
+            status="storing",
+            created_at=base,
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].status == "processing"
+
+    def test_failed_chunk_derives_to_errored(self, tmp_path: Path) -> None:
+        """A chunk in FAILED (submit refused by provider) surfaces as 'errored'."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        ts = datetime(2026, 4, 13, 10, 0, 0, tzinfo=UTC)
+
+        self._insert_batch_row(
+            engine,
+            request_id="req-failed",
+            document_id="doc-failed",
+            file_path="/data/failed.pdf",
+            status="failed",
+            created_at=ts,
+            batch_id=None,
+        )
+
+        result = execute_list_ocr_jobs(engine)
+
+        assert result.total == 1
+        assert result.jobs[0].status == "errored"
 
     def test_created_at_is_tz_aware_utc(self, tmp_path: Path) -> None:
         """created_at must be emitted with an explicit UTC tz suffix.

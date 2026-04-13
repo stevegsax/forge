@@ -100,11 +100,21 @@ SQLAlchemy model: `BatchJob` in `src/forge/store.py`.
 
 ### Batch job states
 
+Defined as `BatchJobStatus` in `src/forge/models.py`. Happy path:
+`submitted` → `storing` → `succeeded`.
+
 | Status | Description |
 |--------|-------------|
-| `submitted` | Job submitted to Anthropic Batch API; workflow is waiting for a signal |
-| `completed` | Result received and signal delivered to workflow |
-| `failed` | Batch API returned an error or the job was not found after timeout |
+| `submitted` | Row created; batch in flight at the provider, waiting for completion |
+| `storing` | Provider reported the batch complete; signal delivered to the waiting workflow; parse + write to the downstream store (e.g. `ocr_results`) is in progress |
+| `succeeded` | End-to-end complete. Only the downstream store workflow writes this value, and only after its write succeeds |
+| `errored` | Per-entry failure from the provider, or the parse/store step raised after signal delivery |
+| `failed` | Provider API refused the submission before returning a batch_id. Written by `record_batch_failure` |
+| `expired` | Provider marked the batch as expired. Written from `BatchPollStatus` in the poller's terminal-failure branch |
+| `canceled` | Provider marked the batch as canceled. Written from `BatchPollStatus` in the poller's terminal-failure branch |
+| `missing` | Batch unretrievable after 24h. The poller gave up and marked the row |
+
+The poller never writes `succeeded` directly — it advances a row to `storing` on signal delivery, and the downstream store workflow promotes to `succeeded` once its write commits. This preserves the invariant that `succeeded` means the stored output actually exists.
 
 ### Signal names
 

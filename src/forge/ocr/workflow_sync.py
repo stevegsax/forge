@@ -85,11 +85,13 @@ class OcrSyncWorkflow:
         )
 
         # Step 2: Split into chunks
-        split_data = json.dumps({
-            "content_id": file_content_ref.content_id,
-            "mime_type": file_content_ref.mime_type,
-            "file_size_bytes": file_content_ref.file_size_bytes,
-        })
+        split_data = json.dumps(
+            {
+                "content_id": file_content_ref.content_id,
+                "mime_type": file_content_ref.mime_type,
+                "file_size_bytes": file_content_ref.file_size_bytes,
+            }
+        )
         split_result = await workflow.execute_activity(
             "split_file_into_chunks",
             split_data,
@@ -107,9 +109,7 @@ class OcrSyncWorkflow:
 
         # Step 3: Call OCR synchronously for each chunk
         chunk_document_ids: list[str] = []
-        result = OcrStoreResult(
-            document_id=document_id, text_length=0, page_count=0, stored=False
-        )
+        result = OcrStoreResult(document_id=document_id, text_length=0, page_count=0, stored=False)
         for chunk in split_result.chunks:
             if chunk_count == 1:
                 chunk_doc_id = document_id
@@ -117,14 +117,16 @@ class OcrSyncWorkflow:
                 chunk_doc_id = f"{document_id}__chunk_{chunk.chunk_index}"
             chunk_document_ids.append(chunk_doc_id)
 
-            ocr_data = json.dumps({
-                "content_id": chunk.content_id,
-                "mime_type": chunk.mime_type,
-                "model_name": input.model_name,
-                "document_id": chunk_doc_id,
-                "file_path": input.file_path,
-                "workflow_id": workflow.info().workflow_id,
-            })
+            ocr_data = json.dumps(
+                {
+                    "content_id": chunk.content_id,
+                    "mime_type": chunk.mime_type,
+                    "model_name": input.model_name,
+                    "document_id": chunk_doc_id,
+                    "file_path": input.file_path,
+                    "workflow_id": workflow.info().workflow_id,
+                }
+            )
             result = await workflow.execute_activity(
                 "call_ocr_sync",
                 ocr_data,
@@ -135,12 +137,14 @@ class OcrSyncWorkflow:
 
         # Step 4: If multi-chunk, reassemble
         if chunk_count > 1:
-            reassemble_data = json.dumps({
-                "document_id": document_id,
-                "chunk_document_ids": chunk_document_ids,
-                "file_path": input.file_path,
-                "total_pages": split_result.total_pages,
-            })
+            reassemble_data = json.dumps(
+                {
+                    "document_id": document_id,
+                    "chunk_document_ids": chunk_document_ids,
+                    "file_path": input.file_path,
+                    "total_pages": split_result.total_pages,
+                }
+            )
             result = await workflow.execute_activity(
                 "reassemble_ocr_chunks",
                 reassemble_data,

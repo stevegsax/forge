@@ -88,11 +88,13 @@ class OcrSubmitWorkflow:
         )
 
         # Step 2: Split into chunks
-        split_data = json.dumps({
-            "content_id": file_content_ref.content_id,
-            "mime_type": file_content_ref.mime_type,
-            "file_size_bytes": file_content_ref.file_size_bytes,
-        })
+        split_data = json.dumps(
+            {
+                "content_id": file_content_ref.content_id,
+                "mime_type": file_content_ref.mime_type,
+                "file_size_bytes": file_content_ref.file_size_bytes,
+            }
+        )
         split_result = await workflow.execute_activity(
             "split_file_into_chunks",
             split_data,
@@ -117,9 +119,7 @@ class OcrSubmitWorkflow:
             if chunk_count == 1:
                 chunk_document_ids.append(document_id)
             else:
-                chunk_document_ids.append(
-                    f"{document_id}__chunk_{chunk.chunk_index}"
-                )
+                chunk_document_ids.append(f"{document_id}__chunk_{chunk.chunk_index}")
 
         if chunk_count > 1:
             gather_input = OcrGatherInput(
@@ -167,14 +167,16 @@ class OcrSubmitWorkflow:
                 "mime_type": chunk.mime_type,
                 "file_size_bytes": chunk.file_size_bytes,
             }
-            submit_data = json.dumps({
-                "submit_input": input.model_copy(
-                    update={"document_id": chunk_doc_id}
-                ).model_dump(),
-                "file_content_ref": chunk_ref_dict,
-                "store_workflow_id": store_handle.id,
-                "root_document_id": document_id,
-            })
+            submit_data = json.dumps(
+                {
+                    "submit_input": input.model_copy(
+                        update={"document_id": chunk_doc_id}
+                    ).model_dump(),
+                    "file_content_ref": chunk_ref_dict,
+                    "store_workflow_id": store_handle.id,
+                    "root_document_id": document_id,
+                }
+            )
             batch_ref = await workflow.execute_activity(
                 "submit_ocr_batch",
                 submit_data,
