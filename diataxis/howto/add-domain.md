@@ -1,8 +1,20 @@
-# How to Add a Domain
-
++++
+title = "How to Add a Domain"
+weight = 143
+description = "How Forge parameterizes LLM behavior through task domains — role prompts, output requirements, user prompt templates, and validation defaults."
+topic = "task-domains"
+covers = [
+    "How to add a new task domain to Forge",
+    "The four files to modify (models.py, domains.py, tests, CLI)",
+    "How to write domain-specific prompts",
+    "How to configure domain-specific validation defaults",
+    "How to test the new domain",
+]
+detail = "Step-by-step recipe. Follows the structure from ADDING_A_DOMAIN.md but in how-to format (no teaching, assume competence)."
++++
 This guide shows you how to add a new task domain to Forge. Adding a domain requires changes to exactly four files.
 
-For background on what domains are and what they control, see [Task Domains](../explanation/task-domains.md). For `DomainConfig` field descriptions and per-domain examples, see the [Task Domains Reference](../reference/task-domains.md).
+For background on what domains are and what they control, see [Task Domains](../explanation/task-domains/). For `DomainConfig` field descriptions and per-domain examples, see the [Task Domains Reference](../reference/task-domains/).
 
 ## Step 1: Add the enum value to `models.py`
 

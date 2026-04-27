@@ -1,9 +1,21 @@
-# Validation and Retries Reference
-
++++
+title = "Validation and Retries Reference"
+weight = 84
+description = "How Forge validates LLM output with deterministic checks and feeds errors back to the LLM on retry."
+topic = "validation-and-retries"
+covers = [
+    "ValidationResult and ValidationConfig model fields",
+    "Validation checks: name, what it runs, pass/fail criteria",
+    "TransitionSignal values and mapping rules",
+    "Error section format: structure, AST context inclusion rules",
+    "CLI flags: --run-ruff-lint, --run-ruff-format, --run-tests, --auto-fix, --max-retries",
+]
+detail = "Tabular reference for validation configuration and error format."
++++
 Technical reference for validation models, checks, transition signal mapping, error
 section format, and CLI flags. For design rationale, see
-[Validation and Retries](../explanation/validation-and-retries.md). For recipes, see
-[How to Configure Validation](../howto/configure-validation.md).
+[Validation and Retries](../explanation/validation-and-retries/). For recipes, see
+[How to Configure Validation](../howto/configure-validation/).
 
 ---
 
@@ -37,7 +49,7 @@ Configuration for the validation pipeline, attached to each task definition.
 | `max_retries` | `int` | `2` | Total number of attempts (initial attempt + retries). A value of 2 means one retry is allowed. |
 
 Domain defaults may differ from the above. See
-[Task Domains Reference](task-domains.md) for per-domain defaults.
+[Task Domains Reference](task-domains/) for per-domain defaults.
 
 ---
 
@@ -142,11 +154,11 @@ Flags accepted by `forge run` and related commands that control validation behav
 
 ## Related
 
-- [Validation and Retries](../explanation/validation-and-retries.md) — Design rationale
+- [Validation and Retries](../explanation/validation-and-retries/) — Design rationale
   for the validation pipeline and retry semantics.
-- [Output Processing Reference](output-processing.md) — Edit application errors that
+- [Output Processing Reference](output-processing/) — Edit application errors that
   also feed the retry mechanism.
-- [How to Configure Validation](../howto/configure-validation.md) — Recipes for
+- [How to Configure Validation](../howto/configure-validation/) — Recipes for
   enabling checks, setting retry limits, and inspecting results.
-- [Workflow Step Reference](workflow-step.md) — Full activity definitions and timeout
+- [Workflow Step Reference](workflow-step/) — Full activity definitions and timeout
   policies for `validate_output` and `evaluate_transition`.

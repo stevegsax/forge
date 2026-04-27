@@ -1,8 +1,21 @@
-# Context Assembly Reference
++++
+title = "Context Assembly Reference"
+weight = 54
+description = "How Forge decides what goes into the prompt: file discovery via import graphs, PageRank ranking, token budget packing, progressive disclosure, and the exploration loop."
+topic = "context-assembly"
+covers = [
+    "Context priority ordering table (1=highest to 6=lowest) with what each level contains",
+    "Exploration provider table: provider name, description, parameters, return format",
+    "Token budget algorithm: inputs, priority order, truncation behavior",
+    "AssembledContext data model fields",
+    "ContextProviderSpec, ContextRequest, ContextResult, ExplorationResponse models",
+    "CLI flags that control context assembly (--include-deps, --no-explore, --max-exploration-rounds, --context-file)",
+]
+detail = "Dense reference. Tables for structured data, brief code examples for provider request/response formats. The system prompt section table has moved to the prompt-construction reference — do not duplicate it here."
++++
+Technical reference for Forge's context assembly pipeline: discovery mechanisms, priority ordering, exploration providers, token budget algorithm, data models, and CLI controls. For the system prompt section table and cache breakpoint reference, see [Prompt Construction Reference](prompt-construction/).
 
-Technical reference for Forge's context assembly pipeline: discovery mechanisms, priority ordering, exploration providers, token budget algorithm, data models, and CLI controls. For the system prompt section table and cache breakpoint reference, see [Prompt Construction Reference](prompt-construction.md).
-
-For background on why the pipeline works this way, see [Context Assembly](../explanation/context-assembly.md). For practical recipes, see [How to Control Context Assembly](../howto/control-context-assembly.md).
+For background on why the pipeline works this way, see [Context Assembly](../explanation/context-assembly/). For practical recipes, see [How to Control Context Assembly](../howto/control-context-assembly/).
 
 ## Context Priority Ordering
 

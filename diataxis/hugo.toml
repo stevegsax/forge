@@ -1,0 +1,87 @@
+# Hugo configuration for the Diataxis documentation site.
+#
+# This file is user-owned. Edit freely — change the theme, add params,
+# override layouts, etc. The skill regenerates authored markdown and
+# marimo WASM bundles; it never rewrites this file or layouts/.
+#
+# To use a different theme, replace the `module.imports.path` below with any
+# Hugo module theme (see https://themes.gohugo.io/) and run
+# `hugo mod get -u`.
+
+title = "Forge"
+
+# Relative URLs make the built site portable (works under `hugo server`,
+# any static host, or copied into a subdirectory).
+baseURL = "/"
+relativeURLs = true
+canonifyURLs = false
+
+enableRobotsTXT = true
+
+[markup]
+  [markup.highlight]
+    noClasses = false
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+
+[module]
+  [[module.imports]]
+    path = "github.com/imfing/hextra"
+
+  # Mount the authored quadrant directories into Hugo's content tree.
+  # Authored paths stay skill-native; Hugo sees them under content/.
+  [[module.mounts]]
+    source = "tutorials"
+    target = "content/tutorials"
+  [[module.mounts]]
+    source = "howto"
+    target = "content/howto"
+  [[module.mounts]]
+    source = "reference"
+    target = "content/reference"
+  [[module.mounts]]
+    source = "explanation"
+    target = "content/explanation"
+
+  # Mount the authored homepage.
+  [[module.mounts]]
+    source = "index.md"
+    target = "content/_index.md"
+
+  # Mount diataxis.toml as a Hugo data file so themes can read editorial
+  # metadata as `hugo.Data.diataxis` (previously `.Site.Data.diataxis`,
+  # deprecated in Hugo 0.156+).
+  [[module.mounts]]
+    source = "diataxis.toml"
+    target = "data/diataxis.toml"
+
+  # Static assets (marimo WASM bundles land under static/exercises/<stem>/).
+  [[module.mounts]]
+    source = "static"
+    target = "static"
+
+[params]
+  description = "Human-facing documentation for Forge, a batch-first LLM task orchestrator. Covers the core orchestration pipeline end-to-end, plus extensions (OCR, evaluation, knowledge extraction, transcript ingestion) that build on the core."
+
+  [params.math]
+    enable = true
+
+  [params.theme]
+    default = "system"
+    displayToggle = true
+
+  [params.navbar]
+    displayTitle = true
+    displayLogo = false
+
+  [params.footer]
+    enable = true
+    displayCopyright = false
+    displayPoweredBy = true
+
+  [params.page]
+    width = "wide"
+
+  [params.toc]
+    displayTags = true

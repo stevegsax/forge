@@ -1,12 +1,24 @@
-# Task Domains
-
-Prerequisites: [Context Assembly](context-assembly.md), [Validation and Retries](validation-and-retries.md).
++++
+title = "Task Domains"
+weight = 141
+description = "How Forge parameterizes LLM behavior through task domains — role prompts, output requirements, user prompt templates, and validation defaults."
+topic = "task-domains"
+covers = [
+    "What a domain is and what it controls",
+    "How domains achieve task-agnostic orchestration — same pipeline, different prompts",
+    "The four pipeline touchpoints: context assembly, exploration, planner, CLI validation defaults",
+    "Why all domains share the same LLMResponse schema",
+    "The existing domains: code_generation, research, code_review, documentation, generic",
+]
+detail = "Concise explanation connecting domains to the task-agnostic principle. Show how the same workflow step produces different behavior purely through prompt parameterization."
++++
+Prerequisites: [Context Assembly](context-assembly/), [Validation and Retries](validation-and-retries/).
 
 Forge is described as task-agnostic: the same orchestration pipeline handles code generation, research, documentation, and code review. That agnosticism is not a property of the pipeline itself — the pipeline knows nothing about what the LLM is being asked to produce. It is a property of task domains.
 
 A domain is a named configuration bundle that parameterizes the pipeline's prompts and validation defaults for a specific category of work. The pipeline reads domain configuration at each stage where the task type matters. Everything else — context assembly mechanics, batch submission, edit application, observability writes, Temporal workflow structure — is domain-agnostic by design.
 
-For the exact fields, enum values, and per-domain defaults, see the [Task Domains Reference](../reference/task-domains.md). To add a new domain, see [How to Add a Domain](../howto/add-domain.md).
+For the exact fields, enum values, and per-domain defaults, see the [Task Domains Reference](../reference/task-domains/). To add a new domain, see [How to Add a Domain](../howto/add-domain/).
 
 ## What a domain controls
 

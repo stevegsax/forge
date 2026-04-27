@@ -1,6 +1,17 @@
-# Task Domains Reference
-
-This reference covers the `TaskDomain` enum, `DomainConfig` fields, pipeline touchpoints, and per-domain validation defaults. For background on how domains work and why they are designed this way, see [Task Domains](../explanation/task-domains.md). To add a new domain, see [How to Add a Domain](../howto/add-domain.md).
++++
+title = "Task Domains Reference"
+weight = 144
+description = "How Forge parameterizes LLM behavior through task domains — role prompts, output requirements, user prompt templates, and validation defaults."
+topic = "task-domains"
+covers = [
+    "DomainConfig field table: field name, type, purpose, example for each existing domain",
+    "TaskDomain enum values",
+    "Pipeline touchpoints: which code reads which DomainConfig field",
+    "ValidationConfig defaults per domain",
+]
+detail = "Tabular reference for DomainConfig. One row per field, with examples from each existing domain."
++++
+This reference covers the `TaskDomain` enum, `DomainConfig` fields, pipeline touchpoints, and per-domain validation defaults. For background on how domains work and why they are designed this way, see [Task Domains](../explanation/task-domains/). To add a new domain, see [How to Add a Domain](../howto/add-domain/).
 
 ## TaskDomain enum
 

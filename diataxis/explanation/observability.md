@@ -1,5 +1,17 @@
-# About Observability and Debugging in Forge
-
++++
+title = "About Observability and Debugging in Forge"
+weight = 101
+description = "How to inspect, diagnose, and debug Forge workflow execution using the observability store, logs, tracing, and CLI commands."
+topic = "observability"
+covers = [
+    "The observability strategy: SQLite store for heavyweight data, Temporal for lightweight stats",
+    "What is stored and why: full prompts, token usage, latency, context stats",
+    "Best-effort writes: why store failures never block workflow execution",
+    "OpenTelemetry tracing: span hierarchy from pipeline run to individual LLM request",
+    "The execution journal: recording decisions, not just events",
+]
+detail = "Explain the design decisions behind the observability approach. Why SQLite? Why separate from Temporal results? Why best-effort?"
++++
 Forge produces a large amount of intermediate data during workflow execution: the full assembled prompt sent to each LLM call, the model's raw response, token counts, latency measurements, context assembly statistics, and the transition signal that drove the next state. Understanding how this data is captured, where it lives, and why it is organized the way it is helps when diagnosing problems and when reasoning about workflow behavior.
 
 ## Two Layers of Observability
@@ -67,4 +79,4 @@ Alongside the structured observability data, two log files provide narrative deb
 
 Both use rotating file handlers (10 MB maximum, 5 backups). The file handler always writes at DEBUG level, regardless of the console verbosity setting. When investigating a problem that occurred hours or days ago, the log files often capture warning and error messages that scrolled off the terminal during execution.
 
-For details on the store schema, CLI commands, environment variables, and span names, see the [Observability Reference](../reference/observability.md). For practical debugging workflows — starting with a symptom and walking through the diagnostic steps — see [How to Debug a Workflow](../howto/debug-workflow.md).
+For details on the store schema, CLI commands, environment variables, and span names, see the [Observability Reference](../reference/observability/). For practical debugging workflows — starting with a symptom and walking through the diagnostic steps — see [How to Debug a Workflow](../howto/debug-workflow/).

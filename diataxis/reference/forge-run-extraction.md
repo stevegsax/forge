@@ -1,8 +1,21 @@
-# Forge Run Extraction Reference
++++
+title = "Forge Run Extraction Reference"
+weight = 114
+description = "Forge's self-learning loop: extracting playbook entries from its own completed run history and injecting them into future task contexts."
+topic = "forge-run-extraction"
+covers = [
+    "Playbook table schema (title, content, tags, source task/workflow IDs) — the forge.db playbooks table specifically",
+    "Tag inference rules: file extension mapping, keyword mapping, defaults",
+    "PlaybookEntry and ExtractionResult data models (forge's, not pbook's)",
+    "CLI commands: forge extract, forge playbooks (list, add, show)",
+    "Playbook injection: context priority level, token budget behavior",
+    "Scope boundary: this reference is for forge's own playbook store; pbook has a separate store with a richer schema — see transcript-ingestion reference",
+]
+detail = "Tabular reference for forge's playbook schema, tag rules, and CLI. Do not describe pbook's schema here, even briefly — point the reader at the transcript-ingestion reference for that."
++++
+Tabular reference for Forge's own playbook storage: the `playbooks` table schema in `forge.db`, the `ForgeExtractionWorkflow` data models, the tag inference rules, the CLI commands that manage forge-side playbooks, and the injection behavior inside context assembly. This reference is scoped to forge's self-learning loop only. It does not describe pbook's `entries` table or any aspect of the transcript ingestion pipeline — for those, see the [Transcript Ingestion Reference](transcript-ingestion/).
 
-Tabular reference for Forge's own playbook storage: the `playbooks` table schema in `forge.db`, the `ForgeExtractionWorkflow` data models, the tag inference rules, the CLI commands that manage forge-side playbooks, and the injection behavior inside context assembly. This reference is scoped to forge's self-learning loop only. It does not describe pbook's `entries` table or any aspect of the transcript ingestion pipeline — for those, see the [Transcript Ingestion Reference](transcript-ingestion.md).
-
-For background on how Forge's self-learning loop is designed, see [Forge Run Extraction](../explanation/forge-run-extraction.md). For step-by-step instructions, see [How to Manage Playbooks](../howto/manage-playbooks.md). For the cross-cutting comparison between this pipeline and transcript ingestion, see [Learning Loops](../explanation/learning-loops.md).
+For background on how Forge's self-learning loop is designed, see [Forge Run Extraction](../explanation/forge-run-extraction/). For step-by-step instructions, see [How to Manage Playbooks](../howto/manage-playbooks/). For the cross-cutting comparison between this pipeline and transcript ingestion, see [Learning Loops](../explanation/learning-loops/).
 
 ## Playbook table schema
 
@@ -160,4 +173,4 @@ During context assembly, the `assemble_context` activity retrieves playbooks and
 | Retrieval method | Tag overlap match against task inferred tags |
 | Budget behavior | Dropped first when token budget is tight |
 
-Priority 5 places playbooks below deterministic analysis results (priority 4) and above broader project context (priority 6). For the full priority table and token budget algorithm, see the [Context Assembly Reference](context-assembly.md).
+Priority 5 places playbooks below deterministic analysis results (priority 4) and above broader project context (priority 6). For the full priority table and token budget algorithm, see the [Context Assembly Reference](context-assembly/).

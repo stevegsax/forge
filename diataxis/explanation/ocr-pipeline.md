@@ -1,10 +1,23 @@
-# OCR Pipeline
-
++++
+title = "OCR Pipeline"
+weight = 151
+description = "How Forge's OCR pipeline uses the core orchestration primitives to extract text and images from documents via the Mistral API."
+topic = "ocr-pipeline"
+covers = [
+    "How the OCR pipeline builds on Forge's core workflow and batch primitives",
+    "The two execution paths: synchronous (OcrSyncWorkflow) and batch (OcrSubmitWorkflow)",
+    "Image extraction and the ocr-image:// URI scheme",
+    "How batch OCR uses Temporal signals — the same pattern as LLM batch processing",
+    "Multi-chunk document gathering (OcrGatherWorkflow)",
+    "SHA-256 duplicate detection for resubmission safety",
+]
+detail = "Frame as 'OCR as an instance of Forge's patterns.' The sync path uses the same workflow-activity pattern. The batch path uses the same submit-wait-signal pattern as LLM batch processing. Don't re-explain these patterns — cross-reference them."
++++
 The OCR pipeline applies Forge's core orchestration primitives to a specialized
 domain: extracting text and images from documents using the Mistral OCR API. Rather
 than introducing new patterns, it composes the primitives already described in
-[The Universal Workflow Step](workflow-step.md) and
-[Model Routing and Batch Processing](llm-dispatch.md). Understanding those two
+[The Universal Workflow Step](workflow-step/) and
+[Model Routing and Batch Processing](llm-dispatch/). Understanding those two
 topics first makes the OCR pipeline straightforward to reason about.
 
 
@@ -12,7 +25,7 @@ topics first makes the OCR pipeline straightforward to reason about.
 
 The pipeline offers two execution paths that mirror the distinction between
 synchronous and batch LLM calls described in
-[Model Routing and Batch Processing](llm-dispatch.md#batch-mode).
+[Model Routing and Batch Processing](llm-dispatch/#batch-mode).
 
 The **synchronous path** (`OcrSyncWorkflow`) calls the Mistral OCR API directly via
 `client.ocr.process_async()` and waits for the response. It follows the same
@@ -117,9 +130,9 @@ edit application, validation). It is a separate workflow family that happens to
 share the same Temporal worker, observability store, and batch infrastructure.
 The `batch_jobs` table used by the OCR batch path is the same table used by the
 LLM batch path, with an additional `provider` column to distinguish Mistral from
-Anthropic jobs. See the [Model Routing and Batch Processing reference](../reference/llm-dispatch.md)
+Anthropic jobs. See the [Model Routing and Batch Processing reference](../reference/llm-dispatch/)
 for the full `batch_jobs` schema.
 
 For technical details on the OCR workflows, data models, and database tables, see
-the [OCR Pipeline reference](../reference/ocr-pipeline.md). For step-by-step
-instructions, see [How to Run OCR](../howto/run-ocr.md).
+the [OCR Pipeline reference](../reference/ocr-pipeline/). For step-by-step
+instructions, see [How to Run OCR](../howto/run-ocr/).

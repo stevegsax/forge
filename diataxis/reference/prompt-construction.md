@@ -1,6 +1,16 @@
-# Prompt Construction Reference
-
-Tabular reference for the system prompt structure: the eleven sections, cache breakpoint placement, and the error injection format used on retry. For the design rationale behind this structure, see [Prompt Construction](../explanation/prompt-construction.md). For how the content of each section is discovered and ranked, see the [Context Assembly Reference](context-assembly.md).
++++
+title = "Prompt Construction Reference"
+weight = 44
+description = "The structure of the system prompt that every LLM call receives: its eleven sections, their cache-optimized ordering, cache breakpoint placement, and how error context is injected on retry."
+topic = "prompt-construction"
+covers = [
+    "System prompt section table: section number, name, source module/config, stability class, cache behavior and breakpoint placement",
+    "Cache breakpoint summary: breakpoint number, position, what it protects, cost savings",
+    "Error injection format: what the 'Previous Errors' section contains, how AST context is derived",
+]
+detail = "Tabular. The 11-row section table is the centerpiece — it is the authoritative enumeration of prompt structure. Add a cache breakpoint summary table and a brief description of the error injection format."
++++
+Tabular reference for the system prompt structure: the eleven sections, cache breakpoint placement, and the error injection format used on retry. For the design rationale behind this structure, see [Prompt Construction](../explanation/prompt-construction/). For how the content of each section is discovered and ranked, see the [Context Assembly Reference](context-assembly/).
 
 ## System prompt sections
 
@@ -64,6 +74,6 @@ The section header includes the attempt number ("Attempt 2 of 3") so the LLM kno
 
 | Topic | What it covers |
 |---|---|
-| [Context Assembly Reference](context-assembly.md) | Priority ordering table, exploration providers, token budget algorithm, data models, CLI flags |
-| [Forge Run Extraction Reference](forge-run-extraction.md) | Playbook table schema (section 5 content source) |
-| [Validation and Retries Reference](validation-and-retries.md) | ValidationResult model, transition signals (section 11 trigger conditions) |
+| [Context Assembly Reference](context-assembly/) | Priority ordering table, exploration providers, token budget algorithm, data models, CLI flags |
+| [Forge Run Extraction Reference](forge-run-extraction/) | Playbook table schema (section 5 content source) |
+| [Validation and Retries Reference](validation-and-retries/) | ValidationResult model, transition signals (section 11 trigger conditions) |

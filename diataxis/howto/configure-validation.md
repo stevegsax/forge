@@ -1,12 +1,23 @@
-# How to Configure Validation
-
++++
+title = "How to Configure Validation"
+weight = 83
+description = "How Forge validates LLM output with deterministic checks and feeds errors back to the LLM on retry."
+topic = "validation-and-retries"
+covers = [
+    "How to enable or disable specific validation checks",
+    "How to add custom test execution to validation",
+    "How to configure retry limits",
+    "How to inspect validation results for a failed step",
+]
+detail = "Short task-focused sections with CLI examples."
++++
 This guide shows how to enable or disable validation checks, add test execution, set
 retry limits, and inspect validation results for a failed step.
 
 For background on how validation works, see
-[Validation and Retries](../explanation/validation-and-retries.md). For the full list of
+[Validation and Retries](../explanation/validation-and-retries/). For the full list of
 flags and model fields, see
-[Validation and Retries Reference](../reference/validation-and-retries.md).
+[Validation and Retries Reference](../reference/validation-and-retries/).
 
 ---
 
@@ -175,9 +186,9 @@ debugging whether a failure is in the generated code or in the project's ruff co
 
 ## Related
 
-- [Validation and Retries](../explanation/validation-and-retries.md) — How the pipeline
+- [Validation and Retries](../explanation/validation-and-retries/) — How the pipeline
   works and why it is structured as it is.
-- [Validation and Retries Reference](../reference/validation-and-retries.md) — Complete
+- [Validation and Retries Reference](../reference/validation-and-retries/) — Complete
   flag list, model fields, and transition mapping rules.
-- [Output Processing Reference](../reference/output-processing.md) — Edit application
+- [Output Processing Reference](../reference/output-processing/) — Edit application
   errors that also trigger the retry path.

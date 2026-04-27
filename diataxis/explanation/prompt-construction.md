@@ -1,10 +1,23 @@
-# Prompt Construction
-
-Prerequisites: [The Universal Workflow Step](workflow-step.md).
++++
+title = "Prompt Construction"
+weight = 41
+description = "The structure of the system prompt that every LLM call receives: its eleven sections, their cache-optimized ordering, cache breakpoint placement, and how error context is injected on retry."
+topic = "prompt-construction"
+covers = [
+    "The system prompt as a structured document — not a chat transcript — and why this follows from the batch-first principle",
+    "The eleven sections and their cache-optimized ordering: stable content first, volatile content last",
+    "Why Anthropic's prefix-based caching drives the ordering — and the 80% input token saving on cached prefixes",
+    "The three cache breakpoints and where they are placed (after output requirements, after target file contents, after exploration results)",
+    "Error injection on retry: structured lint/test output plus AST-derived code context appended as section 11",
+    "Why errors go last — cache preservation across retries",
+]
+detail = "Discursive prose focused on the 'what' and 'why' of prompt structure. This is the most consequential artifact Forge produces — its structure directly bounds LLM output quality. Cover the full section ordering, explain the caching strategy, and discuss error injection. Do NOT cover how files are discovered, ranked, or packed into the budget — that is context assembly's topic. The dividing line: prompt construction describes the destination (what the LLM sees); context assembly describes the journey (how the system decides what to put there)."
++++
+Prerequisites: [The Universal Workflow Step](workflow-step/).
 
 The system prompt is the most consequential artifact Forge produces. Every LLM call in Forge is a single, self-contained document completion — there is no chat history, no multi-turn conversation, no persistent memory between calls. The entire world the LLM knows about must be packed into one prompt. The structure of that prompt directly bounds the quality of the output: if a relevant file is missing, the LLM hallucinates; if the token budget is wasted on irrelevant content, the signal-to-noise ratio drops; if the ordering is wrong, caching fails and every call costs twice as much.
 
-This document covers the structure of the system prompt — its eleven sections, their ordering, and why the ordering is what it is. It does not cover how Forge decides which files and content populate those sections; that process is [Context Assembly](context-assembly.md), which picks up where this topic leaves off. For the authoritative section table, see the [Prompt Construction Reference](../reference/prompt-construction.md).
+This document covers the structure of the system prompt — its eleven sections, their ordering, and why the ordering is what it is. It does not cover how Forge decides which files and content populate those sections; that process is [Context Assembly](context-assembly/), which picks up where this topic leaves off. For the authoritative section table, see the [Prompt Construction Reference](../reference/prompt-construction/).
 
 ## The prompt as a structured document
 
@@ -24,7 +37,7 @@ The ordering principle is simple: content that never changes goes first; content
 
 **Sections 6–7: Task description and target file contents.** The task description and target file list define what "done" means. They are fixed for the life of a task but differ between tasks. The actual contents of the target files come next — they are stable across exploration rounds but may change between retries (a failed attempt may have partially modified a file). The second cache breakpoint is placed after section 7, so retries within the same step share the cached prefix through the target file contents.
 
-**Sections 8–9: Dependencies and interface context.** Direct dependency file contents (when `--include-deps` is enabled) and extracted interface signatures from transitive imports. These are stable within a task and build outward from the task center. For how these are discovered and ranked, see [Context Assembly](context-assembly.md).
+**Sections 8–9: Dependencies and interface context.** Direct dependency file contents (when `--include-deps` is enabled) and extracted interface signatures from transitive imports. These are stable within a task and build outward from the task center. For how these are discovered and ranked, see [Context Assembly](context-assembly/).
 
 **Section 10: Exploration results.** The accumulated responses from the exploration loop — files the LLM requested, symbol lists, search results. These grow round by round during exploration and then stabilize once exploration completes. The third cache breakpoint is placed after section 10, so retries benefit from cached exploration context.
 
@@ -52,6 +65,6 @@ The error section is placed last because it is the most volatile content in the 
 
 ## What this means for downstream topics
 
-Prompt construction describes the destination — the structure of what the LLM sees. [Context Assembly](context-assembly.md) describes the journey — how the system decides what content populates sections 3–10. The two topics are tightly coupled but distinct: you can understand the prompt structure without knowing how import graph analysis or PageRank ranking work, and you can understand the discovery algorithms without knowing the cache breakpoint placement. Both contribute to prompt quality, but from opposite ends.
+Prompt construction describes the destination — the structure of what the LLM sees. [Context Assembly](context-assembly/) describes the journey — how the system decides what content populates sections 3–10. The two topics are tightly coupled but distinct: you can understand the prompt structure without knowing how import graph analysis or PageRank ranking work, and you can understand the discovery algorithms without knowing the cache breakpoint placement. Both contribute to prompt quality, but from opposite ends.
 
-For a concrete end-to-end example of prompt construction in action, see [The Golden Path](../tutorials/golden-path.md). For the section table and cache breakpoint reference, see [Prompt Construction Reference](../reference/prompt-construction.md).
+For a concrete end-to-end example of prompt construction in action, see [The Golden Path](../tutorials/golden-path/). For the section table and cache breakpoint reference, see [Prompt Construction Reference](../reference/prompt-construction/).

@@ -1,10 +1,23 @@
-# System Overview
-
++++
+title = "System Overview"
+weight = 11
+description = "What Forge is, the core principles that drive its design, and how the major components fit together."
+topic = "system-overview"
+covers = [
+    "What problem Forge solves and why it exists",
+    "The batch-first, document-completion paradigm vs. chat-based orchestrators",
+    "The seven architecture principles and their practical consequences",
+    "How the major components relate: CLI, Temporal workflows, activities, code intelligence, observability store",
+    "The concept of task-agnostic orchestration — same pipeline, different prompts",
+    "Plan-then-execute model vs. future dynamic task evolution",
+]
+detail = "High-level orientation piece. A developer reading this should come away with a mental map of the system — what the moving parts are, what philosophy connects them, and where to look for details. No code, no CLI commands. Diagrams showing component relationships are encouraged."
++++
 Prerequisite: Basic familiarity with [Temporal](https://docs.temporal.io/) and LLM APIs.
 
 Forge is a batch-first LLM task orchestrator. It decomposes tasks into independent work units, executes each as a single-step state machine transition, and reconciles the results. This document explains what problem Forge solves, what design principles shape it, and how its major components relate to each other.
 
-For technical details on modules, environment variables, and the technology stack, see the [System Overview Reference](../reference/system-overview.md).
+For technical details on modules, environment variables, and the technology stack, see the [System Overview Reference](../reference/system-overview/).
 
 ## The problem Forge addresses
 
@@ -20,7 +33,7 @@ Every LLM call in Forge is structured as a **document completion**. The orchestr
 
 This is the same pattern regardless of what the model is doing: generating code, decomposing a task into a plan, resolving a file conflict between parallel sub-tasks, or extracting lessons from a completed run. The prompt content changes; the execution pattern does not. This is what makes the architecture task-agnostic -- code generation, research, analysis, and documentation are all instances of the same primitive with different prompts and context.
 
-For a detailed treatment of this central abstraction, see [The Universal Workflow Step](workflow-step.md).
+For a detailed treatment of this central abstraction, see [The Universal Workflow Step](workflow-step/).
 
 ## The seven architecture principles
 
@@ -60,7 +73,7 @@ The rationale is asymmetric risk: the cost of continuing with a bad plan (wasted
 
 Every operation -- code generation, planning, exploration, conflict resolution, knowledge extraction, sanity checking -- is an instance of the same five-phase pattern: construct message, send, receive, serialize, transition. The differentiation between task types lives in the prompt and context, not in the workflow machinery.
 
-This means adding a new task type does not require new workflow code. It requires new prompts, possibly new context sources, and possibly new validation criteria. The orchestration layer is unchanged. For a detailed explanation of this pattern, see [The Universal Workflow Step](workflow-step.md).
+This means adding a new task type does not require new workflow code. It requires new prompts, possibly new context sources, and possibly new validation criteria. The orchestration layer is unchanged. For a detailed explanation of this pattern, see [The Universal Workflow Step](workflow-step/).
 
 ### Follow Temporal best practices
 
@@ -69,6 +82,32 @@ Temporal provides durable execution, retry semantics, child workflows, signal ha
 ## How the major components fit together
 
 Forge has five major component groups. Understanding their relationships provides a mental map for navigating the codebase.
+
+```mermaid
+flowchart LR
+    user["Developer"]
+    cli["CLI<br/>(forge run, forge worker,<br/>forge status, forge extract)"]
+    temporal["Temporal server"]
+    wf["Workflows<br/>(ForgeTaskWorkflow,<br/>BatchPollerWorkflow,<br/>ExtractionWorkflow)"]
+    acts["Activities<br/>(context, LLM call, write output,<br/>validate, transition, git)"]
+    ci["Code intelligence<br/>(import graph, PageRank,<br/>symbols, token budget)"]
+    anthropic["Anthropic API<br/>(sync + batch)"]
+    wt["Git worktrees<br/>(one per task/sub-task)"]
+    store[("SQLite observability store<br/>interactions · runs · playbooks · batch_jobs")]
+
+    user --> cli
+    cli -->|submit ForgeTaskInput| temporal
+    temporal -->|dispatch| wf
+    wf -->|calls| acts
+    acts --> ci
+    acts -->|LLM calls| anthropic
+    acts -->|write / commit| wt
+    acts -.->|best-effort write| store
+    cli -.->|query for status| store
+    wf -.->|lightweight stats| temporal
+```
+
+The dashed lines carry observability and status traffic; the solid lines carry the control and output path. The separation matters: a failure on a dashed-line write never blocks the solid-line flow.
 
 ### CLI
 
@@ -102,6 +141,14 @@ A recurring theme in Forge's design is that the pipeline is the same for every t
 
 This means extending Forge to a new task type is a matter of defining a new domain -- writing role prompts, output requirements, and validation criteria -- not building new workflow machinery. The orchestration layer does not know or care what the LLM is producing. It knows how to assemble context, call a model, apply structured output, validate results, and decide what to do next.
 
+## Plan-then-execute today, dynamic evolution deferred
+
+Forge commits to a plan upfront. When `--plan` is set, the planner decomposes the task into ordered steps once, and those steps execute as written. Steps do not discover new work mid-run. Sub-tasks do not re-plan. A running step that hits an ambiguous situation halts and escalates rather than deciding to branch into parallel exploration on its own. The universal workflow step's three outcome signals — `SUCCESS`, `FAILURE_RETRYABLE`, `FAILURE_TERMINAL` — are the entire vocabulary the orchestrator needs for this model, because there is no pathway for a step to grow new work.
+
+The design document specifies three additional signals for a future dynamic-evolution model: `new_tasks_discovered` (a running step identifies work the planner missed), `blocked_on_human` (a step needs input to proceed), and `blocked_on_sibling` (a step depends on another sub-task's output that has not arrived). None are implemented. The current system handles those situations through the plan-then-execute boundary instead: upfront planning eliminates task discovery, `FAILURE_TERMINAL` is the human-escalation path, and dependency ordering in the plan prevents sibling-blocking.
+
+This is an explicit trade-off. Plan-then-execute is easier to reason about, easier to observe, and easier to make batch-compatible — every LLM call's prompt is known before the run starts, so batch submission can pipeline everything the planner produces. Dynamic evolution buys flexibility at the cost of all three properties. When the planning-is-the-hard-part principle holds, the plan-then-execute model wins the comparison; when it stops holding, the deferred signals become interesting. See [The Universal Workflow Step](workflow-step/) for the full transition-signal reference and how the deferred signals are documented.
+
 ## What comes next
 
-To see the universal workflow step in action, follow the [Golden Path Tutorial](../tutorials/golden-path.md), which walks through a planned task from submission to committed output. For a deeper treatment of the five-phase pattern and why it matters, see [The Universal Workflow Step](workflow-step.md).
+To see the universal workflow step in action, follow the [Golden Path Tutorial](../tutorials/golden-path/), which walks through a planned task from submission to committed output. For a deeper treatment of the five-phase pattern and why it matters, see [The Universal Workflow Step](workflow-step/).

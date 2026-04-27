@@ -1,6 +1,19 @@
-# Model Routing and Batch Processing Reference
-
-For design rationale and conceptual background, see [Model Routing and Batch Processing](../explanation/llm-dispatch.md). For step-by-step recipes, see [How to Configure LLM Dispatch](../howto/configure-llm-dispatch.md).
++++
+title = "Model Routing and Batch Processing Reference"
+weight = 94
+description = "How Forge routes LLM calls to appropriate models via capability tiers, and how batch processing decouples workflow execution from LLM latency."
+topic = "llm-dispatch"
+covers = [
+    "Capability tier table: tier name, default model, use cases, LLM call sites",
+    "Model override mechanism: per-step capability_tier in plans",
+    "Batch processing: batch_jobs table schema, batch states, signal names",
+    "Batch poller: schedule configuration, poll interval, search attributes",
+    "Prompt caching: cache control header placement, cache token fields in LLMStats",
+    "CLI flags: --sync, --batch-poll-interval, model tier overrides",
+]
+detail = "Tabular reference for model configuration and batch mechanics."
++++
+For design rationale and conceptual background, see [Model Routing and Batch Processing](../explanation/llm-dispatch/). For step-by-step recipes, see [How to Configure LLM Dispatch](../howto/configure-llm-dispatch/).
 
 ---
 

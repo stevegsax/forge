@@ -1,8 +1,22 @@
-# Observability Reference
-
++++
+title = "Observability Reference"
+weight = 104
+description = "How to inspect, diagnose, and debug Forge workflow execution using the observability store, logs, tracing, and CLI commands."
+topic = "observability"
+covers = [
+    "SQLite store schema: interactions table, runs table, batch_jobs table",
+    "Alembic migration management",
+    "CLI commands: forge status (all flags and output formats)",
+    "Log files: locations, rotation policy, verbosity levels",
+    "Environment variables: FORGE_DB_PATH, FORGE_LOG_DIR, OTEL_* vars",
+    "API message logging: --log-messages flag, file format and location",
+    "OTel span names and attributes",
+]
+detail = "Complete reference for all observability surfaces. Tables for schemas, CLI flags, env vars."
++++
 Reference for the Forge observability store, CLI inspection commands, log files, environment variables, and OpenTelemetry integration.
 
-For background on why the store is structured this way, see [About Observability and Debugging](../explanation/observability.md). For practical debugging procedures, see [How to Debug a Workflow](../howto/debug-workflow.md).
+For background on why the store is structured this way, see [About Observability and Debugging](../explanation/observability/). For practical debugging procedures, see [How to Debug a Workflow](../howto/debug-workflow/).
 
 ---
 

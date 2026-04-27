@@ -1,8 +1,21 @@
-# How to Submit Tasks
-
++++
+title = "How to Submit Tasks"
+weight = 63
+description = "How Forge decomposes tasks into steps and sub-tasks, the three execution modes, and how fan-out/gather achieves parallelism."
+topic = "task-decomposition"
+covers = [
+    "How to submit a single-step task",
+    "How to submit a planned multi-step task",
+    "How to use a JSON task file for complex task definitions",
+    "How to control fan-out depth",
+    "How to configure sanity check intervals",
+    "How to inspect plan output before execution starts",
+]
+detail = "CLI-focused recipe guide. Each section: brief intro, CLI command, expected output. Include the JSON task file format with annotated fields."
++++
 This guide shows you how to submit tasks to Forge using the CLI. It covers single-step tasks, planned multi-step tasks, JSON task files, fan-out configuration, and sanity checks.
 
-For background on how each execution mode works, see the [task decomposition explanation](../explanation/task-decomposition.md). For full flag and data model documentation, see the [task decomposition reference](../reference/task-decomposition.md).
+For background on how each execution mode works, see the [task decomposition explanation](../explanation/task-decomposition/). For full flag and data model documentation, see the [task decomposition reference](../reference/task-decomposition/).
 
 ## Prerequisites
 
@@ -219,6 +232,34 @@ forge run \
 ```
 
 Fan-out works the same as with code tasks -- independent research threads run in parallel and results are gathered.
+
+## Inspect plan output before execution
+
+In planned mode, the planner runs first and commits a decomposition before any step executes. To see that decomposition as soon as it is produced — and cancel the run if it is wrong — use verbose console output when submitting the task:
+
+```bash
+forge -v run \
+    --task-id add-auth \
+    --description "Add user authentication with password hashing and JWT tokens" \
+    --plan
+```
+
+With `-v`, the worker prints the plan immediately after planning completes:
+
+```text
+14:04:02 INFO     forge.workflows — Plan created: 3 steps
+14:04:02 INFO     forge.workflows — step-1: Add password hashing to the user model
+14:04:02 INFO     forge.workflows — step-2: Add JWT token issue/verify helpers
+14:04:02 INFO     forge.workflows — step-3: Wire the login route to use both
+```
+
+If the plan is wrong, cancel the workflow via the Temporal CLI before the first step's LLM call returns:
+
+```bash
+temporal workflow cancel --workflow-id forge-task-add-auth
+```
+
+To run the planner in isolation — no execution at all, even for correct plans — wrap the task in an eval case and run `forge eval-planner --dry-run` (for schema validation only) or without `--dry-run` to actually invoke the planner and produce a `Plan` that is scored but never executed. See [How to Run Evaluations](run-evaluations/) for the eval-planner workflow.
 
 ## Inspect results
 

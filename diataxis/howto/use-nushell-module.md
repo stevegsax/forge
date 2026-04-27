@@ -1,12 +1,25 @@
-# How to Use the Nushell OCR Module
-
++++
+title = "How to Use the Nushell OCR Module"
+weight = 173
+description = "How to use the Nushell OCR module to perform Forge operations through composable, typed pipeline functions that talk directly to Temporal."
+topic = "nushell-integration"
+covers = [
+    "How to load the OCR module",
+    "How to submit documents for OCR",
+    "How to list and filter OCR jobs",
+    "How to export OCR results",
+    "How to mark and unmark documents for removal",
+    "How to compose operations with pipelines",
+]
+detail = "Task-focused recipes showing nushell commands and pipeline composition. Include concrete examples with expected output shapes."
++++
 The `ocr.nu` module provides composable functions for OCR operations that talk
 directly to the Temporal server. Every command returns structured data (records
 or tables) that can be filtered, sorted, and piped into other commands.
 
 For the full command reference, see
-[Nushell Module Reference](../reference/nushell-module.md). For background on
-the OCR pipeline, see [OCR Pipeline](../explanation/ocr-pipeline.md).
+[Nushell Module Reference](../reference/nushell-module/). For background on
+the OCR pipeline, see [OCR Pipeline](../explanation/ocr-pipeline/).
 
 
 ## Load the module

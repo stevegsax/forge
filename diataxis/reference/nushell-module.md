@@ -1,5 +1,18 @@
-# Nushell Module Reference
-
++++
+title = "Nushell Module Reference"
+weight = 174
+description = "How to use the Nushell OCR module to perform Forge operations through composable, typed pipeline functions that talk directly to Temporal."
+topic = "nushell-integration"
+covers = [
+    "Module location and loading",
+    "ocr submit: parameters, flags, return type",
+    "ocr list: parameters, flags, return type and column schema",
+    "ocr export doc: parameters, flags, return type",
+    "ocr mark / ocr unmark: parameters, return type",
+    "Prerequisites: temporal CLI, running Forge worker",
+]
+detail = "Tabular reference for each exported command. Include parameter types, defaults, and return record/table schemas."
++++
 ## Module Location
 
 | | |
@@ -143,6 +156,6 @@ as `forge-task-queue`.
 | `ocr mark` | `OcrMarkForRemovalWorkflow` |
 | `ocr unmark` | `OcrClearRemovalMarkWorkflow` |
 
-See [How to Use the Nushell OCR Module](../howto/use-nushell-module.md) for
-usage recipes. See [OCR Pipeline Reference](ocr-pipeline.md) for the underlying
+See [How to Use the Nushell OCR Module](../howto/use-nushell-module/) for
+usage recipes. See [OCR Pipeline Reference](ocr-pipeline/) for the underlying
 workflow and data model details.

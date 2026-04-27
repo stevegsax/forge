@@ -1,11 +1,22 @@
-# How to Run Evaluations
-
++++
+title = "How to Run Evaluations"
+weight = 163
+description = "How to evaluate planner output quality using deterministic structural checks and LLM-as-judge scoring."
+topic = "planner-eval"
+covers = [
+    "How to run planner evaluations against the eval corpus",
+    "How to create a new eval case",
+    "How to run evaluations with LLM-as-judge scoring",
+    "How to interpret evaluation results",
+]
+detail = "CLI-focused recipes."
++++
 This guide shows you how to run planner evaluations against an eval corpus, create
 new eval cases, enable LLM-as-judge scoring, interpret results, and compare runs.
 
 For background on how the evaluation framework works, see
-[Planner Evaluation](../explanation/planner-eval.md). For the full schema and CLI
-reference, see the [Planner Evaluation reference](../reference/planner-eval.md).
+[Planner Evaluation](../explanation/planner-eval/). For the full schema and CLI
+reference, see the [Planner Evaluation reference](../reference/planner-eval/).
 
 
 ## Run evaluations against a corpus
@@ -151,7 +162,7 @@ forge eval-planner \
 ```
 
 The output is a JSON array of `PlanEvalResult` objects. See the
-[Planner Evaluation reference](../reference/planner-eval.md#planevalresult) for
+[Planner Evaluation reference](../reference/planner-eval/#planevalresult) for
 the full schema.
 
 

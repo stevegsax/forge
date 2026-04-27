@@ -1,5 +1,17 @@
-# OCR Pipeline Reference
-
++++
+title = "OCR Pipeline Reference"
+weight = 154
+description = "How Forge's OCR pipeline uses the core orchestration primitives to extract text and images from documents via the Mistral API."
+topic = "ocr-pipeline"
+covers = [
+    "OCR workflow definitions: OcrSyncWorkflow, OcrSubmitWorkflow, OcrStoreWorkflow, OcrGatherWorkflow, OcrExportWorkflow, OcrListJobsWorkflow",
+    "OCR data models: OcrInput, OcrResult, OcrImage, OcrListJobsInput/Result, OcrJobEntry fields",
+    "Database tables: ocr_images, batch_jobs (OCR-specific columns)",
+    "CLI commands for OCR operations (including forge ocr-jobs)",
+    "ocr-image:// URI format and resolution",
+]
+detail = "Tabular reference for OCR-specific workflows, models, and storage."
++++
 ## Workflow Definitions
 
 | Workflow | Input | Output | Purpose |
@@ -169,7 +181,7 @@ Status is a two-layer model:
     lifecycle of a single batch row through `submitted` → `storing` →
     `succeeded`, plus failure states (`errored`, `failed`, `expired`,
     `canceled`, `missing`). See
-    [llm-dispatch.md](llm-dispatch.md#batch-job-states) for each state's
+    [llm-dispatch.md](llm-dispatch/#batch-job-states) for each state's
     precise meaning.
 - **Aggregate-level** (`OcrJobEntry.status`, values in `OcrJobDerivedStatus`)
     collapses the chunks of a submission into a single display label shown by
@@ -232,7 +244,7 @@ Stores images extracted from OCR responses, keyed by UUID.
 ### batch_jobs (OCR-specific columns)
 
 The `batch_jobs` table is shared with the LLM batch path. See the
-[Model Routing and Batch Processing reference](llm-dispatch.md) for the full
+[Model Routing and Batch Processing reference](llm-dispatch/) for the full
 schema. OCR batch jobs are distinguished by the `provider` column value
 `"mistral"`. The `file_path` column stores the source document path.
 
@@ -304,5 +316,5 @@ forge start OcrSyncWorkflow \
   --wait
 ```
 
-See [How to Run OCR](../howto/run-ocr.md) for usage recipes. See
-[OCR Pipeline](../explanation/ocr-pipeline.md) for design background.
+See [How to Run OCR](../howto/run-ocr/) for usage recipes. See
+[OCR Pipeline](../explanation/ocr-pipeline/) for design background.

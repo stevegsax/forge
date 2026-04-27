@@ -1,8 +1,19 @@
-# How to Manage Playbooks
++++
+title = "How to Manage Playbooks"
+weight = 113
+description = "Forge's self-learning loop: extracting playbook entries from its own completed run history and injecting them into future task contexts."
+topic = "forge-run-extraction"
+covers = [
+    "How to run knowledge extraction on completed forge runs",
+    "How to list and inspect existing forge playbook entries",
+    "How to manually add a playbook entry to forge's store",
+    "How to verify forge playbooks appear in future task contexts",
+]
+detail = "Short CLI-focused recipes, scoped to forge's own playbook store."
++++
+This guide shows you how to run extraction against completed Forge runs, inspect stored playbook entries in Forge's own store, manually add entries, and verify that playbooks appear in future task contexts. It is scoped to Forge's self-learning loop — for ingesting Claude Code transcripts into pbook, use [How to Ingest Transcripts](ingest-transcripts/) instead.
 
-This guide shows you how to run extraction against completed Forge runs, inspect stored playbook entries in Forge's own store, manually add entries, and verify that playbooks appear in future task contexts. It is scoped to Forge's self-learning loop — for ingesting Claude Code transcripts into pbook, use [How to Ingest Transcripts](ingest-transcripts.md) instead.
-
-For background on how extraction works, see [Forge Run Extraction](../explanation/forge-run-extraction.md). For full CLI option details, see the [Forge Run Extraction Reference](../reference/forge-run-extraction.md).
+For background on how extraction works, see [Forge Run Extraction](../explanation/forge-run-extraction/). For full CLI option details, see the [Forge Run Extraction Reference](../reference/forge-run-extraction/).
 
 ## Run extraction on completed workflows
 
@@ -95,6 +106,6 @@ For background on how extraction works, see [Forge Run Extraction](../explanatio
 
 3. If no playbooks appear and you expect them, check that:
 
-    - The task's inferred tags overlap with the stored entry's tags. The tag inference rules are documented in the [Forge Run Extraction Reference](../reference/forge-run-extraction.md).
+    - The task's inferred tags overlap with the stored entry's tags. The tag inference rules are documented in the [Forge Run Extraction Reference](../reference/forge-run-extraction/).
     - The token budget was not already full. Playbooks are dropped first when the budget is tight.
     - The entries exist. Run `forge playbooks list` to confirm.

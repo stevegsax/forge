@@ -1,10 +1,24 @@
-# Validation and Retries
-
++++
+title = "Validation and Retries"
+weight = 81
+description = "How Forge validates LLM output with deterministic checks and feeds errors back to the LLM on retry."
+topic = "validation-and-retries"
+covers = [
+    "Why deterministic validation runs before LLM-based review",
+    "The validation pipeline: ruff lint, ruff format, optional test execution",
+    "How validation results map to transition signals (SUCCESS, FAILURE_RETRYABLE, FAILURE_TERMINAL)",
+    "Error-aware retries: why blind retries waste budget",
+    "How the error section is constructed with AST-derived code context",
+    "Cache efficiency: why errors are appended at the end of the system prompt",
+    "Retry semantics at each level: single-step (fresh worktree), planned step (reset uncommitted), sub-task",
+]
+detail = "Connect the validation-retry loop to the broader workflow step pattern. Explain why error feedback dramatically improves fix rates (cite the prior art: Aider, Claude Code, SWE-bench). Show how the AST context extraction works conceptually."
++++
 This document explains how Forge validates LLM output, how validation results drive
 workflow transitions, and how error context is fed back to the LLM on retry. For
-field-level specifications, see [Validation and Retries Reference](../reference/validation-and-retries.md).
+field-level specifications, see [Validation and Retries Reference](../reference/validation-and-retries/).
 For configuring the validation pipeline, see
-[How to Configure Validation](../howto/configure-validation.md).
+[How to Configure Validation](../howto/configure-validation/).
 
 ---
 
@@ -196,5 +210,5 @@ same retry mechanism. From the LLM's perspective on retry, it receives a clear d
 of what failed, whether that was an edit that could not be located or a lint rule that the
 generated code violated.
 
-See [Output Processing](output-processing.md) for the edit matching mechanics and the
+See [Output Processing](output-processing/) for the edit matching mechanics and the
 conditions under which an edit fails.

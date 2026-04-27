@@ -56,4 +56,6 @@ forge.db
 .firecrawl/
 
 # Diataxis generated output
-diataxis/_build/
+diataxis/public/
+diataxis/resources/
+diataxis/.hugo_build.lock

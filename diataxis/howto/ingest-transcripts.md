@@ -1,8 +1,21 @@
-# How to Ingest Transcripts
-
++++
+title = "How to Ingest Transcripts"
+weight = 123
+description = "The pipeline that reads Claude Code session transcripts, analyzes them with forge's batch LLM path, and hands extracted experiences to pbook's ExtractionWorkflow cross-queue."
+topic = "transcript-ingestion"
+covers = [
+    "How to ingest a single Claude Code session file",
+    "How to discover and ingest all sessions from ~/.claude/projects/",
+    "How to filter discovered sessions by project",
+    "How to preview what would be ingested without submitting (dry-run)",
+    "How to reprocess a session that was already ingested (--force)",
+    "How to debug a stuck or failing ingestion",
+]
+detail = "Short CLI-focused recipes. Each recipe is a numbered sequence ending in a verification step."
++++
 This guide shows you how to use `forge ingest` to submit Claude Code session files to the transcript ingestion pipeline. Ingested sessions are analyzed by forge's batch LLM path and handed off to pbook's extraction workflow for storage.
 
-For how the pipeline is designed, see [Transcript Ingestion](../explanation/transcript-ingestion.md). For full flag documentation, see the [Transcript Ingestion Reference](../reference/transcript-ingestion.md).
+For how the pipeline is designed, see [Transcript Ingestion](../explanation/transcript-ingestion/). For full flag documentation, see the [Transcript Ingestion Reference](../reference/transcript-ingestion/).
 
 ## Prerequisites
 
@@ -51,7 +64,7 @@ For how the pipeline is designed, see [Transcript Ingestion](../explanation/tran
     Ingestion complete: 14 sessions processed, 31 experiences found, 27 entries created.
     ```
 
-2. Expect the workflow to take minutes to hours, depending on how many sessions are submitted and the batch API's current turnaround time. For why ingestion uses batch mode, see [Transcript Ingestion](../explanation/transcript-ingestion.md).
+2. Expect the workflow to take minutes to hours, depending on how many sessions are submitted and the batch API's current turnaround time. For why ingestion uses batch mode, see [Transcript Ingestion](../explanation/transcript-ingestion/).
 
 ## Filter discovered sessions by project
 

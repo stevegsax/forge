@@ -105,3 +105,10 @@ All modes include automatic context discovery (Phase 4), LLM-guided exploration 
 ## Development Plans
 
 When working on tasks from `development-plans/`, follow the process described in [development-plans/PROCESS.md](development-plans/PROCESS.md): read the task file's Problem and Acceptance Criteria, write a Plan section describing your approach, break it into sub-tasks, update status to IN PROGRESS, check off sub-tasks as you go, and append to Development Notes when you discover something unexpected or change the plan. Task files are living documents — accurate status documentation is as important as writing code.
+
+## Diataxis Documentation
+
+The `diataxis/` directory contains generated, human-facing documentation.
+It is an output artifact — disposable and never authoritative. Do not
+use it as input for design decisions, code generation, or development
+work. If the code and the diataxis docs disagree, the code is right.

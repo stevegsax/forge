@@ -1,10 +1,22 @@
-# Output Processing Reference
-
++++
+title = "Output Processing Reference"
+weight = 74
+description = "How the LLM's structured response is processed: the LLMResponse schema, edit application with fuzzy matching, and file writing."
+topic = "output-processing"
+covers = [
+    "LLMResponse, FileOutput, FileEdit, EditOperation model fields",
+    "Edit matching algorithm: exact, whitespace-normalized, indentation-normalized, fuzzy",
+    "Fuzzy match parameters: similarity threshold (60%), uniqueness gap (5%)",
+    "Edit application order and error conditions",
+    "File write behavior: new files vs. existing file edits",
+]
+detail = "Precise technical reference. Algorithm descriptions with thresholds and edge case behavior."
++++
 Technical reference for LLM output models, edit matching algorithms, and file write
 behavior. For design rationale and worked examples, see
-[Output Processing](../explanation/output-processing.md). For guidance on using validation
+[Output Processing](../explanation/output-processing/). For guidance on using validation
 to detect edit failures, see
-[Validation and Retries Reference](validation-and-retries.md).
+[Validation and Retries Reference](validation-and-retries/).
 
 ---
 
@@ -178,9 +190,9 @@ Level 1 (exact match) does not emit a warning.
 
 ## Related
 
-- [Output Processing](../explanation/output-processing.md) — Design rationale and worked
+- [Output Processing](../explanation/output-processing/) — Design rationale and worked
   examples for the fallback chain.
-- [Validation and Retries Reference](validation-and-retries.md) — What happens when an
+- [Validation and Retries Reference](validation-and-retries/) — What happens when an
   edit fails and the step retries.
-- [How to Configure Validation](../howto/configure-validation.md) — CLI flags for
+- [How to Configure Validation](../howto/configure-validation/) — CLI flags for
   controlling validation behavior.

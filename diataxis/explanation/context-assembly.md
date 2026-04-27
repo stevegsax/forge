@@ -1,10 +1,24 @@
-# Context Assembly
++++
+title = "Context Assembly"
+weight = 51
+description = "How Forge decides what goes into the prompt: file discovery via import graphs, PageRank ranking, token budget packing, progressive disclosure, and the exploration loop."
+topic = "context-assembly"
+covers = [
+    "How import graph analysis discovers relevant files without manual specification",
+    "How PageRank ranks files by structural importance",
+    "How the token budget packer selects what fits (knapsack-style priority packing)",
+    "Progressive disclosure: why only target files and repo map are included by default",
+    "How the exploration loop lets the LLM pull additional context on demand",
+    "Why exploration rounds are separate document completions (not tool calls within a conversation)",
+    "Tradeoffs: structural analysis over embeddings, signatures over full content, fixed ordering over adaptive ranking",
+]
+detail = "Context assembly is Forge's core competency for deciding what populates the prompt sections described in prompt-construction. Walk through the full assembly pipeline: discovery, ranking, packing, progressive disclosure, and the exploration loop. Explain the tradeoffs. Do NOT re-describe the 11-section structure or cache ordering — that is prompt-construction's topic. The dividing line: prompt construction describes the destination; context assembly describes the journey."
++++
+Prerequisites: [Prompt Construction](prompt-construction/).
 
-Prerequisites: [Prompt Construction](prompt-construction.md).
+Context assembly is Forge's answer to the question: given a task, what should the LLM see? The system prompt's eleven sections are described in [Prompt Construction](prompt-construction/) — the ordering, cache breakpoints, and error injection format. This topic picks up from there: how does the system decide what content populates those sections? That process — discovering relevant files, ranking them by structural importance, packing them into a token budget, and letting the LLM pull additional context on demand — is context assembly.
 
-Context assembly is Forge's answer to the question: given a task, what should the LLM see? The system prompt's eleven sections are described in [Prompt Construction](prompt-construction.md) — the ordering, cache breakpoints, and error injection format. This topic picks up from there: how does the system decide what content populates those sections? That process — discovering relevant files, ranking them by structural importance, packing them into a token budget, and letting the LLM pull additional context on demand — is context assembly.
-
-For the data models, provider specifications, and priority ordering table, see [Context Assembly Reference](../reference/context-assembly.md). For a concrete example of context assembly in action, see [The Golden Path](../tutorials/golden-path.md).
+For the data models, provider specifications, and priority ordering table, see [Context Assembly Reference](../reference/context-assembly/). For a concrete example of context assembly in action, see [The Golden Path](../tutorials/golden-path/).
 
 ## How Context Discovery Works
 
@@ -78,4 +92,4 @@ Forge's context assembly makes several deliberate tradeoffs:
 
 - **Fixed priority ordering over adaptive ranking.** The priority tiers (target files > dependencies > interfaces > repo map > manual files) are fixed. An adaptive system could re-rank based on the specific task, but fixed ordering is simpler, predictable, and cache-friendly. The exploration loop provides the adaptive component.
 
-For how the assembled content is structured within the system prompt — section ordering, cache breakpoints, and error injection — see [Prompt Construction](prompt-construction.md). For the complete context pipeline as it relates to the broader workflow step pattern, see [The Universal Workflow Step](workflow-step.md). For practical guidance on controlling context assembly, see [How to Control Context Assembly](../howto/control-context-assembly.md).
+For how the assembled content is structured within the system prompt — section ordering, cache breakpoints, and error injection — see [Prompt Construction](prompt-construction/). For the complete context pipeline as it relates to the broader workflow step pattern, see [The Universal Workflow Step](workflow-step/). For practical guidance on controlling context assembly, see [How to Control Context Assembly](../howto/control-context-assembly/).

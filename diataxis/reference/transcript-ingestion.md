@@ -1,8 +1,22 @@
-# Transcript Ingestion Reference
-
++++
+title = "Transcript Ingestion Reference"
+weight = 124
+description = "The pipeline that reads Claude Code session transcripts, analyzes them with forge's batch LLM path, and hands extracted experiences to pbook's ExtractionWorkflow cross-queue."
+topic = "transcript-ingestion"
+covers = [
+    "TranscriptIngestionWorkflow: input JSON shape, output dict, signals, task queue",
+    "BatchIngestionWorkflow: input JSON shape, output dict, fan-out behavior, task queue",
+    "prepare_transcript activity: input and output JSON shapes",
+    "Cross-queue activities called on pbook-task-queue: record_ingested_session (forge calls pbook)",
+    "Cross-queue child workflow: ExtractionWorkflow (forge calls pbook)",
+    "forge ingest CLI: all flags, argument, environment variables, exit codes",
+    "Model tier and batch behavior: SUMMARIZATION tier default, max_tokens, retry policy",
+]
+detail = "Tabular. One table per subject: workflows, activities, CLI flags, env vars, exit codes. Brief intro sentence per section, no narrative."
++++
 Tabular reference for the transcript ingestion workflows, the `prepare_transcript` activity, the cross-queue calls into pbook, and the `forge ingest` CLI. This reference covers only the forge side of the pipeline. For the pbook side — the `ExtractionWorkflow` input/output schemas, the `entries` table, and the `ingested_sessions` tracking table — consult pbook's documentation.
 
-For background on why the pipeline is designed this way, see [Transcript Ingestion](../explanation/transcript-ingestion.md). For recipes, see [How to Ingest Transcripts](../howto/ingest-transcripts.md). For the cross-cutting discussion of how this pipeline relates to forge's self-learning loop, see [Learning Loops](../explanation/learning-loops.md).
+For background on why the pipeline is designed this way, see [Transcript Ingestion](../explanation/transcript-ingestion/). For recipes, see [How to Ingest Transcripts](../howto/ingest-transcripts/). For the cross-cutting discussion of how this pipeline relates to forge's self-learning loop, see [Learning Loops](../explanation/learning-loops/).
 
 ## Workflows
 
@@ -184,4 +198,4 @@ Invokes either `TranscriptIngestionWorkflow` (single path) or `BatchIngestionWor
 | `src/forge/cli.py` (the `ingest` command) | `forge ingest` entry point, `_submit_ingestion` helper, `format_ingest_dry_run`, `format_ingest_result` |
 | `src/forge/worker.py` | Conditional registration of ingestion workflows/activities based on `_INGESTION_AVAILABLE` |
 
-For guidance on managing forge's own playbook store (a separate pipeline), see the [Forge Run Extraction Reference](forge-run-extraction.md). For the conceptual story of how the two stores relate, see [Learning Loops](../explanation/learning-loops.md).
+For guidance on managing forge's own playbook store (a separate pipeline), see the [Forge Run Extraction Reference](forge-run-extraction/). For the conceptual story of how the two stores relate, see [Learning Loops](../explanation/learning-loops/).

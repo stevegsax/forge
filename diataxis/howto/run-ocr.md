@@ -1,12 +1,25 @@
-# How to Run OCR
-
++++
+title = "How to Run OCR"
+weight = 153
+description = "How Forge's OCR pipeline uses the core orchestration primitives to extract text and images from documents via the Mistral API."
+topic = "ocr-pipeline"
+covers = [
+    "How to run synchronous OCR on a document",
+    "How to submit a document for batch OCR",
+    "How to check batch OCR job status",
+    "How to list all OCR job submissions",
+    "How to export OCR results",
+    "How to handle multi-chunk documents",
+]
+detail = "CLI-focused recipes for OCR operations."
++++
 This guide shows you how to submit documents for OCR processing, check job status,
 export results, and handle multi-chunk documents. All OCR workflows are launched
 via the `forge start` command.
 
 For background on how the OCR pipeline works, see
-[OCR Pipeline](../explanation/ocr-pipeline.md). For the full workflow and data
-model reference, see the [OCR Pipeline reference](../reference/ocr-pipeline.md).
+[OCR Pipeline](../explanation/ocr-pipeline/). For the full workflow and data
+model reference, see the [OCR Pipeline reference](../reference/ocr-pipeline/).
 
 
 ## Run synchronous OCR on a document

@@ -1,8 +1,20 @@
-# System Overview Reference
-
++++
+title = "System Overview Reference"
+weight = 14
+description = "What Forge is, the core principles that drive its design, and how the major components fit together."
+topic = "system-overview"
+covers = [
+    "Architecture principles table (principle, consequence, enforcement point)",
+    "Module map — every package and top-level module with a one-line description",
+    "Technology stack table (component, technology, version/source)",
+    "Environment variables table (all FORGE_* and XDG vars, defaults, effects)",
+    "File system layout (config, state, logs, database)",
+]
+detail = "Tabular reference. One table per section. No narrative prose beyond brief introductions to each table."
++++
 Prerequisite: Basic familiarity with [Temporal](https://docs.temporal.io/) and LLM APIs.
 
-Tabular reference for Forge's architecture principles, module layout, technology stack, environment variables, and file system paths. For the design rationale behind these choices, see the [System Overview Explanation](../explanation/system-overview.md).
+Tabular reference for Forge's architecture principles, module layout, technology stack, environment variables, and file system paths. For the design rationale behind these choices, see the [System Overview Explanation](../explanation/system-overview/).
 
 ## Architecture Principles
 
@@ -167,6 +179,6 @@ Log rotation: 10 MB maximum file size, 5 backup files retained.
 
 ## See Also
 
-- [System Overview Explanation](../explanation/system-overview.md) -- design rationale and principles
-- [The Universal Workflow Step](workflow-step.md) -- the five-phase execution pattern
-- [Golden Path Tutorial](../tutorials/golden-path.md) -- end-to-end walkthrough of a planned task
+- [System Overview Explanation](../explanation/system-overview/) -- design rationale and principles
+- [The Universal Workflow Step](workflow-step/) -- the five-phase execution pattern
+- [Golden Path Tutorial](../tutorials/golden-path/) -- end-to-end walkthrough of a planned task

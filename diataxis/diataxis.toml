@@ -27,8 +27,8 @@ covers = [
     "The concept of task-agnostic orchestration — same pipeline, different prompts",
     "Plan-then-execute model vs. future dynamic task evolution",
 ]
-detail = """High-level orientation piece. A developer reading this should come away with a mental map of the system — what the moving parts are, what philosophy connects them, and where to look for details. No code, no CLI commands. Diagrams showing component relationships are encouraged."""
-guidance = """This is the first thing a new team member reads. Keep it grounded in 'why' — why batch mode, why document completion, why Temporal, why human-gated merges. Connect each principle to the concrete consequence it has for how the system works. Link to the golden-path tutorial for 'seeing it in action' and to the workflow-step explanation for the central abstraction. Link to Temporal docs (https://docs.temporal.io/) for Temporal background."""
+detail = """High-level orientation piece. A developer reading this should come away with a mental map of the system — what the moving parts are, what philosophy connects them, and where to look for details. No code, no CLI commands. Include at least one mermaid diagram showing how the major components (CLI, Temporal workflows, activities, code intelligence, observability store) connect."""
+guidance = """This is the first thing a new team member reads. Keep it grounded in 'why' — why batch mode, why document completion, why Temporal, why human-gated merges. Connect each principle to the concrete consequence it has for how the system works. Make the plan-then-execute-vs-future-dynamic-evolution contrast explicit: today the planner commits the full decomposition upfront; the deferred transition signals (new_tasks_discovered, blocked_on_human, blocked_on_sibling) exist for a future dynamic model but are not implemented. Link to the golden-path tutorial for 'seeing it in action' and to the workflow-step explanation for the central abstraction. Link to Temporal docs (https://docs.temporal.io/) for Temporal background."""
 
 [topics.system-overview.reference]
 file = "reference/system-overview.md"
@@ -77,7 +77,7 @@ guidance = """This is the single most important document in the set. It is the r
 
 [topics.workflow-step]
 title = "The Universal Workflow Step"
-description = "The five-phase pattern (construct, send, receive, serialize, transition) that every operation in Forge follows."
+description = "The five-phase pattern (construct, send, receive-and-serialize, validate, transition) that every operation in Forge follows."
 complexity = "intermediate"
 prerequisites = ["system-overview"]
 order = 3
@@ -94,7 +94,7 @@ covers = [
     "The design decision to keep the orchestrator in control (not the LLM)",
 ]
 detail = """Conceptual deep-dive. Explain the 'why' behind the universal workflow step with enough depth that a developer can reason about whether a proposed change fits the pattern or breaks it. Use the analogy of a state machine where prompts and context are the only variables."""
-guidance = """This is the central abstraction of the system. Make the case for why it matters — not just what it is, but what it buys you. Contrast with the chat-loop pattern used by other orchestrators (where the LLM decides what to do next). Link to the reference doc for the precise activity signatures, data models, and timeout policies. Link to the golden-path tutorial for a concrete example."""
+guidance = """This is the central abstraction of the system. Make the case for why it matters — not just what it is, but what it buys you. Contrast with the chat-loop pattern used by other orchestrators (where the LLM decides what to do next). CANONICAL PHASE VOCABULARY: use the same five-phase names everywhere in this file — 'Construct, Send, Receive and Serialize, Validate, Transition.' Any diagram, numbered list, or prose enumeration must use these exact names in this order. Do not rename, combine, or omit phases between sections; drift between enumerations is a correctness bug. Link to the reference doc for the precise activity signatures, data models, and timeout policies. Link to the golden-path tutorial for a concrete example."""
 
 [topics.workflow-step.reference]
 file = "reference/workflow-step.md"
@@ -227,8 +227,8 @@ covers = [
     "Git strategy: worktree-per-task isolation, human-gated merges, disposable worktrees",
     "How the final result is assembled from gathered sub-task outputs",
 ]
-detail = """Explain the full lifecycle of a task from submission to final committed result. Cover the 'task decomposition and gathering' and 'how a final answer is created' questions from the user's original request. Use diagrams showing the planner output, step execution, and fan-out/gather flow."""
-guidance = """This answers two of the user's core questions: 'how tasks are decomposed and then gathered together' and 'how a final answer is created.' Make the planner's role clear — it is the critical decision point that bounds everything downstream. Explain conflict resolution as another instance of the universal workflow step (with a specialized prompt). Link to the execution-modes reference for CLI flags and data models. Link to the golden-path tutorial for the planned execution example."""
+detail = """Explain the full lifecycle of a task from submission to final committed result. Cover the 'task decomposition and gathering' and 'how a final answer is created' questions from the user's original request. Include at least one mermaid diagram of the fan-out/gather flow (parent workflow, per-sub-task child workflows, gather step, conflict resolution, commit)."""
+guidance = """This answers two of the user's core questions: 'how tasks are decomposed and then gathered together' and 'how a final answer is created.' Make the planner's role clear — it is the critical decision point that bounds everything downstream. Explain conflict resolution as another instance of the universal workflow step (with a specialized prompt). Do NOT enumerate PlanStep fields, SanityCheckVerdict values, or fan-out activity sequences here — those enumerations belong in the task-decomposition reference. Keep the prose motivational (why fan-out exists, why planning gets premium resources, why worktrees are disposable), not procedural. When a mechanism needs to be named, describe it in one sentence and link to reference for the fields. Link to the execution-modes reference for CLI flags and data models. Link to the golden-path tutorial for the planned execution example."""
 
 [topics.task-decomposition.reference]
 file = "reference/task-decomposition.md"
@@ -709,7 +709,7 @@ covers = [
     "The eval corpus: how test cases are defined and organized",
 ]
 detail = """Connect planner evaluation to the principle 'planning is the hard part.' Explain the two-mode approach and why both are needed."""
-guidance = """Keep this concise. The eval framework is a tool, not a core pipeline component. Link to reference for corpus format and scoring details. Link to task-decomposition explanation for why planning quality matters."""
+guidance = """Keep this concise. The eval framework is a tool, not a core pipeline component. Do NOT enumerate the deterministic checks one by one, and do NOT list the six judge criteria — those full lists live in the planner-eval reference. Instead, name a few categories of check (path safety, structural invariants like ID uniqueness, coverage of task targets, step ordering) and name the judge-criteria shape in prose (plan-level qualities the deterministic checks cannot measure), then link out for the authoritative enumeration. Link to reference for corpus format and scoring details. Link to task-decomposition explanation for why planning quality matters."""
 
 [topics.planner-eval.reference]
 file = "reference/planner-eval.md"

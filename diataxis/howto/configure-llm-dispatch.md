@@ -1,6 +1,17 @@
-# How to Configure LLM Dispatch
-
-This guide shows how to control model routing and batch processing behavior in Forge. For background on how these mechanisms work, see [Model Routing and Batch Processing](../explanation/llm-dispatch.md). For a full list of flags and configuration fields, see the [reference](../reference/llm-dispatch.md).
++++
+title = "How to Configure LLM Dispatch"
+weight = 93
+description = "How Forge routes LLM calls to appropriate models via capability tiers, and how batch processing decouples workflow execution from LLM latency."
+topic = "llm-dispatch"
+covers = [
+    "How to run a task in sync mode (--sync)",
+    "How to check batch job status",
+    "How to configure the batch poll interval",
+    "How to override the model tier for a specific task or step",
+]
+detail = "Short CLI-focused recipes."
++++
+This guide shows how to control model routing and batch processing behavior in Forge. For background on how these mechanisms work, see [Model Routing and Batch Processing](../explanation/llm-dispatch/). For a full list of flags and configuration fields, see the [reference](../reference/llm-dispatch/).
 
 ---
 
@@ -156,4 +167,4 @@ forge run --task-file refactor-pipeline.json
 
 Step 1 uses the `REASONING` tier model. Step 2 uses the `GENERATION` tier (the default). Steps without a `capability_tier` field always use `GENERATION`.
 
-Refer to the [reference](../reference/llm-dispatch.md) for the full list of tier values and the per-step field definition.
+Refer to the [reference](../reference/llm-dispatch/) for the full list of tier values and the per-step field definition.

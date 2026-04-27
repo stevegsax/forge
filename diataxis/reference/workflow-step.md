@@ -1,6 +1,18 @@
-# Universal Workflow Step Reference
-
-This document describes the activities, workflows, data models, and configuration that implement the universal workflow step. For background on why this pattern exists, see the [explanation](../explanation/workflow-step.md).
++++
+title = "Universal Workflow Step Reference"
+weight = 34
+description = "The five-phase pattern (construct, send, receive-and-serialize, validate, transition) that every operation in Forge follows."
+topic = "workflow-step"
+covers = [
+    "Activity definitions: name, input type, output type, timeout, retry policy",
+    "Workflow definitions: name, input type, output type, signals, queries",
+    "TransitionSignal enum values and their meanings",
+    "Retry semantics: what happens on FAILURE_RETRYABLE at each level (single-step, planned step, sub-task)",
+    "Core data models: ForgeTaskInput, TaskResult, StepResult, SubTaskResult, LLMCallResult",
+]
+detail = "Tabular reference. One table per activity/workflow definition. Data model tables should list field name, type, required/optional, and description."
++++
+This document describes the activities, workflows, data models, and configuration that implement the universal workflow step. For background on why this pattern exists, see the [explanation](../explanation/workflow-step/).
 
 
 ## Activities

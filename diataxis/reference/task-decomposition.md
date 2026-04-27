@@ -1,8 +1,21 @@
-# Task Decomposition Reference
-
++++
+title = "Task Decomposition Reference"
+weight = 64
+description = "How Forge decomposes tasks into steps and sub-tasks, the three execution modes, and how fan-out/gather achieves parallelism."
+topic = "task-decomposition"
+covers = [
+    "Plan data model: Plan, PlanStep, SubTask fields and constraints",
+    "Planner prompt structure and inputs",
+    "Execution mode selection logic (plan flag, sub_tasks presence)",
+    "CLI flags: --plan, --max-fan-out-depth, --sanity-check-interval, --max-retries",
+    "Git worktree lifecycle: creation, branch naming, cleanup",
+    "Conflict resolution inputs and outputs",
+]
+detail = "Tabular reference for plan format, execution mode rules, and CLI controls."
++++
 Data models, execution mode selection logic, CLI flags, and git worktree lifecycle for task decomposition and execution.
 
-For background on when to use each execution mode and how the planner, fan-out, and gather mechanisms work, see the [task decomposition explanation](../explanation/task-decomposition.md).
+For background on when to use each execution mode and how the planner, fan-out, and gather mechanisms work, see the [task decomposition explanation](../explanation/task-decomposition/).
 
 ## Plan Data Models
 
@@ -206,5 +219,5 @@ The `--task-file` flag accepts a JSON file with the following structure:
 
 ## See Also
 
-- [Task Decomposition (explanation)](../explanation/task-decomposition.md)
-- [How to Submit Tasks](../howto/submit-tasks.md)
+- [Task Decomposition (explanation)](../explanation/task-decomposition/)
+- [How to Submit Tasks](../howto/submit-tasks/)

@@ -1,10 +1,24 @@
-# Transcript Ingestion
-
-Prerequisites: [Model Routing and Batch Processing](llm-dispatch.md), [Forge Run Extraction](forge-run-extraction.md).
++++
+title = "Transcript Ingestion"
+weight = 121
+description = "The pipeline that reads Claude Code session transcripts, analyzes them with forge's batch LLM path, and hands extracted experiences to pbook's ExtractionWorkflow cross-queue."
+topic = "transcript-ingestion"
+covers = [
+    "Why transcript ingestion lives in forge and not in pbook",
+    "The two workflows: TranscriptIngestionWorkflow (single session) and BatchIngestionWorkflow (fan-out parent)",
+    "Why the analysis call uses the SUMMARIZATION tier and batch mode",
+    "The cross-queue contract with pbook: how forge hands experiences to pbook's ExtractionWorkflow",
+    "The task queue split: why ingestion runs on forge-task-queue and pbook runs on pbook-task-queue",
+    "How already-ingested sessions are tracked to avoid double-processing",
+    "Why this pipeline produces pbook entries, not forge playbooks",
+]
+detail = "Discursive prose that explains the division of responsibility between forge and pbook. Open with the question 'why does forge read Claude Code transcripts?' and answer it by explaining that forge owns the batch LLM infrastructure and pbook owns the playbook store, so the natural boundary puts ingestion on the forge side and extraction-of-experiences-into-entries on the pbook side. Do not describe every field of the workflow inputs or every CLI flag — that belongs in the reference. Do not give step-by-step recipes — that belongs in the how-to. Link forward to learning-loops for the cross-cutting story about why forge has two learning pipelines."
++++
+Prerequisites: [Model Routing and Batch Processing](llm-dispatch/), [Forge Run Extraction](forge-run-extraction/).
 
 Transcript ingestion is the pipeline that reads Claude Code JSONL session files, analyzes them with an LLM, and feeds the extracted experiences into [pbook](https://github.com/sax-capital/pbook) for storage. The pipeline lives partly in forge and partly in pbook. This document explains why that boundary exists, how the cross-queue handoff works, and how the two workflows on the forge side (`TranscriptIngestionWorkflow` and `BatchIngestionWorkflow`) relate to each other.
 
-For technical details on workflow inputs, CLI flags, and cross-queue contracts, see the [Transcript Ingestion Reference](../reference/transcript-ingestion.md). For practical recipes, see [How to Ingest Transcripts](../howto/ingest-transcripts.md). For the bigger picture of why forge has two learning pipelines at all — and why their outputs land in different databases — see [Learning Loops](learning-loops.md).
+For technical details on workflow inputs, CLI flags, and cross-queue contracts, see the [Transcript Ingestion Reference](../reference/transcript-ingestion/). For practical recipes, see [How to Ingest Transcripts](../howto/ingest-transcripts/). For the bigger picture of why forge has two learning pipelines at all — and why their outputs land in different databases — see [Learning Loops](learning-loops/).
 
 ## Why transcript ingestion lives in forge, not pbook
 
@@ -82,10 +96,10 @@ This is also why the system is forgiving of poor LLM output. If the analysis ret
 
 ## Why transcript ingestion produces pbook entries and not forge playbooks
 
-Forge has its own playbook store, and its own extraction pipeline, which is covered in [Forge Run Extraction](forge-run-extraction.md). You might reasonably ask why transcript ingestion doesn't write to forge's store alongside forge's own extracted lessons.
+Forge has its own playbook store, and its own extraction pipeline, which is covered in [Forge Run Extraction](forge-run-extraction/). You might reasonably ask why transcript ingestion doesn't write to forge's store alongside forge's own extracted lessons.
 
 The short answer is that forge's playbook store is scoped to lessons forge learned about forge runs, and transcript ingestion is about lessons from Claude Code sessions — which are typically *not* about forge at all. A session in which a developer was debugging a SQLAlchemy migration has nothing to teach forge's own task execution. It has a lot to teach pbook's cross-project knowledge base, which is designed to collect exactly that kind of lesson.
 
-The longer answer involves the schema and retrieval differences between the two stores, which is the subject of [Learning Loops](learning-loops.md). The short version: pbook's store is richer (it has embeddings, feedback counters, and review flags), pbook's retrieval supports intent-based ranking, and pbook's model is cross-project by construction. Forge's store is simpler and self-contained. For Claude Code transcripts — which are external, cross-project data — pbook is the right destination. For forge's own run history, forge's store is the right destination. The two learning loops run in parallel today, and that parallelism is explained at length in the learning-loops topic.
+The longer answer involves the schema and retrieval differences between the two stores, which is the subject of [Learning Loops](learning-loops/). The short version: pbook's store is richer (it has embeddings, feedback counters, and review flags), pbook's retrieval supports intent-based ranking, and pbook's model is cross-project by construction. Forge's store is simpler and self-contained. For Claude Code transcripts — which are external, cross-project data — pbook is the right destination. For forge's own run history, forge's store is the right destination. The two learning loops run in parallel today, and that parallelism is explained at length in the learning-loops topic.
 
-For how the ingestion workflows are invoked and configured at the Python level, see the [Transcript Ingestion Reference](../reference/transcript-ingestion.md). For step-by-step commands, see [How to Ingest Transcripts](../howto/ingest-transcripts.md).
+For how the ingestion workflows are invoked and configured at the Python level, see the [Transcript Ingestion Reference](../reference/transcript-ingestion/). For step-by-step commands, see [How to Ingest Transcripts](../howto/ingest-transcripts/).

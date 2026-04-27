@@ -1,5 +1,17 @@
-# Planner Evaluation
-
++++
+title = "Planner Evaluation"
+weight = 161
+description = "How to evaluate planner output quality using deterministic structural checks and LLM-as-judge scoring."
+topic = "planner-eval"
+covers = [
+    "Why planner evaluation matters — plan quality bounds everything downstream",
+    "The two evaluation modes: deterministic structural checks and LLM-as-judge",
+    "What deterministic checks verify: file coverage, step ordering, constraint adherence",
+    "How LLM-as-judge scoring works: scoring criteria, judge prompt, score aggregation",
+    "The eval corpus: how test cases are defined and organized",
+]
+detail = "Connect planner evaluation to the principle 'planning is the hard part.' Explain the two-mode approach and why both are needed."
++++
 Forge's core principle — "planning is the hard part" — has a direct implication for
 testing: if plan quality bounds everything that runs downstream, then measuring plan
 quality is the highest-leverage form of testing available. A plan that misorders
@@ -9,7 +21,7 @@ exists to catch these problems before execution, and to provide a stable signal 
 comparing planner behavior across model versions or prompt changes.
 
 For background on how planning works and why it matters, see
-[Task Decomposition and Execution](task-decomposition.md).
+[Task Decomposition and Execution](task-decomposition/).
 
 
 ## Two Evaluation Modes
@@ -36,52 +48,16 @@ then optionally run the judge to assess plan quality.
 
 ## What Deterministic Checks Verify
 
-Each check is a pure function that takes a `Plan` and a `TaskDefinition` and
-returns a `DeterministicCheckResult`. Some checks also accept a set of known
-repository files to verify that context file references are plausible.
+Deterministic checks are pure functions over a `Plan` and its `TaskDefinition`. They fall into a few categories, each corresponding to a class of planner error that would cause predictable execution failures. Path-safety checks reject absolute paths and `..` traversal. Structural-invariant checks catch duplicate IDs and sub-task target overlap. Coverage checks ensure every file the task declared as a target ends up in some step. Ordering checks prevent a step from depending on a file that a later step produces. File-plausibility checks verify that context references exist in the repository or are produced by an earlier step — this is the one category that requires the check runner to know the repository's file set, and it skips when that set is not available.
 
-The checks address the most common classes of planner error:
-
-- **Path safety**: all target and context file references must be relative paths
-  without `..` traversal segments.
-- **ID uniqueness**: step IDs must be unique across the plan; sub-task IDs must be
-  unique within each step.
-- **Fan-out correctness**: sub-tasks within a fan-out step must not share target
-  files (overlapping targets would cause merge conflicts), and fan-out steps must
-  have at least two sub-tasks.
-- **Coverage**: every file listed in the task's `target_files` must appear as a
-  target in at least one plan step.
-- **Target presence**: non-fan-out steps must have non-empty `target_files`.
-- **File plausibility**: context files must either exist in the repository or be
-  produced by an earlier step.
-- **Step ordering**: no step may reference a context file that is only produced by
-  a later step (forward references).
-
-These checks encode execution invariants: violations are not style issues but
-conditions that would cause predictable failures.
+These checks encode execution invariants, not style preferences. A plan that fails a deterministic check is not merely inelegant — it will fail in a specific, foreseeable way when run. For the exact check names, what each one verifies, and the `known_repo_files` dependency, see the [planner evaluation reference](../reference/planner-eval/).
 
 
 ## How LLM-as-Judge Scoring Works
 
-The judge prompt presents the full plan — step descriptions, target files, context
-files, sub-task structure — alongside the original task definition and scoring
-criteria. The judge scores the plan on six criteria, each on a 1–5 scale:
+The judge prompt presents the full plan — step descriptions, target files, context files, sub-task structure — alongside the original task definition and a rubric. The judge scores the plan along several dimensions that deterministic checks cannot reach: whether the decomposition is complete, whether step sizes are appropriate, whether the ordering lets each step build on its predecessors, whether context choices are plausible, whether fan-out is used where it helps, and whether the plan's own explanation is coherent. Each dimension gets a 1–5 score and a written rationale; the judge also emits an overall assessment. For the canonical rubric and the full criterion definitions, see the [planner evaluation reference](../reference/planner-eval/).
 
-- **completeness**: does the plan cover all required targets and requirements?
-- **granularity**: are steps appropriately sized?
-- **ordering**: are steps in a logical sequence where each can build on prior ones?
-- **context_quality**: do steps reference appropriate context files?
-- **fan_out_appropriateness**: is fan-out used where it would help, and not used
-  where it would not?
-- **explanation_quality**: does the plan explanation clearly describe the
-  decomposition strategy?
-
-The judge returns one `JudgeScore` per criterion with a numeric score and a
-rationale, plus an `overall_assessment` string.
-
-The default judge model is `claude-sonnet-4-5-20250929`. Any model accessible via
-the Forge LLM provider can be substituted. The judge call is a synchronous LLM
-call, not a batch call, because evaluation is an interactive workflow.
+The judge defaults to `claude-sonnet-4-5-20250929` and runs synchronously rather than via the batch API — evaluation is an interactive workflow, not a pipeline stage. Any model the Forge LLM provider can route to may be substituted via `--judge-model`.
 
 
 ## The Eval Corpus
@@ -113,5 +89,5 @@ regression. When both runs include judge verdicts, runs are also compared by
 average score across criteria, with a threshold of 0.5 score points to distinguish
 meaningful change from noise.
 
-For technical details, see the [Planner Evaluation reference](../reference/planner-eval.md).
-For step-by-step instructions, see [How to Run Evaluations](../howto/run-evaluations.md).
+For technical details, see the [Planner Evaluation reference](../reference/planner-eval/).
+For step-by-step instructions, see [How to Run Evaluations](../howto/run-evaluations/).

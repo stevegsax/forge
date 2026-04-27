@@ -1,5 +1,17 @@
-# Planner Evaluation Reference
-
++++
+title = "Planner Evaluation Reference"
+weight = 164
+description = "How to evaluate planner output quality using deterministic structural checks and LLM-as-judge scoring."
+topic = "planner-eval"
+covers = [
+    "Eval corpus format: directory structure, case file schema",
+    "Deterministic check definitions: check name, what it verifies, pass/fail criteria",
+    "LLM-as-judge scoring criteria and score scale",
+    "EvalResult, EvalCase, DeterministicCheckResult model fields",
+    "CLI: forge eval-planner flags and output format",
+]
+detail = "Tabular reference for the evaluation framework."
++++
 ## Eval Corpus Format
 
 ### Directory Structure
@@ -210,5 +222,5 @@ forge eval-planner --corpus-dir PATH [OPTIONS]
 - `0`: all deterministic checks passed (or `--dry-run` used).
 - Non-zero: at least one deterministic check failed, or no results were produced.
 
-See [How to Run Evaluations](../howto/run-evaluations.md) for usage recipes. See
-[Planner Evaluation](../explanation/planner-eval.md) for design background.
+See [How to Run Evaluations](../howto/run-evaluations/) for usage recipes. See
+[Planner Evaluation](../explanation/planner-eval/) for design background.

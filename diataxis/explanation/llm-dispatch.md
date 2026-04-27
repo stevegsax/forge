@@ -1,8 +1,23 @@
-# Model Routing and Batch Processing
-
++++
+title = "Model Routing and Batch Processing"
+weight = 91
+description = "How Forge routes LLM calls to appropriate models via capability tiers, and how batch processing decouples workflow execution from LLM latency."
+topic = "llm-dispatch"
+covers = [
+    "Capability tiers: why abstract tiers instead of concrete model names",
+    "The four tiers (reasoning, generation, summarization, classification) and their use cases",
+    "Why planning and conflict resolution get the reasoning tier",
+    "Batch mode: why submit-wait-resume instead of synchronous calls",
+    "The 50% cost reduction from the Anthropic Batch API",
+    "How the batch poller delivers results via Temporal signals",
+    "Why every LLM call must be a self-contained document completion (batch compatibility)",
+    "Prompt caching: cache-efficient ordering and cache control headers",
+]
+detail = "Two related topics unified by the theme of 'how Forge manages LLM calls.' Model routing is about which model; batch processing is about how the call is made. Both are consequences of the batch-first design principle."
++++
 Forge makes two kinds of decisions about every LLM call: which model to send it to, and how to send it. These decisions are made by different mechanisms for different reasons, but they share a common root — the batch-first, document-completion design that runs through the whole system.
 
-This document explains how those mechanisms work and why they are designed the way they are. For the configuration details, see the [reference](../reference/llm-dispatch.md). For step-by-step recipes, see [how to configure LLM dispatch](../howto/configure-llm-dispatch.md).
+This document explains how those mechanisms work and why they are designed the way they are. For the configuration details, see the [reference](../reference/llm-dispatch/). For step-by-step recipes, see [how to configure LLM dispatch](../howto/configure-llm-dispatch/).
 
 ---
 
@@ -46,7 +61,7 @@ The same logic applies to conflict resolution. When two sub-tasks modify the sam
 
 ### Why submit-wait-resume instead of synchronous calls
 
-Every LLM call in Forge is stateless and self-contained: the orchestrator assembles a complete prompt, sends it, and expects a single structured response. No streaming, no mid-turn tool calls, no conversation history. This is the document-completion paradigm described in [The Universal Workflow Step](../explanation/workflow-step.md).
+Every LLM call in Forge is stateless and self-contained: the orchestrator assembles a complete prompt, sends it, and expects a single structured response. No streaming, no mid-turn tool calls, no conversation history. This is the document-completion paradigm described in [The Universal Workflow Step](../explanation/workflow-step/).
 
 This property is what makes batch mode possible. Because each call is independent, it can be submitted to a queue, processed at some future time, and the result retrieved later. The workflow does not need to hold an activity slot open while waiting; it can yield, let Temporal persist its state, and resume when the result arrives.
 

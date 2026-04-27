@@ -1,12 +1,25 @@
-# Forge Run Extraction
++++
+title = "Forge Run Extraction"
+weight = 111
+description = "Forge's self-learning loop: extracting playbook entries from its own completed run history and injecting them into future task contexts."
+topic = "forge-run-extraction"
+covers = [
+    "The playbook concept: structured lessons Forge generates from its own completed runs",
+    "Why extraction runs as an independent workflow (not on the critical path)",
+    "The extraction pipeline: fetch unextracted runs from the observability store, call LLM, save entries",
+    "Tag inference: how tags are derived deterministically from task metadata",
+    "How forge-generated playbooks are injected into future forge tasks at context priority 5",
+    "The self-learning feedback loop: Forge improves its own future runs from its own past runs",
+]
+detail = "Explain how forge's own extraction pipeline builds on the core orchestration primitives — it uses the same universal workflow step pattern (construct, send, receive, serialize, transition). Focus on how this creates a self-learning feedback loop that is scoped to forge's own run history. This topic deliberately does NOT cover ingestion from external sources like Claude Code transcripts — that lives in the transcript-ingestion topic — and readers looking for the bigger picture of how forge and pbook together support multiple learning loops should follow the link to learning-loops."
++++
+Prerequisites: [Context Assembly](context-assembly/).
 
-Prerequisites: [Context Assembly](context-assembly.md).
-
-Forge has two separate learning pipelines. This document covers the first one — Forge's self-learning loop, scoped entirely to Forge's own completed run history. It does not cover transcript ingestion from Claude Code sessions; that pipeline is a separate topic, documented in [Transcript Ingestion](transcript-ingestion.md), and it writes to a different database. For the cross-cutting story of why there are two loops and how they relate, see [Learning Loops](learning-loops.md).
+Forge has two separate learning pipelines. This document covers the first one — Forge's self-learning loop, scoped entirely to Forge's own completed run history. It does not cover transcript ingestion from Claude Code sessions; that pipeline is a separate topic, documented in [Transcript Ingestion](transcript-ingestion/), and it writes to a different database. For the cross-cutting story of why there are two loops and how they relate, see [Learning Loops](learning-loops/).
 
 Over time, Forge accumulates experience from its own runs: completed tasks, retried steps, failed validations, and the interventions that resolved them. Without a mechanism to capture and reuse that experience, the same context gaps and error patterns recur in every new run. Forge run extraction is the system's answer. It processes completed workflow results from Forge's observability store, asks an LLM to identify reusable lessons, and stores them as structured entries called playbooks in Forge's own `playbooks` table. Future Forge tasks that resemble previous ones receive those lessons as part of their assembled context.
 
-For technical details on schemas, tag rules, and CLI commands, see the [Forge Run Extraction Reference](../reference/forge-run-extraction.md). For practical steps, see [How to Manage Playbooks](../howto/manage-playbooks.md).
+For technical details on schemas, tag rules, and CLI commands, see the [Forge Run Extraction Reference](../reference/forge-run-extraction/). For practical steps, see [How to Manage Playbooks](../howto/manage-playbooks/).
 
 ## The playbook concept
 
@@ -48,7 +61,7 @@ Playbooks are a context source. During context assembly, the `assemble_context` 
 
 The consequence of that position is that playbooks are included when the budget allows, but are the first items dropped when the budget is tight. This is intentional: a playbook is an optimization, not a correctness requirement. The task can succeed without the playbook; it may succeed more efficiently with it. If the budget is already full with target files, interface context, and validation results, dropping the playbooks is the right tradeoff.
 
-For how context assembly uses the token budget packer and its priority ordering, see [Context Assembly](context-assembly.md).
+For how context assembly uses the token budget packer and its priority ordering, see [Context Assembly](context-assembly/).
 
 ## The self-learning feedback loop
 
@@ -58,4 +71,4 @@ The loop works for successes too, not just failures. When a task succeeds and th
 
 The loop is not instantaneous — it requires running `forge extract` between the original task and the future task. In practice, running extraction periodically (after a batch of tasks or at the end of a work session) keeps the playbook store current without adding overhead to individual task runs.
 
-This loop does not learn from anything outside Forge's own observability store. A lesson captured from a Claude Code conversation transcript, a lesson added manually through pbook's CLI, or a lesson extracted from another project's runs — none of those can flow into Forge's playbook table through this pipeline. Those sources are handled by [Transcript Ingestion](transcript-ingestion.md), which writes to a separate store (pbook's). For the full picture of how these two pipelines relate, and what a unified pipeline might look like, see [Learning Loops](learning-loops.md).
+This loop does not learn from anything outside Forge's own observability store. A lesson captured from a Claude Code conversation transcript, a lesson added manually through pbook's CLI, or a lesson extracted from another project's runs — none of those can flow into Forge's playbook table through this pipeline. Those sources are handled by [Transcript Ingestion](transcript-ingestion/), which writes to a separate store (pbook's). For the full picture of how these two pipelines relate, and what a unified pipeline might look like, see [Learning Loops](learning-loops/).

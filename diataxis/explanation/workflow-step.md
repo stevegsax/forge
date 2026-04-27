@@ -1,9 +1,22 @@
-# The Universal Workflow Step
-
++++
+title = "The Universal Workflow Step"
+weight = 31
+description = "The five-phase pattern (construct, send, receive-and-serialize, validate, transition) that every operation in Forge follows."
+topic = "workflow-step"
+covers = [
+    "Why every operation uses the same five-phase pattern",
+    "How this enables task-agnostic orchestration — new task types need new prompts, not new workflows",
+    "The relationship between Temporal workflows and activities — what runs where and why",
+    "Why the LLM call is stateless and self-contained (batch compatibility, testability, observability)",
+    "How the transition vocabulary (SUCCESS, FAILURE_RETRYABLE, FAILURE_TERMINAL) drives the control loop",
+    "The design decision to keep the orchestrator in control (not the LLM)",
+]
+detail = "Conceptual deep-dive. Explain the 'why' behind the universal workflow step with enough depth that a developer can reason about whether a proposed change fits the pattern or breaks it. Use the analogy of a state machine where prompts and context are the only variables."
++++
 Every operation in Forge -- code generation, planning, exploration, conflict resolution, knowledge extraction, sanity checking -- follows the same five-phase pattern:
 
 ```
-Construct --> Send --> Receive --> Serialize --> Transition
+Construct --> Send --> Receive and Serialize --> Validate --> Transition
 ```
 
 This is not an implementation shortcut. It is the central design decision that shapes everything else in the system. Understanding why this pattern exists, and what it makes possible, is prerequisite to understanding Forge.
@@ -15,7 +28,7 @@ A Forge workflow step proceeds through five phases, each implemented as a separa
 
 1. **Construct.** Assemble the complete prompt -- system prompt and user prompt -- from task metadata, discovered context, playbooks, and (on retries) previous error output.
 2. **Send.** Package the prompt into an API request and submit it to the selected model.
-3. **Receive and serialize.** Extract the structured response, validate it against a Pydantic schema, and write the results (new files or edits to existing files) to the git worktree.
+3. **Receive and Serialize.** Extract the structured response, validate it against a Pydantic schema, and write the results (new files or edits to existing files) to the git worktree.
 4. **Validate.** Run deterministic checks -- linting, formatting, optionally tests -- against the written output.
 5. **Transition.** Map the validation results to one of three outcome signals: `SUCCESS`, `FAILURE_RETRYABLE`, or `FAILURE_TERMINAL`.
 
@@ -32,7 +45,7 @@ Forge takes the opposite approach. The differentiation between types of work liv
 
 The workflow engine does not know or care what the LLM is being asked to do. It knows how to construct a prompt, send it, process the response, validate the output, and decide what happens next. That is all it needs to know.
 
-This has a concrete consequence: adding a new task type to Forge requires writing new prompts, not new workflows. The orchestration machinery, the retry logic, the validation pipeline, the observability instrumentation, the batch processing support -- all of it comes for free because it operates on the same five-phase pattern. See the [reference](../reference/workflow-step.md) for the exact activity signatures and data models.
+This has a concrete consequence: adding a new task type to Forge requires writing new prompts, not new workflows. The orchestration machinery, the retry logic, the validation pipeline, the observability instrumentation, the batch processing support -- all of it comes for free because it operates on the same five-phase pattern. See the [reference](../reference/workflow-step/) for the exact activity signatures and data models.
 
 
 ## Contrast with chat-loop orchestrators
@@ -52,9 +65,9 @@ This inversion has several consequences.
 
 ## The state machine analogy
 
-A useful way to think about the universal workflow step is as a state machine where the states are fixed but the inputs vary.
+The universal workflow step is a state machine where the states are fixed but the inputs vary.
 
-The states are always the same: Construct, Send, Receive, Validate, Transition. The transitions between states are always the same: sequential through the five phases, then branch on the outcome signal. The retry loop is always the same: on `FAILURE_RETRYABLE`, loop back to Construct with error context.
+The states are always the same: Construct, Send, Receive and Serialize, Validate, Transition. The transitions between states are always the same: sequential through the five phases, then branch on the outcome signal. The retry loop is always the same: on `FAILURE_RETRYABLE`, loop back to Construct with error context.
 
 What changes between different types of work is the input to the Construct phase: the role prompt, the output requirements, the context, the task description. And what changes between attempts of the same work is the error section appended to the prompt on retry.
 
@@ -78,11 +91,11 @@ A chat-loop orchestrator cannot use batch APIs without fundamental redesign, bec
 
 Each phase of the workflow step is a separate Temporal activity with a defined input type and output type. This means each phase can be tested in isolation by constructing the input and asserting on the output.
 
-Testing the Construct phase means providing task metadata and asserting that the assembled prompt contains the expected sections. Testing the Send phase means providing a prompt and asserting that the API call is well-formed. Testing the Validate phase means providing written files and asserting that the correct checks run. Testing the Transition phase means providing validation results and asserting the correct signal.
+Testing the Construct phase means providing task metadata and asserting that the assembled prompt contains the expected sections. Testing the Send phase means providing a prompt and asserting that the API call is well-formed. Testing the Receive and Serialize phase means providing an LLM response and asserting that the written files match. Testing the Validate phase means providing written files and asserting that the correct checks run. Testing the Transition phase means providing validation results and asserting the correct signal.
 
 The end-to-end flow can be tested by mocking the LLM response and verifying that the orchestrator drives the correct sequence of activities. Because the LLM call is stateless, the mock only needs to return a valid response for the given prompt -- there is no conversation state to simulate.
 
-For a concrete walkthrough of the workflow step in action, see the [Golden Path tutorial](../tutorials/golden-path.md).
+For a concrete walkthrough of the workflow step in action, see the [Golden Path tutorial](../tutorials/golden-path/).
 
 
 ## Observability
@@ -104,7 +117,7 @@ The five-phase pattern terminates with one of three signals:
 
 This vocabulary is deliberately small. The orchestrator does not need to understand what went wrong in detail -- that information is captured in the validation results and fed back to the LLM on retry. The orchestrator only needs to know whether to proceed, retry, or stop.
 
-Three additional signals (`new_tasks_discovered`, `blocked_on_human`, `blocked_on_sibling`) are defined in the design document for future dynamic task evolution but are not implemented in the current plan-then-execute architecture. The current system handles those situations through existing mechanisms: upfront planning eliminates task discovery, `FAILURE_TERMINAL` covers human escalation, and dependency ordering prevents sibling blocking. See the [reference](../reference/workflow-step.md) for the full `TransitionSignal` definition.
+Three additional signals (`new_tasks_discovered`, `blocked_on_human`, `blocked_on_sibling`) are defined in the design document for future dynamic task evolution but are not implemented in the current plan-then-execute architecture. The current system handles those situations through existing mechanisms: upfront planning eliminates task discovery, `FAILURE_TERMINAL` covers human escalation, and dependency ordering prevents sibling blocking. See the [reference](../reference/workflow-step/) for the full `TransitionSignal` definition.
 
 
 ## The relationship between workflows and activities
@@ -115,4 +128,4 @@ The workflow is the state machine -- it sequences the five phases and implements
 
 This separation means that if an activity fails mid-execution (the worker crashes, the network drops), Temporal can retry the activity on another worker without re-running the entire workflow. The workflow's state -- which phase it is in, how many retries have been attempted, what the previous error was -- is preserved by Temporal's event sourcing.
 
-For the complete list of activities, their input/output types, timeouts, and retry policies, see the [Universal Workflow Step reference](../reference/workflow-step.md).
+For the complete list of activities, their input/output types, timeouts, and retry policies, see the [Universal Workflow Step reference](../reference/workflow-step/).

@@ -1,8 +1,20 @@
-# How to Control Context Assembly
-
++++
+title = "How to Control Context Assembly"
+weight = 53
+description = "How Forge decides what goes into the prompt: file discovery via import graphs, PageRank ranking, token budget packing, progressive disclosure, and the exploration loop."
+topic = "context-assembly"
+covers = [
+    "How to include specific files as context (--context-file)",
+    "How to include dependency contents upfront (--include-deps)",
+    "How to disable or limit exploration (--no-explore, --max-exploration-rounds)",
+    "How to diagnose why a file was or was not included in the prompt",
+    "How to check token budget utilization for a completed run",
+]
+detail = "Short, task-focused guides. Each section addresses one specific 'I want to...' scenario. Include CLI examples and expected output."
++++
 This guide shows you how to control what context Forge includes in the prompt sent to the LLM. Each section addresses a specific task.
 
-For background on how context assembly works, see [Context Assembly (explanation)](../explanation/context-assembly.md). For the full list of flags, data models, and provider specifications, see [Context Assembly Reference](../reference/context-assembly.md).
+For background on how context assembly works, see [Context Assembly (explanation)](../explanation/context-assembly/). For the full list of flags, data models, and provider specifications, see [Context Assembly Reference](../reference/context-assembly/).
 
 ## How to Include Specific Files as Context
 

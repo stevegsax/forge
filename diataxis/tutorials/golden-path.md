@@ -1,5 +1,21 @@
-# The Golden Path: A Planned Task End-to-End
-
++++
+title = "The Golden Path: A Planned Task End-to-End"
+weight = 22
+description = "Step-by-step walkthrough of a planned, multi-step code generation task from CLI submission through committed output."
+topic = "golden-path"
+covers = [
+    "Submitting a planned task via the CLI",
+    "Observing the planner decompose the task into steps",
+    "Watching context assembly discover relevant files",
+    "Seeing the exploration loop request additional context",
+    "Examining the assembled prompt sent to the LLM",
+    "Tracing structured output through edit application",
+    "Watching validation run and a retry with error feedback",
+    "Seeing the final commit in the worktree",
+    "Inspecting the run with forge status --verbose",
+]
+detail = "End-to-end narrative walkthrough using a concrete, realistic example (e.g., adding a new CLI command to an existing Python project). Each step shows the actual CLI command or observable output, then briefly states what happened internally. Show results at every step — never more than 2-3 actions without visible output. The tutorial should take ~20 minutes to read and follow."
++++
 In this tutorial, we will submit a planned task to Forge and follow it through planning, context assembly, exploration, code generation, validation, and commit. The task is adding a new `forge stats` CLI command to an existing Python project. Along the way, we will see:
 
 - The planner decompose the task into ordered steps
@@ -9,7 +25,7 @@ In this tutorial, we will submit a planned task to Forge and follow it through p
 - Validation catch a lint error and trigger a retry with error feedback
 - The successful commit and post-run inspection
 
-By the end, we will have a committed feature branch with a working CLI command, built entirely through Forge's orchestration pipeline. For background on what Forge is and how its components fit together, see [System Overview](../explanation/system-overview.md).
+By the end, we will have a committed feature branch with a working CLI command, built entirely through Forge's orchestration pipeline. For background on what Forge is and how its components fit together, see [System Overview](../explanation/system-overview/).
 
 ## Prerequisites
 
@@ -86,7 +102,7 @@ After a few seconds, the planner output appears:
 
 The planner decided on three sequential steps. Each step has a description, target files, and explicit boundaries (what not to touch). Steps execute in order, and each commits on success before the next step begins.
 
-For more on how the planner decomposes tasks, see [Task Decomposition](../explanation/task-decomposition.md).
+For more on how the planner decomposes tasks, see [Task Decomposition](../explanation/task-decomposition/).
 
 ## Step 3: Watch context assembly discover files
 
@@ -107,7 +123,7 @@ Forge discovers relevant files automatically using import graph analysis. It tra
 
 The system prompt now contains the role statement, output format requirements, project instructions, the ranked repository map, the task description, and the full contents of `store.py`. The remaining budget is available for the exploration loop.
 
-For more on how context assembly selects and ranks files, see [Context Assembly](../explanation/context-assembly.md).
+For more on how context assembly selects and ranks files, see [Context Assembly](../explanation/context-assembly/).
 
 ## Step 4: See the exploration loop request context
 
@@ -126,13 +142,13 @@ Before calling the generation LLM, Forge runs an exploration loop. A lightweight
 
 The exploration LLM read the data models (to understand what structures exist) and the CLI module's public API (to see the existing command pattern). After one round of context gathering, it signaled readiness by returning an empty request list. These results are appended to the system prompt as an "Exploration Results" section.
 
-For more on how the exploration loop works and when it terminates, see [Context Assembly](../explanation/context-assembly.md).
+For more on how the exploration loop works and when it terminates, see [Context Assembly](../explanation/context-assembly/).
 
 ## Step 5: Examine the assembled prompt structure
 
 Forge assembles the final system prompt from eleven sections ordered for cache efficiency — stable content first, volatile content last. The generation LLM receives everything it needs in a single call.
 
-For the section-by-section table showing what each section contains and where cache breakpoints are placed, see the [Prompt Construction Reference](../reference/prompt-construction.md). For the design rationale behind that ordering, see [Prompt Construction](../explanation/prompt-construction.md).
+For the section-by-section table showing what each section contains and where cache breakpoints are placed, see the [Prompt Construction Reference](../reference/prompt-construction/). For the design rationale behind that ordering, see [Prompt Construction](../explanation/prompt-construction/).
 
 ## Step 6: Trace the LLM's structured response
 
@@ -154,7 +170,7 @@ The response contains one edit to `store.py` -- three new query functions added 
 
 The LLM produced search/replace pairs rather than rewriting the entire file. Each pair identifies an exact location in the existing file and provides the replacement text.
 
-For more on why Forge uses search/replace edits, see [Output Processing](../explanation/output-processing.md).
+For more on why Forge uses search/replace edits, see [Output Processing](../explanation/output-processing/).
 
 ## Step 7: Watch edit application
 
@@ -169,7 +185,7 @@ The `write_output` activity applies the edits sequentially. Each edit uses a fou
 
 All three edits matched exactly on the first level. When the LLM's output differs slightly in whitespace or indentation, the fallback chain tries whitespace-normalized, indentation-normalized, and fuzzy matching before giving up.
 
-For the full fallback chain and its thresholds, see [Output Processing](../explanation/output-processing.md).
+For the full fallback chain and its thresholds, see [Output Processing](../explanation/output-processing/).
 
 ## Step 8: See validation catch an error
 
@@ -191,7 +207,7 @@ The LLM introduced a variable name collision. The `evaluate_transition` activity
 14:04:23 INFO     forge.workflows — Resetting uncommitted changes for retry
 ```
 
-For more on validation checks and transition signals, see [Validation and Retries](../explanation/validation-and-retries.md).
+For more on validation checks and transition signals, see [Validation and Retries](../explanation/validation-and-retries/).
 
 ## Step 9: Observe the retry with error feedback
 
@@ -220,7 +236,7 @@ The error section the LLM sees includes the lint error and the enclosing functio
         ...
         total_runs = self._count_all_runs(since)   # <-- ERROR (line 47)
 
-For more on how error context is injected, see [Validation and Retries](../explanation/validation-and-retries.md).
+For more on how error context is injected, see [Validation and Retries](../explanation/validation-and-retries/).
 
 The generation LLM now sees the exact error, the enclosing function, and the offending line. It produces a corrected edit:
 
@@ -231,7 +247,7 @@ The generation LLM now sees the exact error, the enclosing function, and the off
                   cache_read=8,689 cache_write=847 latency=4.9s
 ```
 
-The retry was faster (4.9s vs 7.8s): 8,689 input tokens were served from cache and only 847 new tokens were written. For more on prompt caching, see [Context Assembly](../explanation/context-assembly.md).
+The retry was faster (4.9s vs 7.8s): 8,689 input tokens were served from cache and only 847 new tokens were written. For more on prompt caching, see [Context Assembly](../explanation/context-assembly/).
 
 ## Step 10: See the successful validation and commit
 
@@ -257,7 +273,7 @@ Step-1 is committed to the worktree branch. Forge moves on to step-2 (adding the
 14:05:03 INFO     forge.workflows — Task complete: 3/3 steps succeeded
 ```
 
-For more on how the universal workflow step drives each phase, see [The Universal Workflow Step](../explanation/workflow-step.md).
+For more on how the universal workflow step drives each phase, see [The Universal Workflow Step](../explanation/workflow-step/).
 
 ## Step 11: Inspect the run
 
@@ -323,9 +339,9 @@ Totals:
   Wall time:     78.2s
 ```
 
-The cache hit rate across steps is 78.5%. For more on prompt caching, see [Context Assembly](../explanation/context-assembly.md).
+The cache hit rate across steps is 78.5%. For more on prompt caching, see [Context Assembly](../explanation/context-assembly/).
 
-For more on observability and debugging, see [How to Debug a Workflow](../howto/debug-workflow.md).
+For more on observability and debugging, see [How to Debug a Workflow](../howto/debug-workflow/).
 
 ## What you built
 
@@ -342,10 +358,10 @@ The worktree branch contains the full commit history. From here, you review the 
 
 ## Where to go next
 
-- [How to Submit Tasks](../howto/submit-tasks.md) -- single-step execution, JSON task files, fan-out, and other submission modes
-- [Context Assembly](../explanation/context-assembly.md) -- how file discovery, ranking, and token budgets work
-- [The Universal Workflow Step](../explanation/workflow-step.md) -- the five-phase pattern that drives every operation
-- [Task Decomposition](../explanation/task-decomposition.md) -- how the planner breaks tasks into steps and sub-tasks
-- [Output Processing](../explanation/output-processing.md) -- edit application and the four-level matching fallback chain
-- [Validation and Retries](../explanation/validation-and-retries.md) -- error-aware retries and AST-derived context
-- [How to Debug a Workflow](../howto/debug-workflow.md) -- inspecting prompts, tokens, and validation failures
+- [How to Submit Tasks](../howto/submit-tasks/) -- single-step execution, JSON task files, fan-out, and other submission modes
+- [Context Assembly](../explanation/context-assembly/) -- how file discovery, ranking, and token budgets work
+- [The Universal Workflow Step](../explanation/workflow-step/) -- the five-phase pattern that drives every operation
+- [Task Decomposition](../explanation/task-decomposition/) -- how the planner breaks tasks into steps and sub-tasks
+- [Output Processing](../explanation/output-processing/) -- edit application and the four-level matching fallback chain
+- [Validation and Retries](../explanation/validation-and-retries/) -- error-aware retries and AST-derived context
+- [How to Debug a Workflow](../howto/debug-workflow/) -- inspecting prompts, tokens, and validation failures

@@ -1,8 +1,22 @@
-# How to Debug a Workflow
-
++++
+title = "How to Debug a Workflow"
+weight = 103
+description = "How to inspect, diagnose, and debug Forge workflow execution using the observability store, logs, tracing, and CLI commands."
+topic = "observability"
+covers = [
+    "How to inspect a completed workflow's full history",
+    "How to find what prompt was sent for a specific step",
+    "How to diagnose why a step failed validation",
+    "How to check token budget utilization",
+    "How to read log files for a stuck or slow workflow",
+    "How to enable and read API message logs",
+    "How to use verbose output for real-time debugging",
+]
+detail = "Problem-oriented debugging guide. Each section starts with a symptom ('The workflow failed at step 3') and walks through the diagnostic steps."
++++
 This guide shows how to diagnose common Forge workflow problems using the observability store, log files, CLI commands, and the Temporal CLI. Each section starts with a symptom and walks through the diagnostic steps.
 
-For reference material on CLI flags, schema details, and environment variables, see the [Observability Reference](../reference/observability.md). For background on why these tools exist, see [About Observability and Debugging](../explanation/observability.md).
+For reference material on CLI flags, schema details, and environment variables, see the [Observability Reference](../reference/observability/). For background on why these tools exist, see [About Observability and Debugging](../explanation/observability/).
 
 ---
 

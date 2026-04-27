@@ -1,13 +1,26 @@
-# Output Processing
-
++++
+title = "Output Processing"
+weight = 71
+description = "How the LLM's structured response is processed: the LLMResponse schema, edit application with fuzzy matching, and file writing."
+topic = "output-processing"
+covers = [
+    "Why Forge uses tool-use for structured output instead of parsing free-form text",
+    "The LLMResponse schema: explanation, files, and edits",
+    "Why edits use search/replace instead of full-file replacement (the D50 decision)",
+    "The four-level edit matching fallback chain and why each level exists",
+    "How edits are applied sequentially — each edit sees the result of the previous one",
+    "How ambiguity (multiple matches) is handled as an error",
+]
+detail = "Focus on the design decisions and tradeoffs. Why search/replace? Why four fallback levels? What goes wrong when the LLM outputs slightly different whitespace? Use concrete examples showing how a search string matches (or fails to match) at each fallback level."
++++
 This document explains how Forge processes the LLM's response: why structured output is
 enforced through tool use, why edits use a search/replace model rather than full-file
 replacement, and how the four-level matching fallback chain tolerates minor discrepancies
 in LLM output.
 
 For the technical specification of each model field and the exact matching thresholds,
-see [Output Processing Reference](../reference/output-processing.md). For what happens
-after edits are applied, see [Validation and Retries](validation-and-retries.md).
+see [Output Processing Reference](../reference/output-processing/). For what happens
+after edits are applied, see [Validation and Retries](validation-and-retries/).
 
 ---
 
@@ -54,7 +67,7 @@ the orchestrator would have to decide whether a "new file" operation on a path t
 also edited means replacement or conflict. The `write_output` activity enforces this
 constraint at application time.
 
-For the field-level specification, see [Output Processing Reference](../reference/output-processing.md).
+For the field-level specification, see [Output Processing Reference](../reference/output-processing/).
 
 ---
 
@@ -131,7 +144,7 @@ must exceed a minimum similarity threshold, and it must be clearly ahead of the
 second-best window. The second condition — the uniqueness gap — is what prevents a fuzzy
 match from applying an edit to the wrong location when two similar blocks exist. If two
 windows score nearly equally, the match is ambiguous and the edit fails rather than guess.
-For the exact threshold values, see [Output Processing Reference](../reference/output-processing.md).
+For the exact threshold values, see [Output Processing Reference](../reference/output-processing/).
 
 ### Walking Through the Chain
 
@@ -165,7 +178,7 @@ levels. The rationale is that a fuzzy match against multiple candidates provides
 for choosing; applying the edit to an arbitrary candidate would risk data loss or corruption.
 When an edit fails, the entire `write_output` activity fails, which triggers the retry
 path with the edit failure reported as an error (see
-[Validation and Retries](validation-and-retries.md)).
+[Validation and Retries](validation-and-retries/)).
 
 ---
 
@@ -177,9 +190,9 @@ search string with high fidelity. When it is absent — because the token budget
 or the file was not in context — the LLM must reconstruct the search string from memory,
 which increases the likelihood of drift and the need for deeper fallback levels. Context
 assembly ensures that target file contents are the highest-priority items in the token
-budget. See [Context Assembly](context-assembly.md) for the priority ordering.
+budget. See [Context Assembly](context-assembly/) for the priority ordering.
 
 After edits are applied and new files are written, the validation pipeline runs
 deterministic checks (lint, format, tests) on the resulting worktree state. If validation
 fails, the error output is fed back to the LLM on the next retry. See
-[Validation and Retries](validation-and-retries.md) for how the retry loop works.
+[Validation and Retries](validation-and-retries/) for how the retry loop works.

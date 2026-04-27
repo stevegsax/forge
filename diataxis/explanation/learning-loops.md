@@ -1,6 +1,20 @@
-# Learning Loops
-
-Prerequisites: [Forge Run Extraction](forge-run-extraction.md), [Transcript Ingestion](transcript-ingestion.md).
++++
+title = "Learning Loops"
+weight = 131
+description = "The cross-cutting story of how Forge accumulates knowledge over time — today's two parallel pipelines (forge run extraction and transcript ingestion), why they are separate, and the convergence refactor that would unify them."
+topic = "learning-loops"
+covers = [
+    "The problem: LLM orchestrators don't learn between runs by default",
+    "The two-loops reality today: forge's self-learning loop vs. the pbook-backed cross-project loop",
+    "Side-by-side field comparison of forge's playbooks table and pbook's entries table",
+    "Why the two systems are separate: historical (forge predates pbook) and architectural (different retrieval hot paths)",
+    "The convergence path as a concrete refactor plan: forge-run-extraction becomes a preprocessor; pbook's ExtractionWorkflow becomes the shared extraction step; forge's playbooks table is deleted; forge reads pbook via RetrievalWorkflow",
+    "The hard parts: hot-path latency (forge's context assembly currently does a synchronous SQL read; after convergence it would be a cross-queue Temporal call), and information loss (forge run records are richer than pbook's PushExperienceInput tuples)",
+    "What this means for a reader today: both pipelines exist, they don't share code, and future work is expected to unify them",
+]
+detail = "Discursive, thesis-driven prose. The thesis is: 'Forge's learning infrastructure is bifurcated today, and that bifurcation is an accident of history plus one real design tension.' Cover both the medium-explicitness conceptual story (two loops, why they exist, how they differ) and the hard-explicitness refactor story (exactly what code would change in a unification). Include a mermaid diagram showing both loops running in parallel today, with a second diagram showing the proposed unified pipeline. Include a field-by-field comparison table of the two playbook schemas — this is the one place in the explanation where a table earns its keep, because the contrast is the point. Length: long-form but not padded — every paragraph should carry weight."
++++
+Prerequisites: [Forge Run Extraction](forge-run-extraction/), [Transcript Ingestion](transcript-ingestion/).
 
 Forge has two separate knowledge-accumulation pipelines today, and the split is technical debt. This topic covers the whole story: what each pipeline does, how their schemas diverged, why they haven't been unified, and what unification would look like as a concrete refactor. If you only need to understand one pipeline in isolation, read its own topic instead.
 
@@ -49,9 +63,9 @@ flowchart TB
     style loop2 fill:#f9f9f9,stroke:#666
 ```
 
-The first loop is **Forge's self-learning loop**. Forge records every task it runs in its SQLite observability store. Running `forge extract` triggers `ForgeExtractionWorkflow`, which reads unextracted runs, asks a summarization-tier LLM to distill reusable lessons from them, and writes those lessons to forge's own `playbooks` table. When a new task runs, the `assemble_context` activity does a synchronous SQL read against that table to inject matching entries into the prompt. The entire loop is self-contained inside forge: forge writes the entries, forge reads them, forge's own run history is the only source. This is covered in detail in [Forge Run Extraction](forge-run-extraction.md).
+The first loop is **Forge's self-learning loop**. Forge records every task it runs in its SQLite observability store. Running `forge extract` triggers `ForgeExtractionWorkflow`, which reads unextracted runs, asks a summarization-tier LLM to distill reusable lessons from them, and writes those lessons to forge's own `playbooks` table. When a new task runs, the `assemble_context` activity does a synchronous SQL read against that table to inject matching entries into the prompt. The entire loop is self-contained inside forge: forge writes the entries, forge reads them, forge's own run history is the only source. This is covered in detail in [Forge Run Extraction](forge-run-extraction/).
 
-The second loop is **the cross-project loop**, and it is backed by [pbook](https://github.com/sax-capital/pbook) — a separate service forge talks to via Temporal cross-queue calls. Forge's `TranscriptIngestionWorkflow` reads a Claude Code JSONL session file, renders it to text, asks the batch API to extract structured problem/resolution tuples, and then calls pbook's `ExtractionWorkflow` cross-queue with those tuples. Pbook does the actual playbook creation: it deduplicates, computes embeddings, flags entries for human review, and writes them to its own `entries` table in its own database. Retrieval goes the other way — whoever wants to consume pbook entries calls pbook's `RetrievalWorkflow` cross-queue, which ranks candidates by tag overlap and intent mode and packs them into a token budget. This is covered in detail in [Transcript Ingestion](transcript-ingestion.md).
+The second loop is **the cross-project loop**, and it is backed by [pbook](https://github.com/sax-capital/pbook) — a separate service forge talks to via Temporal cross-queue calls. Forge's `TranscriptIngestionWorkflow` reads a Claude Code JSONL session file, renders it to text, asks the batch API to extract structured problem/resolution tuples, and then calls pbook's `ExtractionWorkflow` cross-queue with those tuples. Pbook does the actual playbook creation: it deduplicates, computes embeddings, flags entries for human review, and writes them to its own `entries` table in its own database. Retrieval goes the other way — whoever wants to consume pbook entries calls pbook's `RetrievalWorkflow` cross-queue, which ranks candidates by tag overlap and intent mode and packs them into a token budget. This is covered in detail in [Transcript Ingestion](transcript-ingestion/).
 
 The key observation is that these two loops do not meet anywhere. Forge's context assembly reads `forge.db`'s `playbooks` table. It does not read pbook's `entries` table. Nothing in pbook reads forge's `playbooks` table. The two databases are entirely independent. A lesson that forge extracts from a completed forge run cannot be retrieved by any project except forge itself. A lesson that pbook accumulates from a Claude Code transcript is invisible to forge's own context assembly.
 
@@ -146,4 +160,4 @@ Do not assume that a lesson captured in one store is visible from the other. It 
 
 The convergence refactor sketched above is the known design trajectory, not a shipped feature. The two pipelines will be unified when the cost/benefit works out — when someone has the latency budget for a cross-queue hot path, or has a caching story that makes the latency a non-issue, and when the design of the extended experience tuple has been thought through carefully enough that forge's extraction quality doesn't regress.
 
-For how pbook's playbook entries are injected into forge's prompts today, see [Context Assembly](context-assembly.md) — noting that only forge's own playbooks participate in that injection, not pbook's.
+For how pbook's playbook entries are injected into forge's prompts today, see [Context Assembly](context-assembly/) — noting that only forge's own playbooks participate in that injection, not pbook's.
