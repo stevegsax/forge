@@ -1,3 +1,4 @@
+#!/usr/bin/env nu
 # Forge OCR module — composable functions for document OCR via Temporal.
 #
 # Usage:
@@ -35,6 +36,24 @@ def temporal-execute [workflow: string, input: record]: nothing -> record {
     $response.stdout | from json | get result
 }
 
+# Start a Temporal workflow without waiting and return the workflow ID.
+def temporal-start [workflow: string, input: record]: nothing -> record {
+    let json_input = ($input | to json --raw)
+    let workflow_id = $"($workflow | str downcase)-(random chars --length 8)"
+    let response = (
+        ^temporal workflow start
+            --type $workflow
+            --task-queue $TASK_QUEUE
+            --workflow-id $workflow_id
+            --input $json_input
+        | complete
+    )
+    if $response.exit_code != 0 {
+        error make { msg: $"temporal workflow start failed: ($response.stderr | str trim)" }
+    }
+    { workflow_id: $workflow_id }
+}
+
 # Conditional flag builder: returns [--flag value] or [].
 def with-flag [flag: string]: any -> list {
     if ($in | is-empty) { [] } else { [$flag $in] }
@@ -59,10 +78,14 @@ export def submit [
     --sync                         # Block until OCR completes (default: batch)
     --skip-duplicate-detection     # Re-submit even if already OCR'd
 ]: nothing -> record {
-    let workflow = if $sync { "OcrSyncWorkflow" } else { "OcrSubmitWorkflow" }
-    temporal-execute $workflow {
+    let input = {
         file_path: ($file_path | path expand)
         skip_duplicate_detection: $skip_duplicate_detection
+    }
+    if $sync {
+        temporal-execute "OcrSyncWorkflow" $input
+    } else {
+        temporal-start "OcrSubmitWorkflow" $input
     }
 }
 
@@ -106,4 +129,51 @@ export def unmark [
     document_id: string            # Document to unmark
 ]: nothing -> record {
     temporal-execute "OcrClearRemovalMarkWorkflow" { document_id: $document_id }
+}
+
+# ---------------------------------------------------------------------------
+# Script entry point (when run via `./ocr.nu <subcommand> ...`)
+# ---------------------------------------------------------------------------
+
+def "main submit" [
+    file_path: path                # Document to OCR
+    --sync                         # Block until OCR completes
+    --skip-duplicate-detection     # Re-submit even if already OCR'd
+] {
+    submit $file_path --sync=$sync --skip-duplicate-detection=$skip_duplicate_detection
+}
+
+def "main list" [
+    --limit (-l): int = 50                          # Max results (server-side)
+    --status (-s): string                           # Filter: processing, succeeded, errored
+] {
+    if ($status | is-empty) {
+        list --limit $limit
+    } else {
+        list --limit $limit --status $status
+    }
+}
+
+def "main export" [
+    document_id: string            # Document to export
+    --output-dir (-o): directory   # Override export directory
+] {
+    mut input = { document_id: $document_id }
+    if ($output_dir != null) {
+        $input = ($input | merge { output_dir: $output_dir })
+    }
+    temporal-execute "OcrExportWorkflow" $input
+}
+
+def "main mark" [document_id: string] {
+    mark $document_id
+}
+
+def "main unmark" [document_id: string] {
+    unmark $document_id
+}
+
+def main [] {
+    print "usage: ocr.nu <submit|list|export|mark|unmark> [args...]"
+    print "  or:  use ocr.nu  (to load as a module)"
 }
