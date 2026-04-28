@@ -131,6 +131,12 @@ async def mock_record_ingested_session(input_json: str) -> None:
     _RECORDED_SESSIONS.append(json.loads(input_json))
 
 
+@activity.defn(name="record_ingested_session_error")
+async def mock_record_ingested_session_error(input_json: str) -> None:
+    _CALL_LOG.append("record_ingested_session_error")
+    _RECORDED_SESSIONS.append(json.loads(input_json))
+
+
 @activity.defn(name="mock_run_extraction")
 async def mock_run_extraction(input_json: str) -> dict:
     """Activity stand-in for pbook's ExtractionWorkflow body.
@@ -163,7 +169,11 @@ class MockExtractionWorkflow:
         )
 
 
-_PBOOK_MOCK_ACTIVITIES = [mock_record_ingested_session, mock_run_extraction]
+_PBOOK_MOCK_ACTIVITIES = [
+    mock_record_ingested_session,
+    mock_record_ingested_session_error,
+    mock_run_extraction,
+]
 _PBOOK_MOCK_WORKFLOWS = [MockExtractionWorkflow]
 
 
@@ -410,8 +420,15 @@ class TestTranscriptIngestionMalformedResponse:
         assert result.get("error") == "malformed_llm_response"
         # Extraction workflow should NOT have been called
         assert not any(c.startswith("ExtractionWorkflow") for c in _CALL_LOG)
-        # record_ingested_session should NOT have been called on this path
+        # The success-path callback must NOT fire on a malformed response.
         assert "record_ingested_session" not in _CALL_LOG
+        # The error-path callback must fire so `pbook sessions` can show
+        # status=error instead of leaving the row stuck on `running`.
+        assert "record_ingested_session_error" in _CALL_LOG
+        assert len(_RECORDED_SESSIONS) == 1
+        recorded = _RECORDED_SESSIONS[0]
+        assert recorded["session_id"] == "s-bad"
+        assert recorded["error_message"] == "malformed_llm_response"
 
 
 # ---------------------------------------------------------------------------

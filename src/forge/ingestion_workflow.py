@@ -105,6 +105,17 @@ class TranscriptIngestionWorkflow:
                 session_id,
                 parsed.parsed_json[:200],
             )
+            await workflow.execute_activity(
+                "record_ingested_session_error",
+                json.dumps({
+                    "session_id": session_id,
+                    "project_name": prepared.get("project", ""),
+                    "error_message": "malformed_llm_response",
+                }),
+                task_queue=PBOOK_TASK_QUEUE,
+                start_to_close_timeout=_SAVE_TIMEOUT,
+                result_type=type(None),
+            )
             return {
                 "experiences_found": 0,
                 "entries_created": 0,
@@ -208,18 +219,18 @@ class BatchIngestionWorkflow:
         # UUID suffix so re-ingesting the same session never collides
         # with a previous run's workflow ID.
         run_suffix = workflow.uuid4().hex[:8]
-        handles = []
+        pending = []
         for session in sessions:
             handle = await workflow.start_child_workflow(
                 TranscriptIngestionWorkflow.run,
                 json.dumps(session),
                 id=f"ingest-session-{session['session_id']}-{run_suffix}",
             )
-            handles.append(handle)
+            pending.append((session, handle))
 
         # Gather results
         results = []
-        for handle in handles:
+        for session, handle in pending:
             try:
                 # ChildWorkflowHandle subclasses asyncio.Task; await the
                 # handle directly. `handle.result()` is the synchronous
@@ -227,11 +238,27 @@ class BatchIngestionWorkflow:
                 result = await handle
                 results.append(result)
             except Exception as exc:
-                workflow.logger.warning("Session ingestion failed: %s", exc)
+                workflow.logger.warning(
+                    "Session ingestion failed for %s: %s",
+                    session.get("session_id", ""), exc,
+                )
+                # Tell pbook the child failed so `pbook sessions` can show
+                # the error instead of leaving the row stuck on `running`.
+                await workflow.execute_activity(
+                    "record_ingested_session_error",
+                    json.dumps({
+                        "session_id": session.get("session_id", ""),
+                        "project_name": session.get("project", ""),
+                        "error_message": str(exc),
+                    }),
+                    task_queue=PBOOK_TASK_QUEUE,
+                    start_to_close_timeout=_SAVE_TIMEOUT,
+                    result_type=type(None),
+                )
                 results.append({
                     "experiences_found": 0,
                     "entries_created": 0,
-                    "session_id": "",
+                    "session_id": session.get("session_id", ""),
                     "error": str(exc),
                 })
 
