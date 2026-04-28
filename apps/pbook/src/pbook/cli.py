@@ -110,12 +110,14 @@ def worker(temporal_address: str) -> None:
 @click.option("--tag", multiple=True, help="Filter by tag (repeatable, OR match).")
 @click.option("--type", "entry_type", default="", help="Filter by entry type.")
 @click.option("--project", default="", help="Filter by source project.")
+@click.option("--needs-review", is_flag=True, help="Only show entries flagged for review.")
 @click.option("--limit", default=20, help="Maximum entries to return.")
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 def list_entries(
     tag: tuple[str, ...],
     entry_type: str,
     project: str,
+    needs_review: bool,
     limit: int,
     output_json: bool,
 ) -> None:
@@ -133,6 +135,8 @@ def list_entries(
         entries = [e for e in entries if e.get("entry_type") == entry_type]
     if project:
         entries = [e for e in entries if e.get("source_project") == project]
+    if needs_review:
+        entries = [e for e in entries if e.get("needs_review")]
 
     if not entries:
         click.echo("No entries found.")
