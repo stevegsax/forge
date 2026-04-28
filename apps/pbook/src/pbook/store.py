@@ -329,6 +329,24 @@ def get_ingested_session_ids(engine: Engine) -> set[str]:
         return {row[0] for row in rows}
 
 
+def list_ingested_sessions(
+    engine: Engine,
+    *,
+    project: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """List ingested sessions, newest first."""
+    t = IngestedSession.__table__
+    stmt = t.select().order_by(t.c.ingested_at.desc()).limit(limit)
+    if project:
+        stmt = t.select().where(t.c.project_name == project).order_by(
+            t.c.ingested_at.desc(),
+        ).limit(limit)
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+
 def record_ingested_session(
     engine: Engine,
     session_id: str,

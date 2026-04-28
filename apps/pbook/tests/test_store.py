@@ -12,8 +12,10 @@ from pbook.store import (
     get_db_path,
     get_entries_by_tags,
     get_entry_by_id,
+    list_ingested_sessions,
     list_recent_entries,
     record_feedback,
+    record_ingested_session,
     record_retrieval,
     save_entries,
     update_entry,
@@ -341,3 +343,50 @@ class TestFeedbackCounters:
         engine, _ = setup_db(tmp_path)
         # Should not raise — UPDATE on non-existent row is a no-op
         record_feedback(engine, 999, helpful=True)
+
+
+# ---------------------------------------------------------------------------
+# Ingested sessions
+# ---------------------------------------------------------------------------
+
+
+class TestListIngestedSessions:
+    def test_returns_recorded_sessions_newest_first(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session(
+            engine, "s1", project_name="alpha", experiences_found=2, entries_created=1,
+        )
+        record_ingested_session(
+            engine, "s2", project_name="bravo", experiences_found=0, entries_created=0,
+        )
+
+        rows = list_ingested_sessions(engine)
+        assert {r["session_id"] for r in rows} == {"s1", "s2"}
+        # Newest first
+        assert rows[0]["session_id"] == "s2"
+        # Counters preserved
+        s1 = next(r for r in rows if r["session_id"] == "s1")
+        assert s1["experiences_found"] == 2
+        assert s1["entries_created"] == 1
+        assert s1["project_name"] == "alpha"
+
+    def test_filters_by_project(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session(engine, "s1", project_name="alpha")
+        record_ingested_session(engine, "s2", project_name="bravo")
+        record_ingested_session(engine, "s3", project_name="alpha")
+
+        rows = list_ingested_sessions(engine, project="alpha")
+        assert {r["session_id"] for r in rows} == {"s1", "s3"}
+
+    def test_respects_limit(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        for i in range(5):
+            record_ingested_session(engine, f"s{i}", project_name="x")
+
+        rows = list_ingested_sessions(engine, limit=2)
+        assert len(rows) == 2
+
+    def test_empty_when_no_sessions(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        assert list_ingested_sessions(engine) == []

@@ -600,6 +600,35 @@ def ingest(
         sys.exit(1)
 
 
+@main.command()
+@click.option("--project", default="", help="Filter by source project.")
+@click.option("--limit", default=20, type=int, help="Maximum sessions to return.")
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+def sessions(project: str, limit: int, output_json: bool) -> None:
+    """List sessions ingested by `pbook ingest`, newest first."""
+    from pbook.store import list_ingested_sessions
+
+    engine, _ = _resolve_db()
+    rows = list_ingested_sessions(engine, project=project or None, limit=limit)
+
+    if output_json:
+        click.echo(json.dumps(rows, default=str, indent=2))
+        return
+
+    if not rows:
+        click.echo("No ingested sessions found.")
+        return
+
+    for row in rows:
+        click.echo(
+            f"{row['session_id']}  "
+            f"project={row['project_name'] or '-'}  "
+            f"experiences={row['experiences_found']}  "
+            f"entries={row['entries_created']}  "
+            f"at={row['ingested_at']}"
+        )
+
+
 @main.command(name="skill-prompt")
 @click.option("--operation", default="add", help="Operation to get instructions for.")
 def skill_prompt(operation: str) -> None:
