@@ -477,8 +477,11 @@ def ingest(
 
     from pbook.transcript import discover_sessions, parse_jsonl_file, render_transcript
 
+    def _emit(payload: dict) -> None:
+        click.echo(json.dumps(payload, indent=2))
+
     if not transcript_path and not ingest_all:
-        click.echo("Error: provide a TRANSCRIPT_PATH or use --all.", err=True)
+        _emit({"status": "error", "error": "provide a TRANSCRIPT_PATH or use --all"})
         sys.exit(1)
 
     # Discover sessions
@@ -502,10 +505,11 @@ def ingest(
         )]
 
     if not sessions:
-        click.echo("No sessions found.")
+        _emit({"status": "no_sessions", "discovered": 0, "skipped_already_ingested": 0})
         return
 
     # Filter already-ingested sessions
+    skipped = 0
     if not force:
         engine, _ = _resolve_db()
         from pbook.store import get_ingested_session_ids
@@ -514,38 +518,50 @@ def ingest(
         before = len(sessions)
         sessions = [s for s in sessions if s.session_id not in ingested]
         skipped = before - len(sessions)
-        if skipped:
-            click.echo(f"Skipping {skipped} already-ingested session(s).")
 
     if not sessions:
-        click.echo("All sessions have been ingested. Use --force to reprocess.")
+        _emit({
+            "status": "all_ingested",
+            "skipped_already_ingested": skipped,
+            "hint": "use --force to reprocess",
+        })
         return
 
-    # Dry-run: show session info
+    # Dry-run: emit session info as JSON
     if dry_run:
-        total_mb = sum(s.size_bytes for s in sessions) / 1024 / 1024
-        click.echo(f"Found {len(sessions)} session(s) to ingest ({total_mb:.1f} MB):")
-        click.echo("")
-
-        # Group by project
         by_project: dict[str, list] = {}
         for s in sessions:
             by_project.setdefault(s.project_name, []).append(s)
 
+        projects_payload = []
         for proj_name, proj_sessions in sorted(by_project.items()):
-            proj_mb = sum(s.size_bytes for s in proj_sessions) / 1024 / 1024
-            click.echo(f"  {proj_name}: {len(proj_sessions)} session(s), {proj_mb:.1f} MB")
-
-            if len(proj_sessions) <= 3:
-                for s in proj_sessions:
+            session_details = []
+            for s in proj_sessions:
+                detail = {
+                    "session_id": s.session_id,
+                    "path": s.path,
+                    "size_bytes": s.size_bytes,
+                }
+                if len(proj_sessions) <= 3:
                     transcript = parse_jsonl_file(Path(s.path))
                     rendered = render_transcript(transcript)
-                    click.echo(
-                        f"    {s.session_id[:8]}... "
-                        f"{len(transcript.messages)} msgs, "
-                        f"{len(rendered)} chars rendered"
-                    )
+                    detail["message_count"] = len(transcript.messages)
+                    detail["rendered_chars"] = len(rendered)
+                session_details.append(detail)
+            projects_payload.append({
+                "project": proj_name,
+                "session_count": len(proj_sessions),
+                "size_bytes": sum(s.size_bytes for s in proj_sessions),
+                "sessions": session_details,
+            })
 
+        _emit({
+            "status": "dry_run",
+            "session_count": len(sessions),
+            "skipped_already_ingested": skipped,
+            "total_size_bytes": sum(s.size_bytes for s in sessions),
+            "projects": projects_payload,
+        })
         return
 
     # Submit to forge's task queue via Temporal
@@ -554,29 +570,33 @@ def ingest(
         for s in sessions
     ]
 
-    async def _submit() -> dict:
+    workflow_id = f"pbook-batch-ingest-{int(time.time())}"
+
+    async def _submit() -> str:
         from temporalio.client import Client
 
         client = await Client.connect(temporal_address)
-        result = await client.execute_workflow(
+        handle = await client.start_workflow(
             "BatchIngestionWorkflow",
             json.dumps({"sessions": session_dicts}),
-            id=f"pbook-batch-ingest-{int(time.time())}",
+            id=workflow_id,
             task_queue="forge-task-queue",
         )
-        return result
+        return handle.first_execution_run_id or ""
 
     try:
-        click.echo(f"Submitting {len(sessions)} session(s) for ingestion...")
-        result = asyncio.run(_submit())
-        click.echo(
-            f"Ingestion complete: "
-            f"{result.get('sessions_processed', 0)} sessions processed, "
-            f"{result.get('total_experiences', 0)} experiences found, "
-            f"{result.get('total_entries_created', 0)} entries created."
-        )
+        run_id = asyncio.run(_submit())
+        _emit({
+            "status": "submitted",
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "task_queue": "forge-task-queue",
+            "submitted_sessions": len(sessions),
+            "skipped_already_ingested": skipped,
+            "session_ids": [s.session_id for s in sessions],
+        })
     except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _emit({"status": "error", "error": str(exc)})
         sys.exit(1)
 
 
