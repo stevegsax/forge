@@ -1,5 +1,7 @@
 .envrc
 diataxis/_build
+diataxis/public/
+diataxis/.hugo_build.lock
 
 # Python
 __pycache__/
