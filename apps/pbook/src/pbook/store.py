@@ -37,6 +37,11 @@ class Base(DeclarativeBase):
     pass
 
 
+SESSION_STATUS_RUNNING = "running"
+SESSION_STATUS_COMPLETED = "completed"
+SESSION_STATUS_ERROR = "error"
+
+
 class IngestedSession(Base):
     __tablename__ = "ingested_sessions"
 
@@ -51,6 +56,14 @@ class IngestedSession(Base):
     entries_created: Mapped[int] = mapped_column(
         sa.Integer, nullable=False, default=0, server_default=sa.text("0"),
     )
+    status: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, default=SESSION_STATUS_COMPLETED,
+        server_default=SESSION_STATUS_COMPLETED,
+    )
+    workflow_id: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(sa.DateTime, nullable=True)
 
 
 class Entry(Base):
@@ -322,10 +335,18 @@ def check_duplicate(
 
 
 def get_ingested_session_ids(engine: Engine) -> set[str]:
-    """Return the set of session IDs that have already been ingested."""
+    """Return session IDs that should be skipped on the next ingest run.
+
+    Includes ``completed`` (already done) and ``running`` (in flight) rows.
+    Excludes ``error`` rows so the user can retry a failed session without
+    needing ``--force``.
+    """
     t = IngestedSession.__table__
+    stmt = sa.select(t.c.session_id).where(
+        t.c.status.in_([SESSION_STATUS_COMPLETED, SESSION_STATUS_RUNNING]),
+    )
     with engine.connect() as conn:
-        rows = conn.execute(sa.select(t.c.session_id)).all()
+        rows = conn.execute(stmt).all()
         return {row[0] for row in rows}
 
 
@@ -335,16 +356,74 @@ def list_ingested_sessions(
     project: str | None = None,
     limit: int = 20,
 ) -> list[dict]:
-    """List ingested sessions, newest first."""
+    """List ingested sessions, newest known activity first.
+
+    Sorts by the most recent of ``ingested_at`` and ``started_at`` so that
+    in-flight sessions (``ingested_at`` is the row insert time on submission)
+    interleave naturally with completed ones.
+    """
     t = IngestedSession.__table__
-    stmt = t.select().order_by(t.c.ingested_at.desc()).limit(limit)
+    # COALESCE keeps the ordering robust if started_at is null on legacy rows.
+    order_key = sa.func.coalesce(t.c.started_at, t.c.ingested_at)
+    stmt = t.select().order_by(order_key.desc()).limit(limit)
     if project:
-        stmt = t.select().where(t.c.project_name == project).order_by(
-            t.c.ingested_at.desc(),
-        ).limit(limit)
+        stmt = (
+            t.select()
+            .where(t.c.project_name == project)
+            .order_by(order_key.desc())
+            .limit(limit)
+        )
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
         return [dict(row) for row in rows]
+
+
+def record_ingested_session_started(
+    engine: Engine,
+    session_id: str,
+    *,
+    project_name: str = "",
+    workflow_id: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    """Mark a session as in-flight.
+
+    Upserts a row with status='running'. Re-submitting (e.g. ``--force``)
+    overwrites the prior row's status and clears any previous error.
+    """
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    logger.info("Recording ingested session %s as running", session_id)
+    now = datetime.now(UTC)
+    t = IngestedSession.__table__
+    stmt = sqlite_insert(t).values(
+        session_id=session_id,
+        project_name=project_name,
+        status=SESSION_STATUS_RUNNING,
+        workflow_id=workflow_id,
+        run_id=run_id,
+        started_at=now,
+        ingested_at=now,
+        experiences_found=0,
+        entries_created=0,
+        error_message=None,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["session_id"],
+        set_={
+            "project_name": project_name,
+            "status": SESSION_STATUS_RUNNING,
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "started_at": now,
+            "ingested_at": now,
+            "experiences_found": 0,
+            "entries_created": 0,
+            "error_message": None,
+        },
+    )
+    with engine.begin() as conn:
+        conn.execute(stmt)
 
 
 def record_ingested_session(
@@ -354,20 +433,81 @@ def record_ingested_session(
     experiences_found: int = 0,
     entries_created: int = 0,
 ) -> None:
-    """Record that a session has been ingested."""
+    """Record that a session has finished ingesting.
+
+    Upserts the row with status='completed'. If the row was previously
+    seeded as 'running' by ``record_ingested_session_started``, this
+    flips it to completed and refreshes the counters.
+    """
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
     logger.info(
         "Recording ingested session %s: %d experiences, %d entries",
         session_id, experiences_found, entries_created,
     )
+    now = datetime.now(UTC)
+    t = IngestedSession.__table__
+    stmt = sqlite_insert(t).values(
+        session_id=session_id,
+        project_name=project_name,
+        experiences_found=experiences_found,
+        entries_created=entries_created,
+        status=SESSION_STATUS_COMPLETED,
+        ingested_at=now,
+        error_message=None,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["session_id"],
+        set_={
+            "project_name": project_name,
+            "experiences_found": experiences_found,
+            "entries_created": entries_created,
+            "status": SESSION_STATUS_COMPLETED,
+            "ingested_at": now,
+            "error_message": None,
+        },
+    )
     with engine.begin() as conn:
-        conn.execute(
-            sa.insert(IngestedSession.__table__).values(
-                session_id=session_id,
-                project_name=project_name,
-                experiences_found=experiences_found,
-                entries_created=entries_created,
-            ),
-        )
+        conn.execute(stmt)
+
+
+def record_ingested_session_error(
+    engine: Engine,
+    session_id: str,
+    error_message: str,
+    *,
+    project_name: str = "",
+) -> None:
+    """Mark a session as failed.
+
+    Upserts the row with status='error' and an error message. ``project_name``
+    is only used when seeding a brand-new row (i.e. failure before
+    ``record_ingested_session_started`` ran).
+    """
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    logger.info("Recording ingested session %s as error: %s", session_id, error_message)
+    now = datetime.now(UTC)
+    t = IngestedSession.__table__
+    stmt = sqlite_insert(t).values(
+        session_id=session_id,
+        project_name=project_name,
+        status=SESSION_STATUS_ERROR,
+        error_message=error_message,
+        ingested_at=now,
+        experiences_found=0,
+        entries_created=0,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["session_id"],
+        set_={
+            "status": SESSION_STATUS_ERROR,
+            "error_message": error_message,
+            "ingested_at": now,
+        },
+    )
+    with engine.begin() as conn:
+        conn.execute(stmt)
 
 
 def find_semantic_duplicates(

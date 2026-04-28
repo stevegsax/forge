@@ -19,6 +19,7 @@ from pbook.activities.extraction import (
     compute_embedding,
     extract_from_experience,
     record_ingested_session,
+    record_ingested_session_error,
     save_extracted_entries,
 )
 from pbook.activities.maintenance import (
@@ -104,6 +105,7 @@ async def run_worker(address: str = "localhost:7233") -> None:
             prune_entries,
             consolidate_entries_llm,
             record_ingested_session,
+            record_ingested_session_error,
         ],
         graceful_shutdown_timeout=timedelta(seconds=30),
     )

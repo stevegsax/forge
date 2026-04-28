@@ -279,3 +279,36 @@ async def record_ingested_session(input_json: str) -> None:
         experiences_found=data.get("experiences_found", 0),
         entries_created=data.get("entries_created", 0),
     )
+
+
+@activity.defn
+async def record_ingested_session_error(input_json: str) -> None:
+    """Mark a Claude Code session as failed.
+
+    Accepts JSON with keys: session_id, error_message, project_name (optional).
+    Called cross-queue from forge's IngestionWorkflow on failure paths.
+    """
+    from pbook.store import (
+        get_db_path,
+        get_engine,
+        run_migrations,
+    )
+    from pbook.store import (
+        record_ingested_session_error as _record_error,
+    )
+
+    data = json.loads(input_json)
+    session_id = data["session_id"]
+
+    db_path = get_db_path()
+    if db_path is None:
+        return
+
+    run_migrations(db_path)
+    engine = get_engine(db_path)
+    _record_error(
+        engine,
+        session_id=session_id,
+        error_message=data.get("error_message", ""),
+        project_name=data.get("project_name", ""),
+    )

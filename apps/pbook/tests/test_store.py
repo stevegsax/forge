@@ -6,16 +6,22 @@ from pathlib import Path
 
 from pbook.models import EntryType, PlaybookEntry
 from pbook.store import (
+    SESSION_STATUS_COMPLETED,
+    SESSION_STATUS_ERROR,
+    SESSION_STATUS_RUNNING,
     build_entry_dict,
     check_duplicate,
     delete_entry,
     get_db_path,
     get_entries_by_tags,
     get_entry_by_id,
+    get_ingested_session_ids,
     list_ingested_sessions,
     list_recent_entries,
     record_feedback,
     record_ingested_session,
+    record_ingested_session_error,
+    record_ingested_session_started,
     record_retrieval,
     save_entries,
     update_entry,
@@ -390,3 +396,109 @@ class TestListIngestedSessions:
     def test_empty_when_no_sessions(self, tmp_path):
         engine, _ = setup_db(tmp_path)
         assert list_ingested_sessions(engine) == []
+
+    def test_completed_record_has_completed_status(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session(engine, "s1", project_name="alpha")
+
+        rows = list_ingested_sessions(engine)
+        assert rows[0]["status"] == SESSION_STATUS_COMPLETED
+
+
+class TestRecordIngestedSessionStarted:
+    def test_seeds_running_row(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session_started(
+            engine, "s1",
+            project_name="alpha",
+            workflow_id="wf-1",
+            run_id="run-1",
+        )
+
+        rows = list_ingested_sessions(engine)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["status"] == SESSION_STATUS_RUNNING
+        assert row["workflow_id"] == "wf-1"
+        assert row["run_id"] == "run-1"
+        assert row["error_message"] is None
+        assert row["started_at"] is not None
+
+    def test_completion_callback_flips_running_to_completed(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session_started(
+            engine, "s1", project_name="alpha", workflow_id="wf-1", run_id="run-1",
+        )
+        record_ingested_session(
+            engine, "s1", project_name="alpha",
+            experiences_found=3, entries_created=2,
+        )
+
+        rows = list_ingested_sessions(engine)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["status"] == SESSION_STATUS_COMPLETED
+        assert row["experiences_found"] == 3
+        assert row["entries_created"] == 2
+        # Workflow ids from the running row are preserved.
+        assert row["workflow_id"] == "wf-1"
+        assert row["run_id"] == "run-1"
+
+    def test_re_seeding_clears_prior_error(self, tmp_path):
+        """`pbook ingest --force` retries an errored session — the new run
+        should reset status and clear the old error message."""
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session_started(
+            engine, "s1", project_name="alpha", workflow_id="wf-1", run_id="run-1",
+        )
+        record_ingested_session_error(engine, "s1", "boom")
+
+        record_ingested_session_started(
+            engine, "s1", project_name="alpha", workflow_id="wf-2", run_id="run-2",
+        )
+
+        rows = list_ingested_sessions(engine)
+        row = rows[0]
+        assert row["status"] == SESSION_STATUS_RUNNING
+        assert row["error_message"] is None
+        assert row["workflow_id"] == "wf-2"
+
+
+class TestRecordIngestedSessionError:
+    def test_flips_running_row_to_error(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session_started(
+            engine, "s1", project_name="alpha", workflow_id="wf-1", run_id="run-1",
+        )
+        record_ingested_session_error(engine, "s1", "malformed_llm_response")
+
+        rows = list_ingested_sessions(engine)
+        row = rows[0]
+        assert row["status"] == SESSION_STATUS_ERROR
+        assert row["error_message"] == "malformed_llm_response"
+
+    def test_seeds_row_when_no_prior_running_record(self, tmp_path):
+        """Failure callback must succeed even if the started callback
+        never ran (e.g. workflow blew up before the seed)."""
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session_error(
+            engine, "s1", "boom", project_name="alpha",
+        )
+
+        rows = list_ingested_sessions(engine)
+        row = rows[0]
+        assert row["status"] == SESSION_STATUS_ERROR
+        assert row["error_message"] == "boom"
+        assert row["project_name"] == "alpha"
+
+
+class TestGetIngestedSessionIds:
+    def test_includes_running_and_completed_excludes_error(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        record_ingested_session(engine, "done", project_name="x")
+        record_ingested_session_started(engine, "live", project_name="x")
+        record_ingested_session_started(engine, "broken", project_name="x")
+        record_ingested_session_error(engine, "broken", "boom")
+
+        ids = get_ingested_session_ids(engine)
+        assert ids == {"done", "live"}

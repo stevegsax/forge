@@ -17,6 +17,8 @@ from pbook.activities.extraction import (
     build_extraction_system_prompt,
     build_extraction_user_prompt,
     execute_extraction_call,
+    record_ingested_session,
+    record_ingested_session_error,
     save_extracted_entries,
 )
 from pbook.llm import reset_provider
@@ -335,3 +337,78 @@ class TestExtractionWorkflow:
             )
 
         assert result["entries_created"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle activities
+# ---------------------------------------------------------------------------
+
+
+class TestRecordIngestedSessionActivities:
+    """Direct unit tests for the cross-queue lifecycle callbacks.
+
+    The activities are thin wrappers around the store helpers. We exercise
+    them via PBOOK_DB_PATH to avoid hitting the developer's real database.
+    """
+
+    @pytest.mark.asyncio
+    async def test_completion_activity_writes_completed_row(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "lifecycle.db"))
+
+        await record_ingested_session(
+            json.dumps({
+                "session_id": "s-good",
+                "project_name": "alpha",
+                "experiences_found": 4,
+                "entries_created": 3,
+            })
+        )
+
+        from pbook.store import get_db_path, get_engine, list_ingested_sessions
+
+        db_path = get_db_path()
+        assert db_path is not None
+        engine = get_engine(db_path)
+        rows = list_ingested_sessions(engine)
+        assert len(rows) == 1
+        assert rows[0]["session_id"] == "s-good"
+        assert rows[0]["status"] == "completed"
+        assert rows[0]["experiences_found"] == 4
+        assert rows[0]["entries_created"] == 3
+
+    @pytest.mark.asyncio
+    async def test_error_activity_writes_error_row(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "lifecycle.db"))
+
+        await record_ingested_session_error(
+            json.dumps({
+                "session_id": "s-bad",
+                "project_name": "alpha",
+                "error_message": "malformed_llm_response",
+            })
+        )
+
+        from pbook.store import get_db_path, get_engine, list_ingested_sessions
+
+        db_path = get_db_path()
+        assert db_path is not None
+        engine = get_engine(db_path)
+        rows = list_ingested_sessions(engine)
+        assert len(rows) == 1
+        assert rows[0]["session_id"] == "s-bad"
+        assert rows[0]["status"] == "error"
+        assert rows[0]["error_message"] == "malformed_llm_response"
+
+    @pytest.mark.asyncio
+    async def test_disabled_db_is_a_noop(self, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", "")
+
+        # Should not raise when the store is disabled.
+        await record_ingested_session(
+            json.dumps({"session_id": "s-x"})
+        )
+        await record_ingested_session_error(
+            json.dumps({"session_id": "s-x", "error_message": "boom"})
+        )

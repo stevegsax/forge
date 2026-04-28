@@ -48,6 +48,11 @@ def _resolve_db() -> tuple:
     return engine, db_path
 
 
+def _strip_embedding(row: dict) -> dict:
+    """Drop the binary embedding column from a row dict for JSON output."""
+    return {k: v for k, v in row.items() if k != "embedding"}
+
+
 def _format_entry(entry: dict) -> str:
     """Format an entry dict for human-readable terminal output."""
     tags_raw = entry.get("tags_json", "[]")
@@ -64,7 +69,7 @@ def _format_entry(entry: dict) -> str:
     if project:
         lines.append(f"  Project: {project}")
 
-    lines.append(f"  {entry['content'][:200]}")
+    lines.append(f"  {entry['content']}")
     return "\n".join(lines)
 
 
@@ -134,7 +139,10 @@ def list_entries(
         return
 
     if output_json:
-        click.echo(json.dumps(entries, default=str, indent=2))
+        click.echo(json.dumps(
+            [_strip_embedding(e) for e in entries],
+            default=str, indent=2,
+        ))
     else:
         for entry in entries:
             click.echo(_format_entry(entry))
@@ -154,7 +162,7 @@ def get(entry_id: int, output_json: bool) -> None:
         sys.exit(1)
 
     if output_json:
-        click.echo(json.dumps(entry, default=str, indent=2))
+        click.echo(json.dumps(_strip_embedding(entry), default=str, indent=2))
     else:
         click.echo(_format_entry(entry))
 
@@ -586,18 +594,34 @@ def ingest(
 
     try:
         run_id = asyncio.run(_submit())
-        _emit({
-            "status": "submitted",
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "task_queue": "forge-task-queue",
-            "submitted_sessions": len(sessions),
-            "skipped_already_ingested": skipped,
-            "session_ids": [s.session_id for s in sessions],
-        })
     except Exception as exc:
         _emit({"status": "error", "error": str(exc)})
         sys.exit(1)
+
+    # Seed running rows so `pbook sessions` shows them while the workflow is
+    # in flight. The workflow's record_ingested_session callback flips them
+    # to completed (or record_ingested_session_error flips them to error).
+    engine_for_seed, _ = _resolve_db()
+    from pbook.store import record_ingested_session_started
+
+    for s in sessions:
+        record_ingested_session_started(
+            engine_for_seed,
+            session_id=s.session_id,
+            project_name=s.project_name,
+            workflow_id=workflow_id,
+            run_id=run_id,
+        )
+
+    _emit({
+        "status": "submitted",
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "task_queue": "forge-task-queue",
+        "submitted_sessions": len(sessions),
+        "skipped_already_ingested": skipped,
+        "session_ids": [s.session_id for s in sessions],
+    })
 
 
 @main.command()
@@ -620,13 +644,18 @@ def sessions(project: str, limit: int, output_json: bool) -> None:
         return
 
     for row in rows:
-        click.echo(
+        status = row.get("status") or "completed"
+        line = (
             f"{row['session_id']}  "
+            f"status={status}  "
             f"project={row['project_name'] or '-'}  "
             f"experiences={row['experiences_found']}  "
             f"entries={row['entries_created']}  "
             f"at={row['ingested_at']}"
         )
+        if status == "error" and row.get("error_message"):
+            line += f"  error={row['error_message']}"
+        click.echo(line)
 
 
 @main.command(name="skill-prompt")
