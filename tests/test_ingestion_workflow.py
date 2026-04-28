@@ -65,7 +65,8 @@ def _reset_state(
     global _PREPARED_JSON, _ANALYSIS_JSON, _EXTRACTION_RESULT
     _CALL_LOG.clear()
     _RECORDED_SESSIONS.clear()
-    _PREPARED_JSON = json.dumps(prepared or {})
+    # Empty string activates the echo-input fallback in mock_prepare_transcript.
+    _PREPARED_JSON = json.dumps(prepared) if prepared is not None else ""
     _ANALYSIS_JSON = json.dumps(analysis or {"experiences": []})
     _EXTRACTION_RESULT = extraction_result or {"entries_created": 0}
 
@@ -78,7 +79,20 @@ def _reset_state(
 @activity.defn(name="prepare_transcript")
 async def mock_prepare_transcript(input_json: str) -> str:
     _CALL_LOG.append("prepare_transcript")
-    return _PREPARED_JSON
+    if _PREPARED_JSON:
+        return _PREPARED_JSON
+    # Default: empty-transcript early-exit, but echo the caller's session_id
+    # so per-session aggregation in fan-out tests can be verified.
+    payload = json.loads(input_json)
+    return json.dumps({
+        "transcript_text": "",
+        "system_prompt": "",
+        "user_prompt": "",
+        "project": payload.get("project", ""),
+        "session_id": payload.get("session_id", ""),
+        "message_count": 0,
+        "char_count": 0,
+    })
 
 
 @activity.defn(name="submit_batch_request")
@@ -487,3 +501,52 @@ class TestBatchIngestionWorkflow:
         assert len(result["per_session"]) == 3
         # All three children should have run prepare_transcript
         assert _CALL_LOG.count("prepare_transcript") == 3
+
+    @pytest.mark.asyncio
+    async def test_parent_awaits_children_before_returning(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """Regression: BatchIngestionWorkflow must await child completion.
+
+        ChildWorkflowHandle subclasses asyncio.Task, so calling `.result()`
+        on it invokes the synchronous Task.result() and raises
+        InvalidStateError("Result is not set.") before the child finishes.
+        The parent's except-handler would then swallow the exception,
+        return zeros with `session_id=""`, complete, and Temporal would
+        terminate the still-running children "by parent close policy".
+
+        This test pins the parent down to actually waiting for each child
+        to complete: per-session results must carry the input session_id
+        and must NOT have an `error` key.
+        """
+        # Echo path: mock_prepare_transcript reflects each input session_id
+        # back as the prepared session_id, taking the empty-transcript
+        # early-exit so no batch signals are required.
+        _reset_state()
+
+        sessions = [
+            {"path": "/tmp/a", "project": "p", "session_id": "s-alpha"},
+            {"path": "/tmp/b", "project": "p", "session_id": "s-bravo"},
+        ]
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[BatchIngestionWorkflow, TranscriptIngestionWorkflow],
+            activities=_FORGE_MOCK_ACTIVITIES,
+        ):
+            result = await env.client.execute_workflow(
+                BatchIngestionWorkflow.run,
+                json.dumps({"sessions": sessions}),
+                id="test-batch-awaits-children",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        per_session = result["per_session"]
+        assert len(per_session) == 2
+        # Children completed normally — no swallowed exceptions.
+        assert all("error" not in r for r in per_session), per_session
+        # Each per_session entry carries the child's actual session_id,
+        # which is only populated on the success path.
+        returned_ids = {r["session_id"] for r in per_session}
+        assert returned_ids == {"s-alpha", "s-bravo"}

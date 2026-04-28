@@ -221,7 +221,10 @@ class BatchIngestionWorkflow:
         results = []
         for handle in handles:
             try:
-                result = await handle.result()
+                # ChildWorkflowHandle subclasses asyncio.Task; await the
+                # handle directly. `handle.result()` is the synchronous
+                # Task.result() and raises before the child finishes.
+                result = await handle
                 results.append(result)
             except Exception as exc:
                 workflow.logger.warning("Session ingestion failed: %s", exc)
