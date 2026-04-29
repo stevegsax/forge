@@ -11,8 +11,12 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
+
+if TYPE_CHECKING:
+    from typing import NoReturn
 
 from pbook.models import PlaybookEntry
 from pbook.store import (
@@ -48,9 +52,75 @@ def _resolve_db() -> tuple:
     return engine, db_path
 
 
+# ---------------------------------------------------------------------------
+# JSON output helpers
+#
+# Skills calling pbook programmatically rely on a stable contract:
+# - Binary BLOB columns are stripped (they don't round-trip through JSON).
+# - tags_json is parsed back into a `tags` list (the on-disk shape leaks
+#   otherwise — emitting a JSON-string-in-JSON forces consumers to parse twice).
+# - datetimes are ISO 8601 with timezone via _json_default below.
+# - On `--json` failure paths, _emit_error writes the envelope to stdout
+#   and exits non-zero, so the caller has a single parseable stream.
+# ---------------------------------------------------------------------------
+
+_BINARY_FIELDS = ("embedding", "source_context_embedding")
+
+
 def _strip_embedding(row: dict) -> dict:
-    """Drop the binary embedding column from a row dict for JSON output."""
-    return {k: v for k, v in row.items() if k != "embedding"}
+    """Drop binary embedding columns from a row dict for JSON output."""
+    return {k: v for k, v in row.items() if k not in _BINARY_FIELDS}
+
+
+def _reshape_entry(row: dict) -> dict:
+    """Strip binary fields and parse `tags_json` into a `tags` list.
+
+    Used by every entry-shaped JSON output site so the skill consumer sees
+    a consistent shape regardless of which command produced the row.
+    """
+    cleaned = _strip_embedding(row)
+    tags_raw = cleaned.pop("tags_json", None)
+    if tags_raw is not None:
+        if isinstance(tags_raw, str):
+            try:
+                cleaned["tags"] = json.loads(tags_raw)
+            except json.JSONDecodeError:
+                cleaned["tags"] = []
+        else:
+            cleaned["tags"] = list(tags_raw)
+    return cleaned
+
+
+def _json_default(obj):
+    """JSON encoder for datetimes (ISO 8601) and any other non-serializable type."""
+    from datetime import UTC, datetime
+
+    if isinstance(obj, datetime):
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=UTC)
+        return obj.isoformat()
+    return str(obj)
+
+
+def _emit_json(payload, *, indent: int = 2) -> None:
+    """Print JSON to stdout using the canonical encoder."""
+    click.echo(json.dumps(payload, default=_json_default, indent=indent))
+
+
+def _emit_error(
+    code: str, message: str, *, json_mode: bool, exit_code: int = 1,
+) -> NoReturn:
+    """Emit a structured error and exit non-zero.
+
+    When `json_mode` is True, the error envelope goes to **stdout** as JSON
+    (so the caller has a single parseable stream). Otherwise we write to
+    stderr in the existing human-readable form.
+    """
+    if json_mode:
+        _emit_json({"error": message, "code": code})
+    else:
+        click.echo(f"Error: {message}", err=True)
+    sys.exit(exit_code)
 
 
 def _format_entry(entry: dict) -> str:
@@ -139,14 +209,14 @@ def list_entries(
         entries = [e for e in entries if e.get("needs_review")]
 
     if not entries:
-        click.echo("No entries found.")
+        if output_json:
+            _emit_json([])
+        else:
+            click.echo("No entries found.")
         return
 
     if output_json:
-        click.echo(json.dumps(
-            [_strip_embedding(e) for e in entries],
-            default=str, indent=2,
-        ))
+        _emit_json([_reshape_entry(e) for e in entries])
     else:
         for entry in entries:
             click.echo(_format_entry(entry))
@@ -162,11 +232,12 @@ def get(entry_id: int, output_json: bool) -> None:
     entry = get_entry_by_id(engine, entry_id)
 
     if entry is None:
-        click.echo(f"Entry {entry_id} not found.", err=True)
-        sys.exit(1)
+        _emit_error(
+            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+        )
 
     if output_json:
-        click.echo(json.dumps(_strip_embedding(entry), default=str, indent=2))
+        _emit_json(_reshape_entry(entry))
     else:
         click.echo(_format_entry(entry))
 
@@ -652,7 +723,7 @@ def sessions(project: str, limit: int, output_json: bool) -> None:
     rows = list_ingested_sessions(engine, project=project or None, limit=limit)
 
     if output_json:
-        click.echo(json.dumps(rows, default=str, indent=2))
+        _emit_json(rows)
         return
 
     if not rows:

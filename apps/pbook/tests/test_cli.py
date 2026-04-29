@@ -158,6 +158,87 @@ class TestGetCommand:
 
 
 # ---------------------------------------------------------------------------
+# JSON contract — every --json site goes through these conventions
+# ---------------------------------------------------------------------------
+
+
+class TestJSONContract:
+    def test_get_json_emits_tags_as_list_not_string(self, tmp_path, monkeypatch):
+        """Regression: the on-disk shape stores tags as a JSON-string-in-JSON.
+        Skill consumers must see a real list."""
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, tags=["lang:python", "lib:pytest"])
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["get", "1", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["tags"] == ["lang:python", "lib:pytest"]
+        assert "tags_json" not in data  # raw column name shouldn't leak
+
+    def test_get_json_strips_embedding(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["get", "1", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "embedding" not in data
+
+    def test_get_json_datetime_iso_8601(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["get", "1", "--json"])
+        data = json.loads(result.output)
+        # ISO 8601 with T separator, e.g. "2026-04-28T16:23:45+00:00"
+        assert "T" in data["created_at"]
+
+    def test_get_json_error_envelope(self, tmp_path, monkeypatch):
+        """When --json is set and the entry is missing, the error must
+        come back as JSON on stdout with non-zero exit."""
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["get", "999", "--json"])
+        assert result.exit_code != 0
+        # stdout, not stderr — single parseable stream for the skill
+        payload = json.loads(result.stdout)
+        assert payload == {
+            "error": "Entry 999 not found.",
+            "code": "not_found",
+        }
+
+    def test_list_json_each_entry_has_tags_list(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="A", tags=["lang:python"])
+        _seed_entry(engine, title="B", tags=["lang:go", "lib:cobra"])
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["list", "--json"])
+        data = json.loads(result.output)
+        assert all(isinstance(e["tags"], list) for e in data)
+        assert all("tags_json" not in e for e in data)
+        assert all("embedding" not in e for e in data)
+
+    def test_list_json_empty_returns_empty_array(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["list", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == []
+
+
+# ---------------------------------------------------------------------------
 # add command
 # ---------------------------------------------------------------------------
 
