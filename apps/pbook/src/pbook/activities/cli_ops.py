@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+_BINARY_FIELDS = ("embedding", "source_context_embedding")
+
+
+def _strip_binary(row: dict) -> dict:
+    """Drop binary BLOB columns from a row dict before returning across
+    the activity wire. Pydantic's to_json (used by Temporal's data
+    converter) doesn't auto-base64 raw bytes inside arbitrary dicts —
+    random float32 byte sequences fail UTF-8 validation in serde_json
+    and the activity result fails to serialize.
+    """
+    return {k: v for k, v in row.items() if k not in _BINARY_FIELDS}
+
+
 def _engine():
     """Open a SQLAlchemy engine against the worker's configured DB.
 
@@ -88,7 +101,8 @@ async def get_entry_activity(input: dict) -> dict | None:
     from pbook.store import get_entry_by_id
 
     engine = _engine()
-    return get_entry_by_id(engine, int(input["entry_id"]))
+    row = get_entry_by_id(engine, int(input["entry_id"]))
+    return _strip_binary(row) if row else None
 
 
 @activity.defn
@@ -122,7 +136,7 @@ async def list_entries_activity(input: dict) -> list[dict]:
     if input.get("needs_review_only"):
         entries = [e for e in entries if e.get("needs_review")]
 
-    return entries
+    return [_strip_binary(e) for e in entries]
 
 
 @activity.defn
@@ -136,7 +150,8 @@ async def list_sources_activity(input: dict) -> dict:
     entry_id = int(input["entry_id"])
     if get_entry_by_id(engine, entry_id) is None:
         return {"found": False, "rows": []}
-    return {"found": True, "rows": list_entry_sources_for_entry(engine, entry_id)}
+    rows = list_entry_sources_for_entry(engine, entry_id)
+    return {"found": True, "rows": [_strip_binary(r) for r in rows]}
 
 
 @activity.defn
@@ -161,6 +176,11 @@ async def review_queue_activity(input: dict) -> dict:
     ``by_experience=True``) of the review queue."""
     from pbook.store import list_recent_entries, list_review_queue_with_sources
 
+    def _strip_entry_for_wire(e: dict) -> dict:
+        # Drop both the sibling sources list (added by
+        # list_review_queue_with_sources) and the binary embedding columns.
+        return _strip_binary({k: v for k, v in e.items() if k != "sources"})
+
     engine = _engine()
     limit = input.get("limit", 20)
     if input.get("by_experience"):
@@ -174,20 +194,20 @@ async def review_queue_activity(input: dict) -> dict:
                     "project_name": (
                         ents[0].get("sources", [{}])[0].get("project_name", "")
                     ),
-                    "entries": [
-                        {k: v for k, v in e.items() if k != "sources"} for e in ents
-                    ],
+                    "entries": [_strip_entry_for_wire(e) for e in ents],
                 }
                 for h, ents in clusters
             ],
-            "singletons": [
-                {k: v for k, v in e.items() if k != "sources"} for e in singletons
-            ],
+            "singletons": [_strip_entry_for_wire(e) for e in singletons],
         }
 
     entries = list_recent_entries(engine, limit=limit)
     needs_review = [e for e in entries if e.get("needs_review")]
-    return {"entries": needs_review, "clusters": [], "singletons": []}
+    return {
+        "entries": [_strip_binary(e) for e in needs_review],
+        "clusters": [],
+        "singletons": [],
+    }
 
 
 @activity.defn
@@ -249,9 +269,8 @@ async def check_duplicate_activity(input: dict) -> list[dict]:
     from pbook.store import check_duplicate
 
     engine = _engine()
-    return check_duplicate(
-        engine, input["title"], tags=input.get("tags"),
-    )
+    matches = check_duplicate(engine, input["title"], tags=input.get("tags"))
+    return [_strip_binary(m) for m in matches]
 
 
 # ---------------------------------------------------------------------------
@@ -459,4 +478,7 @@ async def prune_activity(input: dict) -> dict:
             })
             applied_count += 1
 
-    return {"candidates": candidates, "applied_count": applied_count}
+    return {
+        "candidates": [_strip_binary(c) for c in candidates],
+        "applied_count": applied_count,
+    }

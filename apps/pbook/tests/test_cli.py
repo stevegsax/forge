@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
 from click.testing import CliRunner
 
 if TYPE_CHECKING:
@@ -1042,3 +1043,110 @@ class TestPrune:
 
 
 # Real skill-prompt tests are in TestSkillPromptCommand above.
+
+
+# ---------------------------------------------------------------------------
+# cli_ops activity wire-format
+#
+# Activities must return JSON-serializable data — embedding bytes (and
+# any other raw BLOB) need to be stripped before crossing the Temporal
+# boundary. The pydantic_data_converter uses pydantic's to_json, which
+# fails UTF-8 validation on raw float32 bytes inside arbitrary dicts.
+# Bypassed-tests don't catch this because they call activities
+# in-process; these tests serialize the result explicitly.
+# ---------------------------------------------------------------------------
+
+
+class TestCLIOpsWireFormat:
+    """JSON-serialize each activity result so the bytes-on-the-wire bug
+    can't sneak back in through a new activity that forgets to strip."""
+
+    @pytest.mark.asyncio
+    async def test_get_entry_result_is_json_serializable(self, tmp_path, monkeypatch):
+        import struct
+
+        from pbook.activities.cli_ops import get_entry_activity
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        from pbook.models import EntryType
+
+        save_entries(engine, [build_entry_dict(PlaybookEntry(
+            title="A", content="x", tags=["lang:python"],
+            entry_type=EntryType.CURATED, embedding=emb,
+        ))])
+
+        result = await get_entry_activity({"entry_id": 1})
+        # json.dumps without default= raises on bytes — that's the assertion.
+        json.dumps(result, default=str)
+        assert result is not None
+        assert "embedding" not in result
+
+    @pytest.mark.asyncio
+    async def test_list_entries_result_is_json_serializable(self, tmp_path, monkeypatch):
+        import struct
+
+        from pbook.activities.cli_ops import list_entries_activity
+        from pbook.models import EntryType
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        save_entries(engine, [build_entry_dict(PlaybookEntry(
+            title="A", content="x", tags=["lang:python"],
+            entry_type=EntryType.CURATED, embedding=emb,
+        ))])
+
+        result = await list_entries_activity({})
+        json.dumps(result, default=str)
+        assert all("embedding" not in e for e in result)
+
+    @pytest.mark.asyncio
+    async def test_review_queue_result_is_json_serializable(self, tmp_path, monkeypatch):
+        import struct
+
+        from pbook.activities.cli_ops import review_queue_activity
+        from pbook.models import EntryType
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="A", content="x", tags=["lang:python"],
+                entry_type=EntryType.CURATED, embedding=emb,
+                needs_review=True,
+            )),
+        ])
+
+        # Both modes — flat and clustered — must be wire-safe.
+        flat = await review_queue_activity({"limit": 20, "by_experience": False})
+        json.dumps(flat, default=str)
+        assert all("embedding" not in e for e in flat["entries"])
+
+        clustered = await review_queue_activity({"limit": 20, "by_experience": True})
+        json.dumps(clustered, default=str)
+
+    @pytest.mark.asyncio
+    async def test_list_sources_result_is_json_serializable(self, tmp_path, monkeypatch):
+        from pbook.activities.cli_ops import list_sources_activity
+        from pbook.models import EntryType
+        from pbook.store import add_entry_source
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        save_entries(engine, [build_entry_dict(PlaybookEntry(
+            title="A", content="x", tags=["lang:python"],
+            entry_type=EntryType.CURATED,
+        ))])
+        add_entry_source(
+            engine, entry_id=1, session_id="s", project_name="p",
+            experience_hash="h", source_context="ctx",
+            source_context_embedding=b"\x00\x01\x02\x03",
+        )
+
+        result = await list_sources_activity({"entry_id": 1})
+        json.dumps(result, default=str)
+        for row in result["rows"]:
+            assert "source_context_embedding" not in row
