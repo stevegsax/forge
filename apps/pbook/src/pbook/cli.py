@@ -28,7 +28,6 @@ from pbook.store import (
     list_recent_entries,
     record_feedback,
     run_migrations,
-    save_entries,
     update_entry,
 )
 from pbook.tags import validate_tags
@@ -254,36 +253,71 @@ def get(entry_id: int, output_json: bool) -> None:
 @click.option(
     "--file", "file_path",
     type=click.Path(exists=True, path_type=Path),
-    help="JSON file containing PlaybookEntry.",
+    help="JSON file containing PlaybookEntry. If omitted, JSON is read from stdin.",
 )
 @click.option("--schema", "show_schema", is_flag=True, help="Print JSON schema.")
-def add(file_path: Path | None, show_schema: bool) -> None:
-    """Add a playbook entry."""
+@click.option(
+    "--needs-review", is_flag=True,
+    help="Flag the entry as needing review (default: stored as approved).",
+)
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+def add(
+    file_path: Path | None,
+    show_schema: bool,
+    needs_review: bool,
+    output_json: bool,
+) -> None:
+    """Add a playbook entry.
+
+    Reads JSON from stdin by default, or from --file if given.
+    """
     if show_schema:
         click.echo(json.dumps(PlaybookEntry.model_json_schema(), indent=2))
         return
 
-    if file_path is None:
-        click.echo("Error: --file is required (or use --schema to see the format).", err=True)
-        sys.exit(1)
+    if file_path is not None:
+        raw_json = file_path.read_text()
+    else:
+        if sys.stdin.isatty():
+            _emit_error(
+                "validation_error",
+                "Provide JSON on stdin, --file <path>, or use --schema to see the format.",
+                json_mode=output_json,
+            )
+        raw_json = sys.stdin.read()
 
-    raw_json = file_path.read_text()
     try:
         entry = PlaybookEntry.model_validate_json(raw_json)
     except Exception as exc:
-        click.echo(f"Validation error: {exc}", err=True)
-        sys.exit(1)
+        _emit_error(
+            "validation_error", f"Validation error: {exc}", json_mode=output_json,
+        )
 
     tag_errors = validate_tags(entry.tags)
     if tag_errors:
-        for err in tag_errors:
-            click.echo(f"Tag error: {err}", err=True)
-        sys.exit(1)
+        _emit_error(
+            "tag_invalid", "; ".join(tag_errors), json_mode=output_json,
+        )
+
+    if needs_review:
+        entry = entry.model_copy(update={"needs_review": True})
 
     engine, _ = _resolve_db()
+    from pbook.store import save_entry_returning_id
+
     entry_dict = build_entry_dict(entry)
-    save_entries(engine, [entry_dict])
-    click.echo(f"Added: {entry.title}")
+    new_id = save_entry_returning_id(engine, entry_dict)
+
+    if output_json:
+        _emit_json({
+            "id": new_id,
+            "title": entry.title,
+            "approved": not entry.needs_review,
+            "needs_review": entry.needs_review,
+            "rejected": False,
+        })
+    else:
+        click.echo(f"Added entry {new_id}: {entry.title}")
 
 
 @main.command()
@@ -1034,10 +1068,37 @@ def sessions(project: str, limit: int, output_json: bool) -> None:
 
 
 @main.command(name="skill-prompt")
-@click.option("--operation", default="add", help="Operation to get instructions for.")
-def skill_prompt(operation: str) -> None:
-    """Print server-provided instructions for a skill operation (stub)."""
-    click.echo(f"# pbook skill-prompt: {operation}")
-    click.echo("")
-    click.echo("This command will return LLM instructions for the requested operation.")
-    click.echo("Not yet implemented — see Phase 5 of the implementation plan.")
+@click.option(
+    "--operation", default="",
+    help="Limit output to one workflow (query | discuss | review_queue | add).",
+)
+@click.option(
+    "--json", "output_json", is_flag=True, default=True,
+    help="Machine-readable JSON output (default).",
+)
+def skill_prompt(operation: str, output_json: bool) -> None:
+    """Return editorial guidance for the pbook Claude Code skill.
+
+    The payload contains:
+      - commands: per-command description, args, example.
+      - workflows: per-workflow markdown guidance (query, discuss,
+        review_queue, add).
+      - tags: canonical namespaces and notes on the tag system.
+
+    Intended consumption: /skill-creator at build time to populate
+    SKILL.md, and the skill agent at runtime to refresh context.
+    """
+    from pbook.skill_prompts import build_skill_prompt
+
+    try:
+        payload = build_skill_prompt(operation)
+    except KeyError as exc:
+        _emit_error(
+            "validation_error", str(exc).strip("'"),
+            json_mode=output_json,
+        )
+
+    if output_json:
+        _emit_json(payload)
+    else:
+        click.echo(json.dumps(payload, indent=2, default=_json_default))

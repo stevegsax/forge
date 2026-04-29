@@ -258,7 +258,74 @@ class TestAddCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["add", "--file", str(entry_file)])
         assert result.exit_code == 0
-        assert "Added: New Entry" in result.output
+        assert "Added entry" in result.output
+        assert "New Entry" in result.output
+
+    def test_add_reads_stdin(self, tmp_path, monkeypatch):
+        """When --file is omitted, JSON is read from stdin."""
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["add", "--json"],
+            input=json.dumps({
+                "title": "From stdin",
+                "content": "...",
+                "tags": ["lang:python"],
+            }),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["title"] == "From stdin"
+        assert data["approved"] is True
+        assert data["needs_review"] is False
+        assert data["rejected"] is False
+
+    def test_add_needs_review_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["add", "--needs-review", "--json"],
+            input=json.dumps({
+                "title": "Pending review",
+                "content": "...",
+                "tags": ["lang:python"],
+            }),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["needs_review"] is True
+        assert data["approved"] is False
+
+    def test_add_validation_error_envelope(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--json"], input="not valid json")
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["code"] == "validation_error"
+
+    def test_add_tag_invalid_envelope(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["add", "--json"],
+            input=json.dumps({
+                "title": "Bad Tags",
+                "content": "...",
+                "tags": ["not-namespaced"],
+            }),
+        )
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["code"] == "tag_invalid"
 
     def test_add_invalid_tags(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
@@ -274,16 +341,8 @@ class TestAddCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["add", "--file", str(entry_file)])
         assert result.exit_code != 0
-        assert "Tag error" in result.output
-
-    def test_add_no_file(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
-        _setup_db(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["add"])
-        assert result.exit_code != 0
-        assert "--file" in result.output or "required" in result.output.lower()
+        # Human-readable error path: stderr says "Tag must use namespace:value..."
+        assert "namespace:value" in result.output or "Tag" in result.output
 
     def test_add_invalid_json(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
@@ -649,6 +708,47 @@ class TestTagsCommand:
 
 
 # ---------------------------------------------------------------------------
+# skill-prompt command
+# ---------------------------------------------------------------------------
+
+
+class TestSkillPromptCommand:
+    def test_full_payload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["skill-prompt"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert "commands" in data
+        assert "workflows" in data
+        assert "tags" in data
+        assert set(data["workflows"]) == {"query", "discuss", "review_queue", "add"}
+
+    def test_operation_filter(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["skill-prompt", "--operation", "discuss"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert "workflow" in data
+        assert "## Discuss workflow" in data["workflow"]
+
+    def test_unknown_operation_returns_validation_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["skill-prompt", "--operation", "bogus"])
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["code"] == "validation_error"
+
+
+# ---------------------------------------------------------------------------
 # check-duplicate
 # ---------------------------------------------------------------------------
 
@@ -834,10 +934,4 @@ class TestPrune:
 # ---------------------------------------------------------------------------
 
 
-class TestSkillPrompt:
-    def test_stub(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
-        runner = CliRunner()
-        result = runner.invoke(main, ["skill-prompt"])
-        assert result.exit_code == 0
-        assert "skill-prompt" in result.output
+# Real skill-prompt tests are in TestSkillPromptCommand above.
