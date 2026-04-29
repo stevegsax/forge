@@ -35,6 +35,11 @@ from pbook.activities.review import (
     review_entry,
     validate_entry,
 )
+from pbook.workflow_steps import (
+    llm_chat,
+    llm_embed,
+    register_output_type,
+)
 
 # Import workflows
 from pbook.workflows.export import ExportWorkflow
@@ -69,12 +74,27 @@ def _register_llm_provider() -> None:
     logger.info("Registered LLM provider: anthropic:claude-3-5-sonnet-20241022")
 
 
+def _register_output_types() -> None:
+    """Register pbook's structured-output classes with the local registry.
+
+    The generic ``llm_chat`` activity resolves output types by name at
+    activity-time; without this registration the activity raises KeyError.
+    """
+    from pbook.llm import ConsolidationResult, ExtractionResult, ReviewResult
+
+    register_output_type("ExtractionResult", ExtractionResult)
+    register_output_type("ReviewResult", ReviewResult)
+    register_output_type("ConsolidationResult", ConsolidationResult)
+    logger.info("Registered output types: ExtractionResult, ReviewResult, ConsolidationResult")
+
+
 async def run_worker(address: str = "localhost:7233") -> None:
     """Connect to Temporal and run the pbook worker."""
     from pbook.log_config import setup_logging
 
     setup_logging(console=True)
     _register_llm_provider()
+    _register_output_types()
     logger.info("Connecting to Temporal at %s", address)
     
     # Use custom DataConverter for Phase 4 improvements
@@ -108,6 +128,10 @@ async def run_worker(address: str = "localhost:7233") -> None:
             save_consolidated_entry,
             record_ingested_session,
             record_ingested_session_error,
+            # Generic LLM workflow steps. Old per-purpose activities above
+            # are removed in subsequent migration PRs.
+            llm_chat,
+            llm_embed,
         ],
         graceful_shutdown_timeout=timedelta(seconds=30),
     )

@@ -255,29 +255,19 @@ async def consolidate_entries_llm(entries_json: str) -> str:
     if not entries:
         return ConsolidationResult(merged_title="", merged_content="").model_dump_json()
 
+    from pbook.prompts.consolidation import (
+        build_consolidation_system_prompt,
+        build_consolidation_user_prompt,
+    )
+
     logger.info("Consolidating %d entries via LLM", len(entries))
     provider = get_provider()
     _, model = _resolve_default_model()
 
-    system_prompt = (
-        "You are a knowledge curation assistant. You will be given a set of "
-        "semantically similar playbook entries (lessons/pitfalls). Your task is "
-        "to merge them into a single, comprehensive, and clear entry that "
-        "captures all unique insights from the source entries without redundancy."
-        "\n\n"
-        "Rules:\n"
-        "- The merged entry must be accurate and actionable.\n"
-        "- Avoid generic advice; keep the specific insights from the sources.\n"
-        "- Combine tags into a deduplicated list.\n"
-        "- Quality over quantity: be concise but thorough."
-    )
+    system_prompt = build_consolidation_system_prompt()
+    user_prompt = build_consolidation_user_prompt(entries)
 
-    user_parts = ["## Source Entries to Merge\n"]
-    for e in entries:
-        tags = json.loads(e.get("tags_json", "[]"))
-        user_parts.append(f"### {e['title']}\n**Content:** {e['content']}\n**Tags:** {', '.join(tags)}\n")
-
-    messages = text_messages(system_prompt, "".join(user_parts))
+    messages = text_messages(system_prompt, user_prompt)
 
     params = provider.build_request_params(
         messages=messages,

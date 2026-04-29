@@ -14,8 +14,6 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from pbook.activities.extraction import (
-    build_extraction_system_prompt,
-    build_extraction_user_prompt,
     execute_extraction_call,
     record_ingested_session,
     record_ingested_session_error,
@@ -23,6 +21,10 @@ from pbook.activities.extraction import (
 )
 from pbook.llm import reset_provider
 from pbook.models import PushExperienceInput
+from pbook.prompts.extraction import (
+    build_extraction_system_prompt,
+    build_extraction_user_prompt,
+)
 from pbook.store import (
     get_engine,
     list_recent_entries,

@@ -15,9 +15,6 @@ from temporalio.worker import Worker
 
 from pbook.activities.extraction import save_extracted_entries
 from pbook.activities.review import (
-    apply_suggestions,
-    build_review_system_prompt,
-    build_review_user_prompt,
     execute_review_call,
     fetch_existing_entries,
     review_entry,
@@ -25,6 +22,11 @@ from pbook.activities.review import (
 )
 from pbook.llm import ReviewResult, reset_provider
 from pbook.models import PlaybookEntry
+from pbook.prompts.review import (
+    apply_suggestions,
+    build_review_system_prompt,
+    build_review_user_prompt,
+)
 from pbook.store import (
     build_entry_dict,
     get_engine,
