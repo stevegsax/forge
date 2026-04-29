@@ -210,17 +210,51 @@ async def compute_embedding(text: str) -> str:
 
 @activity.defn
 async def save_extracted_entries(input_json: str) -> int:
-    """Save extracted entries to the store with needs_review=True.
+    """Save extracted entries via match-or-attach, then write source rows.
 
-    Accepts JSON with keys: entries (list), project (str).
-    Returns the number of entries saved.
+    Accepts JSON with keys:
+      - entries: list of extracted-entry dicts (title, content, tags,
+        embedding base64).
+      - project: source project name for any newly-inserted entries.
+      - source: dict carrying the originating experience's identifying
+        info (session_id, project_name, experience_hash, source_context,
+        source_context_embedding base64). Threaded through by
+        ExtractionWorkflow on a per-experience basis.
+
+    For each candidate entry:
+      1. Look up semantic duplicates among existing entries
+         (threshold ENTRY_MATCH_THRESHOLD = 0.85). If a match is found,
+         the candidate is NOT inserted — the existing entry simply
+         gains a new entry_sources row.
+      2. If no match, the candidate becomes a new entry (needs_review=True)
+         and gets its first entry_sources row.
+      3. Source-row writes are deduped against existing rows on the
+         target entry (threshold SOURCE_DEDUP_THRESHOLD = 0.92): if the
+         same justification is already recorded, the new row is skipped.
+
+    Returns the number of NEW entries created. Source rows attached to
+    pre-existing entries do not count toward this number — they're
+    incremental enrichment.
     """
+    import base64
+
     from pbook.models import EntryType, PlaybookEntry
-    from pbook.store import build_entry_dict, get_db_path, get_engine, run_migrations, save_entries
+    from pbook.store import (
+        ENTRY_MATCH_THRESHOLD,
+        add_entry_source,
+        build_entry_dict,
+        find_semantic_duplicates,
+        find_similar_source_contexts,
+        get_db_path,
+        get_engine,
+        run_migrations,
+        save_entry_returning_id,
+    )
 
     data = json.loads(input_json)
     entries_raw = data.get("entries", [])
     project = data.get("project", "")
+    source = data.get("source") or {}
 
     if not entries_raw:
         logger.debug("No extracted entries to save")
@@ -233,25 +267,76 @@ async def save_extracted_entries(input_json: str) -> int:
     run_migrations(db_path)
     engine = get_engine(db_path)
 
-    import base64
+    src_session_id = source.get("session_id", "")
+    src_project_name = source.get("project_name", project)
+    src_experience_hash = source.get("experience_hash")
+    src_context = source.get("source_context", "")
+    raw_src_embedding = source.get("source_context_embedding") or ""
+    src_context_embedding = (
+        base64.b64decode(raw_src_embedding) if raw_src_embedding else None
+    )
 
-    entry_dicts = []
+    new_entry_count = 0
+
     for raw in entries_raw:
         raw_embedding = raw.get("embedding")
         embedding = base64.b64decode(raw_embedding) if raw_embedding else None
-        entry = PlaybookEntry(
-            title=raw["title"],
-            content=raw["content"],
-            tags=raw.get("tags", []),
-            entry_type=EntryType.PITFALL,
-            source_project=project,
-            needs_review=True,
-            embedding=embedding,
-        )
-        entry_dicts.append(build_entry_dict(entry))
 
-    save_entries(engine, entry_dicts)
-    return len(entry_dicts)
+        target_entry_id: int | None = None
+
+        # Step 1: try to attach to an existing semantically-similar entry.
+        if embedding is not None:
+            matches = find_semantic_duplicates(
+                engine, embedding,
+                threshold=ENTRY_MATCH_THRESHOLD,
+                limit=1,
+            )
+            if matches:
+                target_entry_id = matches[0]["id"]
+                logger.info(
+                    "Match-or-attach: candidate '%s' matches existing entry %d "
+                    "(similarity=%.3f). Attaching source instead of inserting.",
+                    raw.get("title", ""), target_entry_id, matches[0]["similarity"],
+                )
+
+        # Step 2: no match — insert a new entry.
+        if target_entry_id is None:
+            entry = PlaybookEntry(
+                title=raw["title"],
+                content=raw["content"],
+                tags=raw.get("tags", []),
+                entry_type=EntryType.PITFALL,
+                source_project=project,
+                needs_review=True,
+                embedding=embedding,
+            )
+            target_entry_id = save_entry_returning_id(engine, build_entry_dict(entry))
+            new_entry_count += 1
+
+        # Step 3: source-row dedup, then write.
+        if src_context_embedding is not None:
+            similar = find_similar_source_contexts(
+                engine, target_entry_id, src_context_embedding,
+            )
+            if similar:
+                logger.info(
+                    "Source dedup: justification for entry %d already recorded "
+                    "(similarity=%.3f). Skipping source row.",
+                    target_entry_id, similar[0]["similarity"],
+                )
+                continue
+
+        add_entry_source(
+            engine,
+            entry_id=target_entry_id,
+            session_id=src_session_id,
+            project_name=src_project_name,
+            experience_hash=src_experience_hash,
+            source_context=src_context,
+            source_context_embedding=src_context_embedding,
+        )
+
+    return new_entry_count
 
 
 @activity.defn

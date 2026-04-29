@@ -24,6 +24,16 @@ class AnalyzedExperience(BaseModel):
     problem: str = Field(description="What unexpected situation occurred")
     resolution: str = Field(description="How it was resolved")
     context: str = Field(default="", description="Relevant technical context")
+    situation: str = Field(
+        default="",
+        description=(
+            "Rich rationale describing the situation that produced this "
+            "experience. Should include short verbatim excerpts from the "
+            "transcript that show what was happening when the problem "
+            "appeared and what led to the resolution. Used later to "
+            "reconstruct the original context when discussing the play."
+        ),
+    )
 
 
 class TranscriptAnalysisResult(BaseModel):
@@ -99,6 +109,14 @@ def build_analysis_system_prompt() -> str:
         "- context: Relevant technical context — libraries, tools, error messages, "
         "or configuration details that would help someone encountering this "
         "situation (1-3 sentences, optional)"
+    )
+    parts.append(
+        "- situation: A rich rationale that captures what was actually happening "
+        "in the conversation when this experience occurred. Include 1-3 short "
+        "verbatim excerpts from the transcript (use ASSISTANT: / USER: prefixes "
+        "and ellipses for elision) that show the problem appearing and the "
+        "resolution being reached. This will be used later to reconstruct the "
+        "original context when discussing why a play was created."
     )
     parts.append("")
     parts.append("If the conversation contains no extractable experiences, return an empty list.")

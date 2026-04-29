@@ -26,6 +26,7 @@ from pbook.activities.maintenance import (
     consolidate_entries_llm,
     fetch_all_entries_for_maintenance,
     prune_entries,
+    save_consolidated_entry,
 )
 from pbook.activities.retrieval import fetch_candidates, record_retrieval_event
 from pbook.activities.review import (
@@ -104,6 +105,7 @@ async def run_worker(address: str = "localhost:7233") -> None:
             fetch_all_entries_for_maintenance,
             prune_entries,
             consolidate_entries_llm,
+            save_consolidated_entry,
             record_ingested_session,
             record_ingested_session_error,
         ],

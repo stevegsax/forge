@@ -183,6 +183,66 @@ async def prune_entries(entry_ids: list[int]) -> int:
 
 
 @activity.defn
+async def save_consolidated_entry(input_json: str) -> int:
+    """Save a consolidated entry and re-parent the cluster's source rows.
+
+    Accepts JSON with keys:
+      - merged_entry: dict with title, content, tags, embedding (base64).
+      - cluster_ids: list[int] of the entry ids that produced the merge.
+
+    Inserts the merged entry directly (NO match-or-attach — the merged
+    entry is meant to replace the cluster, not match against it),
+    re-parents every `entry_sources` row from `cluster_ids` to the new
+    entry, and returns the new entry's id. The maintenance workflow is
+    responsible for pruning the original cluster ids after this call.
+    """
+    import base64
+
+    from pbook.models import EntryType, PlaybookEntry
+    from pbook.store import (
+        build_entry_dict,
+        get_db_path,
+        get_engine,
+        reparent_entry_sources,
+        run_migrations,
+        save_entry_returning_id,
+    )
+
+    data = json.loads(input_json)
+    merged = data["merged_entry"]
+    cluster_ids = list(data.get("cluster_ids", []))
+
+    db_path = get_db_path()
+    if db_path is None:
+        return 0
+
+    run_migrations(db_path)
+    engine = get_engine(db_path)
+
+    raw_embedding = merged.get("embedding") or ""
+    embedding = base64.b64decode(raw_embedding) if raw_embedding else None
+
+    entry = PlaybookEntry(
+        title=merged["title"],
+        content=merged["content"],
+        tags=merged.get("tags", []),
+        entry_type=EntryType.CURATED,
+        needs_review=False,
+        embedding=embedding,
+    )
+    new_id = save_entry_returning_id(engine, build_entry_dict(entry))
+
+    if cluster_ids:
+        reparent_entry_sources(
+            engine,
+            from_entry_ids=cluster_ids,
+            to_entry_id=new_id,
+        )
+
+    return new_id
+
+
+@activity.defn
 async def consolidate_entries_llm(entries_json: str) -> str:
     """Merge semantically similar entries using an LLM.
 

@@ -87,25 +87,27 @@ class MaintenanceWorkflow:
                 result_type=str,
             )
 
-            # Save the consolidated entry
-            # It's a curated entry by default as it was produced by LLM refinement
-            new_entry = {
-                "title": result.merged_title,
-                "content": result.merged_content,
-                "tags": result.merged_tags,
-                "entry_type": "curated",
-                "needs_review": False,
-                "embedding": embedding,
-            }
-            
+            # Save the consolidated entry directly (bypassing match-or-
+            # attach) and re-parent the cluster's entry_sources rows
+            # to the survivor before pruning the originals — otherwise
+            # the cascade would drop them.
+            cluster_ids = [e["id"] for e in cluster]
             await workflow.execute_activity(
-                "save_extracted_entries",
-                json.dumps({"entries": [new_entry], "project": "pbook-maintenance"}),
+                "save_consolidated_entry",
+                json.dumps({
+                    "merged_entry": {
+                        "title": result.merged_title,
+                        "content": result.merged_content,
+                        "tags": result.merged_tags,
+                        "embedding": embedding,
+                    },
+                    "cluster_ids": cluster_ids,
+                }),
                 start_to_close_timeout=_SAVE_TIMEOUT,
+                result_type=int,
             )
 
-            # Prune the originals
-            cluster_ids = [e["id"] for e in cluster]
+            # Prune the originals (entry_sources already re-parented above).
             await workflow.execute_activity(
                 "prune_entries",
                 cluster_ids,

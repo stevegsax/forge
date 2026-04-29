@@ -9,13 +9,17 @@ from pbook.store import (
     SESSION_STATUS_COMPLETED,
     SESSION_STATUS_ERROR,
     SESSION_STATUS_RUNNING,
+    SOURCE_DEDUP_THRESHOLD,
+    add_entry_source,
     build_entry_dict,
     check_duplicate,
     delete_entry,
+    find_similar_source_contexts,
     get_db_path,
     get_entries_by_tags,
     get_entry_by_id,
     get_ingested_session_ids,
+    list_entry_sources_for_entry,
     list_ingested_sessions,
     list_recent_entries,
     record_feedback,
@@ -23,7 +27,9 @@ from pbook.store import (
     record_ingested_session_error,
     record_ingested_session_started,
     record_retrieval,
+    reparent_entry_sources,
     save_entries,
+    save_entry_returning_id,
     update_entry,
 )
 from tests.conftest import setup_db
@@ -502,3 +508,139 @@ class TestGetIngestedSessionIds:
 
         ids = get_ingested_session_ids(engine)
         assert ids == {"done", "live"}
+
+
+# ---------------------------------------------------------------------------
+# entry_sources
+# ---------------------------------------------------------------------------
+
+
+def _seed_entries(engine, n: int = 2) -> list[int]:
+    """Insert N minimal entries and return their ids."""
+    ids: list[int] = []
+    for i in range(n):
+        entry = PlaybookEntry(
+            title=f"Entry {i}", content=f"Body {i}", tags=["lang:python"],
+        )
+        ids.append(save_entry_returning_id(engine, build_entry_dict(entry)))
+    return ids
+
+
+def _vec(*coords: float) -> bytes:
+    """Pack a small float32 vector (for similarity testing)."""
+    import struct
+    return struct.pack(f"{len(coords)}f", *coords)
+
+
+class TestSaveEntryReturningId:
+    def test_returns_new_id(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        entry = PlaybookEntry(title="X", content="Y", tags=[])
+        new_id = save_entry_returning_id(engine, build_entry_dict(entry))
+        assert isinstance(new_id, int) and new_id > 0
+        rows = list_recent_entries(engine)
+        assert any(r["id"] == new_id for r in rows)
+
+
+class TestAddEntrySource:
+    def test_inserts_and_returns_id(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        [eid] = _seed_entries(engine, 1)
+        sid = add_entry_source(
+            engine,
+            entry_id=eid,
+            session_id="sess",
+            project_name="proj",
+            experience_hash="h1",
+            source_context="why",
+            source_context_embedding=_vec(1.0, 0.0),
+        )
+        assert sid is not None and sid > 0
+
+    def test_unique_conflict_is_no_op(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        [eid] = _seed_entries(engine, 1)
+        first = add_entry_source(
+            engine, entry_id=eid, session_id="s", experience_hash="h",
+            source_context="a",
+        )
+        second = add_entry_source(
+            engine, entry_id=eid, session_id="s", experience_hash="h",
+            source_context="b",  # different content but same key triplet
+        )
+        assert first is not None
+        assert second is None
+        rows = list_entry_sources_for_entry(engine, eid)
+        assert len(rows) == 1
+        # The original content survives — DO NOTHING preserves the first row.
+        assert rows[0]["source_context"] == "a"
+
+
+class TestFindSimilarSourceContexts:
+    def test_threshold_excludes_dissimilar(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        [eid] = _seed_entries(engine, 1)
+        add_entry_source(
+            engine, entry_id=eid, session_id="s1", experience_hash="h1",
+            source_context_embedding=_vec(1.0, 0.0),
+        )
+        # Orthogonal vector → cosine 0 → below threshold.
+        out = find_similar_source_contexts(
+            engine, eid, _vec(0.0, 1.0), threshold=SOURCE_DEDUP_THRESHOLD,
+        )
+        assert out == []
+
+    def test_threshold_includes_near_identical(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        [eid] = _seed_entries(engine, 1)
+        add_entry_source(
+            engine, entry_id=eid, session_id="s1", experience_hash="h1",
+            source_context_embedding=_vec(1.0, 0.0),
+        )
+        out = find_similar_source_contexts(
+            engine, eid, _vec(1.0, 0.0001),
+        )
+        assert len(out) == 1
+
+
+class TestReparentEntrySources:
+    def test_moves_rows_to_target(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        a, b = _seed_entries(engine, 2)
+        add_entry_source(engine, entry_id=a, session_id="s1", experience_hash="h1")
+        add_entry_source(engine, entry_id=a, session_id="s2", experience_hash="h2")
+        moved = reparent_entry_sources(engine, from_entry_ids=[a], to_entry_id=b)
+        assert moved == 2
+        assert list_entry_sources_for_entry(engine, a) == []
+        rows_b = list_entry_sources_for_entry(engine, b)
+        assert {r["session_id"] for r in rows_b} == {"s1", "s2"}
+
+    def test_collision_drops_losing_row(self, tmp_path):
+        """If both source and target hold the same (session_id, hash),
+        the source's row is deleted instead of moved."""
+        engine, _ = setup_db(tmp_path)
+        a, b = _seed_entries(engine, 2)
+        add_entry_source(engine, entry_id=a, session_id="s", experience_hash="h",
+                         source_context="from-a")
+        add_entry_source(engine, entry_id=b, session_id="s", experience_hash="h",
+                         source_context="from-b")
+        reparent_entry_sources(engine, from_entry_ids=[a], to_entry_id=b)
+        rows_b = list_entry_sources_for_entry(engine, b)
+        assert len(rows_b) == 1
+        # The pre-existing target row survives; the colliding source row is deleted.
+        assert rows_b[0]["source_context"] == "from-b"
+
+    def test_empty_from_list_is_zero(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        [a] = _seed_entries(engine, 1)
+        assert reparent_entry_sources(engine, from_entry_ids=[], to_entry_id=a) == 0
+
+
+class TestEntrySourceCascade:
+    def test_deleting_entry_drops_its_sources(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        [eid] = _seed_entries(engine, 1)
+        add_entry_source(engine, entry_id=eid, session_id="s", experience_hash="h")
+        assert len(list_entry_sources_for_entry(engine, eid)) == 1
+        delete_entry(engine, eid)
+        assert list_entry_sources_for_entry(engine, eid) == []

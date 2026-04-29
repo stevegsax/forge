@@ -100,6 +100,40 @@ class Entry(Base):
     embedding: Mapped[bytes | None] = mapped_column(sa.LargeBinary, nullable=True)
 
 
+# Match-or-attach thresholds. See grill-me-sessions/entry-sources.grill.md
+# for the rationale (Branch H decisions).
+ENTRY_MATCH_THRESHOLD = 0.85
+SOURCE_DEDUP_THRESHOLD = 0.92
+
+
+class EntrySource(Base):
+    __tablename__ = "entry_sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    entry_id: Mapped[int] = mapped_column(
+        sa.Integer,
+        sa.ForeignKey("entries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    session_id: Mapped[str] = mapped_column(sa.Text, nullable=False, default="")
+    project_name: Mapped[str] = mapped_column(sa.Text, nullable=False, default="")
+    experience_hash: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    source_context: Mapped[str] = mapped_column(sa.Text, nullable=False, default="")
+    source_context_embedding: Mapped[bytes | None] = mapped_column(
+        sa.LargeBinary, nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime, default=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "entry_id", "session_id", "experience_hash",
+            name="uq_entry_sources_entry_session_hash",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
@@ -168,6 +202,9 @@ def get_engine(db_path: Path) -> Engine:
     def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
         cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
         cursor.execute("PRAGMA journal_mode=WAL")
+        # Enable FK enforcement so ON DELETE CASCADE actually fires —
+        # SQLite leaves it off by default.
+        cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
     return engine
@@ -197,6 +234,30 @@ def save_entries(engine: Engine, entries: list[dict]) -> None:
     logger.info("Saving %d entries", len(entries))
     with engine.begin() as conn:
         conn.execute(sa.insert(Entry.__table__), entries)
+
+
+def save_entry_returning_id(engine: Engine, entry: dict) -> int:
+    """Insert a single entry and return its newly-assigned id.
+
+    Used by the extraction match-or-attach path, which must know the
+    new entry's id in order to attach an entry_sources row to it.
+    """
+    with engine.begin() as conn:
+        result = conn.execute(sa.insert(Entry.__table__), [entry])
+        if result.inserted_primary_key:
+            return int(result.inserted_primary_key[0])
+        # Fallback: re-query by title (rare path; should not happen
+        # with SQLite + autoincrement).
+        row = conn.execute(
+            sa.select(Entry.__table__.c.id)
+            .where(Entry.__table__.c.title == entry["title"])
+            .order_by(Entry.__table__.c.id.desc())
+            .limit(1),
+        ).first()
+        if row is None:
+            msg = "save_entry_returning_id: could not resolve new entry id"
+            raise RuntimeError(msg)
+        return int(row[0])
 
 
 def get_entries_by_tags(
@@ -537,6 +598,140 @@ def find_semantic_duplicates(
 
     results.sort(key=lambda x: x["similarity"], reverse=True)
     return results[:limit]
+
+
+def add_entry_source(
+    engine: Engine,
+    *,
+    entry_id: int,
+    session_id: str = "",
+    project_name: str = "",
+    experience_hash: str | None = None,
+    source_context: str = "",
+    source_context_embedding: bytes | None = None,
+) -> int | None:
+    """Insert an entry_sources row.
+
+    Honors the UNIQUE (entry_id, session_id, experience_hash) constraint
+    via SQLite's ON CONFLICT DO NOTHING — a re-ingest of the same
+    experience for the same session is a no-op.
+
+    Returns the new row's id, or ``None`` if the insert was a no-op due
+    to the conflict.
+    """
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    t = EntrySource.__table__
+    stmt = sqlite_insert(t).values(
+        entry_id=entry_id,
+        session_id=session_id,
+        project_name=project_name,
+        experience_hash=experience_hash,
+        source_context=source_context,
+        source_context_embedding=source_context_embedding,
+    ).on_conflict_do_nothing(
+        index_elements=["entry_id", "session_id", "experience_hash"],
+    )
+    with engine.begin() as conn:
+        result = conn.execute(stmt)
+        # ``rowcount`` is 0 on the DO NOTHING path; ``inserted_primary_key``
+        # is unreliable across drivers when nothing was actually inserted.
+        if not result.rowcount:
+            return None
+        return result.inserted_primary_key[0] if result.inserted_primary_key else None
+
+
+def list_entry_sources_for_entry(engine: Engine, entry_id: int) -> list[dict]:
+    """Return all entry_sources rows for a given entry, oldest first."""
+    t = EntrySource.__table__
+    stmt = t.select().where(t.c.entry_id == entry_id).order_by(t.c.created_at)
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def find_similar_source_contexts(
+    engine: Engine,
+    entry_id: int,
+    query_embedding: bytes,
+    *,
+    threshold: float = SOURCE_DEDUP_THRESHOLD,
+) -> list[dict]:
+    """Find entry_sources rows for an entry whose source_context_embedding
+    is within ``threshold`` cosine similarity of the query embedding.
+
+    Used to skip writing a new source row when the same justification
+    is already recorded for this entry.
+    """
+    from pbook.embeddings import cosine_similarity
+
+    t = EntrySource.__table__
+    stmt = t.select().where(
+        t.c.entry_id == entry_id,
+        t.c.source_context_embedding.is_not(None),
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+
+    results: list[dict] = []
+    for row in rows:
+        sim = cosine_similarity(query_embedding, row["source_context_embedding"])
+        if sim >= threshold:
+            results.append({**dict(row), "similarity": sim})
+    results.sort(key=lambda r: r["similarity"], reverse=True)
+    return results
+
+
+def reparent_entry_sources(
+    engine: Engine,
+    *,
+    from_entry_ids: list[int],
+    to_entry_id: int,
+) -> int:
+    """Move all entry_sources rows from ``from_entry_ids`` to ``to_entry_id``.
+
+    Used by the consolidation flow when N entries merge into one — the
+    surviving entry inherits every source row from the merged-away
+    entries before they're deleted (cascade would otherwise drop them).
+
+    UNIQUE conflicts are resolved by deleting the losing row, since it
+    represents an already-recorded source on the surviving entry.
+
+    Returns the number of rows that ended up on the surviving entry.
+    """
+    if not from_entry_ids:
+        return 0
+
+    t = EntrySource.__table__
+    with engine.begin() as conn:
+        # First, delete any from-rows that would collide with existing
+        # to-rows after re-parenting (same session_id + experience_hash).
+        existing_keys = conn.execute(
+            sa.select(t.c.session_id, t.c.experience_hash).where(
+                t.c.entry_id == to_entry_id,
+            ),
+        ).all()
+        existing_set = {(s, h) for s, h in existing_keys}
+
+        from_rows = conn.execute(
+            sa.select(t.c.id, t.c.session_id, t.c.experience_hash).where(
+                t.c.entry_id.in_(from_entry_ids),
+            ),
+        ).all()
+
+        to_delete = [
+            row.id for row in from_rows
+            if (row.session_id, row.experience_hash) in existing_set
+        ]
+        if to_delete:
+            conn.execute(t.delete().where(t.c.id.in_(to_delete)))
+
+        result = conn.execute(
+            t.update()
+            .where(t.c.entry_id.in_(from_entry_ids))
+            .values(entry_id=to_entry_id),
+        )
+        return result.rowcount or 0
 
 
 def semantic_search(
