@@ -25,7 +25,11 @@ from pbook.activities.maintenance import (
     prune_entries,
     save_consolidated_entry,
 )
-from pbook.activities.retrieval import fetch_candidates, record_retrieval_event
+from pbook.activities.retrieval import (
+    compute_similarities,
+    fetch_candidates,
+    record_retrieval_event,
+)
 from pbook.activities.review import (
     fetch_existing_entries,
     find_duplicates,
@@ -108,6 +112,7 @@ async def run_worker(address: str = "localhost:7233") -> None:
         ],
         activities=[
             fetch_candidates,
+            compute_similarities,
             record_retrieval_event,
             fetch_entry_ids,
             export_single_entry,

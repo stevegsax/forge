@@ -113,29 +113,51 @@ def rank_and_pack(
     query_tags: list[str],
     mode: RetrievalMode,
     token_budget: int,
+    *,
+    similarities: dict[int, float] | None = None,
+    threshold: float = 0.0,
 ) -> tuple[list[dict], int]:
     """Rank candidates by score and pack within the token budget.
 
-    Returns ``(packed_entries, total_tokens)``.
+    When ``similarities`` is provided (i.e. the workflow ran a
+    free-text query), ranking is **semantic-primary**: entries are
+    ordered by cosine similarity, with the existing tag-overlap score
+    used as a tiebreaker. Candidates below ``threshold`` are dropped.
+
+    When ``similarities`` is ``None``, the legacy tag-overlap +
+    mode-boost score drives ordering (forge consumers keep working).
+
+    Returns ``(packed_entries, total_tokens)``. Each packed entry
+    carries a ``similarity`` key when it was scored against a query.
     """
     tag_set = set(query_tags)
 
-    scored = [
-        (score_entry(entry, tag_set, mode), entry)
-        for entry in candidates
-    ]
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored: list[tuple[float, float, dict]] = []
+    for entry in candidates:
+        tag_score = score_entry(entry, tag_set, mode)
+        if similarities is not None:
+            sim = similarities.get(entry.get("id", -1), 0.0)
+            if sim < threshold:
+                continue
+            scored.append((sim, tag_score, entry))
+        else:
+            scored.append((tag_score, 0.0, entry))
+
+    # Sort: primary descending, tag_score descending as tiebreaker.
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
     packed: list[dict] = []
     total_tokens = 0
 
-    for _score, entry in scored:
+    for primary, _, entry in scored:
         entry_text = f"{entry['title']}\n{entry['content']}"
         entry_tokens = _estimate_tokens(entry_text)
 
         if total_tokens + entry_tokens > token_budget:
             continue
 
+        if similarities is not None:
+            entry = {**entry, "similarity": primary}
         packed.append(entry)
         total_tokens += entry_tokens
 
@@ -149,6 +171,35 @@ def rank_and_pack(
 # ---------------------------------------------------------------------------
 # Temporal activities
 # ---------------------------------------------------------------------------
+
+
+@activity.defn
+async def compute_similarities(input_json: str) -> dict[str, float]:
+    """Compute cosine similarity between a query embedding and a list of candidates.
+
+    Accepts JSON with keys:
+      - query_embedding_b64: base64-encoded query embedding bytes.
+      - candidates: list of {id, embedding_b64} dicts.
+    Returns a dict mapping str(id) → similarity. (JSON serialization
+    requires string keys; the workflow re-keys to int.)
+
+    Lives in an activity because numpy operations inside a workflow
+    body trip Temporal's determinism sandbox.
+    """
+    import base64
+
+    from pbook.embeddings import cosine_similarity
+
+    data = json.loads(input_json)
+    query_embedding = base64.b64decode(data["query_embedding_b64"])
+    out: dict[str, float] = {}
+    for candidate in data["candidates"]:
+        emb_b64 = candidate.get("embedding_b64")
+        if not emb_b64:
+            continue
+        emb = base64.b64decode(emb_b64)
+        out[str(candidate["id"])] = cosine_similarity(query_embedding, emb)
+    return out
 
 
 @activity.defn
@@ -174,17 +225,35 @@ async def record_retrieval_event(entry_ids_json: str) -> None:
     logger.info("Recorded retrieval for %d entries", len(entry_ids))
 
 
+_MAX_QUERY_ONLY_CANDIDATES = 200
+
+
 @activity.defn
 async def fetch_candidates(input_json: str) -> list[dict]:
-    """Fetch candidate entries matching the query tags.
+    """Fetch candidate entries matching the query tags or query string.
 
-    Accepts JSON-serialized RetrievalInput, returns matching entries from store.
+    Accepts JSON-serialized RetrievalInput.
+
+    - Tags + (optional query) → existing tag fetch.
+    - Query-only (no tags) → broad pool of entries with embeddings,
+      capped at ``_MAX_QUERY_ONLY_CANDIDATES``. The semantic ranking
+      step that follows narrows it.
+    - Neither → empty (preserves prior contract for forge callers).
     """
     from pbook.models import RetrievalInput
-    from pbook.store import get_db_path, get_engine, get_entries_by_tags, run_migrations
+    from pbook.store import (
+        Entry,
+        get_db_path,
+        get_engine,
+        get_entries_by_tags,
+        run_migrations,
+    )
 
     inp = RetrievalInput.model_validate_json(input_json)
-    logger.info("Fetching candidates: tags=%s mode=%s", inp.tags, inp.mode)
+    logger.info(
+        "Fetching candidates: tags=%s mode=%s query=%r",
+        inp.tags, inp.mode, inp.query,
+    )
 
     db_path = get_db_path()
     if db_path is None:
@@ -193,11 +262,29 @@ async def fetch_candidates(input_json: str) -> list[dict]:
     run_migrations(db_path)
     engine = get_engine(db_path)
 
-    candidates = get_entries_by_tags(
-        engine,
-        inp.tags,
-        limit=100,  # Over-fetch for ranking
-        approved_only=inp.approved_only,
-    )
+    if inp.tags:
+        candidates = get_entries_by_tags(
+            engine,
+            inp.tags,
+            limit=100,  # Over-fetch for ranking
+            approved_only=inp.approved_only,
+            include_rejected=inp.include_rejected,
+        )
+    elif inp.query:
+        # Query-only: pull a broad pool of entries that have embeddings
+        # so the semantic step can rank them. Filtered by approval and
+        # rejection per the input.
+        t = Entry.__table__
+        stmt = t.select().where(t.c.embedding.is_not(None))
+        if inp.approved_only:
+            stmt = stmt.where(t.c.needs_review == False)  # noqa: E712
+        if not inp.include_rejected:
+            stmt = stmt.where(t.c.rejected == False)  # noqa: E712
+        stmt = stmt.order_by(t.c.created_at.desc()).limit(_MAX_QUERY_ONLY_CANDIDATES)
+        with engine.connect() as conn:
+            candidates = [dict(r) for r in conn.execute(stmt).mappings().all()]
+    else:
+        candidates = []
+
     logger.info("Found %d candidates", len(candidates))
     return candidates

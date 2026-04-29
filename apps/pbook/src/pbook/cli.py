@@ -449,6 +449,117 @@ def push(file_path: Path, temporal_address: str) -> None:
 
 
 @main.command()
+@click.argument("query", required=False, default="")
+@click.option("--tag", multiple=True, help="Filter by tag (repeatable, AND-merged with query).")
+@click.option(
+    "--threshold", type=float, default=0.0,
+    help="Drop matches below this cosine similarity (0.0 disables the cutoff).",
+)
+@click.option(
+    "--mode", type=click.Choice(["create", "fix"]), default="create",
+    help="Tiebreaker mode when ranking ties on similarity.",
+)
+@click.option("--limit", default=20, type=int, help="Cap on returned entries.")
+@click.option(
+    "--token-budget", default=5000, type=int,
+    help="Token budget for the packed result.",
+)
+@click.option(
+    "--include-rejected", is_flag=True,
+    help="Include entries that have been rejected.",
+)
+@click.option(
+    "--include-unapproved", is_flag=True,
+    help="Include entries flagged needs_review (default: only approved entries).",
+)
+@click.option(
+    "--temporal-address", default="localhost:7233",
+    help="Temporal server address.",
+)
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+def search(
+    query: str,
+    tag: tuple[str, ...],
+    threshold: float,
+    mode: str,
+    limit: int,
+    token_budget: int,
+    include_rejected: bool,
+    include_unapproved: bool,
+    temporal_address: str,
+    output_json: bool,
+) -> None:
+    """Search the playbook by tag and/or free-text query.
+
+    With a free-text QUERY, results are ranked by semantic similarity
+    against entry content. Combine with --tag to AND-merge tag filtering
+    with semantic ranking. Submits a RetrievalWorkflow on
+    pbook-task-queue — the worker must be running.
+    """
+    import asyncio
+
+    if not query and not tag:
+        _emit_error(
+            "validation_error",
+            "Provide a QUERY argument or at least one --tag.",
+            json_mode=output_json,
+        )
+
+    async def _submit():
+        from temporalio.client import Client
+
+        from pbook.models import RetrievalInput, RetrievalMode
+        from pbook.worker import PBOOK_TASK_QUEUE
+        from pbook.workflows.retrieval import RetrievalWorkflow
+
+        client = await Client.connect(temporal_address)
+        retrieval_mode = RetrievalMode(mode)
+        return await client.execute_workflow(
+            RetrievalWorkflow.run,
+            RetrievalInput(
+                tags=list(tag),
+                mode=retrieval_mode,
+                token_budget=token_budget,
+                approved_only=not include_unapproved,
+                query=query,
+                threshold=threshold,
+                include_rejected=include_rejected,
+            ),
+            id=f"pbook-search-{int(time.time())}",
+            task_queue=PBOOK_TASK_QUEUE,
+        )
+
+    try:
+        result = asyncio.run(_submit())
+    except Exception as exc:
+        _emit_error(
+            "worker_unavailable",
+            f"RetrievalWorkflow failed: {exc}",
+            json_mode=output_json,
+        )
+
+    entries = result.entries[:limit] if limit else result.entries
+
+    if output_json:
+        _emit_json({
+            "entries": [_reshape_entry(e) for e in entries],
+            "total_candidates": result.total_candidates,
+            "token_count": result.token_count,
+        })
+        return
+
+    if not entries:
+        click.echo("No matches found.")
+        return
+
+    for entry in entries:
+        sim = entry.get("similarity")
+        prefix = f"[sim={sim:.3f}] " if sim is not None else ""
+        click.echo(f"{prefix}{_format_entry(entry)}")
+        click.echo("")
+
+
+@main.command()
 @click.option("--limit", default=20, help="Maximum entries to show.")
 def review(limit: int) -> None:
     """List entries needing review."""

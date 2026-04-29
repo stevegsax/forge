@@ -61,13 +61,21 @@ class RetrievalMode(StrEnum):
 
 
 class RetrievalInput(BaseModel):
-    """Input for the retrieval workflow."""
+    """Input for the retrieval workflow.
+
+    When ``query`` is non-empty, the workflow computes the query embedding
+    and ranks candidates by cosine similarity (semantic-primary). When
+    empty, ranking falls back to tag overlap + mode boost.
+    """
 
     tags: list[str] = Field(default_factory=list)
     mode: RetrievalMode = RetrievalMode.CREATE
     token_budget: int = 5000
     project: str = ""
     approved_only: bool = False
+    query: str = ""
+    threshold: float = 0.0
+    include_rejected: bool = False
 
 
 class RetrievalResult(BaseModel):

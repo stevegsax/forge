@@ -9,6 +9,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from pbook.activities.retrieval import (
+    compute_similarities,
     fetch_candidates,
     rank_and_pack,
     record_retrieval_event,
@@ -190,13 +191,65 @@ class TestRankAndPack:
         assert packed == []
         assert tokens == 0
 
+    def test_semantic_primary_when_similarities_provided(self):
+        """When similarities are passed in, ordering is similarity-first."""
+        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        candidates = [
+            {"id": 1, "title": "low-sim", "content": "c", **base},
+            {"id": 2, "title": "high-sim", "content": "c", **base},
+        ]
+        # Even though both have identical tag overlap, the one with
+        # higher similarity must come first.
+        packed, _ = rank_and_pack(
+            candidates, ["lang:python"], RetrievalMode.CREATE, 5000,
+            similarities={1: 0.5, 2: 0.95},
+        )
+        assert packed[0]["id"] == 2
+        assert packed[0]["similarity"] == 0.95
+
+    def test_threshold_filters_low_similarity(self):
+        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        candidates = [
+            {"id": 1, "title": "below", "content": "c", **base},
+            {"id": 2, "title": "above", "content": "c", **base},
+        ]
+        packed, _ = rank_and_pack(
+            candidates, [], RetrievalMode.CREATE, 5000,
+            similarities={1: 0.4, 2: 0.9},
+            threshold=0.6,
+        )
+        assert len(packed) == 1
+        assert packed[0]["id"] == 2
+
+    def test_tag_only_unchanged_when_no_similarities(self):
+        """Regression: existing forge consumers pass no similarities and
+        must see the same scoring behavior as before this change."""
+        candidates = [
+            {
+                "id": 1, "title": "Low", "content": "c",
+                "tags_json": '["lang:python"]', "entry_type": "curated",
+            },
+            {
+                "id": 2, "title": "High", "content": "c",
+                "tags_json": '["lang:python", "lib:sqlalchemy"]',
+                "entry_type": "curated",
+            },
+        ]
+        packed, _ = rank_and_pack(
+            candidates, ["lang:python", "lib:sqlalchemy"],
+            RetrievalMode.CREATE, 5000,
+        )
+        assert packed[0]["id"] == 2
+        # No similarity attached when ranking was tag-only.
+        assert "similarity" not in packed[0]
+
 
 # ---------------------------------------------------------------------------
 # RetrievalWorkflow
 # ---------------------------------------------------------------------------
 
 
-_WORKFLOW_ACTIVITIES = [fetch_candidates, record_retrieval_event]
+_WORKFLOW_ACTIVITIES = [fetch_candidates, compute_similarities, record_retrieval_event]
 
 
 class TestRetrievalWorkflow:
@@ -307,3 +360,67 @@ class TestRetrievalWorkflow:
         entry_id = result.entries[0]["id"]
         entry = get_entry_by_id(engine, entry_id)
         assert entry["retrieval_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_retrieval_with_query_uses_semantic_ranking(
+        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """When `query` is non-empty, the workflow embeds it via llm_embed
+        and ranks candidates by cosine similarity. Mocking llm_embed lets
+        us test the wiring without needing OpenAI."""
+        import base64
+        import struct
+
+        from temporalio import activity
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+
+        # Two entries with deliberately different stored embeddings.
+        # We'll mock the query embedding so it aligns with the second.
+        emb_a = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        emb_b = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
+        from pbook.models import EntryType, PlaybookEntry
+
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="A entry", content="content A",
+                tags=["lang:python"], entry_type=EntryType.CURATED,
+                embedding=emb_a,
+            )),
+            build_entry_dict(PlaybookEntry(
+                title="B entry", content="content B",
+                tags=["lang:python"], entry_type=EntryType.CURATED,
+                embedding=emb_b,
+            )),
+        ])
+
+        # Query embedding aligned with B
+        query_b64 = base64.b64encode(emb_b).decode("ascii")
+
+        @activity.defn(name="llm_embed")
+        async def mock_embed(_text: str) -> str:
+            return query_b64
+
+        async with Worker(
+            env.client,
+            task_queue=PBOOK_TASK_QUEUE,
+            workflows=[RetrievalWorkflow],
+            activities=[*_WORKFLOW_ACTIVITIES, mock_embed],
+        ):
+            result = await env.client.execute_workflow(
+                RetrievalWorkflow.run,
+                RetrievalInput(
+                    tags=["lang:python"],
+                    query="anything",
+                    token_budget=5000,
+                ),
+                id="test-retrieval-query",
+                task_queue=PBOOK_TASK_QUEUE,
+            )
+
+        assert len(result.entries) == 2
+        # Semantic-primary: B (similarity 1.0) ranks above A (0.0).
+        assert result.entries[0]["title"] == "B entry"
+        assert result.entries[0]["similarity"] > 0.99
+        assert result.entries[1]["title"] == "A entry"
