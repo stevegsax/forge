@@ -17,6 +17,25 @@ from temporalio.worker.workflow_sandbox import (
     SandboxRestrictions,
 )
 
+from pbook.activities.cli_ops import (
+    add_entry_activity,
+    approve_entry_activity,
+    check_duplicate_activity,
+    filter_already_ingested_activity,
+    get_entry_activity,
+    get_session_text_activity,
+    list_entries_activity,
+    list_sessions_activity,
+    list_sources_activity,
+    list_tags_activity,
+    prune_activity,
+    record_feedback_activity,
+    record_started_sessions_activity,
+    reject_entry_activity,
+    review_queue_activity,
+    update_entry_activity,
+)
+
 # Import activities
 from pbook.activities.export import export_single_entry, fetch_entry_ids
 from pbook.activities.extraction import (
@@ -47,6 +66,24 @@ from pbook.workflow_steps import (
 )
 
 # Import workflows
+from pbook.workflows.cli_ops import (
+    AddEntryWorkflow,
+    ApproveEntryWorkflow,
+    CheckDuplicateWorkflow,
+    FilterAlreadyIngestedWorkflow,
+    GetEntryWorkflow,
+    GetSessionTextWorkflow,
+    ListEntriesWorkflow,
+    ListSessionsWorkflow,
+    ListSourcesWorkflow,
+    ListTagsWorkflow,
+    PruneWorkflow,
+    RecordFeedbackWorkflow,
+    RecordStartedSessionsWorkflow,
+    RejectEntryWorkflow,
+    ReviewQueueWorkflow,
+    UpdateEntryWorkflow,
+)
 from pbook.workflows.export import ExportWorkflow
 from pbook.workflows.extraction import ExtractionWorkflow
 from pbook.workflows.maintenance import MaintenanceWorkflow
@@ -116,11 +153,29 @@ async def run_worker(address: str = "localhost:7233") -> None:
         task_queue=PBOOK_TASK_QUEUE,
         workflow_runner=runner,
         workflows=[
+            # Retrieval / extraction / manual / maintenance / export
             RetrievalWorkflow,
             ExportWorkflow,
             ExtractionWorkflow,
             ManualEntryWorkflow,
             MaintenanceWorkflow,
+            # CLI-op workflows (every direct-DB CLI command except `migrate`)
+            GetEntryWorkflow,
+            ListEntriesWorkflow,
+            ListSourcesWorkflow,
+            ListTagsWorkflow,
+            ReviewQueueWorkflow,
+            ListSessionsWorkflow,
+            GetSessionTextWorkflow,
+            CheckDuplicateWorkflow,
+            AddEntryWorkflow,
+            ApproveEntryWorkflow,
+            RejectEntryWorkflow,
+            UpdateEntryWorkflow,
+            RecordFeedbackWorkflow,
+            PruneWorkflow,
+            FilterAlreadyIngestedWorkflow,
+            RecordStartedSessionsWorkflow,
         ],
         activities=[
             fetch_candidates,
@@ -141,6 +196,23 @@ async def run_worker(address: str = "localhost:7233") -> None:
             # Generic LLM workflow steps used by all workflows in this worker.
             llm_chat,
             llm_embed,
+            # CLI-op activities — one per direct-DB command.
+            get_entry_activity,
+            list_entries_activity,
+            list_sources_activity,
+            list_tags_activity,
+            review_queue_activity,
+            list_sessions_activity,
+            get_session_text_activity,
+            check_duplicate_activity,
+            add_entry_activity,
+            approve_entry_activity,
+            reject_entry_activity,
+            update_entry_activity,
+            record_feedback_activity,
+            prune_activity,
+            filter_already_ingested_activity,
+            record_started_sessions_activity,
         ],
         graceful_shutdown_timeout=timedelta(seconds=30),
     )

@@ -157,3 +157,204 @@ def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
         CapabilityTier.SUMMARIZATION: config.summarization,
         CapabilityTier.CLASSIFICATION: config.classification,
     }[tier]
+
+
+# ---------------------------------------------------------------------------
+# CLI-op workflow inputs/outputs
+#
+# Every CLI command that touches the DB submits a workflow; the worker
+# is the only process that opens the DB file. The worker's
+# PBOOK_DB_PATH is the single source of truth for which DB is in play.
+# `pbook migrate` is the lone exception (schema setup must precede the
+# worker's connection).
+# ---------------------------------------------------------------------------
+
+
+class GetEntryInput(BaseModel):
+    """Input to ``GetEntryWorkflow``."""
+
+    entry_id: int
+
+
+class ListEntriesInput(BaseModel):
+    """Input to ``ListEntriesWorkflow``.
+
+    All filters are optional; ``needs_review_only`` keeps the queue-style
+    filter from the original CLI ``list --needs-review`` flag.
+    """
+
+    tags: list[str] = Field(default_factory=list)
+    entry_type: str | None = None
+    project: str | None = None
+    needs_review_only: bool = False
+    include_rejected: bool = False
+    limit: int = 20
+
+
+class ListSourcesInput(BaseModel):
+    """Input to ``ListSourcesWorkflow``."""
+
+    entry_id: int
+
+
+class ListTagsInput(BaseModel):
+    """Input to ``ListTagsWorkflow`` — no fields, present for symmetry."""
+
+
+class ReviewQueueInput(BaseModel):
+    """Input to ``ReviewQueueWorkflow``."""
+
+    limit: int = 20
+    by_experience: bool = False
+
+
+class ReviewQueueResult(BaseModel):
+    """Output from ``ReviewQueueWorkflow``.
+
+    ``by_experience=False``: entries populated, clusters/singletons empty.
+    ``by_experience=True``: clusters/singletons populated, entries empty.
+    """
+
+    entries: list[dict] = Field(default_factory=list)
+    clusters: list[dict] = Field(default_factory=list)
+    singletons: list[dict] = Field(default_factory=list)
+
+
+class ListSessionsInput(BaseModel):
+    """Input to ``ListSessionsWorkflow``."""
+
+    project: str | None = None
+    limit: int = 20
+
+
+class GetSessionTextInput(BaseModel):
+    """Input to ``GetSessionTextWorkflow``.
+
+    The activity reads the JSONL transcript from disk inside the worker
+    process. ``path`` overrides default resolution (which scans
+    ``~/.claude/projects/``); ``raw=True`` returns the JSONL bytes
+    verbatim instead of the rendered USER:/ASSISTANT: format.
+    """
+
+    session_id: str
+    path: str | None = None
+    raw: bool = False
+
+
+class GetSessionTextResult(BaseModel):
+    """Output from ``GetSessionTextWorkflow``."""
+
+    text: str
+    project_name: str = ""
+
+
+class AddEntryInput(BaseModel):
+    """Input to ``AddEntryWorkflow``."""
+
+    entry: PlaybookEntry
+    needs_review: bool = False
+
+
+class AddEntryResult(BaseModel):
+    """Output from ``AddEntryWorkflow``."""
+
+    id: int
+    title: str
+    needs_review: bool
+    rejected: bool = False
+
+
+class ApproveEntryInput(BaseModel):
+    """Input to ``ApproveEntryWorkflow``."""
+
+    entry_id: int
+
+
+class RejectEntryInput(BaseModel):
+    """Input to ``RejectEntryWorkflow``."""
+
+    entry_id: int
+    reason: str | None = None
+
+
+class UpdateEntryInput(BaseModel):
+    """Input to ``UpdateEntryWorkflow``.
+
+    ``updates`` is a column-name → value dict; the activity validates
+    against the entries table schema.
+    """
+
+    entry_id: int
+    updates: dict = Field(default_factory=dict)
+
+
+class RecordFeedbackInput(BaseModel):
+    """Input to ``RecordFeedbackWorkflow``."""
+
+    entry_id: int
+    helpful: bool
+    context: str = ""
+
+
+class CheckDuplicateInput(BaseModel):
+    """Input to ``CheckDuplicateWorkflow``."""
+
+    title: str
+    tags: list[str] | None = None
+
+
+class PruneInput(BaseModel):
+    """Input to ``PruneWorkflow``.
+
+    ``apply=False`` (dry-run) returns candidates without changing state.
+    ``apply=True`` marks each candidate for review with the
+    ``pattern:prune-candidate`` tag and ``needs_review=True``.
+    """
+
+    min_retrievals: int = 5
+    max_harmful_ratio: float = 0.5
+    max_stale_days: int = 90
+    apply: bool = False
+
+
+class PruneResult(BaseModel):
+    """Output from ``PruneWorkflow``."""
+
+    candidates: list[dict] = Field(default_factory=list)
+    applied_count: int = 0
+
+
+class EntryStatusResult(BaseModel):
+    """Common output for the simple write workflows (approve/reject/update).
+
+    Mirrors what the CLI used to emit before the refactor so existing
+    JSON consumers keep working.
+    """
+
+    id: int
+    title: str
+    approved: bool
+    needs_review: bool = False
+    rejected: bool = False
+    rejection_reason: str | None = None
+
+
+class FilterAlreadyIngestedInput(BaseModel):
+    """Input to ``FilterAlreadyIngestedWorkflow``."""
+
+    session_ids: list[str] = Field(default_factory=list)
+
+
+class IngestedSessionStub(BaseModel):
+    """One session payload for ``RecordStartedSessionsWorkflow``."""
+
+    session_id: str
+    project_name: str
+
+
+class RecordStartedSessionsInput(BaseModel):
+    """Input to ``RecordStartedSessionsWorkflow``."""
+
+    sessions: list[IngestedSessionStub] = Field(default_factory=list)
+    workflow_id: str
+    run_id: str

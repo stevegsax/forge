@@ -39,6 +39,61 @@ def _dispose_store_engines(monkeypatch: pytest.MonkeyPatch):
         engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _bypass_cli_workflows(monkeypatch: pytest.MonkeyPatch):
+    """Make ``pbook.cli._execute_workflow`` dispatch to the activity in-process.
+
+    Production CLI commands submit workflows to a Temporal server. Tests
+    don't want to spin one up; the activity-level path runs the same DB
+    code, so behavior is faithful. This fixture replaces the workflow
+    submission with a direct activity call keyed off the workflow's
+    ``.run`` method.
+
+    Workflows whose ``.run`` isn't in the map (e.g. RetrievalWorkflow,
+    which has multiple activities) fall through to the real
+    ``_execute_workflow`` and tests that need them spin up a real
+    ``WorkflowEnvironment``.
+    """
+    import asyncio
+
+    from pbook import cli
+    from pbook.activities import cli_ops as activities
+    from pbook.workflows import cli_ops as workflows
+
+    mapping = {
+        workflows.GetEntryWorkflow.run: activities.get_entry_activity,
+        workflows.ListEntriesWorkflow.run: activities.list_entries_activity,
+        workflows.ListSourcesWorkflow.run: activities.list_sources_activity,
+        workflows.ListTagsWorkflow.run: activities.list_tags_activity,
+        workflows.ReviewQueueWorkflow.run: activities.review_queue_activity,
+        workflows.ListSessionsWorkflow.run: activities.list_sessions_activity,
+        workflows.GetSessionTextWorkflow.run: activities.get_session_text_activity,
+        workflows.CheckDuplicateWorkflow.run: activities.check_duplicate_activity,
+        workflows.AddEntryWorkflow.run: activities.add_entry_activity,
+        workflows.ApproveEntryWorkflow.run: activities.approve_entry_activity,
+        workflows.RejectEntryWorkflow.run: activities.reject_entry_activity,
+        workflows.UpdateEntryWorkflow.run: activities.update_entry_activity,
+        workflows.RecordFeedbackWorkflow.run: activities.record_feedback_activity,
+        workflows.PruneWorkflow.run: activities.prune_activity,
+        workflows.FilterAlreadyIngestedWorkflow.run: activities.filter_already_ingested_activity,
+        workflows.RecordStartedSessionsWorkflow.run: activities.record_started_sessions_activity,
+    }
+
+    real_execute = cli._execute_workflow
+
+    def bypassed(workflow_fn, arg, *, id_prefix="pbook", temporal_address=""):
+        activity_fn = mapping.get(workflow_fn)
+        if activity_fn is None:
+            return real_execute(
+                workflow_fn, arg,
+                id_prefix=id_prefix, temporal_address=temporal_address,
+            )
+        payload = arg.model_dump() if hasattr(arg, "model_dump") else arg
+        return asyncio.run(activity_fn(payload))
+
+    monkeypatch.setattr(cli, "_execute_workflow", bypassed)
+
+
 def setup_db(tmp_path: Path):
     """Create a test database and return (engine, db_path)."""
     db_path = tmp_path / "test.db"

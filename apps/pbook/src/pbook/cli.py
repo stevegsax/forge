@@ -1,15 +1,24 @@
 """Click CLI for the playbook service.
 
-Thin wrapper over store functions.  Each command resolves the database
-path, runs migrations if needed, and delegates to a store function.
+Thin Temporal client. Every direct-DB command (except ``migrate``)
+submits a workflow that runs against the worker's configured DB. The
+worker process is the only one that opens the DB file — its
+``PBOOK_DB_PATH`` is the single source of truth for which DB any
+operation hits.
+
+``migrate`` and ``skill-prompt`` are the lone exceptions: ``migrate``
+must precede the worker (schema bootstrap), and ``skill-prompt`` is
+pure static config with no DB access.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,35 +28,44 @@ if TYPE_CHECKING:
     from typing import NoReturn
 
 from pbook.models import PlaybookEntry
-from pbook.store import (
-    build_entry_dict,
-    check_duplicate,
-    get_db_path,
-    get_engine,
-    get_entry_by_id,
-    list_recent_entries,
-    record_feedback,
-    run_migrations,
-    update_entry,
-)
 from pbook.tags import validate_tags
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_db() -> tuple:
-    """Resolve the database path, run migrations, and return (engine, db_path).
+_TEMPORAL_ADDRESS = "localhost:7233"
+_PBOOK_TASK_QUEUE = "pbook-task-queue"
 
-    Exits with an error if the store is disabled.
+
+def _execute_workflow(
+    workflow_fn,
+    arg,
+    *,
+    id_prefix: str = "pbook",
+    temporal_address: str = _TEMPORAL_ADDRESS,
+):
+    """Submit a pbook workflow and wait for the result.
+
+    All direct-DB commands route through here. The worker is the only
+    process that opens the DB; the CLI is purely a Temporal client. If
+    the worker isn't running, the connect/submit will fail and the
+    caller surfaces the error.
     """
-    db_path = get_db_path()
-    if db_path is None:
-        click.echo("Error: Store is disabled (PBOOK_DB_PATH is empty).", err=True)
-        sys.exit(1)
+    from temporalio.client import Client
+    from temporalio.contrib.pydantic import pydantic_data_converter
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
-    return engine, db_path
+    async def _submit():
+        client = await Client.connect(
+            temporal_address, data_converter=pydantic_data_converter,
+        )
+        return await client.execute_workflow(
+            workflow_fn,
+            arg,
+            id=f"{id_prefix}-{int(time.time())}-{uuid.uuid4().hex[:8]}",
+            task_queue=_PBOOK_TASK_QUEUE,
+        )
+
+    return asyncio.run(_submit())
 
 
 # ---------------------------------------------------------------------------
@@ -195,25 +213,21 @@ def list_entries(
     output_json: bool,
 ) -> None:
     """List playbook entries."""
-    engine, _ = _resolve_db()
+    from pbook.models import ListEntriesInput
+    from pbook.workflows.cli_ops import ListEntriesWorkflow
 
-    if tag:
-        from pbook.store import get_entries_by_tags
-
-        entries = get_entries_by_tags(
-            engine, list(tag), limit=limit, include_rejected=include_rejected,
-        )
-    else:
-        entries = list_recent_entries(
-            engine, limit=limit, include_rejected=include_rejected,
-        )
-
-    if entry_type:
-        entries = [e for e in entries if e.get("entry_type") == entry_type]
-    if project:
-        entries = [e for e in entries if e.get("source_project") == project]
-    if needs_review:
-        entries = [e for e in entries if e.get("needs_review")]
+    entries = _execute_workflow(
+        ListEntriesWorkflow.run,
+        ListEntriesInput(
+            tags=list(tag),
+            entry_type=entry_type or None,
+            project=project or None,
+            needs_review_only=needs_review,
+            include_rejected=include_rejected,
+            limit=limit,
+        ),
+        id_prefix="pbook-list",
+    )
 
     if not entries:
         if output_json:
@@ -235,8 +249,13 @@ def list_entries(
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 def get(entry_id: int, output_json: bool) -> None:
     """Get a single entry by ID."""
-    engine, _ = _resolve_db()
-    entry = get_entry_by_id(engine, entry_id)
+    from pbook.models import GetEntryInput
+    from pbook.workflows.cli_ops import GetEntryWorkflow
+
+    entry = _execute_workflow(
+        GetEntryWorkflow.run, GetEntryInput(entry_id=entry_id),
+        id_prefix="pbook-get",
+    )
 
     if entry is None:
         _emit_error(
@@ -293,31 +312,39 @@ def add(
             "validation_error", f"Validation error: {exc}", json_mode=output_json,
         )
 
+    # Tag pre-validation in the CLI gives a fast, friendly error before
+    # we round-trip through Temporal. The activity validates again as
+    # belt-and-suspenders.
     tag_errors = validate_tags(entry.tags)
     if tag_errors:
         _emit_error(
             "tag_invalid", "; ".join(tag_errors), json_mode=output_json,
         )
 
-    if needs_review:
-        entry = entry.model_copy(update={"needs_review": True})
+    from pbook.models import AddEntryInput
+    from pbook.workflows.cli_ops import AddEntryWorkflow
 
-    engine, _ = _resolve_db()
-    from pbook.store import save_entry_returning_id
+    result = _execute_workflow(
+        AddEntryWorkflow.run,
+        AddEntryInput(entry=entry, needs_review=needs_review),
+        id_prefix="pbook-add",
+    )
 
-    entry_dict = build_entry_dict(entry)
-    new_id = save_entry_returning_id(engine, entry_dict)
+    if result.get("error") == "tag_invalid":
+        _emit_error(
+            "tag_invalid", "; ".join(result.get("messages", [])), json_mode=output_json,
+        )
 
     if output_json:
         _emit_json({
-            "id": new_id,
-            "title": entry.title,
-            "approved": not entry.needs_review,
-            "needs_review": entry.needs_review,
-            "rejected": False,
+            "id": result["id"],
+            "title": result["title"],
+            "approved": not result["needs_review"],
+            "needs_review": result["needs_review"],
+            "rejected": result["rejected"],
         })
     else:
-        click.echo(f"Added entry {new_id}: {entry.title}")
+        click.echo(f"Added entry {result['id']}: {result['title']}")
 
 
 @main.command()
@@ -329,11 +356,8 @@ def add(
 )
 def update(entry_id: int, file_path: Path) -> None:
     """Update an entry by ID."""
-    engine, _ = _resolve_db()
-    existing = get_entry_by_id(engine, entry_id)
-    if existing is None:
-        click.echo(f"Entry {entry_id} not found.", err=True)
-        sys.exit(1)
+    from pbook.models import UpdateEntryInput
+    from pbook.workflows.cli_ops import UpdateEntryWorkflow
 
     updates = json.loads(file_path.read_text())
 
@@ -345,7 +369,14 @@ def update(entry_id: int, file_path: Path) -> None:
             sys.exit(1)
         updates["tags_json"] = json.dumps(updates.pop("tags"))
 
-    update_entry(engine, entry_id, updates)
+    result = _execute_workflow(
+        UpdateEntryWorkflow.run,
+        UpdateEntryInput(entry_id=entry_id, updates=updates),
+        id_prefix="pbook-update",
+    )
+    if result.get("error") == "not_found":
+        click.echo(f"Entry {entry_id} not found.", err=True)
+        sys.exit(1)
     click.echo(f"Updated entry {entry_id}.")
 
 
@@ -354,26 +385,22 @@ def update(entry_id: int, file_path: Path) -> None:
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 def approve(entry_id: int, output_json: bool) -> None:
     """Clear the needs-review flag on an entry."""
-    engine, _ = _resolve_db()
-    existing = get_entry_by_id(engine, entry_id)
-    if existing is None:
+    from pbook.models import ApproveEntryInput
+    from pbook.workflows.cli_ops import ApproveEntryWorkflow
+
+    result = _execute_workflow(
+        ApproveEntryWorkflow.run, ApproveEntryInput(entry_id=entry_id),
+        id_prefix="pbook-approve",
+    )
+    if result.get("error") == "not_found":
         _emit_error(
             "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
         )
 
-    update_entry(engine, entry_id, {"needs_review": False})
-
     if output_json:
-        _emit_json({
-            "id": entry_id,
-            "title": existing["title"],
-            "approved": True,
-            "needs_review": False,
-            "rejected": bool(existing.get("rejected", False)),
-            "rejection_reason": existing.get("rejection_reason"),
-        })
+        _emit_json(result)
     else:
-        click.echo(f"Approved entry {entry_id}: {existing['title']}")
+        click.echo(f"Approved entry {entry_id}: {result['title']}")
 
 
 @main.command()
@@ -382,29 +409,25 @@ def approve(entry_id: int, output_json: bool) -> None:
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 def reject(entry_id: int, reason: str, output_json: bool) -> None:
     """Mark an entry as rejected (soft-mark; the row is preserved for audit)."""
-    from pbook.store import mark_rejected
+    from pbook.models import RejectEntryInput
+    from pbook.workflows.cli_ops import RejectEntryWorkflow
 
-    engine, _ = _resolve_db()
-    existing = get_entry_by_id(engine, entry_id)
-    if existing is None:
+    reason_value: str | None = reason if reason else None
+    result = _execute_workflow(
+        RejectEntryWorkflow.run,
+        RejectEntryInput(entry_id=entry_id, reason=reason_value),
+        id_prefix="pbook-reject",
+    )
+    if result.get("error") == "not_found":
         _emit_error(
             "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
         )
 
-    reason_value: str | None = reason if reason else None
-    mark_rejected(engine, entry_id, reason=reason_value)
-
     if output_json:
-        _emit_json({
-            "id": entry_id,
-            "title": existing["title"],
-            "approved": False,
-            "rejected": True,
-            "rejection_reason": reason_value,
-        })
+        _emit_json(result)
     else:
         suffix = f" — {reason}" if reason else ""
-        click.echo(f"Rejected entry {entry_id}: {existing['title']}{suffix}")
+        click.echo(f"Rejected entry {entry_id}: {result['title']}{suffix}")
 
 
 @main.command(name="check-duplicate")
@@ -412,8 +435,14 @@ def reject(entry_id: int, reason: str, output_json: bool) -> None:
 @click.option("--tag", multiple=True, help="Tags to refine duplicate search.")
 def check_duplicate_cmd(title: str, tag: tuple[str, ...]) -> None:
     """Check for duplicate entries matching a title."""
-    engine, _ = _resolve_db()
-    matches = check_duplicate(engine, title, tags=list(tag) if tag else None)
+    from pbook.models import CheckDuplicateInput
+    from pbook.workflows.cli_ops import CheckDuplicateWorkflow
+
+    matches = _execute_workflow(
+        CheckDuplicateWorkflow.run,
+        CheckDuplicateInput(title=title, tags=list(tag) if tag else None),
+        id_prefix="pbook-check-dup",
+    )
 
     if not matches:
         click.echo("No duplicates found.")
@@ -602,34 +631,14 @@ def search(
 def _group_review_by_experience(
     entries_with_sources: list[dict],
 ) -> tuple[list[tuple[str, list[dict]]], list[dict]]:
-    """Cluster review-queue entries by their primary experience_hash.
-
-    Each entry's first source row's ``experience_hash`` is the cluster
-    key. Hashes mapped to >= 2 entries become clusters; everything else
-    is a singleton. Pure function; no I/O.
-
-    Designed to surface over-extraction: when a single
-    AnalyzedExperience produces multiple near-duplicate entries, the
-    cluster makes them comparable at a glance.
+    """Backwards-compat thin wrapper: the canonical implementation now
+    lives in ``pbook.activities.cli_ops`` (so the activity can call it
+    inside the worker process). Kept here so existing tests keep
+    importing it from ``pbook.cli`` without churn.
     """
-    by_hash: dict[str, list[dict]] = {}
-    no_hash: list[dict] = []
-    for entry in entries_with_sources:
-        sources = entry.get("sources", [])
-        primary = sources[0].get("experience_hash") if sources else None
-        if primary is None:
-            no_hash.append(entry)
-        else:
-            by_hash.setdefault(primary, []).append(entry)
+    from pbook.activities.cli_ops import group_review_by_experience
 
-    clusters: list[tuple[str, list[dict]]] = []
-    singletons: list[dict] = list(no_hash)
-    for h, ents in sorted(by_hash.items()):
-        if len(ents) >= 2:
-            clusters.append((h, ents))
-        else:
-            singletons.extend(ents)
-    return clusters, singletons
+    return group_review_by_experience(entries_with_sources)
 
 
 @main.command()
@@ -641,29 +650,30 @@ def _group_review_by_experience(
 )
 def review(limit: int, output_json: bool, by_experience: bool) -> None:
     """List entries needing review."""
-    engine, _ = _resolve_db()
+    from pbook.models import ReviewQueueInput
+    from pbook.workflows.cli_ops import ReviewQueueWorkflow
+
+    result = _execute_workflow(
+        ReviewQueueWorkflow.run,
+        ReviewQueueInput(limit=limit, by_experience=by_experience),
+        id_prefix="pbook-review",
+    )
 
     if by_experience:
-        from pbook.store import list_review_queue_with_sources
-
-        all_entries = list_review_queue_with_sources(engine)[:limit]
-        clusters, singletons = _group_review_by_experience(all_entries)
+        clusters = result.get("clusters", [])
+        singletons = result.get("singletons", [])
 
         if output_json:
-            def _reshape_no_sources(e: dict) -> dict:
-                return _reshape_entry({k: v for k, v in e.items() if k != "sources"})
             _emit_json({
                 "clusters": [
                     {
-                        "experience_hash": h,
-                        "project_name": (
-                            ents[0].get("sources", [{}])[0].get("project_name", "")
-                        ),
-                        "entries": [_reshape_no_sources(e) for e in ents],
+                        "experience_hash": c["experience_hash"],
+                        "project_name": c.get("project_name", ""),
+                        "entries": [_reshape_entry(e) for e in c["entries"]],
                     }
-                    for h, ents in clusters
+                    for c in clusters
                 ],
-                "singletons": [_reshape_no_sources(e) for e in singletons],
+                "singletons": [_reshape_entry(e) for e in singletons],
             })
             return
 
@@ -674,7 +684,9 @@ def review(limit: int, output_json: bool, by_experience: bool) -> None:
         if clusters:
             click.echo(f"{len(clusters)} cluster(s) — entries sharing an experience_hash:")
             click.echo("")
-            for h, ents in clusters:
+            for c in clusters:
+                h = c["experience_hash"]
+                ents = c["entries"]
                 click.echo(f"Cluster {h[:12]}… ({len(ents)} entries)")
                 for e in ents:
                     click.echo(f"  [{e['id']}] {e.get('title', '')}")
@@ -687,8 +699,7 @@ def review(limit: int, output_json: bool, by_experience: bool) -> None:
             click.echo("")
         return
 
-    entries = list_recent_entries(engine, limit=limit)
-    needs_review = [e for e in entries if e.get("needs_review")]
+    needs_review = result.get("entries", [])
 
     if output_json:
         _emit_json([_reshape_entry(e) for e in needs_review])
@@ -713,15 +724,19 @@ def review(limit: int, output_json: bool, by_experience: bool) -> None:
 )
 def sources(entry_id: int, output_json: bool) -> None:
     """List the entry_sources rows that produced an entry."""
-    from pbook.store import list_entry_sources_for_entry
+    from pbook.models import ListSourcesInput
+    from pbook.workflows.cli_ops import ListSourcesWorkflow
 
-    engine, _ = _resolve_db()
-    if get_entry_by_id(engine, entry_id) is None:
+    result = _execute_workflow(
+        ListSourcesWorkflow.run, ListSourcesInput(entry_id=entry_id),
+        id_prefix="pbook-sources",
+    )
+    if not result.get("found"):
         _emit_error(
             "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
         )
 
-    rows = list_entry_sources_for_entry(engine, entry_id)
+    rows = result.get("rows", [])
     if output_json:
         _emit_json([_strip_embedding(r) for r in rows])
         return
@@ -768,37 +783,33 @@ def session_text(
     whose stem matches SESSION_ID. Use --path to override (manual
     sessions, alternate locations).
     """
-    from pbook.transcript import discover_sessions, parse_jsonl_file, render_transcript
+    from pbook.models import GetSessionTextInput
+    from pbook.workflows.cli_ops import GetSessionTextWorkflow
 
-    if path_override is not None:
-        jsonl_path: Path | None = path_override
-    else:
-        jsonl_path = None
-        # discover_sessions scans ~/.claude/projects/; find the matching session.
-        for s in discover_sessions(min_size=0, exclude_subagents=False):
-            if s.session_id == session_id:
-                jsonl_path = Path(s.path)
-                break
+    result = _execute_workflow(
+        GetSessionTextWorkflow.run,
+        GetSessionTextInput(
+            session_id=session_id,
+            path=str(path_override) if path_override is not None else None,
+            raw=raw,
+        ),
+        id_prefix="pbook-session-text",
+    )
 
-    if jsonl_path is None or not jsonl_path.exists():
+    if result.get("error") == "session_file_missing":
         _emit_error(
             "session_file_missing",
             f"No transcript found for session {session_id}. Use --path to point at one.",
             json_mode=output_json,
         )
 
-    if raw:
-        text = jsonl_path.read_text()
-    else:
-        transcript = parse_jsonl_file(jsonl_path)
-        text = render_transcript(transcript)
-
+    text = result["text"]
     if output_json:
         _emit_json({
             "session_id": session_id,
-            "path": str(jsonl_path),
             "raw": raw,
             "text": text,
+            "project_name": result.get("project_name", ""),
         })
     else:
         click.echo(text)
@@ -815,17 +826,12 @@ def tags(output_json: bool) -> None:
     Combines the canonical namespace list (closed set in pbook.tags)
     with values_in_use, computed across non-rejected entries.
     """
-    from pbook.store import list_tag_values_in_use
-    from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES
+    from pbook.models import ListTagsInput
+    from pbook.workflows.cli_ops import ListTagsWorkflow
 
-    engine, _ = _resolve_db()
-    payload = {
-        "namespaces": {
-            "general": sorted(GENERAL_NAMESPACES),
-            "extracted": sorted(EXTRACTED_NAMESPACES),
-        },
-        "values_in_use": list_tag_values_in_use(engine),
-    }
+    payload = _execute_workflow(
+        ListTagsWorkflow.run, ListTagsInput(), id_prefix="pbook-tags",
+    )
 
     if output_json:
         _emit_json(payload)
@@ -841,7 +847,13 @@ def tags(output_json: bool) -> None:
 
 @main.command()
 def migrate() -> None:
-    """Run database migrations."""
+    """Run database migrations.
+
+    The lone CLI command that opens the DB directly — schema bootstrap
+    must precede the worker's first connection.
+    """
+    from pbook.store import get_db_path, run_migrations
+
     db_path = get_db_path()
     if db_path is None:
         click.echo("Error: Store is disabled (PBOOK_DB_PATH is empty).", err=True)
@@ -865,15 +877,25 @@ def feedback(entry_id: int, is_helpful: bool | None, context: str) -> None:
         click.echo("Error: specify --helpful or --harmful.", err=True)
         sys.exit(1)
 
-    engine, _ = _resolve_db()
-    existing = get_entry_by_id(engine, entry_id)
-    if existing is None:
+    from pbook.models import RecordFeedbackInput
+    from pbook.workflows.cli_ops import RecordFeedbackWorkflow
+
+    result = _execute_workflow(
+        RecordFeedbackWorkflow.run,
+        RecordFeedbackInput(entry_id=entry_id, helpful=is_helpful, context=context),
+        id_prefix="pbook-feedback",
+    )
+    if result.get("error") == "not_found":
         click.echo(f"Entry {entry_id} not found.", err=True)
         sys.exit(1)
 
-    record_feedback(engine, entry_id, helpful=is_helpful)
     label = "helpful" if is_helpful else "harmful"
-    click.echo(f"Recorded {label} feedback for entry {entry_id}: {existing['title']}")
+    click.echo(f"Recorded {label} feedback for entry {entry_id}: {result['title']}")
+    if result.get("below_threshold"):
+        click.echo(
+            "Note: this entry has been retrieved < 3 times; the signal "
+            "won't move ranking until the 3-retrieval threshold is met.",
+        )
 
 
 @main.command()
@@ -903,18 +925,20 @@ def prune(
         click.echo("Error: specify --dry-run or --apply.", err=True)
         sys.exit(1)
 
-    engine, _ = _resolve_db()
+    from pbook.models import PruneInput
+    from pbook.workflows.cli_ops import PruneWorkflow
 
-    from pbook.activities.maintenance import identify_prune_candidates
-    from pbook.store import list_all_entries
-
-    all_entries = list_all_entries(engine)
-    candidates = identify_prune_candidates(
-        all_entries,
-        min_retrievals=min_retrievals,
-        max_harmful_ratio=max_harmful_ratio,
-        max_stale_days=max_stale_days,
+    result = _execute_workflow(
+        PruneWorkflow.run,
+        PruneInput(
+            min_retrievals=min_retrievals,
+            max_harmful_ratio=max_harmful_ratio,
+            max_stale_days=max_stale_days,
+            apply=apply,
+        ),
+        id_prefix="pbook-prune",
     )
+    candidates = result["candidates"]
 
     if not candidates:
         click.echo("No prune candidates found.")
@@ -927,16 +951,7 @@ def prune(
         click.echo(f"    Reason: {entry['prune_reason']}")
 
     if apply:
-        for entry in candidates:
-            entry_id = entry["id"]
-            existing_tags = json.loads(entry.get("tags_json", "[]"))
-            if "pattern:prune-candidate" not in existing_tags:
-                existing_tags.append("pattern:prune-candidate")
-            update_entry(engine, entry_id, {
-                "needs_review": True,
-                "tags_json": json.dumps(existing_tags),
-            })
-        click.echo(f"\nMarked {len(candidates)} entry/entries for review.")
+        click.echo(f"\nMarked {result['applied_count']} entry/entries for review.")
 
 
 @main.command()
@@ -1016,12 +1031,19 @@ def ingest(
     # Filter already-ingested sessions
     skipped = 0
     if not force:
-        engine, _ = _resolve_db()
-        from pbook.store import get_ingested_session_ids
+        from pbook.models import FilterAlreadyIngestedInput
+        from pbook.workflows.cli_ops import FilterAlreadyIngestedWorkflow
 
-        ingested = get_ingested_session_ids(engine)
+        filter_result = _execute_workflow(
+            FilterAlreadyIngestedWorkflow.run,
+            FilterAlreadyIngestedInput(
+                session_ids=[s.session_id for s in sessions],
+            ),
+            id_prefix="pbook-ingest-filter",
+        )
+        fresh_ids = set(filter_result["fresh_ids"])
         before = len(sessions)
-        sessions = [s for s in sessions if s.session_id not in ingested]
+        sessions = [s for s in sessions if s.session_id in fresh_ids]
         skipped = before - len(sessions)
 
     if not sessions:
@@ -1099,19 +1121,24 @@ def ingest(
         sys.exit(1)
 
     # Seed running rows so `pbook sessions` shows them while the workflow is
-    # in flight. The workflow's record_ingested_session callback flips them
+    # in flight. The forge-side record_ingested_session callback flips them
     # to completed (or record_ingested_session_error flips them to error).
-    engine_for_seed, _ = _resolve_db()
-    from pbook.store import record_ingested_session_started
+    from pbook.models import IngestedSessionStub, RecordStartedSessionsInput
+    from pbook.workflows.cli_ops import RecordStartedSessionsWorkflow
 
-    for s in sessions:
-        record_ingested_session_started(
-            engine_for_seed,
-            session_id=s.session_id,
-            project_name=s.project_name,
+    _execute_workflow(
+        RecordStartedSessionsWorkflow.run,
+        RecordStartedSessionsInput(
+            sessions=[
+                IngestedSessionStub(
+                    session_id=s.session_id, project_name=s.project_name,
+                ) for s in sessions
+            ],
             workflow_id=workflow_id,
             run_id=run_id,
-        )
+        ),
+        id_prefix="pbook-ingest-seed",
+    )
 
     _emit({
         "status": "submitted",
@@ -1130,10 +1157,14 @@ def ingest(
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 def sessions(project: str, limit: int, output_json: bool) -> None:
     """List sessions ingested by `pbook ingest`, newest first."""
-    from pbook.store import list_ingested_sessions
+    from pbook.models import ListSessionsInput
+    from pbook.workflows.cli_ops import ListSessionsWorkflow
 
-    engine, _ = _resolve_db()
-    rows = list_ingested_sessions(engine, project=project or None, limit=limit)
+    rows = _execute_workflow(
+        ListSessionsWorkflow.run,
+        ListSessionsInput(project=project or None, limit=limit),
+        id_prefix="pbook-sessions",
+    )
 
     if output_json:
         _emit_json(rows)

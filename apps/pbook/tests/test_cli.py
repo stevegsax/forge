@@ -493,13 +493,14 @@ class TestApproveReject:
         )
         assert result.exit_code == 0
         data = json.loads(result.stdout)
-        assert data == {
-            "id": 1,
-            "title": "Test Entry",
-            "approved": False,
-            "rejected": True,
-            "rejection_reason": "wrong project",
-        }
+        # Reject now goes through a workflow that returns the full
+        # status dict (consistent shape with approve/update). The
+        # critical fields are unchanged.
+        assert data["id"] == 1
+        assert data["title"] == "Test Entry"
+        assert data["approved"] is False
+        assert data["rejected"] is True
+        assert data["rejection_reason"] == "wrong project"
 
     def test_reject_without_reason_emits_null(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
