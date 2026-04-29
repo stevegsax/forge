@@ -165,5 +165,44 @@ class TestLLMChat:
         )
         kwargs = provider.build_request_params.call_args.kwargs
         assert kwargs["max_tokens"] == 512
-        assert kwargs["model"] == "anthropic:m"
+        # The `anthropic:` prefix is stripped before the SDK call.
+        # provider SDKs (e.g., anthropic) expect the bare model name.
+        assert kwargs["model"] == "m"
         assert kwargs["output_type"] is _ToyResult
+
+    @pytest.mark.asyncio
+    async def test_strips_provider_prefix_from_model(self):
+        """Regression: resolve_model() returns 'anthropic:claude-...' but
+        the Anthropic SDK rejects that string. llm_chat must pass only
+        the bare model name to provider.build_request_params."""
+        register_output_type("ToyResult", _ToyResult)
+        provider = _mock_provider({"answer": "ok"})
+        set_provider(provider)
+
+        await llm_chat(
+            LLMChatInput(
+                system_prompt="s", user_prompt="u",
+                output_type_name="ToyResult",
+                model="anthropic:claude-haiku-4-5-20251001",
+            ),
+        )
+        kwargs = provider.build_request_params.call_args.kwargs
+        assert kwargs["model"] == "claude-haiku-4-5-20251001"
+
+    @pytest.mark.asyncio
+    async def test_bare_model_passes_through_unchanged(self):
+        """When the caller already passed a bare model (no provider
+        prefix), llm_chat should forward it unmodified."""
+        register_output_type("ToyResult", _ToyResult)
+        provider = _mock_provider({"answer": "ok"})
+        set_provider(provider)
+
+        await llm_chat(
+            LLMChatInput(
+                system_prompt="s", user_prompt="u",
+                output_type_name="ToyResult",
+                model="claude-haiku-4-5-20251001",
+            ),
+        )
+        kwargs = provider.build_request_params.call_args.kwargs
+        assert kwargs["model"] == "claude-haiku-4-5-20251001"

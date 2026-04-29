@@ -83,6 +83,14 @@ async def llm_chat(input: LLMChatInput) -> LLMChatResult:
         )
         raise ValueError(msg)
 
+    # Strip the `provider:` prefix if present. `resolve_model()` returns
+    # the fully-qualified id (e.g. `anthropic:claude-haiku-4-5-20251001`),
+    # but provider SDKs expect the bare model name. parse_model_id
+    # returns (provider, model); we keep the model half.
+    from sax_llm.registry import parse_model_id
+
+    _, bare_model = parse_model_id(input.model)
+
     output_type = resolve_output_type(input.output_type_name)
     provider = get_provider()
 
@@ -90,7 +98,7 @@ async def llm_chat(input: LLMChatInput) -> LLMChatResult:
     params = provider.build_request_params(
         messages=messages,
         output_type=output_type,
-        model=input.model,
+        model=bare_model,
         max_tokens=input.max_tokens,
     )
 
