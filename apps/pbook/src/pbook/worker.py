@@ -10,7 +10,7 @@ import logging
 from datetime import timedelta
 
 from temporalio.client import Client
-from temporalio.converter import DataConverter
+from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import (
     SandboxedWorkflowRunner,
@@ -58,15 +58,6 @@ logger = logging.getLogger(__name__)
 PBOOK_TASK_QUEUE = "pbook-task-queue"
 
 
-def _get_data_converter() -> DataConverter:
-    """Get a DataConverter that supports Pydantic models natively (Phase 4)."""
-    from temporalio.contrib.pydantic import PydanticPayloadConverter
-
-    return DataConverter(
-        payload_converter_class=PydanticPayloadConverter,
-    )
-
-
 def _register_llm_provider() -> None:
     """Register the default LLM provider (Anthropic) for extraction and review."""
     from sax_llm import get_provider
@@ -102,8 +93,11 @@ async def run_worker(address: str = "localhost:7233") -> None:
     _register_output_types()
     logger.info("Connecting to Temporal at %s", address)
 
-    # Use custom DataConverter for Phase 4 improvements
-    client = await Client.connect(address, data_converter=_get_data_converter())
+    # Use the official Pydantic v2 data converter end-to-end so Pydantic
+    # models (RetrievalInput, RetrievalResult, PlaybookEntry, etc.) round-trip
+    # cleanly without the legacy-converter UserWarning at every workflow
+    # submission.
+    client = await Client.connect(address, data_converter=pydantic_data_converter)
 
     # Pass pydantic through the workflow sandbox. The sandbox is created
     # fresh per workflow run; without passthrough, pydantic_core gets

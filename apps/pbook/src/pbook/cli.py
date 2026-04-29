@@ -460,11 +460,14 @@ def push(file_path: Path, temporal_address: str) -> None:
 
     async def _submit():
         from temporalio.client import Client
+        from temporalio.contrib.pydantic import pydantic_data_converter
 
         from pbook.worker import PBOOK_TASK_QUEUE
         from pbook.workflows.extraction import ExtractionWorkflow
 
-        client = await Client.connect(temporal_address)
+        client = await Client.connect(
+            temporal_address, data_converter=pydantic_data_converter,
+        )
         result = await client.execute_workflow(
             ExtractionWorkflow.run,
             json.dumps({"experiences": experiences, "project": project}),
@@ -541,12 +544,15 @@ def search(
 
     async def _submit():
         from temporalio.client import Client
+        from temporalio.contrib.pydantic import pydantic_data_converter
 
         from pbook.models import RetrievalInput, RetrievalMode
         from pbook.worker import PBOOK_TASK_QUEUE
         from pbook.workflows.retrieval import RetrievalWorkflow
 
-        client = await Client.connect(temporal_address)
+        client = await Client.connect(
+            temporal_address, data_converter=pydantic_data_converter,
+        )
         retrieval_mode = RetrievalMode(mode)
         return await client.execute_workflow(
             RetrievalWorkflow.run,
@@ -991,8 +997,11 @@ def ingest(
 
     async def _submit() -> str:
         from temporalio.client import Client
+        from temporalio.contrib.pydantic import pydantic_data_converter
 
-        client = await Client.connect(temporal_address)
+        client = await Client.connect(
+            temporal_address, data_converter=pydantic_data_converter,
+        )
         handle = await client.start_workflow(
             "BatchIngestionWorkflow",
             json.dumps({"sessions": session_dicts}),
