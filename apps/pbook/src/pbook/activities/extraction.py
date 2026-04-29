@@ -1,132 +1,24 @@
-"""Extraction activities for the playbook service.
+"""Persistence-side extraction activities.
 
-Receives pushed experience data, calls the LLM to extract lessons
-targeting unexpected + actionable situations, and saves entries
-with needs-review=True.
-
-Design follows Function Core / Imperative Shell:
-
-- Pure functions: build_extraction_system_prompt, build_extraction_user_prompt
-- Testable function: execute_extraction_call (takes provider as argument)
-- Temporal activities: extract_from_experience, save_extracted_entries
+The LLM call itself runs through the generic ``llm_chat`` step — see
+:mod:`pbook.workflow_steps.llm`. This module owns the database side:
+saving extracted entries via match-or-attach and recording session
+lifecycle events for forge's IngestionWorkflow callbacks.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
-from typing import TYPE_CHECKING
 
 from temporalio import activity
 
 logger = logging.getLogger(__name__)
 
-from pbook.llm import ExtractionResult, text_messages
-from pbook.models import CapabilityTier, ModelConfig, PushExperienceInput, resolve_model
-from pbook.prompts.extraction import (
-    build_extraction_system_prompt,
-    build_extraction_user_prompt,
-)
-
-if TYPE_CHECKING:
-    from pbook.llm import LLMProvider
-
-
-def _resolve_default_model() -> tuple[str, str]:
-    """Resolve the default model for extraction, returning (provider, model)."""
-    from sax_llm.registry import parse_model_id
-
-    model_id = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
-    return parse_model_id(model_id)
-
-
-# ---------------------------------------------------------------------------
-# Testable function
-# ---------------------------------------------------------------------------
-
-
-async def execute_extraction_call(
-    system_prompt: str,
-    user_prompt: str,
-    provider: LLMProvider,
-    model: str = "",
-) -> tuple[ExtractionResult, int, int, float]:
-    """Call the LLM provider for extraction and return structured results.
-
-    Returns ``(result, input_tokens, output_tokens, latency_ms)``.
-    Separated from the imperative shell so tests can inject a mock provider.
-    """
-    messages = text_messages(system_prompt, user_prompt)
-    start = time.monotonic()
-
-    params = provider.build_request_params(
-        messages=messages,
-        output_type=ExtractionResult,
-        model=model,
-        max_tokens=4096,
-    )
-    response = await provider.call(params)
-    latency_ms = (time.monotonic() - start) * 1000
-
-    result = ExtractionResult.model_validate(response.tool_input)
-    logger.info(
-        "Extraction LLM call: %d entries, %d input tokens, %d output tokens, %.0fms",
-        len(result.entries), response.input_tokens, response.output_tokens, latency_ms,
-    )
-    return result, response.input_tokens, response.output_tokens, latency_ms
-
 
 # ---------------------------------------------------------------------------
 # Temporal activities
 # ---------------------------------------------------------------------------
-
-
-@activity.defn
-async def extract_from_experience(input_json: str) -> str:
-    """Extract lessons from pushed experience data.
-
-    Accepts JSON-serialized list of PushExperienceInput dicts.
-    Returns JSON-serialized ExtractionResult.
-    """
-    from pbook.llm import get_provider
-
-    experiences = [
-        PushExperienceInput.model_validate(exp)
-        for exp in json.loads(input_json)
-    ]
-
-    if not experiences:
-        logger.debug("No experiences to extract from")
-        return ExtractionResult().model_dump_json()
-
-    logger.info("Extracting from %d experience(s)", len(experiences))
-    provider = get_provider()
-    system_prompt = build_extraction_system_prompt(experiences)
-    user_prompt = build_extraction_user_prompt()
-    _, model = _resolve_default_model()
-
-    result, _in_tok, _out_tok, _latency = await execute_extraction_call(
-        system_prompt, user_prompt, provider, model=model,
-    )
-
-    logger.info("Extracted %d entries", len(result.entries))
-    return result.model_dump_json()
-
-
-@activity.defn
-async def compute_embedding(text: str) -> str:
-    """Generate an embedding for the given text using OpenAI.
-
-    Returns a base64-encoded string (JSON-safe) rather than raw bytes.
-    Decode with ``base64.b64decode()`` at the DB boundary.
-    """
-    import base64
-
-    from pbook.embeddings import get_embedding
-
-    raw = await get_embedding(text)
-    return base64.b64encode(raw).decode("ascii")
 
 
 @activity.defn

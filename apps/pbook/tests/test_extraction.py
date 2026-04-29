@@ -5,16 +5,13 @@ from __future__ import annotations
 import base64
 import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sax_llm.models import ProviderResponse
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from pbook.activities.extraction import (
-    execute_extraction_call,
     record_ingested_session,
     record_ingested_session_error,
     save_extracted_entries,
@@ -25,6 +22,7 @@ from pbook.prompts.extraction import (
     build_extraction_system_prompt,
     build_extraction_user_prompt,
 )
+from pbook.workflow_steps import LLMChatResult
 from pbook.store import (
     get_engine,
     list_recent_entries,
@@ -132,63 +130,6 @@ class TestBuildExtractionUserPrompt:
 
 
 # ---------------------------------------------------------------------------
-# execute_extraction_call
-# ---------------------------------------------------------------------------
-
-
-class TestExecuteExtractionCall:
-    @pytest.mark.asyncio
-    async def test_calls_provider(self):
-        mock_response = ProviderResponse(
-            tool_input={
-                "entries": [
-                    {
-                        "title": "Strip base64 prefix",
-                        "content": "Mistral OCR returns data URI prefix.",
-                        "tags": ["ocr", "mistral"],
-                    }
-                ]
-            },
-            model_name="test-model",
-            input_tokens=100,
-            output_tokens=50,
-            raw_response_json="{}",
-        )
-
-        provider = MagicMock()
-        provider.build_request_params.return_value = {"mock": True}
-        provider.call = AsyncMock(return_value=mock_response)
-
-        result, in_tok, out_tok, latency = await execute_extraction_call(
-            "system", "user", provider,
-        )
-
-        assert len(result.entries) == 1
-        assert result.entries[0].title == "Strip base64 prefix"
-        assert in_tok == 100
-        assert out_tok == 50
-        assert latency > 0
-
-    @pytest.mark.asyncio
-    async def test_empty_extraction(self):
-        mock_response = ProviderResponse(
-            tool_input={"entries": []},
-            model_name="test",
-            input_tokens=0,
-            output_tokens=0,
-            raw_response_json="{}",
-        )
-        provider = MagicMock()
-        provider.build_request_params.return_value = {}
-        provider.call = AsyncMock(return_value=mock_response)
-
-        result, _, _, _ = await execute_extraction_call(
-            "system", "user", provider,
-        )
-        assert result.entries == []
-
-
-# ---------------------------------------------------------------------------
 # save_extracted_entries activity
 # ---------------------------------------------------------------------------
 
@@ -228,6 +169,27 @@ class TestSaveExtractedEntries:
 # ---------------------------------------------------------------------------
 
 
+def _make_chat_stub(tool_input: dict):
+    """Build an @activity.defn(name='llm_chat') closure returning canned tool_input."""
+    @activity.defn(name="llm_chat")
+    async def _llm_chat(_input) -> LLMChatResult:
+        return LLMChatResult(
+            tool_input=tool_input,
+            model_name="anthropic:test",
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=1.0,
+        )
+    return _llm_chat
+
+
+def _make_embed_stub(value: str):
+    @activity.defn(name="llm_embed")
+    async def _llm_embed(_text: str) -> str:
+        return value
+    return _llm_embed
+
+
 class TestExtractionWorkflow:
     @pytest.mark.asyncio
     async def test_extraction_creates_entries(
@@ -236,27 +198,22 @@ class TestExtractionWorkflow:
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
-        @activity.defn(name="extract_from_experience")
-        async def mock_extract(input_json: str) -> str:
-            return json.dumps({
-                "entries": [
-                    {
-                        "title": "Mock lesson",
-                        "content": "Mock content",
-                        "tags": ["lang:python"],
-                    }
-                ]
-            })
-
-        @activity.defn(name="compute_embedding")
-        async def mock_compute_embedding(text: str) -> str:
-            return base64.b64encode(b"fake-embedding").decode("ascii")
+        mock_chat = _make_chat_stub({
+            "entries": [
+                {
+                    "title": "Mock lesson",
+                    "content": "Mock content",
+                    "tags": ["lang:python"],
+                },
+            ],
+        })
+        mock_embed = _make_embed_stub(base64.b64encode(b"fake-embedding").decode("ascii"))
 
         async with Worker(
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ExtractionWorkflow],
-            activities=[mock_extract, save_extracted_entries, mock_compute_embedding],
+            activities=[mock_chat, mock_embed, save_extracted_entries],
         ):
             result = await env.client.execute_workflow(
                 ExtractionWorkflow.run,
@@ -266,7 +223,7 @@ class TestExtractionWorkflow:
                             "project": "forge",
                             "problem": "test problem",
                             "resolution": "test resolution",
-                        }
+                        },
                     ],
                     "project": "forge",
                 }),
@@ -275,7 +232,7 @@ class TestExtractionWorkflow:
             )
 
         assert result["entries_created"] == 1
-        
+
         # Verify embedding was saved
         engine = get_engine(tmp_path / "test.db")
         entries = list_recent_entries(engine)
@@ -308,19 +265,14 @@ class TestExtractionWorkflow:
     ) -> None:
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
 
-        @activity.defn(name="extract_from_experience")
-        async def mock_extract_empty(input_json: str) -> str:
-            return json.dumps({"entries": []})
-
-        @activity.defn(name="compute_embedding")
-        async def mock_compute_embedding(text: str) -> str:
-            return ""
+        mock_chat = _make_chat_stub({"entries": []})
+        mock_embed = _make_embed_stub("")
 
         async with Worker(
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ExtractionWorkflow],
-            activities=[mock_extract_empty, mock_compute_embedding],
+            activities=[mock_chat, mock_embed],
         ):
             result = await env.client.execute_workflow(
                 ExtractionWorkflow.run,

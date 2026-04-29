@@ -16,8 +16,6 @@ from temporalio.converter import DataConverter
 # Import activities
 from pbook.activities.export import export_single_entry, fetch_entry_ids
 from pbook.activities.extraction import (
-    compute_embedding,
-    extract_from_experience,
     record_ingested_session,
     record_ingested_session_error,
     save_extracted_entries,
@@ -115,12 +113,10 @@ async def run_worker(address: str = "localhost:7233") -> None:
             record_retrieval_event,
             fetch_entry_ids,
             export_single_entry,
-            extract_from_experience,
             save_extracted_entries,
             validate_entry,
             fetch_existing_entries,
             review_entry,
-            compute_embedding,
             find_duplicates,
             fetch_all_entries_for_maintenance,
             prune_entries,
