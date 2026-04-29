@@ -5,19 +5,15 @@ from __future__ import annotations
 import base64
 import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sax_llm.models import ProviderResponse
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from pbook.activities.extraction import save_extracted_entries
 from pbook.activities.review import (
-    execute_review_call,
     fetch_existing_entries,
-    review_entry,
     validate_entry,
 )
 from pbook.llm import ReviewResult, reset_provider
@@ -33,6 +29,7 @@ from pbook.store import (
     run_migrations,
     save_entries,
 )
+from pbook.workflow_steps import LLMChatResult
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflows.manual_entry import ManualEntryWorkflow
 
@@ -147,58 +144,6 @@ class TestApplySuggestions:
 
 
 # ---------------------------------------------------------------------------
-# execute_review_call
-# ---------------------------------------------------------------------------
-
-
-class TestExecuteReviewCall:
-    @pytest.mark.asyncio
-    async def test_calls_provider(self):
-        mock_response = ProviderResponse(
-            tool_input={
-                "approved": True,
-                "rejection_reason": "",
-                "suggested_title": "",
-                "suggested_content": "",
-                "suggested_tags": [],
-            },
-            model_name="test",
-            input_tokens=0,
-            output_tokens=0,
-            raw_response_json="{}",
-        )
-        provider = MagicMock()
-        provider.build_request_params.return_value = {}
-        provider.call = AsyncMock(return_value=mock_response)
-
-        result = await execute_review_call("system", "user", provider)
-        assert result.approved is True
-
-    @pytest.mark.asyncio
-    async def test_rejection(self):
-        mock_response = ProviderResponse(
-            tool_input={
-                "approved": False,
-                "rejection_reason": "Too generic",
-                "suggested_title": "",
-                "suggested_content": "",
-                "suggested_tags": [],
-            },
-            model_name="test",
-            input_tokens=0,
-            output_tokens=0,
-            raw_response_json="{}",
-        )
-        provider = MagicMock()
-        provider.build_request_params.return_value = {}
-        provider.call = AsyncMock(return_value=mock_response)
-
-        result = await execute_review_call("system", "user", provider)
-        assert result.approved is False
-        assert result.rejection_reason == "Too generic"
-
-
-# ---------------------------------------------------------------------------
 # validate_entry activity
 # ---------------------------------------------------------------------------
 
@@ -250,89 +195,35 @@ class TestFetchExistingEntries:
 
 
 # ---------------------------------------------------------------------------
-# review_entry activity
-# ---------------------------------------------------------------------------
-
-
-class TestReviewEntryActivity:
-    @pytest.mark.asyncio
-    async def test_approved_entry(self, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from pbook.llm import set_provider
-
-        mock_response = ProviderResponse(
-            tool_input={
-                "approved": True,
-                "rejection_reason": "",
-                "suggested_title": "Better Title",
-                "suggested_content": "",
-                "suggested_tags": [],
-            },
-            model_name="test",
-            input_tokens=0,
-            output_tokens=0,
-            raw_response_json="{}",
-        )
-        provider = MagicMock()
-        provider.build_request_params.return_value = {}
-        provider.call = AsyncMock(return_value=mock_response)
-        set_provider(provider)
-
-        input_json = json.dumps({
-            "entry": {
-                "title": "Original",
-                "content": "Some advice",
-                "tags": ["lang:python"],
-            },
-            "existing_entries": [],
-        })
-
-        result = json.loads(await review_entry(input_json))
-        assert result["approved"] is True
-        assert result["final_entry"]["title"] == "Better Title"
-
-    @pytest.mark.asyncio
-    async def test_rejected_entry(self, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from pbook.llm import set_provider
-
-        mock_response = ProviderResponse(
-            tool_input={
-                "approved": False,
-                "rejection_reason": "Too vague",
-                "suggested_title": "",
-                "suggested_content": "",
-                "suggested_tags": [],
-            },
-            model_name="test",
-            input_tokens=0,
-            output_tokens=0,
-            raw_response_json="{}",
-        )
-        provider = MagicMock()
-        provider.build_request_params.return_value = {}
-        provider.call = AsyncMock(return_value=mock_response)
-        set_provider(provider)
-
-        input_json = json.dumps({
-            "entry": {
-                "title": "Bad",
-                "content": "Write good code",
-                "tags": ["lang:python"],
-            },
-            "existing_entries": [],
-        })
-
-        result = json.loads(await review_entry(input_json))
-        assert result["approved"] is False
-        assert result["rejection_reason"] == "Too vague"
-
-
-# ---------------------------------------------------------------------------
 # ManualEntryWorkflow
 # ---------------------------------------------------------------------------
+
+
+def _make_chat_stub(tool_input: dict):
+    @activity.defn(name="llm_chat")
+    async def _llm_chat(_input) -> LLMChatResult:
+        return LLMChatResult(
+            tool_input=tool_input,
+            model_name="anthropic:test",
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=1.0,
+        )
+    return _llm_chat
+
+
+def _make_embed_stub(value: str):
+    @activity.defn(name="llm_embed")
+    async def _llm_embed(_text: str) -> str:
+        return value
+    return _llm_embed
+
+
+def _make_find_duplicates_stub():
+    @activity.defn(name="find_duplicates")
+    async def _find_duplicates(_input_json: str) -> list:
+        return []
+    return _find_duplicates
 
 
 class TestManualEntryWorkflow:
@@ -343,22 +234,14 @@ class TestManualEntryWorkflow:
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
-        @activity.defn(name="review_entry")
-        async def mock_review(input_json: str) -> str:
-            data = json.loads(input_json)
-            return json.dumps({
-                "approved": True,
-                "rejection_reason": "",
-                "final_entry": data["entry"],
-            })
-
-        @activity.defn(name="compute_embedding")
-        async def mock_compute_embedding(text: str) -> str:
-            return base64.b64encode(b"fake-embedding").decode("ascii")
-
-        @activity.defn(name="find_duplicates")
-        async def mock_find_duplicates(input_json: str) -> list:
-            return []
+        mock_chat = _make_chat_stub({
+            "approved": True,
+            "rejection_reason": "",
+            "suggested_title": "",
+            "suggested_content": "",
+            "suggested_tags": [],
+        })
+        mock_embed = _make_embed_stub(base64.b64encode(b"fake-embedding").decode("ascii"))
 
         raw_json = json.dumps({
             "title": "Good entry",
@@ -373,10 +256,10 @@ class TestManualEntryWorkflow:
             activities=[
                 validate_entry,
                 fetch_existing_entries,
-                mock_review,
+                mock_chat,
                 save_extracted_entries,
-                mock_compute_embedding,
-                mock_find_duplicates,
+                mock_embed,
+                _make_find_duplicates_stub(),
             ],
         ):
             result = await env.client.execute_workflow(
@@ -396,21 +279,14 @@ class TestManualEntryWorkflow:
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
-        @activity.defn(name="review_entry")
-        async def mock_reject(input_json: str) -> str:
-            return json.dumps({
-                "approved": False,
-                "rejection_reason": "Too generic",
-                "final_entry": {},
-            })
-
-        @activity.defn(name="compute_embedding")
-        async def mock_compute_embedding(text: str) -> str:
-            return base64.b64encode(b"fake-embedding").decode("ascii")
-
-        @activity.defn(name="find_duplicates")
-        async def mock_find_duplicates(input_json: str) -> list:
-            return []
+        mock_chat = _make_chat_stub({
+            "approved": False,
+            "rejection_reason": "Too generic",
+            "suggested_title": "",
+            "suggested_content": "",
+            "suggested_tags": [],
+        })
+        mock_embed = _make_embed_stub(base64.b64encode(b"fake-embedding").decode("ascii"))
 
         raw_json = json.dumps({
             "title": "Bad entry",
@@ -425,10 +301,10 @@ class TestManualEntryWorkflow:
             activities=[
                 validate_entry,
                 fetch_existing_entries,
-                mock_reject,
+                mock_chat,
                 save_extracted_entries,
-                mock_compute_embedding,
-                mock_find_duplicates,
+                mock_embed,
+                _make_find_duplicates_stub(),
             ],
         ):
             result = await env.client.execute_workflow(

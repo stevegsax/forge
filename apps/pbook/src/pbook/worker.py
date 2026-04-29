@@ -30,7 +30,6 @@ from pbook.activities.retrieval import fetch_candidates, record_retrieval_event
 from pbook.activities.review import (
     fetch_existing_entries,
     find_duplicates,
-    review_entry,
     validate_entry,
 )
 from pbook.workflow_steps import (
@@ -116,7 +115,6 @@ async def run_worker(address: str = "localhost:7233") -> None:
             save_extracted_entries,
             validate_entry,
             fetch_existing_entries,
-            review_entry,
             find_duplicates,
             fetch_all_entries_for_maintenance,
             prune_entries,
