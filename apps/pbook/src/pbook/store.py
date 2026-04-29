@@ -393,6 +393,40 @@ def get_entry_by_id(engine: Engine, entry_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+def get_entries_by_ids(engine: Engine, ids: list[int]) -> list[dict]:
+    """Bulk-fetch entries by primary key.
+
+    Returns rows in arbitrary order; missing IDs are silently absent
+    from the result. Used by the retrieval pipeline to load the full
+    content of only the top-N candidates after ranking, keeping the
+    workflow boundary payload small.
+    """
+    if not ids:
+        return []
+    t = Entry.__table__
+    stmt = t.select().where(t.c.id.in_(ids))
+    with engine.connect() as conn:
+        return [dict(row) for row in conn.execute(stmt).mappings().all()]
+
+
+def get_embeddings_by_ids(
+    engine: Engine, ids: list[int],
+) -> list[tuple[int, bytes | None]]:
+    """Fetch (id, embedding) pairs for the given primary keys.
+
+    Used by similarity computation in the retrieval workflow so that
+    embedding bytes never cross the activity-result wire (Pydantic's
+    JSON encoder fails on raw float32 byte sequences inside arbitrary
+    dicts). Embedding may be ``None`` if the row never had one.
+    """
+    if not ids:
+        return []
+    t = Entry.__table__
+    stmt = sa.select(t.c.id, t.c.embedding).where(t.c.id.in_(ids))
+    with engine.connect() as conn:
+        return [(row[0], row[1]) for row in conn.execute(stmt).fetchall()]
+
+
 def update_entry(engine: Engine, entry_id: int, updates: dict) -> None:
     """Update an entry by primary key with the given field values."""
     logger.info("Updating entry %d: %s", entry_id, list(updates.keys()))

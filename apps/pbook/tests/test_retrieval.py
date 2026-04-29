@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from pbook.activities.retrieval import (
-    compute_similarities,
+    compute_similarities_by_id,
     fetch_candidates,
-    rank_and_pack,
+    pack_within_budget,
+    rank_meta,
     record_retrieval_event,
+    score_and_pack,
     score_entry,
 )
 from pbook.models import PlaybookEntry, RetrievalInput, RetrievalMode
@@ -152,135 +154,205 @@ class TestScoreEntry:
 
 
 # ---------------------------------------------------------------------------
-# rank_and_pack
+# rank_meta (pure)
 # ---------------------------------------------------------------------------
 
 
-class TestRankAndPack:
-    def test_packs_within_budget(self):
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
-        candidates = [
-            {"title": "A", "content": "x" * 400, **base},
-            {"title": "B", "content": "y" * 400, **base},
-            {"title": "C", "content": "z" * 400, **base},
-        ]
-        # Budget for ~2 entries (each ~100 tokens)
-        packed, tokens = rank_and_pack(candidates, ["lang:python"], RetrievalMode.CREATE, 250)
-        assert len(packed) == 2
-        assert tokens <= 250
+class TestRankMeta:
+    """rank_meta operates on minimal candidate dicts (id + ranking fields)
+    and returns a sorted list of (primary, secondary, id) tuples."""
 
-    def test_ranks_by_score(self):
-        candidates = [
-            {
-                "title": "Low", "content": "c",
-                "tags_json": '["lang:python"]', "entry_type": "curated",
-            },
-            {
-                "title": "High", "content": "c",
-                "tags_json": '["lang:python", "lib:sqlalchemy"]',
-                "entry_type": "curated",
-            },
+    def test_ranks_by_tag_score(self):
+        meta = [
+            {"id": 1, "tags_json": '["lang:python"]', "entry_type": "curated"},
+            {"id": 2, "tags_json": '["lang:python", "lib:sqlalchemy"]',
+             "entry_type": "curated"},
         ]
-        packed, _ = rank_and_pack(
-            candidates, ["lang:python", "lib:sqlalchemy"], RetrievalMode.CREATE, 5000,
+        scored = rank_meta(
+            meta, ["lang:python", "lib:sqlalchemy"], RetrievalMode.CREATE,
         )
-        assert packed[0]["title"] == "High"
+        assert scored[0][2] == 2  # higher overlap ranks first
 
-    def test_empty_candidates(self):
-        packed, tokens = rank_and_pack([], ["lang:python"], RetrievalMode.CREATE, 5000)
-        assert packed == []
-        assert tokens == 0
+    def test_empty_meta(self):
+        assert rank_meta([], ["lang:python"], RetrievalMode.CREATE) == []
 
     def test_semantic_primary_when_similarities_provided(self):
-        """When similarities are passed in, ordering is similarity-first."""
+        """With similarities, ordering is similarity-first; tag overlap is
+        the tiebreaker."""
         base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
-        candidates = [
-            {"id": 1, "title": "low-sim", "content": "c", **base},
-            {"id": 2, "title": "high-sim", "content": "c", **base},
+        meta = [
+            {"id": 1, **base},
+            {"id": 2, **base},
         ]
-        # Even though both have identical tag overlap, the one with
-        # higher similarity must come first.
-        packed, _ = rank_and_pack(
-            candidates, ["lang:python"], RetrievalMode.CREATE, 5000,
+        scored = rank_meta(
+            meta, ["lang:python"], RetrievalMode.CREATE,
             similarities={1: 0.5, 2: 0.95},
         )
-        assert packed[0]["id"] == 2
-        assert packed[0]["similarity"] == 0.95
+        assert scored[0][2] == 2
+        assert scored[0][0] == 0.95
 
     def test_threshold_filters_low_similarity(self):
         base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
-        candidates = [
-            {"id": 1, "title": "below", "content": "c", **base},
-            {"id": 2, "title": "above", "content": "c", **base},
-        ]
-        packed, _ = rank_and_pack(
-            candidates, [], RetrievalMode.CREATE, 5000,
+        meta = [{"id": 1, **base}, {"id": 2, **base}]
+        scored = rank_meta(
+            meta, [], RetrievalMode.CREATE,
             similarities={1: 0.4, 2: 0.9},
             threshold=0.6,
         )
+        assert len(scored) == 1
+        assert scored[0][2] == 2
+
+    def test_no_similarities_returns_secondary_zero(self):
+        """When no similarities are provided, the secondary (tiebreaker)
+        score is 0; the primary carries the tag-overlap score."""
+        meta = [
+            {"id": 1, "tags_json": '["lang:python"]', "entry_type": "curated"},
+        ]
+        scored = rank_meta(meta, ["lang:python"], RetrievalMode.CREATE)
+        assert scored[0][1] == 0.0
+        assert scored[0][0] > 0
+
+
+# ---------------------------------------------------------------------------
+# pack_within_budget (pure)
+# ---------------------------------------------------------------------------
+
+
+class TestPackWithinBudget:
+    """pack_within_budget walks scored entries in order, fetching content
+    from full_entries (id-keyed dict) and packing until the token budget
+    is exhausted."""
+
+    def test_packs_within_budget(self):
+        scored = [(1.0, 0.0, 1), (0.9, 0.0, 2), (0.8, 0.0, 3)]
+        full = {
+            1: {"id": 1, "title": "A", "content": "x" * 400},
+            2: {"id": 2, "title": "B", "content": "y" * 400},
+            3: {"id": 3, "title": "C", "content": "z" * 400},
+        }
+        # Budget for ~2 entries (each ~100 tokens after title)
+        packed, tokens = pack_within_budget(scored, full, 250, annotate_similarity=False)
+        assert len(packed) == 2
+        assert tokens <= 250
+
+    def test_skips_ids_not_in_full_entries(self):
+        """Caller may load only top-K full entries; lower-ranked IDs in
+        scored should be skipped silently."""
+        scored = [(0.9, 0.0, 1), (0.5, 0.0, 999)]
+        full = {1: {"id": 1, "title": "A", "content": "c"}}
+        packed, _ = pack_within_budget(scored, full, 5000, annotate_similarity=False)
         assert len(packed) == 1
-        assert packed[0]["id"] == 2
+        assert packed[0]["id"] == 1
 
-    def test_encode_candidate_embedding_handles_bytes_list_str_none(self):
-        from pbook.workflows.retrieval import _encode_candidate_embedding
+    def test_strips_embedding_from_packed_output(self):
+        """Embedding bytes don't belong in retrieval results — consumers
+        don't use them and shipping bytes re-introduces the JSON-encoder
+        problem this layout was built to avoid."""
+        scored = [(1.0, 0.0, 1)]
+        full = {1: {"id": 1, "title": "A", "content": "c", "embedding": b"\x01\x02"}}
+        packed, _ = pack_within_budget(scored, full, 5000, annotate_similarity=False)
+        assert "embedding" not in packed[0]
 
-        assert _encode_candidate_embedding(None) == ""
-        assert _encode_candidate_embedding("") == ""
-        # bytes → base64
-        assert _encode_candidate_embedding(b"\x01\x02") == "AQI="
-        # list of ints (Temporal-serialized bytes) → base64
-        assert _encode_candidate_embedding([1, 2]) == "AQI="
-        # str input passes through (assumed already base64)
-        assert _encode_candidate_embedding("AQI=") == "AQI="
-        # unknown type falls back to empty
-        assert _encode_candidate_embedding({"unexpected": True}) == ""
+    def test_annotates_similarity_when_requested(self):
+        scored = [(0.85, 1.5, 1)]
+        full = {1: {"id": 1, "title": "A", "content": "c"}}
+        packed, _ = pack_within_budget(scored, full, 5000, annotate_similarity=True)
+        assert packed[0]["similarity"] == 0.85
+
+    def test_no_similarity_key_when_not_annotated(self):
+        scored = [(2.0, 0.0, 1)]
+        full = {1: {"id": 1, "title": "A", "content": "c"}}
+        packed, _ = pack_within_budget(scored, full, 5000, annotate_similarity=False)
+        assert "similarity" not in packed[0]
+
+    def test_empty_scored_returns_empty(self):
+        packed, tokens = pack_within_budget([], {}, 5000, annotate_similarity=False)
+        assert packed == []
+        assert tokens == 0
+
+
+# ---------------------------------------------------------------------------
+# compute_similarities_by_id (activity, DB-backed)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeSimilaritiesByID:
+    """The activity loads embeddings from the DB itself so the workflow
+    body never ferries embedding bytes."""
 
     @pytest.mark.asyncio
-    async def test_compute_similarities_activity(self):
-        """Direct unit test of the activity function (not via Temporal)."""
-        import base64
-        import json
+    async def test_aligned_query_scores_high(self, tmp_path: Path, monkeypatch):
+        import base64 as _b64
+        import json as _json
         import struct
 
-        from pbook.activities.retrieval import compute_similarities
+        from pbook.models import EntryType, PlaybookEntry
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
 
         emb_a = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
         emb_b = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="A", content="A", tags=["lang:python"],
+                entry_type=EntryType.CURATED, embedding=emb_a,
+            )),
+            build_entry_dict(PlaybookEntry(
+                title="B", content="B", tags=["lang:python"],
+                entry_type=EntryType.CURATED, embedding=emb_b,
+            )),
+        ])
+
+        # Query embedding aligned with A.
         query = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-
-        result = await compute_similarities(json.dumps({
-            "query_embedding_b64": base64.b64encode(query).decode("ascii"),
-            "candidates": [
-                {"id": 1, "embedding_b64": base64.b64encode(emb_a).decode("ascii")},
-                {"id": 2, "embedding_b64": base64.b64encode(emb_b).decode("ascii")},
-                {"id": 3, "embedding_b64": ""},  # missing — skipped
-            ],
+        result = await compute_similarities_by_id(_json.dumps({
+            "query_embedding_b64": _b64.b64encode(query).decode("ascii"),
+            "ids": [1, 2],
         }))
-        assert result["1"] > 0.99   # aligned with query
+        assert result["1"] > 0.99   # aligned
         assert result["2"] < 0.01   # orthogonal
-        assert "3" not in result
 
-    def test_tag_only_unchanged_when_no_similarities(self):
-        """Regression: existing forge consumers pass no similarities and
-        must see the same scoring behavior as before this change."""
-        candidates = [
-            {
-                "id": 1, "title": "Low", "content": "c",
-                "tags_json": '["lang:python"]', "entry_type": "curated",
-            },
-            {
-                "id": 2, "title": "High", "content": "c",
-                "tags_json": '["lang:python", "lib:sqlalchemy"]',
-                "entry_type": "curated",
-            },
-        ]
-        packed, _ = rank_and_pack(
-            candidates, ["lang:python", "lib:sqlalchemy"],
-            RetrievalMode.CREATE, 5000,
-        )
-        assert packed[0]["id"] == 2
-        # No similarity attached when ranking was tag-only.
-        assert "similarity" not in packed[0]
+    @pytest.mark.asyncio
+    async def test_skips_entries_without_embeddings(self, tmp_path: Path, monkeypatch):
+        import base64 as _b64
+        import json as _json
+        import struct
+
+        from pbook.models import EntryType, PlaybookEntry
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="No emb", content="x", tags=["lang:python"],
+                entry_type=EntryType.CURATED,
+            )),
+        ])
+
+        query = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        result = await compute_similarities_by_id(_json.dumps({
+            "query_embedding_b64": _b64.b64encode(query).decode("ascii"),
+            "ids": [1],
+        }))
+        assert "1" not in result
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_ids_returns_empty_dict(self, tmp_path: Path, monkeypatch):
+        import base64 as _b64
+        import json as _json
+        import struct
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        query = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        result = await compute_similarities_by_id(_json.dumps({
+            "query_embedding_b64": _b64.b64encode(query).decode("ascii"),
+            "ids": [],
+        }))
+        assert result == {}
 
 
 # ---------------------------------------------------------------------------
@@ -289,15 +361,22 @@ class TestRankAndPack:
 
 
 class TestFetchCandidatesWireFormat:
-    """Embeddings come out of SQLite as raw bytes (BLOB). Temporal
-    serializes activity results via pydantic's to_json, which doesn't
-    auto-base64 raw bytes inside arbitrary dicts — random float32 byte
-    sequences trip serde_json's UTF-8 validator and the activity fails
-    to complete. fetch_candidates must encode embeddings to base64
-    strings before returning so the result can cross the wire."""
+    """fetch_candidates returns minimal dicts (id + ranking fields) to
+    keep the activity-result payload small. Heavy fields (title, content,
+    embedding, timestamps) are not on the wire — they are loaded later
+    by score_and_pack for the top-N entries that fit the token budget.
+
+    This also avoids the pydantic-to-json bytes issue entirely: there is
+    no embedding in the result, so there are no raw float32 bytes for
+    the JSON encoder to choke on."""
+
+    _MINIMAL_KEYS: ClassVar[set[str]] = {
+        "id", "tags_json", "entry_type",
+        "helpful_count", "harmful_count", "retrieval_count",
+    }
 
     @pytest.mark.asyncio
-    async def test_query_only_branch_encodes_embeddings_as_str(
+    async def test_query_only_branch_returns_minimal_dicts(
         self, tmp_path: Path, monkeypatch,
     ) -> None:
         import struct
@@ -309,7 +388,7 @@ class TestFetchCandidatesWireFormat:
 
         save_entries(engine, [
             build_entry_dict(PlaybookEntry(
-                title="A", content="content",
+                title="A", content="content with stuff",
                 tags=["lang:python"], entry_type=EntryType.CURATED,
                 embedding=emb,
             )),
@@ -320,20 +399,20 @@ class TestFetchCandidatesWireFormat:
         )
 
         assert len(result) == 1
-        embedding = result[0].get("embedding")
-        assert isinstance(embedding, str), (
-            f"embedding should be base64 str, got {type(embedding).__name__}"
+        assert set(result[0].keys()) == self._MINIMAL_KEYS, (
+            f"fetch_candidates must return only ranking fields; got {set(result[0])}"
         )
-        # Sanity-check: decodable, equal to original.
-        import base64
-        assert base64.b64decode(embedding) == emb
+        # Heavy fields explicitly absent.
+        assert "embedding" not in result[0]
+        assert "title" not in result[0]
+        assert "content" not in result[0]
 
     @pytest.mark.asyncio
-    async def test_tag_branch_also_encodes_embeddings(
+    async def test_tag_branch_returns_minimal_dicts(
         self, tmp_path: Path, monkeypatch,
     ) -> None:
-        """Same wire-format constraint applies to the tag-only branch —
-        forge has been calling this path for a long time."""
+        """Same minimal contract for the tag branch — forge consumers
+        get the same wire shape; full content is loaded by score_and_pack."""
         import struct
 
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
@@ -356,7 +435,8 @@ class TestFetchCandidatesWireFormat:
         )
 
         assert len(result) == 1
-        assert isinstance(result[0].get("embedding"), str)
+        assert set(result[0].keys()) == self._MINIMAL_KEYS
+        assert "embedding" not in result[0]
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +444,12 @@ class TestFetchCandidatesWireFormat:
 # ---------------------------------------------------------------------------
 
 
-_WORKFLOW_ACTIVITIES = [fetch_candidates, compute_similarities, record_retrieval_event]
+_WORKFLOW_ACTIVITIES = [
+    fetch_candidates,
+    compute_similarities_by_id,
+    score_and_pack,
+    record_retrieval_event,
+]
 
 
 class TestRetrievalWorkflow:

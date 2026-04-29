@@ -30,9 +30,10 @@ from pbook.activities.maintenance import (
     save_consolidated_entry,
 )
 from pbook.activities.retrieval import (
-    compute_similarities,
+    compute_similarities_by_id,
     fetch_candidates,
     record_retrieval_event,
+    score_and_pack,
 )
 from pbook.activities.review import (
     fetch_existing_entries,
@@ -129,7 +130,8 @@ async def run_worker(address: str = "localhost:7233") -> None:
         ],
         activities=[
             fetch_candidates,
-            compute_similarities,
+            compute_similarities_by_id,
+            score_and_pack,
             record_retrieval_event,
             fetch_entry_ids,
             export_single_entry,
