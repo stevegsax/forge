@@ -7,7 +7,6 @@ import pytest
 
 from pbook.embeddings import cosine_similarity, get_client
 
-
 # ---------------------------------------------------------------------------
 # cosine_similarity
 # ---------------------------------------------------------------------------
@@ -72,15 +71,17 @@ class TestGetEmbedding:
     @pytest.mark.asyncio
     async def test_returns_float32_bytes(self, monkeypatch):
         """get_embedding calls the OpenAI API and returns float32 bytes."""
+        from typing import ClassVar
+
         import pbook.embeddings as mod
 
         fake_vector = [0.1, 0.2, 0.3]
 
         class FakeEmbeddingData:
-            embedding = fake_vector
+            embedding: ClassVar = fake_vector
 
         class FakeResponse:
-            data = [FakeEmbeddingData()]
+            data: ClassVar = [FakeEmbeddingData()]
 
         class FakeEmbeddings:
             async def create(self, *, input, model):
@@ -100,15 +101,17 @@ class TestGetEmbedding:
     @pytest.mark.asyncio
     async def test_strips_newlines(self, monkeypatch):
         """get_embedding replaces newlines with spaces in input text."""
+        from typing import ClassVar
+
         import pbook.embeddings as mod
 
         captured_input = {}
 
         class FakeEmbeddingData:
-            embedding = [0.0]
+            embedding: ClassVar = [0.0]
 
         class FakeResponse:
-            data = [FakeEmbeddingData()]
+            data: ClassVar = [FakeEmbeddingData()]
 
         class FakeEmbeddings:
             async def create(self, *, input, model):

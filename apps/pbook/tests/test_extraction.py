@@ -22,13 +22,13 @@ from pbook.prompts.extraction import (
     build_extraction_system_prompt,
     build_extraction_user_prompt,
 )
-from pbook.workflow_steps import LLMChatResult
 from pbook.store import (
     get_engine,
     list_recent_entries,
     run_migrations,
 )
 from pbook.worker import PBOOK_TASK_QUEUE
+from pbook.workflow_steps import LLMChatResult
 from pbook.workflows.extraction import ExtractionWorkflow
 
 if TYPE_CHECKING:

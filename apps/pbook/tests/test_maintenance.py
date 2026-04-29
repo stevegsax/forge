@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 from pbook.activities.maintenance import identify_prune_candidates
 
-
 # ---------------------------------------------------------------------------
 # identify_prune_candidates
 # ---------------------------------------------------------------------------

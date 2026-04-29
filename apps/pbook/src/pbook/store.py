@@ -275,7 +275,10 @@ def get_entries_by_tags(
     if not tags:
         return []
 
-    logger.debug("Querying entries by tags=%s limit=%d approved_only=%s", tags, limit, approved_only)
+    logger.debug(
+        "Querying entries by tags=%s limit=%d approved_only=%s",
+        tags, limit, approved_only,
+    )
     tag_placeholders = ", ".join(f":tag_{i}" for i in range(len(tags)))
     tag_params = {f"tag_{i}": tag for i, tag in enumerate(tags)}
 

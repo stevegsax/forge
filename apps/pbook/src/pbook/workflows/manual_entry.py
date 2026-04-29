@@ -124,7 +124,8 @@ class ManualEntryWorkflow:
         # Step 6: Apply suggestions, restore the precomputed embedding, save.
         final = apply_suggestions(proposed, review)
         final_dict = final.model_dump()
-        final_dict["embedding"] = entry_embedding  # base64; matches save_extracted_entries' expectation
+        # base64; matches save_extracted_entries' expectation
+        final_dict["embedding"] = entry_embedding
 
         save_input = json.dumps({
             "entries": [final_dict],

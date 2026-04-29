@@ -49,7 +49,7 @@ class MaintenanceWorkflow:
         # ACE: Pruning mainly removes stale or harmful fragments
         prune_candidates = identify_prune_candidates(all_entries)
         prune_ids = [e["id"] for e in prune_candidates]
-        
+
         pruned_count = 0
         if prune_ids:
             pruned_count = await workflow.execute_activity(
@@ -65,7 +65,7 @@ class MaintenanceWorkflow:
         # Step 3: Identify clusters of semantically similar entries for consolidation
         # ACE: Grow-and-refine mechanism balances expansion with redundancy control
         clusters = group_similar_entries(remaining_entries, threshold=0.85)
-        
+
         model = resolve_model(CapabilityTier.REASONING, ModelConfig())
 
         consolidated_count = 0
@@ -129,7 +129,7 @@ class MaintenanceWorkflow:
                 cluster_ids,
                 start_to_close_timeout=_PRUNE_TIMEOUT,
             )
-            
+
             consolidated_count += 1
 
         return {

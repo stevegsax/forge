@@ -10,8 +10,8 @@ import logging
 from datetime import timedelta
 
 from temporalio.client import Client
-from temporalio.worker import Worker
 from temporalio.converter import DataConverter
+from temporalio.worker import Worker
 
 # Import activities
 from pbook.activities.export import export_single_entry, fetch_entry_ids
@@ -52,7 +52,7 @@ PBOOK_TASK_QUEUE = "pbook-task-queue"
 def _get_data_converter() -> DataConverter:
     """Get a DataConverter that supports Pydantic models natively (Phase 4)."""
     from temporalio.contrib.pydantic import PydanticPayloadConverter
-    
+
     return DataConverter(
         payload_converter_class=PydanticPayloadConverter,
     )
@@ -92,7 +92,7 @@ async def run_worker(address: str = "localhost:7233") -> None:
     _register_llm_provider()
     _register_output_types()
     logger.info("Connecting to Temporal at %s", address)
-    
+
     # Use custom DataConverter for Phase 4 improvements
     client = await Client.connect(address, data_converter=_get_data_converter())
 

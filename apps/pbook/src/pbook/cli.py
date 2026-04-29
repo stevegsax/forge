@@ -14,8 +14,6 @@ from pathlib import Path
 
 import click
 
-logger = logging.getLogger(__name__)
-
 from pbook.models import PlaybookEntry
 from pbook.store import (
     build_entry_dict,
@@ -31,6 +29,8 @@ from pbook.store import (
     update_entry,
 )
 from pbook.tags import validate_tags
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_db() -> tuple:
@@ -372,7 +372,10 @@ def migrate() -> None:
 
 @main.command()
 @click.argument("entry_id", type=int)
-@click.option("--helpful", "is_helpful", flag_value=True, default=None, help="Mark entry as helpful.")
+@click.option(
+    "--helpful", "is_helpful", flag_value=True, default=None,
+    help="Mark entry as helpful.",
+)
 @click.option("--harmful", "is_helpful", flag_value=False, help="Mark entry as harmful.")
 @click.option("--context", default="", help="Why the entry was helpful or harmful.")
 def feedback(entry_id: int, is_helpful: bool | None, context: str) -> None:
@@ -393,11 +396,20 @@ def feedback(entry_id: int, is_helpful: bool | None, context: str) -> None:
 
 
 @main.command()
-@click.option("--dry-run", is_flag=True, default=False, help="List candidates without changing anything.")
+@click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="List candidates without changing anything.",
+)
 @click.option("--apply", is_flag=True, default=False, help="Mark candidates for review.")
 @click.option("--min-retrievals", default=5, help="Minimum retrievals for harmful ratio check.")
-@click.option("--max-harmful-ratio", default=0.5, type=float, help="Harmful ratio threshold.")
-@click.option("--max-stale-days", default=180, type=int, help="Days before unretrieved entry is stale.")
+@click.option(
+    "--max-harmful-ratio", default=0.5, type=float,
+    help="Harmful ratio threshold.",
+)
+@click.option(
+    "--max-stale-days", default=180, type=int,
+    help="Days before unretrieved entry is stale.",
+)
 def prune(
     dry_run: bool,
     apply: bool,

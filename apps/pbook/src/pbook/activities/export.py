@@ -13,9 +13,9 @@ import logging
 
 from temporalio import activity
 
-logger = logging.getLogger(__name__)
-
 from pbook.models import PlaybookEntry
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Pure functions

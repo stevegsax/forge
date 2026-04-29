@@ -13,10 +13,10 @@ import logging
 
 from temporalio import activity
 
-logger = logging.getLogger(__name__)
-
 from pbook.models import EntryType, RetrievalMode
 from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES, parse_tag
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Pure functions

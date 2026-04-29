@@ -68,9 +68,9 @@ async def find_duplicates(input_json: str) -> list[dict]:
 
     Accepts JSON with keys: embedding (bytes), threshold (float).
     """
-    from pbook.store import find_semantic_duplicates, get_db_path, get_engine, run_migrations
-
     import base64
+
+    from pbook.store import find_semantic_duplicates, get_db_path, get_engine, run_migrations
 
     data = json.loads(input_json)
     embedding = base64.b64decode(data["embedding"])

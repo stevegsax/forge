@@ -29,8 +29,8 @@ from pbook.store import (
     run_migrations,
     save_entries,
 )
-from pbook.workflow_steps import LLMChatResult
 from pbook.worker import PBOOK_TASK_QUEUE
+from pbook.workflow_steps import LLMChatResult
 from pbook.workflows.manual_entry import ManualEntryWorkflow
 
 if TYPE_CHECKING:

@@ -159,7 +159,8 @@ async def record_ingested_session(input_json: str) -> None:
     Accepts JSON with keys: session_id, project_name, experiences_found, entries_created.
     Called cross-queue from forge's IngestionWorkflow.
     """
-    from pbook.store import get_db_path, get_engine, record_ingested_session as _record, run_migrations
+    from pbook.store import get_db_path, get_engine, run_migrations
+    from pbook.store import record_ingested_session as _record
 
     data = json.loads(input_json)
     session_id = data["session_id"]
