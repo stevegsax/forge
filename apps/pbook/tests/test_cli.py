@@ -486,6 +486,169 @@ class TestApproveReject:
 
 
 # ---------------------------------------------------------------------------
+# review --json (additional cases beyond the human-output tests below)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewJSON:
+    def test_review_json_lists_only_needs_review(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="approved", needs_review=False)
+        _seed_entry(engine, title="pending", needs_review=True)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["review", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert data[0]["title"] == "pending"
+
+    def test_review_json_empty_returns_empty_array(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["review", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == []
+
+
+# ---------------------------------------------------------------------------
+# sources command
+# ---------------------------------------------------------------------------
+
+
+class TestSourcesCommand:
+    def test_sources_lists_rows(self, tmp_path, monkeypatch):
+        from pbook.store import add_entry_source
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+        add_entry_source(
+            engine,
+            entry_id=1,
+            session_id="abc",
+            project_name="forge",
+            experience_hash="h1",
+            source_context="situation excerpt",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["sources", "1"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+        assert data[0]["session_id"] == "abc"
+        assert data[0]["source_context"] == "situation excerpt"
+        # Embedding column stripped per JSON contract.
+        assert "source_context_embedding" not in data[0]
+
+    def test_sources_missing_entry_returns_not_found_envelope(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["sources", "999"])
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# session-text command
+# ---------------------------------------------------------------------------
+
+
+class TestSessionTextCommand:
+    def test_session_text_path_override_renders(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        # Minimal valid Claude Code JSONL: one user message.
+        jsonl = tmp_path / "fake.jsonl"
+        jsonl.write_text(json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": "hello"},
+        }) + "\n")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["session-text", "fake", "--path", str(jsonl)],
+        )
+        assert result.exit_code == 0
+        assert "USER" in result.output or "hello" in result.output
+
+    def test_session_text_raw_returns_jsonl(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        jsonl = tmp_path / "fake.jsonl"
+        jsonl.write_text('{"type":"user","message":{"role":"user","content":"hi"}}\n')
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["session-text", "fake", "--path", str(jsonl), "--raw"],
+        )
+        assert result.exit_code == 0
+        assert '"type":"user"' in result.output
+
+    def test_session_text_missing_returns_envelope(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["session-text", "no-such-session", "--json"])
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["code"] == "session_file_missing"
+
+
+# ---------------------------------------------------------------------------
+# tags command
+# ---------------------------------------------------------------------------
+
+
+class TestTagsCommand:
+    def test_tags_json_includes_namespaces_and_values(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="A", tags=["lang:python", "lib:sqlalchemy"])
+        _seed_entry(engine, title="B", tags=["lang:go", "domain:cli"])
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["tags"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert "lang" in data["namespaces"]["general"]
+        assert "project" in data["namespaces"]["extracted"]
+        assert "python" in data["values_in_use"]["lang"]
+        assert "go" in data["values_in_use"]["lang"]
+        assert "sqlalchemy" in data["values_in_use"]["lib"]
+        assert "cli" in data["values_in_use"]["domain"]
+
+    def test_tags_excludes_rejected_entries(self, tmp_path, monkeypatch):
+        from pbook.store import mark_rejected
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, title="kept", tags=["lang:python"])
+        _seed_entry(engine, title="dropped", tags=["lang:elixir"])
+        mark_rejected(engine, 2)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["tags"])
+        data = json.loads(result.stdout)
+        assert "python" in data["values_in_use"]["lang"]
+        assert "elixir" not in data["values_in_use"]["lang"]
+
+
+# ---------------------------------------------------------------------------
 # check-duplicate
 # ---------------------------------------------------------------------------
 

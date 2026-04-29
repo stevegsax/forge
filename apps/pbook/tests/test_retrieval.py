@@ -221,6 +221,45 @@ class TestRankAndPack:
         assert len(packed) == 1
         assert packed[0]["id"] == 2
 
+    def test_encode_candidate_embedding_handles_bytes_list_str_none(self):
+        from pbook.workflows.retrieval import _encode_candidate_embedding
+
+        assert _encode_candidate_embedding(None) == ""
+        assert _encode_candidate_embedding("") == ""
+        # bytes → base64
+        assert _encode_candidate_embedding(b"\x01\x02") == "AQI="
+        # list of ints (Temporal-serialized bytes) → base64
+        assert _encode_candidate_embedding([1, 2]) == "AQI="
+        # str input passes through (assumed already base64)
+        assert _encode_candidate_embedding("AQI=") == "AQI="
+        # unknown type falls back to empty
+        assert _encode_candidate_embedding({"unexpected": True}) == ""
+
+    @pytest.mark.asyncio
+    async def test_compute_similarities_activity(self):
+        """Direct unit test of the activity function (not via Temporal)."""
+        import base64
+        import json
+        import struct
+
+        from pbook.activities.retrieval import compute_similarities
+
+        emb_a = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        emb_b = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
+        query = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+
+        result = await compute_similarities(json.dumps({
+            "query_embedding_b64": base64.b64encode(query).decode("ascii"),
+            "candidates": [
+                {"id": 1, "embedding_b64": base64.b64encode(emb_a).decode("ascii")},
+                {"id": 2, "embedding_b64": base64.b64encode(emb_b).decode("ascii")},
+                {"id": 3, "embedding_b64": ""},  # missing — skipped
+            ],
+        }))
+        assert result["1"] > 0.99   # aligned with query
+        assert result["2"] < 0.01   # orthogonal
+        assert "3" not in result
+
     def test_tag_only_unchanged_when_no_similarities(self):
         """Regression: existing forge consumers pass no similarities and
         must see the same scoring behavior as before this change."""

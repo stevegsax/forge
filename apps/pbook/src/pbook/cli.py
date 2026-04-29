@@ -561,11 +561,16 @@ def search(
 
 @main.command()
 @click.option("--limit", default=20, help="Maximum entries to show.")
-def review(limit: int) -> None:
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+def review(limit: int, output_json: bool) -> None:
     """List entries needing review."""
     engine, _ = _resolve_db()
     entries = list_recent_entries(engine, limit=limit)
     needs_review = [e for e in entries if e.get("needs_review")]
+
+    if output_json:
+        _emit_json([_reshape_entry(e) for e in needs_review])
+        return
 
     if not needs_review:
         click.echo("No entries need review.")
@@ -576,6 +581,140 @@ def review(limit: int) -> None:
     for entry in needs_review:
         click.echo(_format_entry(entry))
         click.echo("")
+
+
+@main.command()
+@click.argument("entry_id", type=int)
+@click.option(
+    "--json", "output_json", is_flag=True, default=True,
+    help="Machine-readable JSON output (default).",
+)
+def sources(entry_id: int, output_json: bool) -> None:
+    """List the entry_sources rows that produced an entry."""
+    from pbook.store import list_entry_sources_for_entry
+
+    engine, _ = _resolve_db()
+    if get_entry_by_id(engine, entry_id) is None:
+        _emit_error(
+            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+        )
+
+    rows = list_entry_sources_for_entry(engine, entry_id)
+    if output_json:
+        _emit_json([_strip_embedding(r) for r in rows])
+        return
+
+    if not rows:
+        click.echo(f"No sources recorded for entry {entry_id}.")
+        return
+
+    for row in rows:
+        click.echo(
+            f"[{row['id']}] session={row['session_id'] or '-'}  "
+            f"project={row['project_name'] or '-'}  "
+            f"hash={row['experience_hash'] or '-'}",
+        )
+        if row.get("source_context"):
+            click.echo(f"  {row['source_context']}")
+        click.echo("")
+
+
+@main.command(name="session-text")
+@click.argument("session_id")
+@click.option(
+    "--path", "path_override",
+    type=click.Path(exists=True, path_type=Path),
+    help="Override transcript path (used when the session isn't in ingested_sessions).",
+)
+@click.option(
+    "--raw", is_flag=True,
+    help="Emit the JSONL bytes verbatim instead of rendered text.",
+)
+@click.option(
+    "--json", "output_json", is_flag=True,
+    help="JSON-wrap the output (otherwise plain text).",
+)
+def session_text(
+    session_id: str,
+    path_override: Path | None,
+    raw: bool,
+    output_json: bool,
+) -> None:
+    """Render the transcript for a Claude Code session by id.
+
+    Resolves the JSONL path by scanning ~/.claude/projects/ for a file
+    whose stem matches SESSION_ID. Use --path to override (manual
+    sessions, alternate locations).
+    """
+    from pbook.transcript import discover_sessions, parse_jsonl_file, render_transcript
+
+    if path_override is not None:
+        jsonl_path: Path | None = path_override
+    else:
+        jsonl_path = None
+        # discover_sessions scans ~/.claude/projects/; find the matching session.
+        for s in discover_sessions(min_size=0, exclude_subagents=False):
+            if s.session_id == session_id:
+                jsonl_path = Path(s.path)
+                break
+
+    if jsonl_path is None or not jsonl_path.exists():
+        _emit_error(
+            "session_file_missing",
+            f"No transcript found for session {session_id}. Use --path to point at one.",
+            json_mode=output_json,
+        )
+
+    if raw:
+        text = jsonl_path.read_text()
+    else:
+        transcript = parse_jsonl_file(jsonl_path)
+        text = render_transcript(transcript)
+
+    if output_json:
+        _emit_json({
+            "session_id": session_id,
+            "path": str(jsonl_path),
+            "raw": raw,
+            "text": text,
+        })
+    else:
+        click.echo(text)
+
+
+@main.command()
+@click.option(
+    "--json", "output_json", is_flag=True, default=True,
+    help="Machine-readable JSON output (default).",
+)
+def tags(output_json: bool) -> None:
+    """Show valid tag namespaces and the values currently in use.
+
+    Combines the canonical namespace list (closed set in pbook.tags)
+    with values_in_use, computed across non-rejected entries.
+    """
+    from pbook.store import list_tag_values_in_use
+    from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES
+
+    engine, _ = _resolve_db()
+    payload = {
+        "namespaces": {
+            "general": sorted(GENERAL_NAMESPACES),
+            "extracted": sorted(EXTRACTED_NAMESPACES),
+        },
+        "values_in_use": list_tag_values_in_use(engine),
+    }
+
+    if output_json:
+        _emit_json(payload)
+    else:
+        click.echo("Tag namespaces:")
+        for kind, names in payload["namespaces"].items():
+            click.echo(f"  {kind}: {', '.join(names)}")
+        click.echo("")
+        click.echo("Values in use:")
+        for ns, vals in payload["values_in_use"].items():
+            click.echo(f"  {ns}: {', '.join(vals) if vals else '(none)'}")
 
 
 @main.command()

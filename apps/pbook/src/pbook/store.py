@@ -332,6 +332,36 @@ def list_recent_entries(
         return [dict(row) for row in rows]
 
 
+def list_tag_values_in_use(engine: Engine) -> dict[str, list[str]]:
+    """Group tag values by namespace across non-rejected entries.
+
+    Returns ``{"lang": ["python", ...], "lib": [...], ...}`` with values
+    deduplicated and sorted. Used by ``pbook tags --json`` so a skill
+    can suggest tags that are already in use without needing to
+    enumerate every entry.
+    """
+    from pbook.tags import VALID_NAMESPACES
+
+    t = Entry.__table__
+    stmt = sa.select(t.c.tags_json).where(t.c.rejected == False)  # noqa: E712
+
+    groups: dict[str, set[str]] = {ns: set() for ns in VALID_NAMESPACES}
+    with engine.connect() as conn:
+        for (tags_raw,) in conn.execute(stmt).all():
+            try:
+                tags = json.loads(tags_raw or "[]")
+            except json.JSONDecodeError:
+                continue
+            for tag in tags:
+                if not isinstance(tag, str) or ":" not in tag:
+                    continue
+                ns, _, value = tag.partition(":")
+                if ns in groups and value:
+                    groups[ns].add(value)
+
+    return {ns: sorted(values) for ns, values in groups.items()}
+
+
 def mark_rejected(
     engine: Engine, entry_id: int, *, reason: str | None = None,
 ) -> None:

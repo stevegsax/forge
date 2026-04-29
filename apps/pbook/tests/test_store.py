@@ -725,3 +725,73 @@ class TestRejectedFiltering:
             engine, ["lang:python"], include_rejected=True,
         )
         assert {r["id"] for r in rows} == set(ids)
+
+
+class TestListTagValuesInUse:
+    def test_groups_by_namespace(self, tmp_path):
+        from pbook.store import list_tag_values_in_use
+
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="A", content="x",
+                tags=["lang:python", "lib:pytest", "domain:testing"],
+            )),
+            build_entry_dict(PlaybookEntry(
+                title="B", content="y",
+                tags=["lang:go", "lib:cobra"],
+            )),
+        ])
+
+        result = list_tag_values_in_use(engine)
+        assert result["lang"] == ["go", "python"]
+        assert result["lib"] == ["cobra", "pytest"]
+        assert result["domain"] == ["testing"]
+        # Empty namespaces return empty lists, not missing keys.
+        assert result["project"] == []
+        assert result["pattern"] == []
+
+    def test_excludes_rejected_entries(self, tmp_path):
+        from pbook.store import list_tag_values_in_use, mark_rejected
+
+        engine, _ = setup_db(tmp_path)
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="kept", content="x", tags=["lang:python"],
+            )),
+            build_entry_dict(PlaybookEntry(
+                title="dropped", content="x", tags=["lang:elixir"],
+            )),
+        ])
+        # The "dropped" entry's id depends on insert order — find it.
+        rejected_id = next(
+            r["id"] for r in list_recent_entries(engine, include_rejected=True)
+            if r["title"] == "dropped"
+        )
+        mark_rejected(engine, rejected_id)
+
+        result = list_tag_values_in_use(engine)
+        assert "python" in result["lang"]
+        assert "elixir" not in result["lang"]
+
+    def test_handles_malformed_tags_gracefully(self, tmp_path):
+        from pbook.store import list_tag_values_in_use
+
+        engine, _ = setup_db(tmp_path)
+        # Tags without colons or with empty values shouldn't crash.
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="A", content="x", tags=["lang:python"],
+            )),
+        ])
+        # Direct DB poke to introduce malformed tags_json (sim. a
+        # historical bad row):
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE entries SET tags_json = '[\"malformed\", \"\", \"x:\"]' WHERE id = 1",
+            ))
+
+        result = list_tag_values_in_use(engine)
+        # No crash; the well-formed namespaces are still empty for this entry.
+        assert all(isinstance(v, list) for v in result.values())
