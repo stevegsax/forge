@@ -332,6 +332,50 @@ def list_recent_entries(
         return [dict(row) for row in rows]
 
 
+def list_review_queue_with_sources(engine: Engine) -> list[dict]:
+    """Fetch needs_review entries each annotated with their source rows.
+
+    Each returned dict is an entry with an extra ``sources`` key holding
+    its ``entry_sources`` rows in created_at order. Rejected entries are
+    excluded.
+
+    Used by ``pbook review --by-experience`` to surface over-extraction
+    clusters: when a single AnalyzedExperience produces multiple
+    near-duplicate entries, they share an ``experience_hash`` and the
+    grouping is the fastest way to spot them at triage time.
+    """
+    t = Entry.__table__
+    stmt = (
+        t.select()
+        .where(t.c.needs_review == True)  # noqa: E712
+        .where(t.c.rejected == False)  # noqa: E712
+        .order_by(t.c.created_at.desc())
+    )
+    with engine.connect() as conn:
+        entries = [dict(row) for row in conn.execute(stmt).mappings().all()]
+
+    if not entries:
+        return []
+
+    s = EntrySource.__table__
+    src_stmt = (
+        s.select()
+        .where(s.c.entry_id.in_([e["id"] for e in entries]))
+        .order_by(s.c.created_at.asc())
+    )
+    with engine.connect() as conn:
+        source_rows = [dict(row) for row in conn.execute(src_stmt).mappings().all()]
+
+    by_entry: dict[int, list[dict]] = {}
+    for src in source_rows:
+        by_entry.setdefault(src["entry_id"], []).append(src)
+
+    for entry in entries:
+        entry["sources"] = by_entry.get(entry["id"], [])
+
+    return entries
+
+
 def list_tag_values_in_use(engine: Engine) -> dict[str, list[str]]:
     """Group tag values by namespace across non-rejected entries.
 

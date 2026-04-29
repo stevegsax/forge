@@ -574,6 +574,110 @@ class TestReviewJSON:
 
 
 # ---------------------------------------------------------------------------
+# review --by-experience grouping
+# ---------------------------------------------------------------------------
+
+
+class TestGroupReviewByExperience:
+    """Pure grouping helper — entries sharing an experience_hash form a
+    cluster (>= 2 members); everything else is a singleton."""
+
+    def test_two_entries_same_hash_form_cluster(self):
+        from pbook.cli import _group_review_by_experience
+
+        entries = [
+            {"id": 1, "title": "A", "sources": [{"experience_hash": "h1"}]},
+            {"id": 2, "title": "B", "sources": [{"experience_hash": "h1"}]},
+        ]
+        clusters, singletons = _group_review_by_experience(entries)
+        assert singletons == []
+        assert len(clusters) == 1
+        h, ents = clusters[0]
+        assert h == "h1"
+        assert {e["id"] for e in ents} == {1, 2}
+
+    def test_unique_hashes_become_singletons(self):
+        from pbook.cli import _group_review_by_experience
+
+        entries = [
+            {"id": 1, "sources": [{"experience_hash": "h1"}]},
+            {"id": 2, "sources": [{"experience_hash": "h2"}]},
+        ]
+        clusters, singletons = _group_review_by_experience(entries)
+        assert clusters == []
+        assert {e["id"] for e in singletons} == {1, 2}
+
+    def test_no_sources_entry_is_singleton(self):
+        from pbook.cli import _group_review_by_experience
+
+        entries = [{"id": 5, "sources": []}]
+        clusters, singletons = _group_review_by_experience(entries)
+        assert clusters == []
+        assert singletons == [{"id": 5, "sources": []}]
+
+    def test_null_experience_hash_is_singleton(self):
+        """Manual entries with no experience_hash shouldn't be clustered."""
+        from pbook.cli import _group_review_by_experience
+
+        entries = [
+            {"id": 1, "sources": [{"experience_hash": None}]},
+            {"id": 2, "sources": [{"experience_hash": None}]},
+        ]
+        clusters, singletons = _group_review_by_experience(entries)
+        assert clusters == []
+        assert len(singletons) == 2
+
+    def test_mixed_clusters_and_singletons(self):
+        from pbook.cli import _group_review_by_experience
+
+        entries = [
+            {"id": 1, "sources": [{"experience_hash": "h1"}]},
+            {"id": 2, "sources": [{"experience_hash": "h1"}]},
+            {"id": 3, "sources": [{"experience_hash": "h1"}]},
+            {"id": 4, "sources": [{"experience_hash": "h2"}]},
+            {"id": 5, "sources": []},
+        ]
+        clusters, singletons = _group_review_by_experience(entries)
+        assert len(clusters) == 1
+        assert {e["id"] for e in clusters[0][1]} == {1, 2, 3}
+        assert {e["id"] for e in singletons} == {4, 5}
+
+
+class TestReviewByExperienceCLI:
+    def test_cluster_surfaces_in_json(self, tmp_path, monkeypatch):
+        from pbook.store import add_entry_source
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        # Two needs_review entries from the same experience
+        _seed_entry(engine, title="A from exp", needs_review=True)
+        _seed_entry(engine, title="B from exp", needs_review=True)
+        _seed_entry(engine, title="C alone", needs_review=True)
+        add_entry_source(
+            engine, entry_id=1, session_id="s1", project_name="p",
+            experience_hash="shared", source_context="x", source_context_embedding=b"",
+        )
+        add_entry_source(
+            engine, entry_id=2, session_id="s2", project_name="p",
+            experience_hash="shared", source_context="y", source_context_embedding=b"",
+        )
+        add_entry_source(
+            engine, entry_id=3, session_id="s3", project_name="p",
+            experience_hash="lone", source_context="z", source_context_embedding=b"",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["review", "--by-experience", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data["clusters"]) == 1
+        cluster = data["clusters"][0]
+        assert cluster["experience_hash"] == "shared"
+        assert {e["id"] for e in cluster["entries"]} == {1, 2}
+        assert {e["id"] for e in data["singletons"]} == {3}
+
+
+# ---------------------------------------------------------------------------
 # sources command
 # ---------------------------------------------------------------------------
 

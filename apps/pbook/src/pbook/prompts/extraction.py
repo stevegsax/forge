@@ -52,6 +52,37 @@ def build_extraction_system_prompt(experiences: list[PushExperienceInput]) -> st
     parts.append("- Vague or over-prescriptive advice that constrains future decisions")
     parts.append("- Entries without specific, actionable guidance")
     parts.append("")
+    parts.append("## Verify each candidate against the Resolution")
+    parts.append("")
+    parts.append(
+        "Each candidate lesson must be supported by the **Resolution** text, "
+        "not just the Problem or symptom narrative. Symptoms and dismissed "
+        "hypotheses (red herrings) often appear in the Problem text but are "
+        "explicitly debunked by the Resolution."
+    )
+    parts.append("")
+    parts.append(
+        "If the Resolution explicitly says something was NOT the cause "
+        "('root cause was not X', 'turned out X wasn't the issue', "
+        "'X was a red herring'), do NOT extract a lesson naming X as a pitfall."
+    )
+    parts.append("")
+    parts.append("## One root cause, one entry")
+    parts.append("")
+    parts.append(
+        "Most experiences yield 0 or 1 entries. Multiple entries from one "
+        "experience are rare and should be reserved for cases where the "
+        "Resolution genuinely teaches independent lessons with distinct "
+        "root causes."
+    )
+    parts.append("")
+    parts.append(
+        "If you find yourself producing multiple entries from a single "
+        "experience, ask whether they are facets of the same root cause. "
+        "If so, pick the sharpest framing and drop the others — multiple "
+        "near-duplicate framings of one lesson degrade the playbook."
+    )
+    parts.append("")
     parts.append(
         "It is better to extract NOTHING than to extract a misleading "
         "or overly generic entry. Quality over quantity."

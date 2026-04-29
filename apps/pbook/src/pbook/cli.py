@@ -599,12 +599,94 @@ def search(
         click.echo("")
 
 
+def _group_review_by_experience(
+    entries_with_sources: list[dict],
+) -> tuple[list[tuple[str, list[dict]]], list[dict]]:
+    """Cluster review-queue entries by their primary experience_hash.
+
+    Each entry's first source row's ``experience_hash`` is the cluster
+    key. Hashes mapped to >= 2 entries become clusters; everything else
+    is a singleton. Pure function; no I/O.
+
+    Designed to surface over-extraction: when a single
+    AnalyzedExperience produces multiple near-duplicate entries, the
+    cluster makes them comparable at a glance.
+    """
+    by_hash: dict[str, list[dict]] = {}
+    no_hash: list[dict] = []
+    for entry in entries_with_sources:
+        sources = entry.get("sources", [])
+        primary = sources[0].get("experience_hash") if sources else None
+        if primary is None:
+            no_hash.append(entry)
+        else:
+            by_hash.setdefault(primary, []).append(entry)
+
+    clusters: list[tuple[str, list[dict]]] = []
+    singletons: list[dict] = list(no_hash)
+    for h, ents in sorted(by_hash.items()):
+        if len(ents) >= 2:
+            clusters.append((h, ents))
+        else:
+            singletons.extend(ents)
+    return clusters, singletons
+
+
 @main.command()
 @click.option("--limit", default=20, help="Maximum entries to show.")
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
-def review(limit: int, output_json: bool) -> None:
+@click.option(
+    "--by-experience", "by_experience", is_flag=True,
+    help="Group entries by experience_hash to surface over-extraction clusters.",
+)
+def review(limit: int, output_json: bool, by_experience: bool) -> None:
     """List entries needing review."""
     engine, _ = _resolve_db()
+
+    if by_experience:
+        from pbook.store import list_review_queue_with_sources
+
+        all_entries = list_review_queue_with_sources(engine)[:limit]
+        clusters, singletons = _group_review_by_experience(all_entries)
+
+        if output_json:
+            def _reshape_no_sources(e: dict) -> dict:
+                return _reshape_entry({k: v for k, v in e.items() if k != "sources"})
+            _emit_json({
+                "clusters": [
+                    {
+                        "experience_hash": h,
+                        "project_name": (
+                            ents[0].get("sources", [{}])[0].get("project_name", "")
+                        ),
+                        "entries": [_reshape_no_sources(e) for e in ents],
+                    }
+                    for h, ents in clusters
+                ],
+                "singletons": [_reshape_no_sources(e) for e in singletons],
+            })
+            return
+
+        if not clusters and not singletons:
+            click.echo("No entries need review.")
+            return
+
+        if clusters:
+            click.echo(f"{len(clusters)} cluster(s) — entries sharing an experience_hash:")
+            click.echo("")
+            for h, ents in clusters:
+                click.echo(f"Cluster {h[:12]}… ({len(ents)} entries)")
+                for e in ents:
+                    click.echo(f"  [{e['id']}] {e.get('title', '')}")
+                click.echo("")
+        if singletons:
+            click.echo(f"{len(singletons)} singleton(s):")
+            click.echo("")
+            for e in singletons:
+                click.echo(f"  [{e['id']}] {e.get('title', '')}")
+            click.echo("")
+        return
+
     entries = list_recent_entries(engine, limit=limit)
     needs_review = [e for e in entries if e.get("needs_review")]
 

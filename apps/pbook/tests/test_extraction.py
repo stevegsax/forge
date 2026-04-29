@@ -116,6 +116,30 @@ class TestBuildExtractionSystemPrompt:
         assert "environment" in prompt
         assert "production" in prompt
 
+    def test_warns_against_red_herring_lessons(self):
+        """The prompt must instruct the LLM to verify candidates against
+        the Resolution — symptoms and dismissed hypotheses in the Problem
+        text are common over-extraction traps (see #258/259/260 cluster
+        where MISTRAL_API_KEY appeared in the Problem but was explicitly
+        NOT the cause)."""
+        exp = PushExperienceInput(
+            project="forge", problem="x", resolution="y",
+        )
+        prompt = build_extraction_system_prompt([exp])
+        assert "Resolution" in prompt
+        assert "red herring" in prompt.lower()
+
+    def test_warns_against_multiple_entries_per_experience(self):
+        """Multiple entries from one experience must be rare; if produced,
+        they should reflect distinct root causes, not different framings
+        of the same lesson."""
+        exp = PushExperienceInput(
+            project="forge", problem="x", resolution="y",
+        )
+        prompt = build_extraction_system_prompt([exp])
+        assert "0 or 1 entries" in prompt
+        assert "root cause" in prompt.lower()
+
 
 # ---------------------------------------------------------------------------
 # build_extraction_user_prompt
