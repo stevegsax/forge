@@ -9,6 +9,7 @@ BatchIngestionWorkflow: fans out to process multiple sessions
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import timedelta
 
@@ -145,18 +146,31 @@ class TranscriptIngestionWorkflow:
             }
 
         # Step 4: Convert to PushExperienceInput format and call
-        # pbook's ExtractionWorkflow cross-queue
+        # pbook's ExtractionWorkflow cross-queue. The metadata carries
+        # session_id, the rich situation text (for future "discuss this
+        # play" flows), and a stable experience_hash so re-ingestion
+        # is idempotent on the entry_sources side.
         project = prepared.get("project", "")
-        push_experiences = [
-            {
+        push_experiences = []
+        for exp in experiences:
+            problem = exp["problem"]
+            resolution = exp["resolution"]
+            context = exp.get("context", "")
+            digest = hashlib.sha256(
+                f"{problem}\x00{resolution}\x00{context}".encode(),
+            ).hexdigest()
+            push_experiences.append({
                 "project": project,
-                "problem": exp["problem"],
-                "resolution": exp["resolution"],
-                "context": exp.get("context", ""),
-                "metadata": {"source": "claude-code-transcript", "session_id": session_id},
-            }
-            for exp in experiences
-        ]
+                "problem": problem,
+                "resolution": resolution,
+                "context": context,
+                "metadata": {
+                    "source": "claude-code-transcript",
+                    "session_id": session_id,
+                    "experience_hash": digest,
+                    "situation": exp.get("situation", ""),
+                },
+            })
 
         run_suffix = workflow.uuid4().hex[:8]
         extraction_result = await workflow.execute_child_workflow(
