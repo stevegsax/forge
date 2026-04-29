@@ -31,7 +31,9 @@ pbook is a knowledge playbook service: it stores curated advice and LLM-extracte
 
 **Function Core / Imperative Shell, enforced.** Every module separates pure logic from I/O. Examples: `store.build_entry_dict` (pure) vs `store.save_entries` (I/O); `activities/retrieval.rank_and_pack` (pure) vs `activities/retrieval.fetch_candidates` (I/O). Tests exercise the pure functions directly — they don't mock the database. Keep this split when adding code: a pure function the test can import and call beats a method that requires fixture setup.
 
-**Pluggable LLM provider via `pbook.llm`.** `pbook/llm.py` holds a global `_provider` registered via `set_provider()`; activities call `get_provider()`. The worker registers a `sax-llm` provider at startup. Tests inject mock providers. Activities that don't need an LLM (list, get, approve, prune candidate detection) must not call `get_provider()` so they stay testable without a mock.
+**Pluggable LLM provider via `pbook.llm`.** `pbook/llm.py` holds a global `_provider` registered via `set_provider()`; the generic chat activity calls `get_provider()`. The worker registers a `sax-llm` provider at startup. Tests inject mock providers. Activities that don't need an LLM (list, get, approve, prune candidate detection) must not call `get_provider()` so they stay testable without a mock.
+
+**Generic LLM/embedding workflow steps via `pbook.workflow_steps`.** Every LLM call goes through `llm_chat` (structured-output chat) or `llm_embed` (text-to-vector) — see `src/pbook/workflow_steps/`. Workflows resolve their model via `pbook.models.resolve_model()` in workflow body, build prompts (pure functions in `src/pbook/prompts/`) via `workflow.unsafe.imports_passed_through()`, call `llm_chat` with an `output_type_name` registered at worker startup (`_register_output_types()`), and validate the returned `tool_input` against their own Pydantic class. When adding a new structured output type, register it in `pbook/worker.py::_register_output_types()` or `llm_chat` raises `KeyError`.
 
 ### Data model essentials
 

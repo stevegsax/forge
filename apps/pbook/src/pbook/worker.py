@@ -21,7 +21,6 @@ from pbook.activities.extraction import (
     save_extracted_entries,
 )
 from pbook.activities.maintenance import (
-    consolidate_entries_llm,
     fetch_all_entries_for_maintenance,
     prune_entries,
     save_consolidated_entry,
@@ -118,12 +117,10 @@ async def run_worker(address: str = "localhost:7233") -> None:
             find_duplicates,
             fetch_all_entries_for_maintenance,
             prune_entries,
-            consolidate_entries_llm,
             save_consolidated_entry,
             record_ingested_session,
             record_ingested_session_error,
-            # Generic LLM workflow steps. Old per-purpose activities above
-            # are removed in subsequent migration PRs.
+            # Generic LLM workflow steps used by all workflows in this worker.
             llm_chat,
             llm_embed,
         ],

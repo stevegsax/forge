@@ -5,21 +5,16 @@ Extends test_maintenance.py which covers identify_prune_candidates.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
-from sax_llm.models import ProviderResponse
 
 from pbook.activities.maintenance import (
-    consolidate_entries_llm,
     fetch_all_entries_for_maintenance,
     group_similar_entries,
     prune_entries,
 )
-from pbook.llm import ConsolidationResult, set_provider
 from pbook.store import get_engine, run_migrations, save_entries
 
 if TYPE_CHECKING:
@@ -203,50 +198,7 @@ class TestPruneEntries:
         assert count == 0
 
 
-# ---------------------------------------------------------------------------
-# consolidate_entries_llm activity
-# ---------------------------------------------------------------------------
-
-
-class TestConsolidateEntriesLlm:
-    @pytest.fixture(autouse=True)
-    def _cleanup_provider(self):
-        yield
-        from pbook.llm import reset_provider
-        reset_provider()
-
-    @pytest.mark.asyncio
-    async def test_merges_entries(self):
-        mock_response = ProviderResponse(
-            tool_input={
-                "merged_title": "Combined Lesson",
-                "merged_content": "Unified content",
-                "merged_tags": ["lang:python", "tool:pytest"],
-            },
-            model_name="test",
-            input_tokens=0,
-            output_tokens=0,
-            raw_response_json="{}",
-        )
-        provider = MagicMock()
-        provider.build_request_params.return_value = {}
-        provider.call = AsyncMock(return_value=mock_response)
-        set_provider(provider)
-
-        entries = [
-            {"title": "Lesson A", "content": "Content A", "tags_json": '["lang:python"]'},
-            {"title": "Lesson B", "content": "Content B", "tags_json": '["tool:pytest"]'},
-        ]
-        result_json = await consolidate_entries_llm(json.dumps(entries))
-        result = ConsolidationResult.model_validate_json(result_json)
-
-        assert result.merged_title == "Combined Lesson"
-        assert result.merged_content == "Unified content"
-        assert "lang:python" in result.merged_tags
-
-    @pytest.mark.asyncio
-    async def test_empty_entries(self):
-        result_json = await consolidate_entries_llm("[]")
-        result = ConsolidationResult.model_validate_json(result_json)
-        assert result.merged_title == ""
-        assert result.merged_content == ""
+# consolidate_entries_llm activity is gone — consolidation now goes
+# through the generic llm_chat step. Coverage of the merge prompt
+# lives in tests/test_workflow_steps_llm.py and the workflow-level
+# tests below (TestMaintenanceWorkflow, when added).

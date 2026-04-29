@@ -4,7 +4,11 @@ Design follows Function Core / Imperative Shell:
 
 - Pure functions: identify_prune_candidates, group_similar_entries
 - Temporal activities: fetch_all_entries_for_maintenance, prune_entries,
-  consolidate_entries_llm
+  save_consolidated_entry
+
+The LLM consolidation call now goes through the generic ``llm_chat``
+step in :mod:`pbook.workflow_steps.llm`; this module owns only the
+database-side maintenance work.
 """
 
 from __future__ import annotations
@@ -12,25 +16,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
 from temporalio import activity
 
 logger = logging.getLogger(__name__)
-
-from pbook.llm import ConsolidationResult, text_messages
-from pbook.models import CapabilityTier, ModelConfig, resolve_model
-
-if TYPE_CHECKING:
-    from pbook.llm import LLMProvider
-
-
-def _resolve_default_model() -> tuple[str, str]:
-    """Resolve the default model for consolidation."""
-    from sax_llm.registry import parse_model_id
-
-    model_id = resolve_model(CapabilityTier.REASONING, ModelConfig())
-    return parse_model_id(model_id)
 
 
 # ---------------------------------------------------------------------------
@@ -242,40 +231,3 @@ async def save_consolidated_entry(input_json: str) -> int:
     return new_id
 
 
-@activity.defn
-async def consolidate_entries_llm(entries_json: str) -> str:
-    """Merge semantically similar entries using an LLM.
-
-    Accepts JSON-serialized list of entries.
-    Returns JSON-serialized ConsolidationResult.
-    """
-    from pbook.llm import get_provider
-
-    entries = json.loads(entries_json)
-    if not entries:
-        return ConsolidationResult(merged_title="", merged_content="").model_dump_json()
-
-    from pbook.prompts.consolidation import (
-        build_consolidation_system_prompt,
-        build_consolidation_user_prompt,
-    )
-
-    logger.info("Consolidating %d entries via LLM", len(entries))
-    provider = get_provider()
-    _, model = _resolve_default_model()
-
-    system_prompt = build_consolidation_system_prompt()
-    user_prompt = build_consolidation_user_prompt(entries)
-
-    messages = text_messages(system_prompt, user_prompt)
-
-    params = provider.build_request_params(
-        messages=messages,
-        output_type=ConsolidationResult,
-        model=model,
-        max_tokens=2048,
-    )
-    response = await provider.call(params)
-    result = ConsolidationResult.model_validate(response.tool_input)
-
-    return result.model_dump_json()

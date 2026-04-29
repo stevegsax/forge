@@ -14,10 +14,17 @@ from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from pbook.activities.maintenance import group_similar_entries, identify_prune_candidates
     from pbook.llm import ConsolidationResult
+    from pbook.models import CapabilityTier, ModelConfig, resolve_model
+    from pbook.prompts.consolidation import (
+        build_consolidation_system_prompt,
+        build_consolidation_user_prompt,
+    )
+    from pbook.workflow_steps.llm import LLMChatInput, LLMChatResult
 
 _FETCH_TIMEOUT = timedelta(seconds=60)
 _PRUNE_TIMEOUT = timedelta(seconds=60)
 _CONSOLIDATE_TIMEOUT = timedelta(minutes=5)
+_CONSOLIDATE_HEARTBEAT = timedelta(seconds=60)
 _SAVE_TIMEOUT = timedelta(seconds=30)
 _EMBEDDING_TIMEOUT = timedelta(seconds=60)
 
@@ -59,29 +66,38 @@ class MaintenanceWorkflow:
         # ACE: Grow-and-refine mechanism balances expansion with redundancy control
         clusters = group_similar_entries(remaining_entries, threshold=0.85)
         
+        model = resolve_model(CapabilityTier.REASONING, ModelConfig())
+
         consolidated_count = 0
         for cluster in clusters:
             # Consolidation logic:
             # 1. Ask LLM to merge cluster into a single entry
             # 2. Compute embedding for the new entry
-            # 3. Save the new entry
+            # 3. Save the new entry (re-parents source rows)
             # 4. Prune the original entries in the cluster
-            
-            result_json = await workflow.execute_activity(
-                "consolidate_entries_llm",
-                json.dumps(cluster),
+
+            chat_result = await workflow.execute_activity(
+                "llm_chat",
+                LLMChatInput(
+                    system_prompt=build_consolidation_system_prompt(),
+                    user_prompt=build_consolidation_user_prompt(cluster),
+                    output_type_name="ConsolidationResult",
+                    model=model,
+                    max_tokens=2048,
+                ),
                 start_to_close_timeout=_CONSOLIDATE_TIMEOUT,
-                result_type=str,
+                heartbeat_timeout=_CONSOLIDATE_HEARTBEAT,
+                result_type=LLMChatResult,
             )
-            result = ConsolidationResult.model_validate_json(result_json)
-            
+            result = ConsolidationResult.model_validate(chat_result.tool_input)
+
             if not result.merged_title or not result.merged_content:
                 continue
 
             # Compute embedding for the new entry
             text_to_embed = f"{result.merged_title}\n{result.merged_content}"
             embedding = await workflow.execute_activity(
-                "compute_embedding",
+                "llm_embed",
                 text_to_embed,
                 start_to_close_timeout=_EMBEDDING_TIMEOUT,
                 result_type=str,
