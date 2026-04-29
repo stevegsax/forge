@@ -8,6 +8,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 
@@ -186,8 +187,6 @@ async def compute_similarities(input_json: str) -> dict[str, float]:
     Lives in an activity because numpy operations inside a workflow
     body trip Temporal's determinism sandbox.
     """
-    import base64
-
     from pbook.embeddings import cosine_similarity
 
     data = json.loads(input_json)
@@ -285,6 +284,17 @@ async def fetch_candidates(input_json: str) -> list[dict]:
             candidates = [dict(r) for r in conn.execute(stmt).mappings().all()]
     else:
         candidates = []
+
+    # Base64-encode embedding bytes for the wire. Temporal serializes
+    # activity results via pydantic's to_json, which doesn't auto-encode
+    # raw bytes inside arbitrary dicts — random float32 bytes hit the
+    # JSON encoder's UTF-8 validator and the activity fails to complete.
+    # The workflow body's `_encode_candidate_embedding` already handles
+    # str pass-through, so encoding here is transparent downstream.
+    for c in candidates:
+        emb = c.get("embedding")
+        if isinstance(emb, bytes):
+            c["embedding"] = base64.b64encode(emb).decode("ascii")
 
     logger.info("Found %d candidates", len(candidates))
     return candidates

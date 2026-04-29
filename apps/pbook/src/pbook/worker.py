@@ -12,6 +12,10 @@ from datetime import timedelta
 from temporalio.client import Client
 from temporalio.converter import DataConverter
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import (
+    SandboxedWorkflowRunner,
+    SandboxRestrictions,
+)
 
 # Import activities
 from pbook.activities.export import export_single_entry, fetch_entry_ids
@@ -100,9 +104,22 @@ async def run_worker(address: str = "localhost:7233") -> None:
     # Use custom DataConverter for Phase 4 improvements
     client = await Client.connect(address, data_converter=_get_data_converter())
 
+    # Pass pydantic through the workflow sandbox. The sandbox is created
+    # fresh per workflow run; without passthrough, pydantic_core gets
+    # imported lazily inside the workflow body and triggers
+    # "imported after initial workflow load" warnings, plus we'd pay the
+    # re-import cost on every replay. pydantic + pydantic_core are
+    # deterministic and safe to share across runs.
+    runner = SandboxedWorkflowRunner(
+        restrictions=SandboxRestrictions.default.with_passthrough_modules(
+            "pydantic", "pydantic_core",
+        ),
+    )
+
     worker = Worker(
         client,
         task_queue=PBOOK_TASK_QUEUE,
+        workflow_runner=runner,
         workflows=[
             RetrievalWorkflow,
             ExportWorkflow,

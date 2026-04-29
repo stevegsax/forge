@@ -284,6 +284,82 @@ class TestRankAndPack:
 
 
 # ---------------------------------------------------------------------------
+# fetch_candidates wire format
+# ---------------------------------------------------------------------------
+
+
+class TestFetchCandidatesWireFormat:
+    """Embeddings come out of SQLite as raw bytes (BLOB). Temporal
+    serializes activity results via pydantic's to_json, which doesn't
+    auto-base64 raw bytes inside arbitrary dicts — random float32 byte
+    sequences trip serde_json's UTF-8 validator and the activity fails
+    to complete. fetch_candidates must encode embeddings to base64
+    strings before returning so the result can cross the wire."""
+
+    @pytest.mark.asyncio
+    async def test_query_only_branch_encodes_embeddings_as_str(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        import struct
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        from pbook.models import EntryType, PlaybookEntry
+
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="A", content="content",
+                tags=["lang:python"], entry_type=EntryType.CURATED,
+                embedding=emb,
+            )),
+        ])
+
+        result = await fetch_candidates(
+            RetrievalInput(query="anything", token_budget=5000).model_dump_json(),
+        )
+
+        assert len(result) == 1
+        embedding = result[0].get("embedding")
+        assert isinstance(embedding, str), (
+            f"embedding should be base64 str, got {type(embedding).__name__}"
+        )
+        # Sanity-check: decodable, equal to original.
+        import base64
+        assert base64.b64decode(embedding) == emb
+
+    @pytest.mark.asyncio
+    async def test_tag_branch_also_encodes_embeddings(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """Same wire-format constraint applies to the tag-only branch —
+        forge has been calling this path for a long time."""
+        import struct
+
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        emb = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
+        from pbook.models import EntryType, PlaybookEntry
+
+        save_entries(engine, [
+            build_entry_dict(PlaybookEntry(
+                title="B", content="content",
+                tags=["lang:python"], entry_type=EntryType.CURATED,
+                embedding=emb,
+            )),
+        ])
+
+        result = await fetch_candidates(
+            RetrievalInput(
+                tags=["lang:python"], token_budget=5000,
+            ).model_dump_json(),
+        )
+
+        assert len(result) == 1
+        assert isinstance(result[0].get("embedding"), str)
+
+
+# ---------------------------------------------------------------------------
 # RetrievalWorkflow
 # ---------------------------------------------------------------------------
 
