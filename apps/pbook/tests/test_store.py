@@ -644,3 +644,84 @@ class TestEntrySourceCascade:
         assert len(list_entry_sources_for_entry(engine, eid)) == 1
         delete_entry(engine, eid)
         assert list_entry_sources_for_entry(engine, eid) == []
+
+
+# ---------------------------------------------------------------------------
+# Soft-rejection
+# ---------------------------------------------------------------------------
+
+
+class TestMarkRejected:
+    def test_persists_flag_and_reason(self, tmp_path):
+        from pbook.store import mark_rejected
+
+        engine, _ = setup_db(tmp_path)
+        [eid] = _seed_entries(engine, 1)
+
+        mark_rejected(engine, eid, reason="wrong project")
+
+        row = get_entry_by_id(engine, eid)
+        assert row is not None
+        assert row["rejected"] is True
+        assert row["rejection_reason"] == "wrong project"
+
+    def test_default_reason_is_none(self, tmp_path):
+        from pbook.store import mark_rejected
+
+        engine, _ = setup_db(tmp_path)
+        [eid] = _seed_entries(engine, 1)
+        mark_rejected(engine, eid)
+
+        row = get_entry_by_id(engine, eid)
+        assert row is not None
+        assert row["rejected"] is True
+        assert row["rejection_reason"] is None
+
+
+class TestRejectedFiltering:
+    """Default queries hide rejected entries; include_rejected surfaces them."""
+
+    def test_list_recent_entries_excludes_rejected_by_default(self, tmp_path):
+        from pbook.store import mark_rejected
+
+        engine, _ = setup_db(tmp_path)
+        ids = _seed_entries(engine, 3)
+        mark_rejected(engine, ids[0])
+
+        rows = list_recent_entries(engine)
+        surviving_ids = {r["id"] for r in rows}
+        assert ids[0] not in surviving_ids
+        assert ids[1] in surviving_ids and ids[2] in surviving_ids
+
+    def test_list_recent_entries_include_rejected(self, tmp_path):
+        from pbook.store import mark_rejected
+
+        engine, _ = setup_db(tmp_path)
+        ids = _seed_entries(engine, 2)
+        mark_rejected(engine, ids[0])
+
+        rows = list_recent_entries(engine, include_rejected=True)
+        assert {r["id"] for r in rows} == set(ids)
+
+    def test_get_entries_by_tags_excludes_rejected_by_default(self, tmp_path):
+        from pbook.store import get_entries_by_tags, mark_rejected
+
+        engine, _ = setup_db(tmp_path)
+        ids = _seed_entries(engine, 2)
+        mark_rejected(engine, ids[0])
+
+        rows = get_entries_by_tags(engine, ["lang:python"])
+        surviving_ids = {r["id"] for r in rows}
+        assert ids[0] not in surviving_ids
+
+    def test_get_entries_by_tags_include_rejected(self, tmp_path):
+        from pbook.store import get_entries_by_tags, mark_rejected
+
+        engine, _ = setup_db(tmp_path)
+        ids = _seed_entries(engine, 2)
+        mark_rejected(engine, ids[0])
+
+        rows = get_entries_by_tags(
+            engine, ["lang:python"], include_rejected=True,
+        )
+        assert {r["id"] for r in rows} == set(ids)

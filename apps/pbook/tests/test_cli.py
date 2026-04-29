@@ -393,7 +393,9 @@ class TestApproveReject:
         assert result.exit_code != 0
         assert "not found" in result.output
 
-    def test_reject(self, tmp_path, monkeypatch):
+    def test_reject_soft_marks_entry(self, tmp_path, monkeypatch):
+        """`reject` soft-marks the row; it survives for audit and is
+        hidden from default queries."""
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
@@ -403,9 +405,65 @@ class TestApproveReject:
         assert result.exit_code == 0
         assert "Rejected" in result.output
 
-        # Verify deletion
-        result = runner.invoke(main, ["get", "1"])
-        assert result.exit_code != 0
+        # Row still exists — pbook get can find it.
+        result = runner.invoke(main, ["get", "1", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["rejected"] is True
+
+        # But list hides it by default.
+        result = runner.invoke(main, ["list", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == []
+
+        # --include-rejected surfaces it.
+        result = runner.invoke(main, ["list", "--json", "--include-rejected"])
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert data[0]["rejected"] is True
+
+    def test_reject_with_reason(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["reject", "1", "--reason", "wrong project", "--json"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data == {
+            "id": 1,
+            "title": "Test Entry",
+            "approved": False,
+            "rejected": True,
+            "rejection_reason": "wrong project",
+        }
+
+    def test_reject_without_reason_emits_null(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["reject", "1", "--json"])
+        data = json.loads(result.stdout)
+        assert data["rejection_reason"] is None
+
+    def test_approve_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        engine = _setup_db(tmp_path)
+        _seed_entry(engine, needs_review=True)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["approve", "1", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["approved"] is True
+        assert data["needs_review"] is False
+        assert data["rejected"] is False
 
     def test_reject_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
@@ -415,6 +473,16 @@ class TestApproveReject:
         result = runner.invoke(main, ["reject", "999"])
         assert result.exit_code != 0
         assert "not found" in result.output
+
+    def test_reject_missing_json_envelope(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+        _setup_db(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["reject", "999", "--json"])
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["code"] == "not_found"
 
 
 # ---------------------------------------------------------------------------

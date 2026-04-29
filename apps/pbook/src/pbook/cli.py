@@ -22,7 +22,6 @@ from pbook.models import PlaybookEntry
 from pbook.store import (
     build_entry_dict,
     check_duplicate,
-    delete_entry,
     get_db_path,
     get_engine,
     get_entry_by_id,
@@ -181,6 +180,10 @@ def worker(temporal_address: str) -> None:
 @click.option("--type", "entry_type", default="", help="Filter by entry type.")
 @click.option("--project", default="", help="Filter by source project.")
 @click.option("--needs-review", is_flag=True, help="Only show entries flagged for review.")
+@click.option(
+    "--include-rejected", is_flag=True,
+    help="Include entries that have been rejected (excluded by default).",
+)
 @click.option("--limit", default=20, help="Maximum entries to return.")
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 def list_entries(
@@ -188,6 +191,7 @@ def list_entries(
     entry_type: str,
     project: str,
     needs_review: bool,
+    include_rejected: bool,
     limit: int,
     output_json: bool,
 ) -> None:
@@ -197,9 +201,13 @@ def list_entries(
     if tag:
         from pbook.store import get_entries_by_tags
 
-        entries = get_entries_by_tags(engine, list(tag), limit=limit)
+        entries = get_entries_by_tags(
+            engine, list(tag), limit=limit, include_rejected=include_rejected,
+        )
     else:
-        entries = list_recent_entries(engine, limit=limit)
+        entries = list_recent_entries(
+            engine, limit=limit, include_rejected=include_rejected,
+        )
 
     if entry_type:
         entries = [e for e in entries if e.get("entry_type") == entry_type]
@@ -309,30 +317,60 @@ def update(entry_id: int, file_path: Path) -> None:
 
 @main.command()
 @click.argument("entry_id", type=int)
-def approve(entry_id: int) -> None:
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+def approve(entry_id: int, output_json: bool) -> None:
     """Clear the needs-review flag on an entry."""
     engine, _ = _resolve_db()
     existing = get_entry_by_id(engine, entry_id)
     if existing is None:
-        click.echo(f"Entry {entry_id} not found.", err=True)
-        sys.exit(1)
+        _emit_error(
+            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+        )
 
     update_entry(engine, entry_id, {"needs_review": False})
-    click.echo(f"Approved entry {entry_id}: {existing['title']}")
+
+    if output_json:
+        _emit_json({
+            "id": entry_id,
+            "title": existing["title"],
+            "approved": True,
+            "needs_review": False,
+            "rejected": bool(existing.get("rejected", False)),
+            "rejection_reason": existing.get("rejection_reason"),
+        })
+    else:
+        click.echo(f"Approved entry {entry_id}: {existing['title']}")
 
 
 @main.command()
 @click.argument("entry_id", type=int)
-def reject(entry_id: int) -> None:
-    """Delete an entry (reject it)."""
+@click.option("--reason", default="", help="Why the entry is being rejected (optional).")
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
+def reject(entry_id: int, reason: str, output_json: bool) -> None:
+    """Mark an entry as rejected (soft-mark; the row is preserved for audit)."""
+    from pbook.store import mark_rejected
+
     engine, _ = _resolve_db()
     existing = get_entry_by_id(engine, entry_id)
     if existing is None:
-        click.echo(f"Entry {entry_id} not found.", err=True)
-        sys.exit(1)
+        _emit_error(
+            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+        )
 
-    delete_entry(engine, entry_id)
-    click.echo(f"Rejected and deleted entry {entry_id}: {existing['title']}")
+    reason_value: str | None = reason if reason else None
+    mark_rejected(engine, entry_id, reason=reason_value)
+
+    if output_json:
+        _emit_json({
+            "id": entry_id,
+            "title": existing["title"],
+            "approved": False,
+            "rejected": True,
+            "rejection_reason": reason_value,
+        })
+    else:
+        suffix = f" — {reason}" if reason else ""
+        click.echo(f"Rejected entry {entry_id}: {existing['title']}{suffix}")
 
 
 @main.command(name="check-duplicate")

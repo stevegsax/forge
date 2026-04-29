@@ -98,6 +98,10 @@ class Entry(Base):
         onupdate=lambda: datetime.now(UTC),
     )
     embedding: Mapped[bytes | None] = mapped_column(sa.LargeBinary, nullable=True)
+    rejected: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=False, server_default=sa.text("0"),
+    )
+    rejection_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
 
 
 # Match-or-attach thresholds. See grill-me-sessions/entry-sources.grill.md
@@ -266,31 +270,36 @@ def get_entries_by_tags(
     *,
     limit: int = 10,
     approved_only: bool = False,
+    include_rejected: bool = False,
 ) -> list[dict]:
     """Query entries matching any of the given tags, ordered by recency.
 
     Uses SQLite ``json_each()`` to unnest the ``tags_json`` array and match
-    against the input tags.
+    against the input tags. Rejected entries are excluded by default —
+    pass ``include_rejected=True`` to surface them.
     """
     if not tags:
         return []
 
     logger.debug(
-        "Querying entries by tags=%s limit=%d approved_only=%s",
-        tags, limit, approved_only,
+        "Querying entries by tags=%s limit=%d approved_only=%s include_rejected=%s",
+        tags, limit, approved_only, include_rejected,
     )
     tag_placeholders = ", ".join(f":tag_{i}" for i in range(len(tags)))
     tag_params = {f"tag_{i}": tag for i, tag in enumerate(tags)}
 
-    approved_clause = ""
+    clauses = []
     if approved_only:
-        approved_clause = "AND p.needs_review = 0"
+        clauses.append("AND p.needs_review = 0")
+    if not include_rejected:
+        clauses.append("AND p.rejected = 0")
+    extra = "\n        ".join(clauses)
 
     query = sa.text(f"""
         SELECT DISTINCT p.*
         FROM entries p, json_each(p.tags_json) AS t
         WHERE t.value IN ({tag_placeholders})
-        {approved_clause}
+        {extra}
         ORDER BY p.created_at DESC
         LIMIT :limit
     """)
@@ -300,14 +309,48 @@ def get_entries_by_tags(
         return [dict(row) for row in rows]
 
 
-def list_recent_entries(engine: Engine, *, limit: int = 20) -> list[dict]:
-    """Query recent entries ordered by creation time descending."""
+def list_recent_entries(
+    engine: Engine, *, limit: int = 20, include_rejected: bool = False,
+) -> list[dict]:
+    """Query recent entries ordered by creation time descending.
+
+    Rejected entries are excluded by default; pass ``include_rejected=True``
+    to surface them.
+    """
     t = Entry.__table__
     stmt = t.select().order_by(t.c.created_at.desc()).limit(limit)
+    if not include_rejected:
+        stmt = (
+            t.select()
+            .where(t.c.rejected == False)  # noqa: E712 — SQLAlchemy needs == not `is`
+            .order_by(t.c.created_at.desc())
+            .limit(limit)
+        )
 
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
         return [dict(row) for row in rows]
+
+
+def mark_rejected(
+    engine: Engine, entry_id: int, *, reason: str | None = None,
+) -> None:
+    """Soft-mark an entry as rejected with an optional reason.
+
+    Replaces the prior delete-on-reject semantics. The row stays in the
+    table so the rejection (and its reason) survive for audit; default
+    queries hide rejected rows via ``include_rejected=False``.
+    """
+    logger.info(
+        "Marking entry %d as rejected (reason=%r)", entry_id, reason or "<none>",
+    )
+    t = Entry.__table__
+    with engine.begin() as conn:
+        conn.execute(
+            t.update()
+            .where(t.c.id == entry_id)
+            .values(rejected=True, rejection_reason=reason),
+        )
 
 
 def get_entry_by_id(engine: Engine, entry_id: int) -> dict | None:
@@ -580,15 +623,19 @@ def find_semantic_duplicates(
     *,
     threshold: float = 0.85,
     limit: int = 5,
+    include_rejected: bool = False,
 ) -> list[dict]:
     """Find entries with high semantic similarity to the given embedding.
 
     Calculates cosine similarity in Python using the ``embedding`` column.
+    Rejected entries are excluded by default.
     """
     from pbook.embeddings import cosine_similarity
 
     t = Entry.__table__
     stmt = t.select().where(t.c.embedding.is_not(None))
+    if not include_rejected:
+        stmt = stmt.where(t.c.rejected == False)  # noqa: E712
 
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
