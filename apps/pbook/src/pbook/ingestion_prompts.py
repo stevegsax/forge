@@ -31,7 +31,7 @@ class AnalyzedExperience(BaseModel):
             "experience. Should include short verbatim excerpts from the "
             "transcript that show what was happening when the problem "
             "appeared and what led to the resolution. Used later to "
-            "reconstruct the original context when discussing the play."
+            "reconstruct the original context when discussing the playbook."
         ),
     )
 
@@ -116,7 +116,7 @@ def build_analysis_system_prompt() -> str:
         "verbatim excerpts from the transcript (use ASSISTANT: / USER: prefixes "
         "and ellipses for elision) that show the problem appearing and the "
         "resolution being reached. This will be used later to reconstruct the "
-        "original context when discussing why a play was created."
+        "original context when discussing why a playbook was created."
     )
     parts.append("")
     parts.append("If the conversation contains no extractable experiences, return an empty list.")

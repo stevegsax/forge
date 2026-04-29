@@ -94,7 +94,7 @@ _COMMANDS: dict[str, dict[str, str]] = {
 _QUERY_WORKFLOW = """\
 ## Query workflow
 
-When the user asks "find plays about X" or "what do we know about X?",
+When the user asks "find playbooks about X" or "what do we know about X?",
 prefer free-text search over tag enumeration:
 
 1. **Try semantic search first**:
@@ -134,9 +134,9 @@ compose three commands:
 
 Reach for transcripts when:
 - The user asks something the source_context doesn't answer
-- Multiple sources agree on the play but the user wants to see
+- Multiple sources agree on the playbook but the user wants to see
   one specific case
-- The user is debugging the play itself (was extraction wrong?)
+- The user is debugging the playbook itself (was extraction wrong?)
 """
 
 _REVIEW_WORKFLOW = """\
@@ -163,7 +163,7 @@ been captured already.
 _ADD_WORKFLOW = """\
 ## Add workflow
 
-When the user wants to add a new play:
+When the user wants to add a new playbook:
 
 1. **Discover what tags are available**: `pbook tags --json`
    Use `namespaces` to validate, `values_in_use` to suggest familiar
@@ -183,9 +183,60 @@ review path — the skill (with the user) IS the review.
 """
 
 
+_FEEDBACK_WORKFLOW = """\
+## Feedback workflow
+
+When the user reacts to a playbook the skill just surfaced — positively
+("perfect", "exactly what I needed", "yes, that worked") or negatively
+("that's wrong", "didn't help", "outdated") — record the signal
+deliberately, and only after confirming with the user.
+
+The skill is the only path that captures *why* the user reacted. A bare
+helpful/harmful counter is weak signal; the user's own phrasing in
+`--context` is what makes the playbook improvable.
+
+1. **Track which entries you surfaced.** During search/discuss/review,
+   keep the list of entry IDs you showed. Feedback attaches to specific
+   IDs — don't guess. If you surfaced multiple entries and the user's
+   reaction is ambiguous, ask which one they mean.
+
+2. **Match the user's strength of reaction to the right command.**
+   - Soft-negative ("didn't quite apply", "wasn't a fit here") →
+     `pbook feedback <id> --harmful --context "<their reason>"`.
+     This nudges ranking down; the entry stays in the playbook.
+   - Hard-negative ("this is wrong", "outdated", "shouldn't be in
+     the playbook") → `pbook reject <id> --reason "<their reason>"`.
+     The entry is hidden from default queries.
+   - Positive ("yes, that fit", "exactly right") →
+     `pbook feedback <id> --helpful --context "<their reason>"`.
+
+3. **Confirm before recording.** Reflect the cue back as a question:
+   "Sounds like entry 151 didn't apply here — want me to mark it
+   harmful with the note 'v3 API changed'?" Wait for yes/no/edit.
+   Run the CLI command only after the user confirms. This avoids
+   recording feedback the user didn't intend.
+
+4. **Capture the *why* in `--context`.** Use the user's own words
+   where possible, trimmed to a sentence or two. The context is the
+   provenance of the signal — it survives even after the counter is
+   bounded.
+
+5. **Set expectations about the 3-retrieval threshold.** Feedback
+   only moves ranking once the entry has been retrieved 3+ times.
+   If the user gives feedback on a fresh entry, mention this so they
+   don't expect an immediate ranking shift: "Recorded — note this
+   entry has only been retrieved twice, so the signal won't move
+   ranking until it's served once more."
+
+Don't infer-and-record from cues silently. The skill watches for the
+opportunity; the user decides.
+"""
+
+
 _WORKFLOWS: dict[str, str] = {
     "query": _QUERY_WORKFLOW,
     "discuss": _DISCUSS_WORKFLOW,
+    "feedback": _FEEDBACK_WORKFLOW,
     "review_queue": _REVIEW_WORKFLOW,
     "add": _ADD_WORKFLOW,
 }

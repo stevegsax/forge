@@ -724,7 +724,9 @@ class TestSkillPromptCommand:
         assert "commands" in data
         assert "workflows" in data
         assert "tags" in data
-        assert set(data["workflows"]) == {"query", "discuss", "review_queue", "add"}
+        assert set(data["workflows"]) == {
+            "query", "discuss", "feedback", "review_queue", "add",
+        }
 
     def test_operation_filter(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))

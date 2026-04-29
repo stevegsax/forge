@@ -35,10 +35,10 @@ class TestBuildSkillPrompt:
             assert info.get("args"), f"{name} missing args"
             assert info.get("example"), f"{name} missing example"
 
-    def test_workflows_cover_the_four_skill_capabilities(self):
+    def test_workflows_cover_the_five_skill_capabilities(self):
         payload = build_skill_prompt()
         assert set(payload["workflows"]) == {
-            "query", "discuss", "review_queue", "add",
+            "query", "discuss", "feedback", "review_queue", "add",
         }
 
     def test_each_workflow_has_nontrivial_markdown(self):
@@ -47,6 +47,38 @@ class TestBuildSkillPrompt:
             assert isinstance(md, str), f"{name} workflow should be a markdown string"
             assert len(md) > 200, f"{name} workflow looks too thin"
             assert md.startswith("##"), f"{name} workflow should start with a heading"
+
+    def test_feedback_workflow_covers_load_bearing_rules(self):
+        """The feedback workflow is the only place the skill learns
+        when to record — these elements must be present so /skill-creator
+        bakes them into SKILL.md, not paraphrased away."""
+        payload = build_skill_prompt()
+        md = payload["workflows"]["feedback"]
+        # Confirm-before-recording is the cornerstone of the design.
+        assert "confirm" in md.lower()
+        # The skill must distinguish harmful (signal) from reject (hide).
+        assert "--harmful" in md
+        assert "reject" in md.lower()
+        # The 3-retrieval threshold is non-obvious; the skill must surface it
+        # so users don't expect immediate ranking shifts.
+        assert "3" in md and "retriev" in md.lower()
+        # Context capture is what makes the signal useful — the bare
+        # counter is not.
+        assert "--context" in md
+
+    def test_workflow_markdown_uses_playbook_not_play(self):
+        """Avoid the generic word 'play'; pbook entries are 'playbooks'."""
+        import re
+
+        payload = build_skill_prompt()
+        # \bplay\b matches the bare word but not 'playbook'/'playbooks'/'replay'/'display'.
+        bare_play = re.compile(r"\bplays?\b", re.IGNORECASE)
+        for name, md in payload["workflows"].items():
+            match = bare_play.search(md)
+            assert match is None, (
+                f"{name} workflow uses bare 'play(s)': "
+                f"{md[max(0, match.start()-20):match.end()+20]!r}"
+            )
 
     def test_tags_section_includes_namespaces_and_notes(self):
         payload = build_skill_prompt()

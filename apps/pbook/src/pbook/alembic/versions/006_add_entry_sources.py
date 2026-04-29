@@ -1,15 +1,15 @@
-"""Add entry_sources join table for play provenance.
+"""Add entry_sources join table for playbook provenance.
 
 Revision ID: 006
 Revises: 005
 Create Date: 2026-04-28
 
 Records the originating Claude Code session(s) and situations that
-caused each play to be created. Granularity is per-experience: one row
-per (entry, experience), so a single session contributing many distinct
-situations to the same play yields many rows. ``experience_hash`` is
-``sha256(problem + resolution + context)`` and is nullable so future
-manual-attribution rows can omit it.
+caused each playbook to be created. Granularity is per-experience: one
+row per (entry, experience), so a single session contributing many
+distinct situations to the same playbook yields many rows.
+``experience_hash`` is ``sha256(problem + resolution + context)`` and is
+nullable so future manual-attribution rows can omit it.
 """
 
 from __future__ import annotations
