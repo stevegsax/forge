@@ -173,7 +173,12 @@ def "main unmark" [document_id: string] {
     unmark $document_id
 }
 
-def main [] {
-    print "usage: ocr.nu <submit|list|export|mark|unmark> [args...]"
-    print "  or:  use ocr.nu  (to load as a module)"
+# Forge OCR — submit documents for OCR and manage results.
+#
+# Subcommands: submit, list, export, mark, unmark.
+# Run `ocr <subcommand> --help` for details on a specific subcommand.
+export def main []: nothing -> nothing {
+    print "usage: ocr <submit|list|export|mark|unmark> [args...]"
+    print ""
+    print "Run `ocr <subcommand> --help` for details on a specific subcommand."
 }
