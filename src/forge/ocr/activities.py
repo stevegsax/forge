@@ -1136,18 +1136,24 @@ def execute_list_ocr_jobs(
 
     Returns one entry per submission — distinct from chunking, and
     distinct from resubmissions of the same file_path. Aggregate
-    status is derived from the underlying batch_jobs rows, and the
-    ocr_results row is joined on document_id when available.
+    status is derived in SQL from the underlying batch_jobs rows, and
+    the ocr_results row is joined on document_id when available.
 
-    Status logic:
-    - Any chunk errored -> "errored"
-    - Any chunk still submitted -> "processing"
+    Status logic (computed in SQL, matched to OcrJobDerivedStatus):
+    - Any chunk errored or failed -> "errored"
+    - Any chunk still submitted or storing -> "processing"
     - All chunks succeeded -> "succeeded"
     - Otherwise -> "unknown"
 
     Resubmissions each get a distinct row in the output — the old
     errored submission and the new one are both visible, so logs can
     be reviewed and the old row can be cleaned up later.
+
+    When ``status_filter`` is provided the filter is applied in SQL
+    before ``ORDER BY`` / ``LIMIT``, so the returned rows are the
+    newest-first ``limit`` rows that match the filter (instead of
+    silently returning fewer rows when the limit was consumed by
+    other statuses).
     """
     import sqlalchemy as sa
 
@@ -1182,54 +1188,55 @@ def execute_list_ocr_jobs(
         .group_by(bj.c.document_id, bj.c.file_path)
     ).subquery("agg")
 
+    # Derive list-level status in SQL so the optional status_filter can
+    # be applied before LIMIT. The CASE order mirrors the precedence
+    # in OcrJobDerivedStatus: errored beats processing beats succeeded.
+    status_expr = sa.case(
+        (
+            sa.or_(sub.c.n_errored > 0, sub.c.n_failed > 0),
+            sa.literal(OcrJobDerivedStatus.ERRORED.value),
+        ),
+        (
+            sa.or_(sub.c.n_submitted > 0, sub.c.n_storing > 0),
+            sa.literal(OcrJobDerivedStatus.PROCESSING.value),
+        ),
+        (
+            sub.c.n_succeeded == sub.c.chunk_count,
+            sa.literal(OcrJobDerivedStatus.SUCCEEDED.value),
+        ),
+        else_=sa.literal(OcrJobDerivedStatus.UNKNOWN.value),
+    )
+
     # Left join ocr_results on document_id (unique), so resubmissions
     # pick up only their own completed row. Rows marked for removal
     # are excluded so soft-deleted submissions don't bleed through.
-    stmt = (
-        sa.select(
-            sub.c.document_id.label("submission_document_id"),
-            sub.c.file_path,
-            sub.c.created_at,
-            sub.c.chunk_count,
-            sub.c.n_errored,
-            sub.c.n_failed,
-            sub.c.n_submitted,
-            sub.c.n_storing,
-            sub.c.n_succeeded,
-            ocr.c.document_id.label("result_document_id"),
+    stmt = sa.select(
+        sub.c.document_id.label("submission_document_id"),
+        sub.c.file_path,
+        sub.c.created_at,
+        sub.c.chunk_count,
+        status_expr.label("status"),
+        ocr.c.document_id.label("result_document_id"),
+    ).select_from(
+        sub.outerjoin(
+            ocr,
+            sa.and_(
+                ocr.c.document_id == sub.c.document_id,
+                ocr.c.marked_for_removal == sa.false(),
+            ),
         )
-        .select_from(
-            sub.outerjoin(
-                ocr,
-                sa.and_(
-                    ocr.c.document_id == sub.c.document_id,
-                    ocr.c.marked_for_removal == sa.false(),
-                ),
-            )
-        )
-        .order_by(sub.c.created_at.desc())
-        .limit(limit)
     )
+
+    if status_filter:
+        stmt = stmt.where(status_expr == status_filter)
+
+    stmt = stmt.order_by(sub.c.created_at.desc()).limit(limit)
 
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
 
     jobs: list[OcrJobEntry] = []
     for row in rows:
-        # Derive list-level status from chunk-level BatchJobStatus counts.
-        # See OcrJobDerivedStatus in forge.ocr.models for the label vocabulary.
-        if row["n_errored"] > 0 or row["n_failed"] > 0:
-            status = OcrJobDerivedStatus.ERRORED.value
-        elif row["n_submitted"] > 0 or row["n_storing"] > 0:
-            status = OcrJobDerivedStatus.PROCESSING.value
-        elif row["n_succeeded"] == row["chunk_count"]:
-            status = OcrJobDerivedStatus.SUCCEEDED.value
-        else:
-            status = OcrJobDerivedStatus.UNKNOWN.value
-
-        if status_filter and status != status_filter:
-            continue
-
         # Prefer the ocr_results document_id (confirms a stored result),
         # but fall back to the batch_jobs document_id for in-flight or
         # errored submissions so callers can still reference the row.
@@ -1241,7 +1248,7 @@ def execute_list_ocr_jobs(
             OcrJobEntry(
                 file_path=row["file_path"],
                 document_id=document_id,
-                status=status,
+                status=row["status"],
                 chunk_count=row["chunk_count"],
                 created_at=row["created_at"].isoformat() if row["created_at"] else "",
             )

@@ -884,9 +884,7 @@ class TestSubmitOcrBatchFailureRecording:
         try:
             store_mod.get_db_path = lambda: db_path
             store_mod.get_engine = lambda _path: engine
-            store_mod.record_batch_failure = MagicMock(
-                side_effect=RuntimeError("DB write failed")
-            )
+            store_mod.record_batch_failure = MagicMock(side_effect=RuntimeError("DB write failed"))
 
             from forge.ocr.activities import submit_ocr_batch
 
@@ -2886,6 +2884,85 @@ class TestExecuteListOcrJobs:
 
         assert len(result.jobs) == 2
         assert result.total == 2
+
+    def test_status_filter_applied_before_limit(self, tmp_path: Path) -> None:
+        """``status_filter`` constrains rows *before* ``LIMIT``.
+
+        Regression test: previously the SQL ``ORDER BY ... LIMIT`` ran on
+        all statuses and the filter was applied in Python afterwards, so a
+        small limit silently dropped matching rows when newer rows of other
+        statuses consumed the limit window.
+        """
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        base = datetime(2026, 4, 13, tzinfo=UTC)
+
+        # Five newer succeeded submissions, then two older errored ones.
+        # With limit=3 and no SQL-level filter the errored rows fall off
+        # the LIMIT window and the Python filter returns an empty list.
+        for i in range(5):
+            self._insert_batch_row(
+                engine,
+                request_id=f"req-ok-{i}",
+                document_id=f"doc-ok-{i}",
+                file_path=f"/data/ok{i}.pdf",
+                status="succeeded",
+                created_at=base.replace(hour=10 + i),
+            )
+        for i in range(2):
+            self._insert_batch_row(
+                engine,
+                request_id=f"req-err-{i}",
+                document_id=f"doc-err-{i}",
+                file_path=f"/data/err{i}.pdf",
+                status="errored",
+                created_at=base.replace(hour=8 + i),
+            )
+
+        result = execute_list_ocr_jobs(engine, limit=3, status_filter="errored")
+
+        assert result.total == 2
+        assert [job.document_id for job in result.jobs] == ["doc-err-1", "doc-err-0"]
+        assert all(job.status == "errored" for job in result.jobs)
+
+    def test_status_filter_returns_full_limit_when_enough_matches(self, tmp_path: Path) -> None:
+        """With more matching rows than ``limit``, exactly ``limit`` come back."""
+        from datetime import UTC, datetime
+
+        engine, _ = _setup_db(tmp_path)
+        base = datetime(2026, 4, 13, tzinfo=UTC)
+
+        # Newer succeeded rows interleaved with five errored rows — the
+        # filter must still surface the newest ``limit`` errored rows.
+        for i in range(3):
+            self._insert_batch_row(
+                engine,
+                request_id=f"req-ok-{i}",
+                document_id=f"doc-ok-{i}",
+                file_path=f"/data/ok{i}.pdf",
+                status="succeeded",
+                created_at=base.replace(hour=20 + i),
+            )
+        for i in range(5):
+            self._insert_batch_row(
+                engine,
+                request_id=f"req-err-{i}",
+                document_id=f"doc-err-{i}",
+                file_path=f"/data/err{i}.pdf",
+                status="errored",
+                created_at=base.replace(hour=10 + i),
+            )
+
+        result = execute_list_ocr_jobs(engine, limit=3, status_filter="errored")
+
+        assert result.total == 3
+        # Newest matching first: errored rows at hours 14, 13, 12.
+        assert [job.document_id for job in result.jobs] == [
+            "doc-err-4",
+            "doc-err-3",
+            "doc-err-2",
+        ]
 
     def test_excludes_marked_for_removal_results(self, tmp_path: Path) -> None:
         """ocr_results rows marked for removal are excluded from the join.
