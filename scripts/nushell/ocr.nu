@@ -19,6 +19,67 @@ const TASK_QUEUE = "forge-task-queue"
 # Private helpers
 # ---------------------------------------------------------------------------
 
+# Indent each line of `text` by four spaces. Empty input renders as
+# "(empty)" so error sections never collapse to a blank line.
+def indent-block [text: string]: nothing -> string {
+    if ($text | is-empty) {
+        "    (empty)"
+    } else {
+        $text | lines | each {|line| $"    ($line)" } | str join "\n"
+    }
+}
+
+# Raise a structured error for a failed `^temporal` invocation.
+#
+# Surfaces:
+#   - the workflow type and the CLI exit code in the headline;
+#   - the task queue and the JSON input we sent (so the request is
+#     reproducible without re-running the script);
+#   - stderr verbatim (the CLI's terse one-liner, e.g.
+#     "Error: workflow failed");
+#   - stdout — parsed as JSON when temporal emits its `--output json`
+#     failure envelope and rendered as YAML for readability; raw text
+#     otherwise.
+#
+# `help` points at the worker log (the Python traceback lives there)
+# and names the failure modes that surface as a generic
+# "workflow failed".
+# No return-type annotation: this command always raises via `error make`,
+# and Nushell has no "never" type to express that — `nothing -> nothing`
+# is rejected by the parser because `error make`'s output type is `error`.
+def temporal-fail [
+    command: string                # "execute" or "start"
+    workflow: string               # workflow type name (e.g. "OcrListJobsWorkflow")
+    json_input: string             # serialized input record sent to the CLI
+    response: record               # output of `^temporal ... | complete`
+] {
+    let stderr = ($response.stderr | str trim)
+    let stdout = ($response.stdout | str trim)
+    let parsed = (try { $stdout | from json } catch { null })
+    let stdout_block = if ($parsed != null) { $parsed | to yaml } else { $stdout }
+    error make {
+        msg: ([
+            $"temporal workflow ($command) failed: ($workflow) — exit code ($response.exit_code)"
+            ""
+            $"  task queue: ($TASK_QUEUE)"
+            $"  input:      ($json_input)"
+            ""
+            "  stderr:"
+            (indent-block $stderr)
+            ""
+            "  stdout:"
+            (indent-block $stdout_block)
+        ] | str join "\n")
+        help: ([
+            "Inspect ~/.local/state/forge/worker.log for the workflow's Python traceback."
+            "Common causes of a generic 'workflow failed':"
+            "  • activity result payload >2 MiB (reduce --limit or paginate)"
+            "  • an unregistered activity or workflow (restart the worker)"
+            "  • an activity timeout"
+        ] | str join "\n")
+    }
+}
+
 # Execute a Temporal workflow and return the parsed result record.
 def temporal-execute [workflow: string, input: record]: nothing -> record {
     let json_input = ($input | to json --raw)
@@ -31,7 +92,7 @@ def temporal-execute [workflow: string, input: record]: nothing -> record {
         | complete
     )
     if $response.exit_code != 0 {
-        error make { msg: $"temporal workflow execute failed: ($response.stderr | str trim)" }
+        temporal-fail "execute" $workflow $json_input $response
     }
     $response.stdout | from json | get result
 }
@@ -49,7 +110,7 @@ def temporal-start [workflow: string, input: record]: nothing -> record {
         | complete
     )
     if $response.exit_code != 0 {
-        error make { msg: $"temporal workflow start failed: ($response.stderr | str trim)" }
+        temporal-fail "start" $workflow $json_input $response
     }
     { workflow_id: $workflow_id }
 }
