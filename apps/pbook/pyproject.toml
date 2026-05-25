@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-sax-llm = { path = "../sax-llm", editable = true }
+sax-llm = { git = "https://github.com/stevegsax/sax-llm.git", rev = "v0.1.0" }
 
 [project.scripts]
 pbook = "pbook.cli:main"

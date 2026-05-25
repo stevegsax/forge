@@ -21,7 +21,7 @@ uv run pbook worker                   # start the Temporal worker on pbook-task-
 
 `pytest` runs with `asyncio_mode = "auto"` and a session-scoped event loop. `tests/conftest.py` autouse fixtures set `PBOOK_DB_PATH` to a per-test tmpdir and dispose every SQLAlchemy engine — tests never touch the developer's real database.
 
-`sax-llm` is an editable sibling at `../sax-llm` (see `[tool.uv.sources]`). Working on `sax-llm` types or providers requires the sibling checkout.
+`sax-llm` is a git dependency pinned to a release tag in `[tool.uv.sources]` (currently `rev = "v0.1.0"` against `github.com/stevegsax/sax-llm`). Local edits to a `../sax-llm` checkout are no longer picked up — to change `sax-llm` types or providers, cut a new tag there and bump the pin with `uv add "sax-llm @ git+https://github.com/stevegsax/sax-llm.git@<tag>"`, or temporarily switch the source to an editable path for local iteration.
 
 ## Architecture
 
