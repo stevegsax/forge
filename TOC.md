@@ -11,6 +11,7 @@
 - [DECISIONS.md](docs/planning/DECISIONS.md) — Key design decisions and rationale (batch mode, universal workflow step, Temporal, orchestrator control, etc.).
 - [USAGE.md](USAGE.md) — Guide for submitting code development and research tasks to Forge with CLI examples.
 - [WORKERS.md](docs/planning/WORKERS.md) — Worker overview, checking whether workers are running, identity, and scaling.
+- [DEPLOYMENT.md](docs/planning/DEPLOYMENT.md) — Deploying self-hosted Forge to AWS EC2 with Supabase-backed Temporal and Forge store plus S3 OCR blobs: architecture, prerequisite code changes, packaging forge/pbook/sax-llm, step-by-step process, configuration, and Supabase gotchas.
 - [DEBUGGING.md](docs/planning/DEBUGGING.md) — Logging, observability store, API message logs, OTel tracing, and environment variables for debugging.
 - [ADDING_A_DOMAIN.md](docs/planning/ADDING_A_DOMAIN.md) — How to parameterize LLM behavior through task domains without changing pipeline logic.
 - [test-strategy.md](docs/planning/test-strategy.md) — Practical guide for writing Python tests with emphasis on testing pyramid and signal quality.
