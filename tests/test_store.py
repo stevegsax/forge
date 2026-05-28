@@ -36,6 +36,7 @@ from forge.store import (
     save_interaction,
     save_playbooks,
     save_run,
+    tags_overlap,
 )
 
 if TYPE_CHECKING:
@@ -494,6 +495,17 @@ class TestPlaybookRoundtrip:
         results = get_playbooks_by_tags(engine, [], limit=10)
         assert results == []
 
+    def test_get_by_tags_respects_limit(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        engine = _migrate(db_path)
+
+        self._insert_playbook(engine, title="A", tags=["python"])
+        self._insert_playbook(engine, title="B", tags=["python"])
+        self._insert_playbook(engine, title="C", tags=["python"])
+
+        results = get_playbooks_by_tags(engine, ["python"], limit=2)
+        assert len(results) == 2
+
     def test_list_recent_playbooks(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
         engine = _migrate(db_path)
@@ -511,6 +523,22 @@ class TestPlaybookRoundtrip:
 
         results = list_recent_playbooks(engine)
         assert results == []
+
+
+class TestTagsOverlap:
+    """Pure tag-matching helper (dialect-free core of the playbook queries)."""
+
+    def test_overlap_matches(self) -> None:
+        assert tags_overlap('["python", "api"]', {"api"}) is True
+
+    def test_no_overlap(self) -> None:
+        assert tags_overlap('["python"]', {"rust"}) is False
+
+    def test_malformed_json_never_matches(self) -> None:
+        assert tags_overlap("{not json", {"python"}) is False
+
+    def test_non_list_payload_never_matches(self) -> None:
+        assert tags_overlap('{"tag": "python"}', {"python"}) is False
 
 
 # ---------------------------------------------------------------------------
