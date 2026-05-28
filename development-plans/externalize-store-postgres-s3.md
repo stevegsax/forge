@@ -1,18 +1,19 @@
 # Externalize the Forge store: Postgres backend + S3 OCR blobs + survivable writes
 
-**Status:** PHASE A DONE (A1–A8 complete). Phases B and C not started.
+**Status:** PHASES A & B DONE. Phase C (survivable writes) not started.
 **Last updated:** 2026-05-28
 **Owner:** stevegsax
 
-> **Resume pointer — next action:** Phase A is complete. `FORGE_DB_URL` is the
-> single required store config; SQLite + Postgres engines build; `psycopg2-binary`
-> is locked. The pbook↔sax-llm `uv lock` conflict is fixed (pbook now uses the local
-> editable `../sax-llm` source, matching forge; both lockfiles regenerated). Full
-> suite green on SQLite except 3 pre-existing environmental `TestExecuteCheckOcrDuplicate`
-> failures (missing `test-inputs/2311.06440v1.pdf`). **Still owed for full
-> confidence:** validate Alembic migrations against a real Postgres (needs a scratch
-> PG / testcontainers — engine-build is tested but PG DDL is not). **Next:** Phase B
-> (OCR blobs to S3). Phases run **A → B → C** (C depends on A's resolver).
+> **Resume pointer — next action:** Phases A and B are complete on SQLite.
+> `FORGE_DB_URL` is the single required store config (SQLite + Postgres engines
+> build; `psycopg2-binary` locked). OCR blobs live in S3: `data` columns dropped,
+> `s3_key` added (migration `014`), all blob I/O encapsulated in `ocr/s3_blobs.py`;
+> tests mock S3 with `moto` (session-scoped conftest fixture). Full suite: 1470
+> passed; only failures are the 3 pre-existing environmental `TestExecuteCheckOcrDuplicate`
+> cases (missing `test-inputs/2311.06440v1.pdf`). **Still owed for full confidence:**
+> validate Alembic migrations (incl. `014`'s `batch_alter_table`) against a real
+> Postgres — engine build + SQLite DDL are tested, PG DDL is not. **Next:** Phase C
+> (survivable store writes; migration `015` follows `014`).
 
 Prerequisite work for the AWS EC2 deployment in
 [docs/planning/DEPLOYMENT.md](../docs/planning/DEPLOYMENT.md). Today the Forge store
@@ -280,16 +281,16 @@ Callers (should stay unchanged if S3 is encapsulated):
 - Add `boto3>=1.34`. Run `uv lock`.
 
 ### Sub-tasks
-- [ ] B1. Migration `014`: add `s3_key` (NOT NULL), drop `data` from both blob tables
-- [ ] B2. `ocr/s3_blobs.py` boto3 wrapper (+ config + lazy client)
-- [ ] B3. Update ORM models (`FileContentBlob`, `OcrImage`)
-- [ ] B4. Rewrite `save_file_content` / `save_ocr_image` (upload + reference)
-- [ ] B5. Rewrite `get_file_content` / `get_ocr_image` (fetch from S3)
-- [ ] B6. Update `delete_*` to remove S3 objects
-- [ ] B7. Confirm OCR-activity callers + `ocr-image://` export still work unchanged
-- [ ] B8. Add `boto3`; `uv lock`
-- [ ] B9. Tests (mock S3 via `moto`; cover write/read/delete + bucket-unset-fails-task)
-- [ ] B10. Update DEPLOYMENT.md if anything diverged
+- [x] B1. Migration `014`: add `s3_key` (NOT NULL), drop `data` from both blob tables (batch_alter_table; verified on SQLite)
+- [x] B2. `ocr/s3_blobs.py` boto3 wrapper (`get_bucket`/`build_key`/`put`/`get`/`delete`; `S3ConfigError`; per-call client, lazy boto3 import)
+- [x] B3. Update ORM models (`FileContentBlob`, `OcrImage`) — `data` → `s3_key`
+- [x] B4. Rewrite `save_file_content` / `save_ocr_image` (upload to S3 first, then store `s3_key`)
+- [x] B5. Rewrite `get_file_content` / `get_ocr_image` (fetch from S3, return under `data`)
+- [x] B6. Update `delete_*` to remove S3 objects (query key → delete row → delete object)
+- [x] B7. Confirmed OCR-activity callers + `ocr-image://` export unchanged (all use `blob["data"]` / byte-in)
+- [x] B8. Added `boto3>=1.34` (+ `moto[s3]>=5.0` dev); `uv lock`
+- [x] B9. Tests: `tests/test_s3_blobs.py` (moto) — write/read/delete, prefix, bucket-unset-raises; existing blob tests pass via a session-scoped moto fixture in conftest
+- [x] B10. Updated DEPLOYMENT.md (no inline mode; Phase A+B marked implemented)
 
 ### Tests
 - `save_*`/`get_*` with S3 (mocked via `moto`): upload called, row has `s3_key`,
@@ -578,6 +579,24 @@ idempotency tests pass; DEPLOYMENT.md updated; PR(s) opened against `main`
   postgres engine test now runs (no longer `importorskip`-skipped): 1459 passed.
   Phase A complete. Remaining validation gap: Alembic migrations on a real Postgres
   (engine build is tested; PG DDL is not — needs a scratch PG/testcontainers).
+- **2026-05-28** — Implemented Phase B (OCR blobs → S3). New `ocr/s3_blobs.py`
+  encapsulates all S3 I/O (`get_bucket` raising `S3ConfigError` when
+  `FORGE_OCR_S3_BUCKET` is unset, `build_key` applying `FORGE_OCR_S3_PREFIX`,
+  `put`/`get`/`delete`; boto3 imported lazily, fresh client per call so there's no
+  module-level I/O state and moto intercepts cleanly). Migration `014` adds
+  `s3_key` (NOT NULL) and drops `data` on both blob tables via `batch_alter_table`
+  (verified on SQLite). ORM models updated. `save_file_content`/`save_ocr_image`
+  upload to S3 first then store `s3_key` (a DB failure leaves only a harmless orphan
+  object, never a row without bytes); `get_*` fetch from S3 and return under the
+  historical `data` key so the ~8 OCR-activity callers and the `ocr-image://` export
+  are unchanged; `delete_*` query the key, delete the row, then delete the object.
+  Added `boto3>=1.34` + `moto[s3]>=5.0` (dev); re-locked. Tests: new
+  `tests/test_s3_blobs.py` (write/read/delete, prefix, bucket-unset-raises,
+  no-row-on-failure) plus a session-scoped `moto` S3 backend + autouse
+  `forge_ocr_s3` fixture in conftest so existing blob tests pass unchanged. Full
+  suite: **1470 passed** (same 3 environmental PDF failures), ruff clean on `src/`
+  and new tests. No inline-in-DB fallback — S3 is the only OCR blob store. Next:
+  Phase C.
 
 ---
 

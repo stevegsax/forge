@@ -140,6 +140,44 @@ def forge_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return url
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _s3_backend():
+    """Back OCR blob storage with an in-memory moto S3 bucket for the whole session.
+
+    OCR blobs (file_content_blobs, ocr_images) now live in S3. Entering moto once
+    per session (rather than per test) keeps overhead low; the bucket persists and
+    tests use unique blob ids so accumulated objects don't collide. Fake AWS creds
+    prevent any accidental real call.
+    """
+    import os
+
+    for key, value in (
+        ("AWS_ACCESS_KEY_ID", "testing"),
+        ("AWS_SECRET_ACCESS_KEY", "testing"),
+        ("AWS_SESSION_TOKEN", "testing"),
+        ("AWS_DEFAULT_REGION", "us-east-1"),
+    ):
+        os.environ.setdefault(key, value)
+
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        boto3.client("s3").create_bucket(Bucket="forge-test-ocr")
+        yield "forge-test-ocr"
+
+
+@pytest.fixture(autouse=True)
+def forge_ocr_s3(monkeypatch: pytest.MonkeyPatch, _s3_backend: str) -> str:
+    """Point every test at the mocked OCR blob bucket via ``FORGE_OCR_S3_BUCKET``.
+
+    Tests exercising the unset-bucket failure path delete the env var explicitly.
+    """
+    monkeypatch.setenv("FORGE_OCR_S3_BUCKET", _s3_backend)
+    monkeypatch.delenv("FORGE_OCR_S3_PREFIX", raising=False)
+    return _s3_backend
+
+
 @pytest.fixture(autouse=True)
 def dispose_store_engines(monkeypatch: pytest.MonkeyPatch):
     """Dispose SQLAlchemy engines created via forge.store.get_engine after each test."""

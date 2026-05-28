@@ -136,11 +136,14 @@ Today `file_content_blobs.data` and `ocr_images.data` are `LargeBinary`
 5. **Lifecycle** — S3 lifecycle rules can expire old blobs; the database row is
    the index of record.
 
-Keep an env switch so blob storage falls back to the database/local for dev and
-tests (e.g. `FORGE_OCR_S3_BUCKET` unset → store inline as today).
+S3 is the only OCR blob store — there is no inline-in-DB fallback. `FORGE_OCR_S3_BUCKET`
+unset or S3 unreachable fails the OCR *task* (the worker keeps running); non-OCR work
+needs no bucket. Tests mock S3 with `moto` rather than storing bytes in SQLite.
 
-> These changes are not yet implemented. Track them as a `development-plans/` task
-> per [PROCESS.md](../../development-plans/PROCESS.md) before deploying.
+> **Implemented (Phase A + B)** in
+> [development-plans/externalize-store-postgres-s3.md](../../development-plans/externalize-store-postgres-s3.md):
+> the store is configured by a required `FORGE_DB_URL` and OCR blobs live in S3
+> (`s3_key` references; migration `014`). Phase C (survivable writes) is pending.
 
 ## Packaging Forge and pbook for deployment
 
@@ -456,7 +459,7 @@ way and set `FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233` locally.
 |---|---|---|
 | `FORGE_TEMPORAL_ADDRESS` | Temporal frontend address | `127.0.0.1:7233` |
 | `FORGE_DB_URL` | **Required.** Forge store connection: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://…` (prod). Unset → hard error; no disable-store mode | `postgresql+psycopg2://…/forge?sslmode=require` |
-| `FORGE_OCR_S3_BUCKET` | S3 bucket for OCR blobs (unset = store inline, dev) | `forge-ocr-blobs-<acct>` |
+| `FORGE_OCR_S3_BUCKET` | S3 bucket for OCR blobs. Required for OCR work; unset or unreachable → the OCR task fails (no inline-in-DB fallback) | `forge-ocr-blobs-<acct>` |
 | `FORGE_OCR_S3_PREFIX` | Optional key prefix for OCR blobs | e.g. `ocr/` |
 | `FORGE_LOG_DIR` | Log directory (empty = disable file logging) | `/data/forge/logs` |
 | `FORGE_OTEL_EXPORTER` | Trace exporter: `console`/`otlp_grpc`/`otlp_http`/`none` | `none` (default `console` is noisy) |

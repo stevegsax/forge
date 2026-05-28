@@ -202,7 +202,7 @@ class FileContentBlob(Base):
     __tablename__ = "file_content_blobs"
 
     id: Mapped[str] = mapped_column(sa.String, primary_key=True)
-    data: Mapped[bytes] = mapped_column(sa.LargeBinary, nullable=False)
+    s3_key: Mapped[str] = mapped_column(sa.String, nullable=False)
     mime_type: Mapped[str] = mapped_column(sa.String, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -218,7 +218,7 @@ class OcrImage(Base):
     document_id: Mapped[str] = mapped_column(sa.String, nullable=False, default="", index=True)
     page_index: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     original_image_id: Mapped[str] = mapped_column(sa.String, nullable=False)
-    data: Mapped[bytes] = mapped_column(sa.LargeBinary, nullable=False)
+    s3_key: Mapped[str] = mapped_column(sa.String, nullable=False)
     mime_type: Mapped[str] = mapped_column(sa.String, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     top_left_x: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
@@ -862,12 +862,20 @@ def save_file_content(
     mime_type: str,
     file_size_bytes: int,
 ) -> None:
-    """Insert a row into the file_content_blobs table."""
+    """Upload file bytes to S3 and record the reference in file_content_blobs.
+
+    Uploads to S3 first (so a DB failure leaves only a harmless orphan object,
+    never a row pointing at missing bytes). An unset bucket or S3 error raises.
+    """
+    from forge.ocr import s3_blobs
+
+    s3_key = s3_blobs.build_key(content_id)
+    s3_blobs.put(s3_key, data, mime_type)
     with engine.begin() as conn:
         conn.execute(
             sa.insert(FileContentBlob.__table__).values(
                 id=content_id,
-                data=data,
+                s3_key=s3_key,
                 mime_type=mime_type,
                 file_size_bytes=file_size_bytes,
             )
@@ -875,7 +883,14 @@ def save_file_content(
 
 
 def get_file_content(engine: Engine, content_id: str) -> dict | None:
-    """Look up file content by ID. Returns dict with id, data, mime_type, file_size_bytes."""
+    """Look up file content by ID, fetching the bytes from S3.
+
+    Returns a dict with id, s3_key, mime_type, file_size_bytes, created_at and a
+    ``data`` key holding the bytes fetched from S3 (preserving the historical
+    byte-out shape for callers). An S3 fetch error raises.
+    """
+    from forge.ocr import s3_blobs
+
     t = FileContentBlob.__table__
     stmt = t.select().where(t.c.id == content_id)
 
@@ -883,14 +898,21 @@ def get_file_content(engine: Engine, content_id: str) -> dict | None:
         row = conn.execute(stmt).mappings().first()
         if row is None:
             return None
-        return dict(row)
+        result = dict(row)
+    result["data"] = s3_blobs.get(result["s3_key"])
+    return result
 
 
 def delete_file_content(engine: Engine, content_id: str) -> None:
-    """Delete file content by ID."""
+    """Delete file content by ID, removing both the DB row and the S3 object."""
+    from forge.ocr import s3_blobs
+
     t = FileContentBlob.__table__
     with engine.begin() as conn:
+        s3_key = conn.execute(sa.select(t.c.s3_key).where(t.c.id == content_id)).scalar()
         conn.execute(sa.delete(t).where(t.c.id == content_id))
+    if s3_key is not None:
+        s3_blobs.delete(s3_key)
 
 
 # ---------------------------------------------------------------------------
@@ -913,7 +935,15 @@ def save_ocr_image(
     bottom_right_x: int | None = None,
     bottom_right_y: int | None = None,
 ) -> None:
-    """Insert a row into the ocr_images table."""
+    """Upload image bytes to S3 and record the reference in ocr_images.
+
+    Uploads to S3 first (a DB failure leaves only a harmless orphan object). An
+    unset bucket or S3 error raises.
+    """
+    from forge.ocr import s3_blobs
+
+    s3_key = s3_blobs.build_key(image_id)
+    s3_blobs.put(s3_key, data, mime_type)
     with engine.begin() as conn:
         conn.execute(
             sa.insert(OcrImage.__table__).values(
@@ -921,7 +951,7 @@ def save_ocr_image(
                 document_id=document_id,
                 page_index=page_index,
                 original_image_id=original_image_id,
-                data=data,
+                s3_key=s3_key,
                 mime_type=mime_type,
                 file_size_bytes=file_size_bytes,
                 top_left_x=top_left_x,
@@ -986,7 +1016,9 @@ def get_ocr_images(engine: Engine, document_id: str) -> list[dict]:
 
 
 def get_ocr_image(engine: Engine, image_id: str) -> dict | None:
-    """Get a single image with blob data."""
+    """Get a single image, fetching its bytes from S3 under the ``data`` key."""
+    from forge.ocr import s3_blobs
+
     t = OcrImage.__table__
     stmt = t.select().where(t.c.id == image_id)
 
@@ -994,13 +1026,22 @@ def get_ocr_image(engine: Engine, image_id: str) -> dict | None:
         row = conn.execute(stmt).mappings().first()
         if row is None:
             return None
-        return dict(row)
+        result = dict(row)
+    result["data"] = s3_blobs.get(result["s3_key"])
+    return result
 
 
 def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> None:
-    """Delete OCR images by document IDs."""
+    """Delete OCR images by document IDs, removing both rows and S3 objects."""
     if not document_ids:
         return
+    from forge.ocr import s3_blobs
+
     t = OcrImage.__table__
     with engine.begin() as conn:
+        s3_keys = list(
+            conn.execute(sa.select(t.c.s3_key).where(t.c.document_id.in_(document_ids))).scalars()
+        )
         conn.execute(sa.delete(t).where(t.c.document_id.in_(document_ids)))
+    for s3_key in s3_keys:
+        s3_blobs.delete(s3_key)
