@@ -711,21 +711,13 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     complex activity input. Loads file bytes from the database,
     base64-encodes in memory, and submits to the provider.
     """
-    from sax_llm import get_provider, parse_model_id
+    from sax_llm import get_provider
 
     from forge.ocr.models import OcrSubmitInput
-    from forge.store import (
-        delete_file_content,
-        get_file_content,
-        get_store_engine,
-        record_batch_failure,
-        record_batch_submission,
-    )
+    from forge.store import get_file_content, get_store_engine
 
     data = json.loads(input_json)
     ocr_input = OcrSubmitInput.model_validate(data["submit_input"])
-    store_workflow_id = data["store_workflow_id"]
-    root_document_id = data.get("root_document_id") or ocr_input.document_id
 
     # Load file content from database
     engine = get_store_engine()
@@ -746,46 +738,21 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     )
 
     provider = get_provider(ocr_input.model_name)
-    provider_name, _ = parse_model_id(ocr_input.model_name)
 
-    try:
-        result = await execute_submit_ocr_batch(ocr_input, file_content, provider)
-    except Exception as exc:
-        request_id = str(uuid.uuid4())
-        try:
-            record_batch_failure(
-                engine,
-                request_id=request_id,
-                workflow_id=store_workflow_id,
-                error_message=str(exc),
-                provider=provider_name,
-                file_path=ocr_input.file_path,
-                document_id=root_document_id,
-            )
-        except Exception:
-            logger.error("Failed to record batch failure", exc_info=True)
-        raise
+    # No store writes here: OcrSubmitWorkflow records the submission (and deletes
+    # the blob) after this returns, and records a failure if this raises. Keeping
+    # the store out of this activity means a DB blip never re-runs the expensive
+    # submit (fixes the double-submit-on-DB-error bug).
+    return await execute_submit_ocr_batch(ocr_input, file_content, provider)
 
-    # Clean up the BLOB after successful submission
-    try:
-        delete_file_content(engine, content_id)
-    except Exception:
-        logger.error("Failed to delete file content blob %s", content_id, exc_info=True)
 
-    # Record batch submission for the poller to find — if recording fails,
-    # the batch is submitted but untracked. A duplicate on retry is better
-    # than a lost batch.
-    record_batch_submission(
-        engine,
-        request_id=result.request_id,
-        batch_id=result.batch_id,
-        workflow_id=store_workflow_id,
-        provider=provider_name,
-        file_path=ocr_input.file_path,
-        document_id=root_document_id,
-    )
+@activity.defn
+async def delete_file_content_blob(content_id: str) -> None:
+    """Delete a stored file-content blob (DB row + S3 object) after submission."""
+    from forge.store import delete_file_content, get_store_engine
 
-    return result
+    engine = get_store_engine()
+    delete_file_content(engine, content_id)
 
 
 @activity.defn
