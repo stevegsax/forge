@@ -86,9 +86,10 @@ Docker because it is a self-contained service with no filesystem coupling.
 
 ## Prerequisite code changes
 
-The current code stores everything in local SQLite (`forge.db`) and keeps OCR
-blobs as `LargeBinary` columns. This deployment requires two contained changes
-that must ship **before** it is possible. Both are well-scoped because store
+Forge originally stored everything in local SQLite (`forge.db`) and kept OCR
+blobs as `LargeBinary` columns. This deployment required two contained store
+changes — both now **implemented and merged to `main`** (Phases A and B below;
+survivable writes followed as Phase C). They were well-scoped because store
 access is centralized.
 
 ### A. Back the Forge store with Postgres
@@ -140,10 +141,12 @@ S3 is the only OCR blob store — there is no inline-in-DB fallback. `FORGE_OCR_
 unset or S3 unreachable fails the OCR *task* (the worker keeps running); non-OCR work
 needs no bucket. Tests mock S3 with `moto` rather than storing bytes in SQLite.
 
-> **Implemented (Phase A + B)** in
+> **Implemented and merged (Phases A, B, C)** — see
 > [development-plans/externalize-store-postgres-s3.md](../../development-plans/externalize-store-postgres-s3.md):
 > the store is configured by a required `FORGE_DB_URL` and OCR blobs live in S3
-> (`s3_key` references; migration `014`). Phase C (survivable writes) is pending.
+> (`s3_key` references; migration `014`). Phase C makes every store write
+> idempotent and survivable via the `persist_to_store` activity (migration `015`
+> adds the nullable-unique `idempotency_key` columns).
 
 ## Packaging Forge and pbook for deployment
 
@@ -543,8 +546,9 @@ Supabase connection caps as worker count grows.
 
 ## Open questions to resolve before go-live
 
-- **Prerequisite code changes (A) and (B)** implemented, tested (SQLite path still
-  green for the test suite), and merged.
+- **Prerequisite code changes (A), (B), and (C)** implemented, tested (SQLite path
+  still green for the test suite; migrations validated on real Postgres; OCR e2e
+  green against the live Mistral API), and merged.
 - **Supabase `CREATE DATABASE` privilege** — confirm, or plan for extra projects.
 - **IPv4 vs IPv6 egress** path from the VPC to Supabase.
 - **pbook scope** — is `forge ingest` part of this deployment? If so: provision
