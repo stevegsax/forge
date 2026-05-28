@@ -74,7 +74,7 @@ async def execute_poll_batch_results(
     pending_jobs: list[dict[str, Any]],
     temporal_client: Client,
     update_status_fn: Callable[..., None],
-    store_images_fn: Callable[[list[ExtractedImage]], dict[str, str]] | None = None,
+    store_images_fn: Callable[[list[ExtractedImage], str], dict[str, str]] | None = None,
 ) -> BatchPollerResult:
     """Poll LLM providers for batch results and signal waiting workflows.
 
@@ -110,8 +110,7 @@ async def execute_poll_batch_results(
             age = datetime.now(UTC) - _ensure_utc(created_at)
             if age > _MISSING_THRESHOLD:
                 logger.warning("Batch %s is >24h old and unretrievable, marking MISSING", batch_id)
-                _safe_update_status(
-                    update_status_fn,
+                update_status_fn(
                     request_id=request_id,
                     status=BatchJobStatus.MISSING,
                     error_message="Batch unretrievable after 24h",
@@ -145,8 +144,7 @@ async def execute_poll_batch_results(
             # BatchPollStatus.FAILED/EXPIRED/CANCELED values match the
             # corresponding BatchJobStatus members by string value, so the
             # raw .value is valid for the store column.
-            _safe_update_status(
-                update_status_fn,
+            update_status_fn(
                 request_id=request_id,
                 status=BatchJobStatus(poll_result.status.value),
                 error_message=error_msg,
@@ -160,22 +158,16 @@ async def execute_poll_batch_results(
         for entry in poll_result.entries:
             if entry.succeeded:
                 raw_json = entry.raw_response_json
-                # Store extracted images before signaling (Temporal payload limit)
+                # Store extracted images before signaling (Temporal payload limit).
+                # Idempotent (deterministic image ids); a DB/S3 error propagates so
+                # the whole poll activity retries rather than dropping images.
                 if entry.extracted_images and store_images_fn is not None:
-                    try:
-                        image_mapping = store_images_fn(entry.extracted_images)
-                        # Embed mapping in raw_response_json for parse activity
-                        if image_mapping and raw_json:
-                            data = json.loads(raw_json)
-                            data["_image_mapping"] = image_mapping
-                            raw_json = json.dumps(data)
-                    except Exception:
-                        logger.warning(
-                            "Failed to store images for batch %s entry %s",
-                            batch_id,
-                            entry.custom_id,
-                            exc_info=True,
-                        )
+                    image_mapping = store_images_fn(entry.extracted_images, entry.custom_id)
+                    # Embed mapping in raw_response_json for parse activity
+                    if image_mapping and raw_json:
+                        data = json.loads(raw_json)
+                        data["_image_mapping"] = image_mapping
+                        raw_json = json.dumps(data)
 
                 signal = BatchResult(
                     request_id=entry.custom_id,
@@ -211,11 +203,7 @@ async def execute_poll_batch_results(
         # This prevents the list view from showing "done" for a submission
         # whose store step later failed or is still in progress.
         final_status = BatchJobStatus.STORING if job_signals > 0 else BatchJobStatus.ERRORED
-        _safe_update_status(
-            update_status_fn,
-            request_id=request_id,
-            status=final_status,
-        )
+        update_status_fn(request_id=request_id, status=final_status)
 
     result = BatchPollerResult(
         batches_checked=batches_checked,
@@ -235,20 +223,6 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
-
-
-def _safe_update_status(
-    update_fn: Callable[..., None],
-    *,
-    request_id: str,
-    status: BatchJobStatus | str,
-    error_message: str | None = None,
-) -> None:
-    """Best-effort status update. Never raises (D42)."""
-    try:
-        update_fn(request_id=request_id, status=status, error_message=error_message)
-    except Exception:
-        logger.warning("Failed to update batch job status for %s", request_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -293,16 +267,19 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
             )
 
         # Build store_images closure over the engine
-        from forge.store import save_ocr_image
+        from forge.store import ocr_image_id, save_ocr_image
 
-        def store_images_fn(images: list[ExtractedImage]) -> dict[str, str]:
-            """Decode base64, store each image, return {original_id: uuid}."""
+        def store_images_fn(images: list[ExtractedImage], request_id: str) -> dict[str, str]:
+            """Decode base64, store each image, return {original_id: uuid}.
+
+            Image ids are deterministic (``ocr_image_id``) so a poll retry re-stores
+            idempotently instead of creating duplicates.
+            """
             import base64
-            import uuid
 
             mapping: dict[str, str] = {}
             for img in images:
-                image_id = str(uuid.uuid4())
+                image_id = ocr_image_id(request_id, img.original_image_id, img.page_index)
                 raw_b64 = img.image_base64
                 mime_type = img.mime_type
                 # Strip data URI prefix if present (e.g. "data:image/png;base64,")

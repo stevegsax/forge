@@ -32,7 +32,7 @@ with workflow.unsafe.imports_passed_through():
         RemoveWorktreeInput,
         ThinkingConfig,
     )
-    from forge.persist_models import PersistRequest, PersistResult
+    from forge.persist_models import PersistBatchSubmission, PersistRequest, PersistResult
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ async def batch_submit_and_wait(
 
     Generalized from _call_llm_batch_dispatch in workflows.py.
     """
-    await workflow.execute_activity(
+    submit_result: BatchSubmitResult = await workflow.execute_activity(
         "submit_batch_request",
         BatchSubmitInput(
             context=context,
@@ -124,6 +124,16 @@ async def batch_submit_and_wait(
         start_to_close_timeout=submit_timeout,
         retry_policy=_LLM_RETRY,
         result_type=BatchSubmitResult,
+    )
+    # Survivably record the submission before waiting, so the poller can find the
+    # job (and a DB blip retries only this cheap write, not the submit call).
+    await persist_block(
+        PersistBatchSubmission(
+            request_id=submit_result.request_id,
+            batch_id=submit_result.batch_id,
+            workflow_id=workflow.info().workflow_id,
+            provider=submit_result.provider,
+        )
     )
     await workflow.wait_condition(
         lambda: len(batch_results) > 0,

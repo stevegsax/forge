@@ -290,6 +290,17 @@ def playbook_idempotency_key(extraction_workflow_id: str, title: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"playbook:{extraction_workflow_id}:{title}"))
 
 
+def ocr_image_id(request_id: str, original_image_id: str, page_index: int) -> str:
+    """Deterministic ``ocr_images.id`` so re-storing on retry is idempotent.
+
+    Keyed on the submission/request id plus the source image and page, so the same
+    extracted image always maps to the same row (insert_or_ignore on the PK).
+    """
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"ocr-image:{request_id}:{original_image_id}:{page_index}")
+    )
+
+
 def build_playbook_dict(
     entry: PlaybookEntry,
     extraction_workflow_id: str,

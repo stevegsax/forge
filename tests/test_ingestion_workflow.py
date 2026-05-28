@@ -30,6 +30,7 @@ from forge.models import (
     ParsedLLMResponse,
     ParseResponseInput,
 )
+from forge.persist_models import PersistRequest, PersistResult
 from forge.workflows import FORGE_TASK_QUEUE
 
 if TYPE_CHECKING:
@@ -113,10 +114,17 @@ async def mock_parse_response(input: ParseResponseInput) -> ParsedLLMResponse:
     )
 
 
+@activity.defn(name="persist_to_store")
+async def mock_persist_to_store(req: PersistRequest) -> PersistResult:
+    """No-op survivable-write mock (batch path now persists the submission)."""
+    return PersistResult(kind=req.kind, applied=True)
+
+
 _FORGE_MOCK_ACTIVITIES = [
     mock_prepare_transcript,
     mock_submit_batch,
     mock_parse_response,
+    mock_persist_to_store,
 ]
 
 
