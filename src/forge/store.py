@@ -498,6 +498,21 @@ def save_playbooks(engine: Engine, entries: list[dict]) -> bool:
     return applied
 
 
+def tags_overlap(tags_json: str, wanted: set[str]) -> bool:
+    """True if the row's stored tags intersect ``wanted`` (pure, dialect-free).
+
+    ``tags_json`` is a JSON-encoded list of strings (see ``build_playbook_dict``).
+    Malformed or non-list payloads never match.
+    """
+    try:
+        row_tags = json.loads(tags_json)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(row_tags, list):
+        return False
+    return any(tag in wanted for tag in row_tags)
+
+
 def get_playbooks_by_tags(
     engine: Engine,
     tags: list[str],
@@ -505,26 +520,22 @@ def get_playbooks_by_tags(
 ) -> list[dict]:
     """Query playbooks matching any of the given tags, ordered by recency.
 
-    Uses SQLite json_each() to unnest the tags_json array and match
-    against the input tags.
+    Tag matching is done in Python (``tags_overlap``) rather than in SQL so the
+    query is portable across SQLite and Postgres — the SQLite ``json_each()``
+    table function does not exist on Postgres.
     """
     if not tags:
         return []
 
-    tag_placeholders = ", ".join(f":tag_{i}" for i in range(len(tags)))
-    tag_params = {f"tag_{i}": tag for i, tag in enumerate(tags)}
-
-    query = sa.text(f"""
-        SELECT DISTINCT p.*
-        FROM playbooks p, json_each(p.tags_json) AS t
-        WHERE t.value IN ({tag_placeholders})
-        ORDER BY p.created_at DESC
-        LIMIT :limit
-    """)
+    wanted = set(tags)
+    t = Playbook.__table__
+    stmt = t.select().order_by(t.c.created_at.desc())
 
     with engine.connect() as conn:
-        rows = conn.execute(query, {**tag_params, "limit": limit}).mappings().all()
-        return [dict(row) for row in rows]
+        rows = conn.execute(stmt).mappings().all()
+
+    matched = [dict(row) for row in rows if tags_overlap(row["tags_json"], wanted)]
+    return matched[:limit] if limit > 0 else matched
 
 
 def list_recent_playbooks(engine: Engine, limit: int = 20) -> list[dict]:
@@ -550,38 +561,24 @@ def get_playbook_ids(
     """
     t = Playbook.__table__
 
+    # ``source_task_id`` filtering and recency ordering stay in SQL; tag matching
+    # is done in Python (``tags_overlap``) to keep the query portable across
+    # SQLite and Postgres (no ``json_each``). See ``get_playbooks_by_tags``.
+    stmt = sa.select(t.c.id, t.c.tags_json)
+    if source_task_id:
+        stmt = stmt.where(t.c.source_task_id == source_task_id)
+    stmt = stmt.order_by(t.c.created_at.desc())
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+
     if tags:
-        tag_placeholders = ", ".join(f":tag_{i}" for i in range(len(tags)))
-        tag_params: dict[str, object] = {f"tag_{i}": tag for i, tag in enumerate(tags)}
-
-        base_sql = f"""
-            SELECT DISTINCT p.id
-            FROM playbooks p, json_each(p.tags_json) AS t
-            WHERE t.value IN ({tag_placeholders})
-        """
-        if source_task_id:
-            base_sql += " AND p.source_task_id = :source_task_id"
-            tag_params["source_task_id"] = source_task_id
-        base_sql += " ORDER BY p.created_at DESC"
-        if limit > 0:
-            base_sql += " LIMIT :limit"
-            tag_params["limit"] = limit
-
-        query = sa.text(base_sql)
-        with engine.connect() as conn:
-            rows = conn.execute(query, tag_params).all()
-            return [row[0] for row in rows]
+        wanted = set(tags)
+        ids = [row[0] for row in rows if tags_overlap(row[1], wanted)]
     else:
-        stmt = sa.select(t.c.id)
-        if source_task_id:
-            stmt = stmt.where(t.c.source_task_id == source_task_id)
-        stmt = stmt.order_by(t.c.created_at.desc())
-        if limit > 0:
-            stmt = stmt.limit(limit)
+        ids = [row[0] for row in rows]
 
-        with engine.connect() as conn:
-            rows = conn.execute(stmt).all()
-            return [row[0] for row in rows]
+    return ids[:limit] if limit > 0 else ids
 
 
 def get_playbook_by_id(engine: Engine, playbook_id: int) -> dict | None:
