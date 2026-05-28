@@ -15,8 +15,10 @@ import os
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from temporalio.worker import Worker
 
+from forge.activities.persist import persist_to_store
 from forge.ocr.activities import (
     call_ocr_sync,
     check_ocr_duplicate,
@@ -47,15 +49,20 @@ _OCR_SYNC_ACTIVITIES = [
     read_and_store_file_content,
     split_file_into_chunks,
     reassemble_ocr_chunks,
+    # OcrSyncWorkflow persists the ocr_results row survivably (Phase C); the real
+    # activity writes to the migrated test DB from the test_db fixture.
+    persist_to_store,
 ]
 
 
-@pytest.fixture()
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def local_env():
     """Temporal environment with real wall-clock time (not time-skipping).
 
     Time-skipping environments auto-advance time, which breaks real API
-    calls that need wall-clock time to complete.
+    calls that need wall-clock time to complete. Module-scoped so the whole
+    module shares one dev server (booting one per test was flaky); the loop
+    scope matches the session test loop so the client stays on the right loop.
     """
     from temporalio.testing import WorkflowEnvironment
 
