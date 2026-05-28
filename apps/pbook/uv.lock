@@ -632,7 +632,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.4" },
     { name = "openai", specifier = ">=2.31.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "sax-llm", git = "https://github.com/stevegsax/sax-llm.git?rev=v0.1.0" },
+    { name = "sax-llm", editable = "../sax-llm" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.9.0" },
 ]
@@ -847,11 +847,26 @@ wheels = [
 [[package]]
 name = "sax-llm"
 version = "0.1.0"
-source = { git = "https://github.com/stevegsax/sax-llm.git?rev=v0.1.0#45a17fadf53b493f6424c895a8a6b419679a171f" }
+source = { editable = "../sax-llm" }
 dependencies = [
     { name = "anthropic" },
     { name = "mistralai" },
     { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.40.0" },
+    { name = "mistralai", specifier = ">=1.0.0" },
+    { name = "pydantic", specifier = ">=2.10.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "ruff", specifier = ">=0.8.0" },
 ]
 
 [[package]]
