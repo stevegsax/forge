@@ -26,6 +26,10 @@ with workflow.unsafe.imports_passed_through():
         OcrStoreInput,
         OcrStoreResult,
     )
+    from forge.workflow_blocks import (
+        _PERSIST_RETRY,
+        _PERSIST_SCHEDULE_TO_CLOSE,
+    )
 
 _PARSE_TIMEOUT = timedelta(seconds=30)
 _STORE_TIMEOUT = timedelta(seconds=30)
@@ -109,7 +113,8 @@ class OcrStoreWorkflow:
                 "store_ocr_result",
                 store_data,
                 start_to_close_timeout=_STORE_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                schedule_to_close_timeout=_PERSIST_SCHEDULE_TO_CLOSE,
+                retry_policy=_PERSIST_RETRY,
                 result_type=OcrStoreResult,
             )
         except Exception as exc:

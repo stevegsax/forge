@@ -43,6 +43,7 @@ from forge.ocr.models import (
     OcrMarkResult,
     OcrParseResult,
     OcrStoreResult,
+    OcrSyncCallResult,
     SplitResult,
 )
 
@@ -635,16 +636,17 @@ async def execute_call_ocr_sync(
     workflow_id: str,
     provider: LLMProvider,
     store_images_fn: StoreImagesFn | None = None,
-) -> OcrStoreResult:
-    """Call OCR synchronously and store the result.
+) -> OcrSyncCallResult:
+    """Call OCR synchronously, store images, and return the parsed result.
 
-    This replaces the batch-submit → poll → signal → parse → store pipeline
-    with a single direct API call.  Reuses ``execute_parse_ocr_result`` and
-    ``execute_store_ocr_result`` for the parse/store steps.
+    The API call, image storage, and parse happen here; the ``ocr_results`` row
+    is **not** written — OcrSyncWorkflow persists it survivably via
+    ``persist_to_store`` so a DB blip never re-runs this expensive OCR call.
 
     *store_images_fn* accepts a list of ``ExtractedImage`` and returns a
     mapping of ``{original_image_id: stored_uuid}``.  In production this
-    is wired to the database; in tests it can be a stub.
+    is wired to the database (with deterministic, idempotent image ids); in
+    tests it can be a stub.
     """
     from sax_llm import parse_model_id
     from sax_llm.mistral import _extract_images_from_response
@@ -670,7 +672,11 @@ async def execute_call_ocr_sync(
 
     parse_result = execute_parse_ocr_result(raw_json)
 
-    return execute_store_ocr_result(
+    file_hash = None
+    if file_path and Path(file_path).is_file():
+        file_hash = compute_file_hash(file_path)
+
+    return OcrSyncCallResult(
         document_id=document_id,
         file_path=file_path,
         text=parse_result.text,
@@ -678,9 +684,7 @@ async def execute_call_ocr_sync(
         input_tokens=parse_result.input_tokens,
         output_tokens=parse_result.output_tokens,
         page_count=parse_result.page_count,
-        batch_id="",
-        workflow_id=workflow_id,
-        image_ids=parse_result.image_ids,
+        file_hash=file_hash,
     )
 
 
@@ -801,8 +805,8 @@ async def update_batch_job_status(input_json: str) -> None:
 
 
 @activity.defn
-async def call_ocr_sync(input_json: str) -> OcrStoreResult:
-    """Activity: call OCR synchronously and store the result.
+async def call_ocr_sync(input_json: str) -> OcrSyncCallResult:
+    """Activity: call OCR synchronously and return the parsed result.
 
     Replaces the batch-submit → poll → signal → parse → store pipeline
     with a single direct API call.  Takes JSON with keys:
@@ -819,6 +823,7 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
     from forge.store import (
         get_file_content,
         get_store_engine,
+        ocr_image_id,
         save_ocr_image,
     )
 
@@ -855,7 +860,9 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
     def _store_images(images: list[ExtractedImage]) -> dict[str, str]:
         mapping: dict[str, str] = {}
         for img in images:
-            image_id = str(uuid.uuid4())
+            # Deterministic id (keyed on document) so a retry re-stores idempotently;
+            # document_id is set at store time, so no later update is needed.
+            image_id = ocr_image_id(document_id, img.original_image_id, img.page_index)
             raw_b64 = img.image_base64
             img_mime = img.mime_type
             if raw_b64.startswith("data:"):
@@ -865,6 +872,7 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
             save_ocr_image(
                 engine,
                 image_id=image_id,
+                document_id=document_id,
                 page_index=img.page_index,
                 original_image_id=img.original_image_id,
                 data=img_data,
