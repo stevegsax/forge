@@ -49,6 +49,7 @@ from forge.models import (
     TaskResult,
     TransitionSignal,
 )
+from forge.persist_models import PersistRequest, PersistResult
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 if TYPE_CHECKING:
@@ -195,6 +196,12 @@ async def mock_call_llm_fixable(context: AssembledContext) -> LLMCallResult:
     )
 
 
+@activity.defn(name="persist_to_store")
+async def mock_persist_to_store(req: PersistRequest) -> PersistResult:
+    """No-op survivable-write mock (e2e asserts on results, not the store)."""
+    return PersistResult(kind=req.kind, applied=True)
+
+
 # ---------------------------------------------------------------------------
 # Parse handlers for single-step e2e
 # ---------------------------------------------------------------------------
@@ -232,6 +239,7 @@ def _e2e_fixable_parse(input: ParseResponseInput) -> ParsedLLMResponse:
 # ---------------------------------------------------------------------------
 
 _REAL_ACTIVITIES = [
+    mock_persist_to_store,
     create_worktree_activity,
     remove_worktree_activity,
     commit_changes_activity,
@@ -560,6 +568,7 @@ async def mock_e2e_plan_call_llm(context: AssembledContext) -> LLMCallResult:
 
 
 _PLANNED_REAL_ACTIVITIES = [
+    mock_persist_to_store,
     create_worktree_activity,
     remove_worktree_activity,
     reset_worktree_activity,
@@ -905,6 +914,7 @@ async def mock_e2e_fanout_call_llm(context: AssembledContext) -> LLMCallResult:
 
 
 _FANOUT_REAL_ACTIVITIES = [
+    mock_persist_to_store,
     create_worktree_activity,
     remove_worktree_activity,
     reset_worktree_activity,

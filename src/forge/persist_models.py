@@ -13,11 +13,32 @@ whether a new row was written (vs. a duplicate absorbed on retry).
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from forge.models import PlaybookEntry, TaskResult
+from forge.models import (
+    ConflictResolutionCallResult,
+    ExtractionCallResult,
+    LLMCallResult,
+    PlanCallResult,
+    PlaybookEntry,
+    SanityCheckCallResult,
+    TaskResult,
+)
+
+if TYPE_CHECKING:
+    from forge.models import ContextStats
+
+# The LLM-family result types that an interaction row can be built from. They all
+# carry model_name/input_tokens/output_tokens/latency_ms and the cache token fields.
+_LLMResult = (
+    LLMCallResult
+    | PlanCallResult
+    | SanityCheckCallResult
+    | ConflictResolutionCallResult
+    | ExtractionCallResult
+)
 
 
 class PersistInteraction(BaseModel):
@@ -123,3 +144,52 @@ class PersistResult(BaseModel):
 
     kind: str
     applied: bool
+
+
+def build_persist_interaction(
+    *,
+    idempotency_key: str,
+    role: str,
+    task_id: str,
+    system_prompt: str,
+    user_prompt: str,
+    result: _LLMResult,
+    step_id: str | None = None,
+    sub_task_id: str | None = None,
+    context_stats: ContextStats | None = None,
+) -> PersistInteraction:
+    """Build a ``PersistInteraction`` from an LLM-family result (pure; sandbox-safe).
+
+    Mirrors the historical ``build_interaction_dict`` explanation rule exactly:
+    explanation comes from ``result.response.explanation`` (LLM/sanity), else
+    ``result.plan.explanation`` (planner), else "" (conflict-resolution/extraction).
+    """
+    explanation = ""
+    response = getattr(result, "response", None)
+    if response is not None:
+        explanation = response.explanation
+    else:
+        plan = getattr(result, "plan", None)
+        if plan is not None:
+            explanation = plan.explanation
+
+    context_stats_json = (
+        context_stats.model_dump_json() if context_stats is not None else None
+    )
+    return PersistInteraction(
+        idempotency_key=idempotency_key,
+        task_id=task_id,
+        role=role,
+        step_id=step_id,
+        sub_task_id=sub_task_id,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_name=result.model_name,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        latency_ms=result.latency_ms,
+        explanation=explanation,
+        context_stats_json=context_stats_json,
+        cache_creation_input_tokens=getattr(result, "cache_creation_input_tokens", 0) or 0,
+        cache_read_input_tokens=getattr(result, "cache_read_input_tokens", 0) or 0,
+    )

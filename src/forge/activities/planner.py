@@ -338,13 +338,4 @@ async def call_planner(input: PlannerInput) -> PlanCallResult:
             )
         )
 
-        from forge.store import persist_interaction
-
-        persist_interaction(
-            task_id=input.task_id,
-            role="planner",
-            system_prompt=input.system_prompt,
-            user_prompt=input.user_prompt,
-            llm_result=result,
-        )
         return result

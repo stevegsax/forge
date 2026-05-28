@@ -57,6 +57,7 @@ from forge.models import (
     WriteOutputInput,
     WriteResult,
 )
+from forge.persist_models import PersistRequest, PersistResult
 from forge.workflows import (
     FORGE_TASK_QUEUE,
     ForgeSubTaskWorkflow,
@@ -120,6 +121,12 @@ async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResu
         request_id="req-mock-123",
         batch_id="msgbatch_mock123",
     )
+
+
+@activity.defn(name="persist_to_store")
+async def mock_persist_to_store(req: PersistRequest) -> PersistResult:
+    """No-op survivable-write mock: workflows now persist after each LLM call."""
+    return PersistResult(kind=req.kind, applied=True)
 
 
 @activity.defn(name="parse_llm_response")
@@ -260,6 +267,7 @@ async def mock_evaluate_transition(input: TransitionInput) -> str:
 
 # All mock activities in registration order
 _MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_create_worktree,
     mock_remove_worktree,
     mock_commit_changes,
@@ -584,6 +592,7 @@ async def mock_plan_create_worktree(input: CreateWorktreeInput) -> CreateWorktre
 
 # Activities list for planned workflow tests
 _PLAN_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_plan_create_worktree,
     mock_assemble_planner_context,
     mock_call_planner,
@@ -929,6 +938,7 @@ async def mock_subtask_evaluate_transition(input: TransitionInput) -> str:
 
 
 _SUBTASK_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_subtask_create_worktree,
     mock_subtask_remove_worktree,
     mock_assemble_sub_task_context,
@@ -1323,6 +1333,7 @@ async def mock_fanout_call_conflict_resolution(
 
 
 _FANOUT_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_fanout_create_worktree,
     mock_fanout_remove_worktree,
     mock_fanout_assemble_planner_context,
@@ -1841,6 +1852,7 @@ def _mixed_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
 
 
 _MIXED_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_fanout_create_worktree,
     mock_fanout_remove_worktree,
     mock_fanout_assemble_planner_context,
@@ -2024,6 +2036,7 @@ async def mock_p8_evaluate_transition(input: TransitionInput) -> str:
 
 
 _P8_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_p8_create_worktree,
     mock_p8_remove_worktree,
     mock_p8_commit,
@@ -2269,6 +2282,7 @@ async def mock_p8s_reset_worktree(input: ResetWorktreeInput) -> None:
 
 
 _P8_STEP_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_p8s_create_worktree,
     mock_p8s_assemble_planner_context,
     mock_p8s_call_planner,
@@ -2454,6 +2468,7 @@ async def mock_p8st_evaluate_transition(input: TransitionInput) -> str:
 
 
 _P8_ST_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_p8st_create_worktree,
     mock_p8st_remove_worktree,
     mock_p8st_assemble_sub_task_context,
@@ -2743,6 +2758,7 @@ async def mock_recursive_call_conflict_resolution(
 
 
 _RECURSIVE_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_recursive_create_worktree,
     mock_recursive_remove_worktree,
     mock_recursive_assemble_sub_task_context,
@@ -3328,6 +3344,7 @@ async def mock_call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResu
 
 
 _SC_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_sc_create_worktree,
     mock_sc_assemble_planner_context,
     mock_sc_call_planner,
@@ -3773,6 +3790,7 @@ async def mock_batch_evaluate_transition(input: TransitionInput) -> str:
 
 
 _BATCH_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_batch_create_worktree,
     mock_batch_remove_worktree,
     mock_batch_commit_changes,
@@ -3991,6 +4009,7 @@ async def mock_bp_reset_worktree(input: ResetWorktreeInput) -> None:
 
 
 _BATCH_PLAN_MOCK_ACTIVITIES = [
+    mock_persist_to_store,
     mock_bp_create_worktree,
     mock_bp_assemble_planner,
     mock_bp_submit_batch,

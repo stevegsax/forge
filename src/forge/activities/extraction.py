@@ -295,15 +295,6 @@ async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
             )
         )
 
-        from forge.store import persist_interaction
-
-        persist_interaction(
-            task_id="__extraction__",
-            role="extraction",
-            system_prompt=input.system_prompt,
-            user_prompt=input.user_prompt,
-            llm_result=result,
-        )
         return result
 
 

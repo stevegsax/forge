@@ -115,16 +115,4 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
             )
         )
 
-        from forge.store import persist_interaction
-
-        persist_interaction(
-            task_id=context.task_id,
-            role="llm",
-            system_prompt=context.system_prompt,
-            user_prompt=context.user_prompt,
-            llm_result=result,
-            step_id=context.step_id,
-            sub_task_id=context.sub_task_id,
-            context_stats=context.context_stats,
-        )
         return result

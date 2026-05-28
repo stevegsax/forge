@@ -32,6 +32,7 @@ with workflow.unsafe.imports_passed_through():
         RemoveWorktreeInput,
         ThinkingConfig,
     )
+    from forge.persist_models import PersistRequest, PersistResult
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +74,22 @@ _PERSIST_RETRY = RetryPolicy(
 )
 _PERSIST_START_TO_CLOSE = timedelta(seconds=30)
 _PERSIST_SCHEDULE_TO_CLOSE = timedelta(minutes=20)
+
+
+async def persist_block(req: PersistRequest) -> PersistResult:
+    """Survivable store write: invoke ``persist_to_store`` with the persist retry.
+
+    A transient DB outage retries only this cheap write; the expensive call that
+    produced ``req`` already returned to the workflow and is never re-run.
+    """
+    return await workflow.execute_activity(
+        "persist_to_store",
+        req,
+        start_to_close_timeout=_PERSIST_START_TO_CLOSE,
+        schedule_to_close_timeout=_PERSIST_SCHEDULE_TO_CLOSE,
+        retry_policy=_PERSIST_RETRY,
+        result_type=PersistResult,
+    )
 
 
 # ---------------------------------------------------------------------------

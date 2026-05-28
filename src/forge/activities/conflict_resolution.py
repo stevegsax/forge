@@ -328,14 +328,4 @@ async def call_conflict_resolution(
             )
         )
 
-        from forge.store import persist_interaction
-
-        persist_interaction(
-            task_id=input.task_id,
-            role="conflict_resolution",
-            system_prompt=input.system_prompt,
-            user_prompt=input.user_prompt,
-            llm_result=result,
-            step_id=input.step_id,
-        )
         return result
