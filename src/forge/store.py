@@ -3,9 +3,10 @@
 Persists full LLM interaction data and run results to a local SQLite database.
 
 Design follows Function Core / Imperative Shell:
-- Pure functions: get_db_path, build_interaction_dict
-- Imperative shell: get_engine, run_migrations, save_interaction, save_run,
-  persist_interaction, get_interactions, get_run, list_recent_runs
+- Pure functions: build_interaction_dict, build_playbook_dict
+- Imperative shell: get_store_url, get_store_engine, run_migrations,
+  insert_or_ignore, save_interaction, save_run, get_interactions, get_run,
+  list_recent_runs
 """
 
 from __future__ import annotations
@@ -13,11 +14,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from forge.models import BatchJobStatus
@@ -28,7 +31,6 @@ if TYPE_CHECKING:
     from forge.models import (
         AssembledContext,
         ConflictResolutionCallResult,
-        ContextStats,
         ExtractionCallResult,
         LLMCallResult,
         PlanCallResult,
@@ -48,6 +50,10 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+class StoreConfigError(RuntimeError):
+    """The observability store is misconfigured (e.g. ``FORGE_DB_URL`` unset)."""
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +101,7 @@ class Interaction(Base):
     __tablename__ = "interactions"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    idempotency_key: Mapped[str | None] = mapped_column(sa.String, nullable=True, unique=True)
     task_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
     step_id: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     sub_task_id: Mapped[str | None] = mapped_column(sa.String, nullable=True)
@@ -154,6 +161,7 @@ class Playbook(Base):
     __tablename__ = "playbooks"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    idempotency_key: Mapped[str | None] = mapped_column(sa.String, nullable=True, unique=True)
     title: Mapped[str] = mapped_column(sa.String, nullable=False)
     content: Mapped[str] = mapped_column(sa.Text, nullable=False)
     tags_json: Mapped[str] = mapped_column(sa.Text, nullable=False)
@@ -184,7 +192,7 @@ class OcrResult(Base):
         sa.Boolean,
         nullable=False,
         default=False,
-        server_default=sa.text("0"),
+        server_default=sa.false(),
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
@@ -196,7 +204,7 @@ class FileContentBlob(Base):
     __tablename__ = "file_content_blobs"
 
     id: Mapped[str] = mapped_column(sa.String, primary_key=True)
-    data: Mapped[bytes] = mapped_column(sa.LargeBinary, nullable=False)
+    s3_key: Mapped[str] = mapped_column(sa.String, nullable=False)
     mime_type: Mapped[str] = mapped_column(sa.String, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -212,7 +220,7 @@ class OcrImage(Base):
     document_id: Mapped[str] = mapped_column(sa.String, nullable=False, default="", index=True)
     page_index: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     original_image_id: Mapped[str] = mapped_column(sa.String, nullable=False)
-    data: Mapped[bytes] = mapped_column(sa.LargeBinary, nullable=False)
+    s3_key: Mapped[str] = mapped_column(sa.String, nullable=False)
     mime_type: Mapped[str] = mapped_column(sa.String, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     top_left_x: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
@@ -228,29 +236,6 @@ class OcrImage(Base):
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
-
-
-def get_db_path() -> Path | None:
-    """Resolve the database path.
-
-    Resolution order:
-    1. ``FORGE_DB_PATH`` environment variable.
-    2. ``$XDG_STATE_HOME/forge/forge.db``
-    3. ``~/.local/state/forge/forge.db``
-
-    Returns ``None`` if ``FORGE_DB_PATH`` is set to an empty string (disables store).
-    """
-    env_value = os.environ.get("FORGE_DB_PATH")
-    if env_value is not None:
-        if env_value == "":
-            return None
-        return Path(env_value)
-
-    xdg_state = os.environ.get("XDG_STATE_HOME")
-    if xdg_state:
-        return Path(xdg_state) / "forge" / "forge.db"
-
-    return Path.home() / ".local" / "state" / "forge" / "forge.db"
 
 
 def build_interaction_dict(
@@ -299,12 +284,29 @@ def build_interaction_dict(
     }
 
 
+def playbook_idempotency_key(extraction_workflow_id: str, title: str) -> str:
+    """Deterministic per-playbook idempotency key, stable across retries."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"playbook:{extraction_workflow_id}:{title}"))
+
+
+def ocr_image_id(request_id: str, original_image_id: str, page_index: int) -> str:
+    """Deterministic ``ocr_images.id`` so re-storing on retry is idempotent.
+
+    Keyed on the submission/request id plus the source image and page, so the same
+    extracted image always maps to the same row (insert_or_ignore on the PK).
+    """
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"ocr-image:{request_id}:{original_image_id}:{page_index}")
+    )
+
+
 def build_playbook_dict(
     entry: PlaybookEntry,
     extraction_workflow_id: str,
 ) -> dict:
-    """Convert a PlaybookEntry to an insertable dict."""
+    """Convert a PlaybookEntry to an insertable dict (with a deterministic key)."""
     return {
+        "idempotency_key": playbook_idempotency_key(extraction_workflow_id, entry.title),
         "title": entry.title,
         "content": entry.content,
         "tags_json": json.dumps(entry.tags),
@@ -319,22 +321,56 @@ def build_playbook_dict(
 # ---------------------------------------------------------------------------
 
 
-def get_engine(db_path: Path) -> Engine:
-    """Create a SQLAlchemy engine with WAL mode for the given database path."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = sa.create_engine(f"sqlite:///{db_path}")
+def get_store_url() -> str:
+    """Return the configured store URL from ``FORGE_DB_URL``.
 
-    @sa.event.listens_for(engine, "connect")
-    def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
-        cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.close()
+    The store is mandatory infrastructure with no implicit default and no
+    runtime failover. A ``sqlite:///<path>`` URL is the dev/test configuration;
+    a ``postgresql+psycopg2://...`` URL is production. Unset or empty raises.
+    """
+    url = os.environ.get("FORGE_DB_URL")
+    if not url:
+        raise StoreConfigError(
+            "FORGE_DB_URL is not set. Set it to a 'sqlite:///<path>' URL for "
+            "development and tests, or a 'postgresql+psycopg2://...' URL for "
+            "production."
+        )
+    return url
 
-    return engine
+
+def _ensure_sqlite_parent(url: str) -> None:
+    """Create the parent directory for a file-based SQLite URL."""
+    database = make_url(url).database
+    if database and database != ":memory:":
+        Path(database).parent.mkdir(parents=True, exist_ok=True)
 
 
-def run_migrations(db_path: Path) -> None:
-    """Run Alembic migrations programmatically."""
+def get_store_engine() -> Engine:
+    """Build the store engine from ``FORGE_DB_URL``.
+
+    SQLite URLs get WAL journaling (and the parent directory is created);
+    Postgres URLs get connection pre-ping and a small bounded pool to respect
+    the managed-database connection caps. Connection errors are not caught here
+    — they propagate (no runtime failover).
+    """
+    url = get_store_url()
+    if make_url(url).get_backend_name() == "sqlite":
+        _ensure_sqlite_parent(url)
+        engine = sa.create_engine(url)
+
+        @sa.event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
+            cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
+        return engine
+
+    return sa.create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+
+
+def run_migrations(url: str) -> None:
+    """Run Alembic migrations against the store URL (SQLite or Postgres)."""
     from alembic import command
     from alembic.config import Config
 
@@ -344,73 +380,63 @@ def run_migrations(db_path: Path) -> None:
     cfg = Config(str(ini_path))
     cfg.set_main_option("script_location", str(alembic_dir))
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    if make_url(url).get_backend_name() == "sqlite":
+        _ensure_sqlite_parent(url)
+    cfg.set_main_option("sqlalchemy.url", url)
     command.upgrade(cfg, "head")
 
 
-def save_interaction(engine: Engine, **kwargs: object) -> None:
-    """Insert a row into the interactions table."""
-    with engine.begin() as conn:
-        conn.execute(sa.insert(Interaction.__table__).values(**kwargs))
-
-
-def persist_interaction(
+def insert_or_ignore(
+    engine: Engine,
+    table: sa.Table,
+    values: dict,
     *,
-    task_id: str,
-    role: str,
-    system_prompt: str,
-    user_prompt: str,
-    llm_result: _AnyLLMResult,
-    step_id: str | None = None,
-    sub_task_id: str | None = None,
-    context_stats: ContextStats | None = None,
-) -> None:
-    """Best-effort persist of an LLM interaction. Never raises (D42).
+    index_elements: list[str],
+) -> bool:
+    """Idempotent insert via the dialect's ``ON CONFLICT DO NOTHING``.
 
-    Consolidates the get_db_path → get_engine → build_interaction_dict →
-    save_interaction pattern used across all activity modules.
+    Returns ``True`` if a new row was written, ``False`` if an existing row on
+    ``index_elements`` absorbed the insert (a no-op). This makes every write safe
+    to re-apply on a Temporal retry: a duplicate never raises, and the caller can
+    tell whether it was the first writer.
     """
-    try:
-        from forge.models import AssembledContext
+    dialect = engine.dialect.name
+    if dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as _dialect_insert
+    elif dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as _dialect_insert
+    else:  # pragma: no cover - only sqlite/postgres are supported stores
+        msg = f"insert_or_ignore is unsupported on dialect {dialect!r}"
+        raise StoreConfigError(msg)
 
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        context = AssembledContext(
-            task_id=task_id,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            context_stats=context_stats,
-        )
-
-        engine = get_engine(db_path)
-        data = build_interaction_dict(
-            task_id=task_id,
-            step_id=step_id,
-            sub_task_id=sub_task_id,
-            role=role,
-            context=context,
-            llm_result=llm_result,
-        )
-        save_interaction(engine, **data)
-    except Exception:
-        logger.warning("Failed to persist %s interaction to store", role, exc_info=True)
-
-
-def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> None:
-    """Insert a row into the runs table."""
-    result_json = task_result.model_dump_json()
+    stmt = (
+        _dialect_insert(table).values(**values).on_conflict_do_nothing(index_elements=index_elements)
+    )
     with engine.begin() as conn:
-        conn.execute(
-            sa.insert(Run.__table__).values(
-                task_id=task_result.task_id,
-                workflow_id=workflow_id,
-                status=task_result.status.value,
-                result_json=result_json,
-            )
-        )
+        result = conn.execute(stmt)
+    return bool(result.rowcount)
+
+
+def save_interaction(engine: Engine, **kwargs: object) -> bool:
+    """Insert a row into the interactions table (idempotent on idempotency_key)."""
+    return insert_or_ignore(
+        engine, Interaction.__table__, dict(kwargs), index_elements=["idempotency_key"]
+    )
+
+
+def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> bool:
+    """Insert a row into the runs table (idempotent on workflow_id)."""
+    return insert_or_ignore(
+        engine,
+        Run.__table__,
+        {
+            "task_id": task_result.task_id,
+            "workflow_id": workflow_id,
+            "status": task_result.status.value,
+            "result_json": task_result.model_dump_json(),
+        },
+        index_elements=["workflow_id"],
+    )
 
 
 def get_interactions(
@@ -458,12 +484,18 @@ def list_recent_runs(engine: Engine, limit: int = 20) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def save_playbooks(engine: Engine, entries: list[dict]) -> None:
-    """Bulk insert rows into the playbooks table."""
-    if not entries:
-        return
-    with engine.begin() as conn:
-        conn.execute(sa.insert(Playbook.__table__), entries)
+def save_playbooks(engine: Engine, entries: list[dict]) -> bool:
+    """Insert playbook rows (idempotent per-entry on idempotency_key).
+
+    Returns ``True`` if at least one new row was written.
+    """
+    applied = False
+    for entry in entries:
+        if insert_or_ignore(
+            engine, Playbook.__table__, dict(entry), index_elements=["idempotency_key"]
+        ):
+            applied = True
+    return applied
 
 
 def get_playbooks_by_tags(
@@ -600,25 +632,29 @@ def record_batch_submission(
     provider: str = "anthropic",
     file_path: str | None = None,
     document_id: str | None = None,
-) -> None:
+) -> bool:
     """Insert a new batch job record with status 'submitted'.
 
     ``document_id`` groups chunks of a single submission together so
     that the list_ocr_jobs query can distinguish resubmissions of the
     same file. Defaults to ``request_id`` when not supplied.
+
+    Idempotent on the ``request_id`` primary key.
     """
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(BatchJob.__table__).values(
-                id=request_id,
-                batch_id=batch_id,
-                workflow_id=workflow_id,
-                status=BatchJobStatus.SUBMITTED,
-                provider=provider,
-                file_path=file_path,
-                document_id=document_id or request_id,
-            )
-        )
+    return insert_or_ignore(
+        engine,
+        BatchJob.__table__,
+        {
+            "id": request_id,
+            "batch_id": batch_id,
+            "workflow_id": workflow_id,
+            "status": BatchJobStatus.SUBMITTED,
+            "provider": provider,
+            "file_path": file_path,
+            "document_id": document_id or request_id,
+        },
+        index_elements=["id"],
+    )
 
 
 def record_batch_failure(
@@ -630,26 +666,28 @@ def record_batch_failure(
     provider: str = "anthropic",
     file_path: str | None = None,
     document_id: str | None = None,
-) -> None:
+) -> bool:
     """Insert a batch job record with status 'failed' and no batch_id.
 
     Used when the provider API call fails before returning a batch_id.
     ``document_id`` groups chunks of a single submission together; see
-    ``record_batch_submission``.
+    ``record_batch_submission``. Idempotent on the ``request_id`` primary key.
     """
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(BatchJob.__table__).values(
-                id=request_id,
-                batch_id=None,
-                workflow_id=workflow_id,
-                status=BatchJobStatus.FAILED,
-                provider=provider,
-                error_message=error_message,
-                file_path=file_path,
-                document_id=document_id or request_id,
-            )
-        )
+    return insert_or_ignore(
+        engine,
+        BatchJob.__table__,
+        {
+            "id": request_id,
+            "batch_id": None,
+            "workflow_id": workflow_id,
+            "status": BatchJobStatus.FAILED,
+            "provider": provider,
+            "error_message": error_message,
+            "file_path": file_path,
+            "document_id": document_id or request_id,
+        },
+        index_elements=["id"],
+    )
 
 
 def update_batch_status(
@@ -719,23 +757,25 @@ def save_ocr_result(
     batch_id: str,
     workflow_id: str,
     file_hash: str | None = None,
-) -> None:
-    """Insert a row into the ocr_results table."""
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(OcrResult.__table__).values(
-                document_id=document_id,
-                file_path=file_path,
-                text=text,
-                page_count=page_count,
-                model_name=model_name,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                batch_id=batch_id,
-                workflow_id=workflow_id,
-                file_hash=file_hash,
-            )
-        )
+) -> bool:
+    """Insert a row into the ocr_results table (idempotent on document_id)."""
+    return insert_or_ignore(
+        engine,
+        OcrResult.__table__,
+        {
+            "document_id": document_id,
+            "file_path": file_path,
+            "text": text,
+            "page_count": page_count,
+            "model_name": model_name,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "batch_id": batch_id,
+            "workflow_id": workflow_id,
+            "file_hash": file_hash,
+        },
+        index_elements=["document_id"],
+    )
 
 
 def delete_ocr_results(engine: Engine, document_ids: list[str]) -> None:
@@ -848,20 +888,37 @@ def save_file_content(
     mime_type: str,
     file_size_bytes: int,
 ) -> None:
-    """Insert a row into the file_content_blobs table."""
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(FileContentBlob.__table__).values(
-                id=content_id,
-                data=data,
-                mime_type=mime_type,
-                file_size_bytes=file_size_bytes,
-            )
-        )
+    """Upload file bytes to S3 and record the reference in file_content_blobs.
+
+    Uploads to S3 first (so a DB failure leaves only a harmless orphan object,
+    never a row pointing at missing bytes). An unset bucket or S3 error raises.
+    """
+    from forge.ocr import s3_blobs
+
+    s3_key = s3_blobs.build_key(content_id)
+    s3_blobs.put(s3_key, data, mime_type)
+    insert_or_ignore(
+        engine,
+        FileContentBlob.__table__,
+        {
+            "id": content_id,
+            "s3_key": s3_key,
+            "mime_type": mime_type,
+            "file_size_bytes": file_size_bytes,
+        },
+        index_elements=["id"],
+    )
 
 
 def get_file_content(engine: Engine, content_id: str) -> dict | None:
-    """Look up file content by ID. Returns dict with id, data, mime_type, file_size_bytes."""
+    """Look up file content by ID, fetching the bytes from S3.
+
+    Returns a dict with id, s3_key, mime_type, file_size_bytes, created_at and a
+    ``data`` key holding the bytes fetched from S3 (preserving the historical
+    byte-out shape for callers). An S3 fetch error raises.
+    """
+    from forge.ocr import s3_blobs
+
     t = FileContentBlob.__table__
     stmt = t.select().where(t.c.id == content_id)
 
@@ -869,14 +926,21 @@ def get_file_content(engine: Engine, content_id: str) -> dict | None:
         row = conn.execute(stmt).mappings().first()
         if row is None:
             return None
-        return dict(row)
+        result = dict(row)
+    result["data"] = s3_blobs.get(result["s3_key"])
+    return result
 
 
 def delete_file_content(engine: Engine, content_id: str) -> None:
-    """Delete file content by ID."""
+    """Delete file content by ID, removing both the DB row and the S3 object."""
+    from forge.ocr import s3_blobs
+
     t = FileContentBlob.__table__
     with engine.begin() as conn:
+        s3_key = conn.execute(sa.select(t.c.s3_key).where(t.c.id == content_id)).scalar()
         conn.execute(sa.delete(t).where(t.c.id == content_id))
+    if s3_key is not None:
+        s3_blobs.delete(s3_key)
 
 
 # ---------------------------------------------------------------------------
@@ -899,23 +963,33 @@ def save_ocr_image(
     bottom_right_x: int | None = None,
     bottom_right_y: int | None = None,
 ) -> None:
-    """Insert a row into the ocr_images table."""
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(OcrImage.__table__).values(
-                id=image_id,
-                document_id=document_id,
-                page_index=page_index,
-                original_image_id=original_image_id,
-                data=data,
-                mime_type=mime_type,
-                file_size_bytes=file_size_bytes,
-                top_left_x=top_left_x,
-                top_left_y=top_left_y,
-                bottom_right_x=bottom_right_x,
-                bottom_right_y=bottom_right_y,
-            )
-        )
+    """Upload image bytes to S3 and record the reference in ocr_images.
+
+    Uploads to S3 first (a DB failure leaves only a harmless orphan object). An
+    unset bucket or S3 error raises.
+    """
+    from forge.ocr import s3_blobs
+
+    s3_key = s3_blobs.build_key(image_id)
+    s3_blobs.put(s3_key, data, mime_type)
+    insert_or_ignore(
+        engine,
+        OcrImage.__table__,
+        {
+            "id": image_id,
+            "document_id": document_id,
+            "page_index": page_index,
+            "original_image_id": original_image_id,
+            "s3_key": s3_key,
+            "mime_type": mime_type,
+            "file_size_bytes": file_size_bytes,
+            "top_left_x": top_left_x,
+            "top_left_y": top_left_y,
+            "bottom_right_x": bottom_right_x,
+            "bottom_right_y": bottom_right_y,
+        },
+        index_elements=["id"],
+    )
 
 
 def update_ocr_images_document_id(
@@ -972,7 +1046,9 @@ def get_ocr_images(engine: Engine, document_id: str) -> list[dict]:
 
 
 def get_ocr_image(engine: Engine, image_id: str) -> dict | None:
-    """Get a single image with blob data."""
+    """Get a single image, fetching its bytes from S3 under the ``data`` key."""
+    from forge.ocr import s3_blobs
+
     t = OcrImage.__table__
     stmt = t.select().where(t.c.id == image_id)
 
@@ -980,13 +1056,22 @@ def get_ocr_image(engine: Engine, image_id: str) -> dict | None:
         row = conn.execute(stmt).mappings().first()
         if row is None:
             return None
-        return dict(row)
+        result = dict(row)
+    result["data"] = s3_blobs.get(result["s3_key"])
+    return result
 
 
 def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> None:
-    """Delete OCR images by document IDs."""
+    """Delete OCR images by document IDs, removing both rows and S3 objects."""
     if not document_ids:
         return
+    from forge.ocr import s3_blobs
+
     t = OcrImage.__table__
     with engine.begin() as conn:
+        s3_keys = list(
+            conn.execute(sa.select(t.c.s3_key).where(t.c.document_id.in_(document_ids))).scalars()
+        )
         conn.execute(sa.delete(t).where(t.c.document_id.in_(document_ids)))
+    for s3_key in s3_keys:
+        s3_blobs.delete(s3_key)

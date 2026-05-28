@@ -482,17 +482,13 @@ def _load_playbooks_for_task(task: TaskDefinition) -> list[dict]:
     Returns empty list on any error (D42 pattern).
     """
     try:
-        from forge.store import get_db_path, get_engine, get_playbooks_by_tags
-
-        db_path = get_db_path()
-        if db_path is None or not db_path.exists():
-            return []
+        from forge.store import get_playbooks_by_tags, get_store_engine
 
         tags = infer_task_tags(task)
         if not tags:
             return []
 
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         return get_playbooks_by_tags(engine, tags, limit=5)
     except Exception:
         logger.warning("Failed to load playbooks from store", exc_info=True)

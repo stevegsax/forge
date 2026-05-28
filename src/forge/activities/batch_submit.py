@@ -4,7 +4,7 @@ Submits an assembled context to the LLM provider's batch API.
 
 Design follows Function Core / Imperative Shell:
 - Testable function: execute_batch_submit (takes provider as argument)
-- Imperative shell: submit_batch_request, _record_submission
+- Imperative shell: submit_batch_request
 """
 
 from __future__ import annotations
@@ -77,29 +77,6 @@ async def execute_batch_submit(
 # ---------------------------------------------------------------------------
 
 
-def _record_submission(
-    result: BatchSubmitResult, workflow_id: str, provider: str = "anthropic"
-) -> None:
-    """Best-effort store write. Never raises (D42)."""
-    try:
-        from forge.store import get_db_path, get_engine, record_batch_submission
-
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        engine = get_engine(db_path)
-        record_batch_submission(
-            engine,
-            request_id=result.request_id,
-            batch_id=result.batch_id,
-            workflow_id=workflow_id,
-            provider=provider,
-        )
-    except Exception:
-        logger.warning("Failed to record batch submission to store", exc_info=True)
-
-
 @activity.defn
 async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
     """Activity wrapper — creates provider and delegates to execute_batch_submit."""
@@ -129,5 +106,6 @@ async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
         from sax_llm import parse_model_id
 
         provider_name, _ = parse_model_id(input.context.model_name or DEFAULT_MODEL)
-        _record_submission(result, input.workflow_id, provider=provider_name)
-        return result
+        # Thread the provider back to the workflow, which persists the submission
+        # survivably (Phase C) — the activity no longer writes to the store.
+        return result.model_copy(update={"provider": provider_name})

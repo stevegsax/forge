@@ -17,3 +17,8 @@ select = [
 
 [lint.isort]
 known-first-party = ["forge"]
+
+[lint.flake8-type-checking]
+# pydantic models evaluate annotations at runtime, so imports used only as field
+# types must stay at module scope (not moved into a TYPE_CHECKING block).
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]

@@ -18,16 +18,16 @@ with workflow.unsafe.imports_passed_through():
         ExtractionWorkflowInput,
         ExtractionWorkflowResult,
         FetchExtractionInput,
-        SaveExtractionInput,
         ValidatePlaybookInput,
         ValidatePlaybookResult,
         resolve_model,
     )
+    from forge.persist_models import PersistPlaybooks, build_persist_interaction
+    from forge.workflow_blocks import persist_block as _persist_block
 
 _FETCH_TIMEOUT = timedelta(seconds=30)
 _LLM_TIMEOUT = timedelta(minutes=5)
 _LLM_HEARTBEAT = timedelta(seconds=60)
-_SAVE_TIMEOUT = timedelta(seconds=30)
 
 
 @workflow.defn
@@ -71,6 +71,18 @@ class ForgeExtractionWorkflow:
             result_type=ExtractionCallResult,
         )
 
+        # Survivably persist the extraction interaction (one per run).
+        await _persist_block(
+            build_persist_interaction(
+                idempotency_key=f"{workflow.info().workflow_id}:extraction",
+                role="extraction",
+                task_id="__extraction__",
+                system_prompt=extraction_input.system_prompt,
+                user_prompt=extraction_input.user_prompt,
+                result=call_result,
+            )
+        )
+
         # Validate each extracted entry through the shared activity
         validated_entries = []
         for entry in call_result.result.entries:
@@ -84,15 +96,12 @@ class ForgeExtractionWorkflow:
                 validated_entries.append(v.entry)
 
         if validated_entries:
-            await workflow.execute_activity(
-                "save_extraction_results",
-                SaveExtractionInput(
-                    entries=validated_entries,
-                    source_workflow_ids=call_result.source_workflow_ids,
+            # Survivable, idempotent playbook write (replaces save_extraction_results).
+            await _persist_block(
+                PersistPlaybooks(
                     extraction_workflow_id=workflow.info().workflow_id,
-                ),
-                start_to_close_timeout=_SAVE_TIMEOUT,
-                result_type=type(None),
+                    entries=validated_entries,
+                )
             )
 
         return ExtractionWorkflowResult(

@@ -17,6 +17,8 @@ dependencies = [
     "scipy>=1.14",
     "sqlalchemy>=2.0",
     "alembic>=1.14",
+    "psycopg2-binary>=2.9",
+    "boto3>=1.34",
     "pymupdf>=1.27.2",
     "sax-llm",
     "pbook",
@@ -57,14 +59,20 @@ select = [
 [tool.ruff.lint.isort]
 known-first-party = ["forge"]
 
+[tool.ruff.lint.flake8-type-checking]
+# pydantic models evaluate annotations at runtime, so imports used only as field
+# types must stay at module scope (not moved into a TYPE_CHECKING block).
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = "--cov=forge --cov-report=term-missing --cov-fail-under=85 -m 'not e2e'"
+addopts = "--cov=forge --cov-report=term-missing --cov-fail-under=85 -m 'not e2e and not postgres'"
 markers = [
     "e2e: end-to-end tests requiring external services (Mistral API, Temporal)",
+    "postgres: tests that run Alembic migrations against a real Postgres via testcontainers (requires Docker)",
 ]
 filterwarnings = [
     "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
@@ -78,4 +86,6 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
+    "moto[s3]>=5.0",
+    "testcontainers[postgres]>=4.0",
 ]

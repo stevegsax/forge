@@ -181,6 +181,8 @@ async def _assemble_conflict_resolution(
 # ---------------------------------------------------------------------------
 
 with workflow.unsafe.imports_passed_through():
+    from forge.persist_models import PersistRun
+    from forge.persist_models import build_persist_interaction as _build_persist_interaction
     from forge.workflow_blocks import (
         batch_submit_and_wait as _call_llm_batch_dispatch,
     )
@@ -189,6 +191,9 @@ with workflow.unsafe.imports_passed_through():
     )
     from forge.workflow_blocks import (
         generation_dispatch as _call_generation_dispatch,
+    )
+    from forge.workflow_blocks import (
+        persist_block as _persist_block,
     )
     from forge.workflow_blocks import (
         remove_worktree as _remove_worktree,
@@ -226,6 +231,36 @@ class ForgeTaskWorkflow:
         self._batch_results: list[BatchResult] = []
         self._sync_mode: bool = True
         self._log_messages: bool = False
+        # Monotonic counter for deterministic, replay-stable interaction
+        # idempotency keys (Phase C survivable writes).
+        self._persist_seq: int = 0
+
+    async def _persist_interaction(
+        self,
+        *,
+        role: str,
+        task_id: str,
+        system_prompt: str,
+        user_prompt: str,
+        result: object,
+        step_id: str | None = None,
+        sub_task_id: str | None = None,
+        context_stats: object = None,
+    ) -> None:
+        """Survivably persist one LLM interaction (idempotent on a per-run key)."""
+        self._persist_seq += 1
+        req = _build_persist_interaction(
+            idempotency_key=f"{workflow.info().workflow_id}:{role}:{self._persist_seq}",
+            role=role,
+            task_id=task_id,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            result=result,
+            step_id=step_id,
+            sub_task_id=sub_task_id,
+            context_stats=context_stats,
+        )
+        await _persist_block(req)
 
     @workflow.signal
     async def batch_result_received(self, result: BatchResult) -> None:
@@ -242,8 +277,16 @@ class ForgeTaskWorkflow:
             input.sync_mode,
         )
         if input.plan:
-            return await self._run_planned(input)
-        return await self._run_single_step(input)
+            result = await self._run_planned(input)
+        else:
+            result = await self._run_single_step(input)
+        # Survivably persist the run result (idempotent on workflow_id) so every
+        # execution records a row — including fire-and-forget submissions, which
+        # the old CLI-side _persist_run never covered.
+        await _persist_block(
+            PersistRun(workflow_id=workflow.info().workflow_id, task_result=result)
+        )
+        return result
 
     # ------------------------------------------------------------------
     # LLM dispatch methods (delegating to module-level shared functions)
@@ -266,14 +309,23 @@ class ForgeTaskWorkflow:
         )
 
     async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
-        return await _call_generation_dispatch(
-            self._batch_results, self._sync_mode, context
+        result = await _call_generation_dispatch(self._batch_results, self._sync_mode, context)
+        await self._persist_interaction(
+            role="llm",
+            task_id=context.task_id,
+            system_prompt=context.system_prompt,
+            user_prompt=context.user_prompt,
+            result=result,
+            step_id=context.step_id,
+            sub_task_id=context.sub_task_id,
+            context_stats=context.context_stats,
         )
+        return result
 
     async def _call_planner_llm(self, planner_input: PlannerInput) -> PlanCallResult:
         """Dispatch planner LLM call via sync or batch path."""
         if self._sync_mode:
-            return await workflow.execute_activity(
+            result: PlanCallResult = await workflow.execute_activity(
                 "call_planner",
                 planner_input,
                 start_to_close_timeout=_LLM_TIMEOUT,
@@ -281,29 +333,38 @@ class ForgeTaskWorkflow:
                 retry_policy=_LLM_RETRY,
                 result_type=PlanCallResult,
             )
-        context = AssembledContext(
+        else:
+            context = AssembledContext(
+                task_id=planner_input.task_id,
+                system_prompt=planner_input.system_prompt,
+                user_prompt=planner_input.user_prompt,
+                model_name=planner_input.model_name,
+                log_messages=planner_input.log_messages,
+                worktree_path=planner_input.worktree_path,
+            )
+            parsed = await self._call_llm_batch(
+                context,
+                "Plan",
+                thinking=planner_input.thinking,
+            )
+            result = PlanCallResult(
+                task_id=planner_input.task_id,
+                plan=Plan.model_validate_json(parsed.parsed_json),
+                model_name=parsed.model_name,
+                input_tokens=parsed.input_tokens,
+                output_tokens=parsed.output_tokens,
+                latency_ms=parsed.latency_ms,
+                cache_creation_input_tokens=parsed.cache_creation_input_tokens,
+                cache_read_input_tokens=parsed.cache_read_input_tokens,
+            )
+        await self._persist_interaction(
+            role="planner",
             task_id=planner_input.task_id,
             system_prompt=planner_input.system_prompt,
             user_prompt=planner_input.user_prompt,
-            model_name=planner_input.model_name,
-            log_messages=planner_input.log_messages,
-            worktree_path=planner_input.worktree_path,
+            result=result,
         )
-        parsed = await self._call_llm_batch(
-            context,
-            "Plan",
-            thinking=planner_input.thinking,
-        )
-        return PlanCallResult(
-            task_id=planner_input.task_id,
-            plan=Plan.model_validate_json(parsed.parsed_json),
-            model_name=parsed.model_name,
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
-            latency_ms=parsed.latency_ms,
-            cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-            cache_read_input_tokens=parsed.cache_read_input_tokens,
-        )
+        return result
 
     async def _call_exploration(self, exploration_input: ExplorationInput) -> ExplorationResponse:
         """Dispatch exploration LLM call via sync or batch path."""
@@ -329,7 +390,7 @@ class ForgeTaskWorkflow:
     async def _call_sanity_check_llm(self, sanity_input: SanityCheckInput) -> SanityCheckCallResult:
         """Dispatch sanity check LLM call via sync or batch path."""
         if self._sync_mode:
-            return await workflow.execute_activity(
+            result: SanityCheckCallResult = await workflow.execute_activity(
                 "call_sanity_check",
                 sanity_input,
                 start_to_close_timeout=_SANITY_CHECK_TIMEOUT,
@@ -337,37 +398,54 @@ class ForgeTaskWorkflow:
                 retry_policy=_LLM_RETRY,
                 result_type=SanityCheckCallResult,
             )
-        context = AssembledContext(
+        else:
+            context = AssembledContext(
+                task_id=sanity_input.task_id,
+                system_prompt=sanity_input.system_prompt,
+                user_prompt=sanity_input.user_prompt,
+                model_name=sanity_input.model_name,
+                log_messages=sanity_input.log_messages,
+                worktree_path=sanity_input.worktree_path,
+            )
+            parsed = await self._call_llm_batch(
+                context,
+                "SanityCheckResponse",
+                thinking=sanity_input.thinking,
+            )
+            result = SanityCheckCallResult(
+                task_id=sanity_input.task_id,
+                response=SanityCheckResponse.model_validate_json(parsed.parsed_json),
+                model_name=parsed.model_name,
+                input_tokens=parsed.input_tokens,
+                output_tokens=parsed.output_tokens,
+                latency_ms=parsed.latency_ms,
+                cache_creation_input_tokens=parsed.cache_creation_input_tokens,
+                cache_read_input_tokens=parsed.cache_read_input_tokens,
+            )
+        await self._persist_interaction(
+            role="sanity_check",
             task_id=sanity_input.task_id,
             system_prompt=sanity_input.system_prompt,
             user_prompt=sanity_input.user_prompt,
-            model_name=sanity_input.model_name,
-            log_messages=sanity_input.log_messages,
-            worktree_path=sanity_input.worktree_path,
+            result=result,
         )
-        parsed = await self._call_llm_batch(
-            context,
-            "SanityCheckResponse",
-            thinking=sanity_input.thinking,
-        )
-        response = SanityCheckResponse.model_validate_json(parsed.parsed_json)
-        return SanityCheckCallResult(
-            task_id=sanity_input.task_id,
-            response=response,
-            model_name=parsed.model_name,
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
-            latency_ms=parsed.latency_ms,
-            cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-            cache_read_input_tokens=parsed.cache_read_input_tokens,
-        )
+        return result
 
     async def _call_conflict_resolution(
         self, call_input: ConflictResolutionCallInput
     ) -> ConflictResolutionCallResult:
-        return await _call_conflict_resolution_dispatch(
+        result = await _call_conflict_resolution_dispatch(
             self._batch_results, self._sync_mode, call_input
         )
+        await self._persist_interaction(
+            role="conflict_resolution",
+            task_id=call_input.task_id,
+            system_prompt=call_input.system_prompt,
+            user_prompt=call_input.user_prompt,
+            result=result,
+            step_id=call_input.step_id,
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Phase 7: LLM-guided context exploration
@@ -1340,6 +1418,34 @@ class ForgeSubTaskWorkflow:
         self._batch_results: list[BatchResult] = []
         self._sync_mode: bool = True
         self._log_messages: bool = False
+        self._persist_seq: int = 0
+
+    async def _persist_interaction(
+        self,
+        *,
+        role: str,
+        task_id: str,
+        system_prompt: str,
+        user_prompt: str,
+        result: object,
+        step_id: str | None = None,
+        sub_task_id: str | None = None,
+        context_stats: object = None,
+    ) -> None:
+        """Survivably persist one LLM interaction (idempotent on a per-run key)."""
+        self._persist_seq += 1
+        req = _build_persist_interaction(
+            idempotency_key=f"{workflow.info().workflow_id}:{role}:{self._persist_seq}",
+            role=role,
+            task_id=task_id,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            result=result,
+            step_id=step_id,
+            sub_task_id=sub_task_id,
+            context_stats=context_stats,
+        )
+        await _persist_block(req)
 
     @workflow.signal
     async def batch_result_received(self, result: BatchResult) -> None:
@@ -1380,16 +1486,34 @@ class ForgeSubTaskWorkflow:
         )
 
     async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
-        return await _call_generation_dispatch(
-            self._batch_results, self._sync_mode, context
+        result = await _call_generation_dispatch(self._batch_results, self._sync_mode, context)
+        await self._persist_interaction(
+            role="llm",
+            task_id=context.task_id,
+            system_prompt=context.system_prompt,
+            user_prompt=context.user_prompt,
+            result=result,
+            step_id=context.step_id,
+            sub_task_id=context.sub_task_id,
+            context_stats=context.context_stats,
         )
+        return result
 
     async def _call_conflict_resolution(
         self, call_input: ConflictResolutionCallInput
     ) -> ConflictResolutionCallResult:
-        return await _call_conflict_resolution_dispatch(
+        result = await _call_conflict_resolution_dispatch(
             self._batch_results, self._sync_mode, call_input
         )
+        await self._persist_interaction(
+            role="conflict_resolution",
+            task_id=call_input.task_id,
+            system_prompt=call_input.system_prompt,
+            user_prompt=call_input.user_prompt,
+            result=result,
+            step_id=call_input.step_id,
+        )
+        return result
 
     async def _run_single_step(self, input: SubTaskInput) -> SubTaskResult:
         """Execute a leaf sub-task: LLM call with retry loop."""

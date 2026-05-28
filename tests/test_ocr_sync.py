@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import sqlalchemy as sa
 from sax_llm.models import ExtractedImage
 from temporalio import activity
 from temporalio.worker import Worker
@@ -18,12 +19,33 @@ from forge.ocr.models import (
     FileContentRef,
     OcrDuplicateCheckResult,
     OcrStoreResult,
+    OcrSyncCallResult,
     OcrSyncInput,
     SplitResult,
 )
 from forge.ocr.workflow_sync import OcrSyncWorkflow
-from forge.store import get_engine, run_migrations
+from forge.persist_models import PersistRequest, PersistResult
+from forge.store import run_migrations
 from forge.workflows import FORGE_TASK_QUEUE
+
+
+@activity.defn(name="persist_to_store")
+async def mock_persist_to_store(req: PersistRequest) -> PersistResult:
+    """No-op survivable-write mock for OcrSyncWorkflow tests."""
+    return PersistResult(kind=req.kind, applied=True)
+
+
+def _sync_call_result(document_id: str, *, text_len: int, page_count: int) -> OcrSyncCallResult:
+    """Build an OcrSyncCallResult for mocking call_ocr_sync."""
+    return OcrSyncCallResult(
+        document_id=document_id,
+        file_path="/tmp/test.pdf",
+        text="x" * text_len,
+        model_name="mistral-ocr-latest",
+        input_tokens=10,
+        output_tokens=20,
+        page_count=page_count,
+    )
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,8 +61,9 @@ if TYPE_CHECKING:
 def _setup_db(tmp_path: Path):
     """Create a test database with migrations applied."""
     db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path), db_path
+    url = f"sqlite:///{db_path}"
+    run_migrations(url)
+    return sa.create_engine(url), db_path
 
 
 def _build_ocr_response(
@@ -136,16 +159,14 @@ class TestExecuteCallOcrSync:
     @pytest.mark.asyncio
     async def test_basic_ocr_and_store(self, tmp_path: Path) -> None:
         """Calls provider, parses result, stores in DB."""
-        engine, db_path = _setup_db(tmp_path)
+        engine, _ = _setup_db(tmp_path)
         provider = _build_mock_provider()
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             result = await execute_call_ocr_sync(
                 base64_data="dGVzdA==",
@@ -157,9 +178,10 @@ class TestExecuteCallOcrSync:
                 provider=provider,
             )
 
+            # call_ocr_sync now returns the parsed result; the workflow persists it.
             assert result.document_id == "doc-sync-1"
-            assert result.stored is True
-            assert result.text_length == len("Extracted text")
+            assert result.text == "Extracted text"
+            assert result.file_path == "/tmp/test.pdf"
 
             # Verify provider was called correctly
             provider.call_ocr.assert_called_once()
@@ -167,13 +189,12 @@ class TestExecuteCallOcrSync:
             assert call_kwargs["model"] == "mistral-ocr-latest"
             assert call_kwargs["document_data_uri"] == "data:application/pdf;base64,dGVzdA=="
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
     @pytest.mark.asyncio
     async def test_image_extraction_and_storage(self, tmp_path: Path) -> None:
         """Images in the OCR response are extracted, stored, and referenced."""
-        engine, db_path = _setup_db(tmp_path)
+        engine, _ = _setup_db(tmp_path)
 
         # OCR response with an image
         response_body = _build_ocr_response(
@@ -199,11 +220,9 @@ class TestExecuteCallOcrSync:
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             result = await execute_call_ocr_sync(
                 base64_data="dGVzdA==",
@@ -216,18 +235,17 @@ class TestExecuteCallOcrSync:
                 store_images_fn=mock_store_images,
             )
 
-            assert result.stored is True
+            assert result.document_id == "doc-img-1"
             # Verify image was extracted
             assert len(stored_images) == 1
             assert stored_images[0].original_image_id == "img-0.jpeg"
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
     @pytest.mark.asyncio
     async def test_no_store_images_fn_skips_images(self, tmp_path: Path) -> None:
         """When store_images_fn is None, images are extracted but not stored."""
-        engine, db_path = _setup_db(tmp_path)
+        engine, _ = _setup_db(tmp_path)
 
         response_body = _build_ocr_response(
             text="Has image ![x](img-0.jpeg).",
@@ -244,11 +262,9 @@ class TestExecuteCallOcrSync:
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             result = await execute_call_ocr_sync(
                 base64_data="dGVzdA==",
@@ -262,12 +278,10 @@ class TestExecuteCallOcrSync:
             )
 
             # Should still succeed — just no image mapping in output
-            assert result.stored is True
-            # Image refs are NOT rewritten (no mapping)
-            assert result.text_length > 0
+            assert result.document_id == "doc-no-store"
+            assert result.text
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
 
 # ---------------------------------------------------------------------------
@@ -310,13 +324,9 @@ class TestOcrSyncWorkflow:
             )
 
         @activity.defn(name="call_ocr_sync")
-        async def mock_call_ocr_sync(_input_json: str) -> OcrStoreResult:
+        async def mock_call_ocr_sync(_input_json: str) -> OcrSyncCallResult:
             data = json.loads(_input_json)
-            return OcrStoreResult(
-                document_id=data["document_id"],
-                text_length=100,
-                page_count=5,
-            )
+            return _sync_call_result(data["document_id"], text_len=100, page_count=5)
 
         async with Worker(
             env.client,
@@ -327,6 +337,7 @@ class TestOcrSyncWorkflow:
                 mock_read,
                 mock_split,
                 mock_call_ocr_sync,
+                mock_persist_to_store,
             ],
         ):
             result = await env.client.execute_workflow(
@@ -410,15 +421,11 @@ class TestOcrSyncWorkflow:
             )
 
         @activity.defn(name="call_ocr_sync")
-        async def mock_call_ocr_sync(_input_json: str) -> OcrStoreResult:
+        async def mock_call_ocr_sync(_input_json: str) -> OcrSyncCallResult:
             nonlocal call_count
             call_count += 1
             data = json.loads(_input_json)
-            return OcrStoreResult(
-                document_id=data["document_id"],
-                text_length=500,
-                page_count=25,
-            )
+            return _sync_call_result(data["document_id"], text_len=500, page_count=25)
 
         @activity.defn(name="reassemble_ocr_chunks")
         async def mock_reassemble(_input_json: str) -> OcrStoreResult:
@@ -439,6 +446,7 @@ class TestOcrSyncWorkflow:
                 mock_split,
                 mock_call_ocr_sync,
                 mock_reassemble,
+                mock_persist_to_store,
             ],
         ):
             result = await env.client.execute_workflow(
@@ -480,19 +488,15 @@ class TestOcrSyncWorkflow:
             )
 
         @activity.defn(name="call_ocr_sync")
-        async def mock_call_ocr_sync(_input_json: str) -> OcrStoreResult:
+        async def mock_call_ocr_sync(_input_json: str) -> OcrSyncCallResult:
             data = json.loads(_input_json)
-            return OcrStoreResult(
-                document_id=data["document_id"],
-                text_length=50,
-                page_count=1,
-            )
+            return _sync_call_result(data["document_id"], text_len=50, page_count=1)
 
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
             workflows=[OcrSyncWorkflow],
-            activities=[mock_read, mock_split, mock_call_ocr_sync],
+            activities=[mock_read, mock_split, mock_call_ocr_sync, mock_persist_to_store],
         ):
             result = await env.client.execute_workflow(
                 OcrSyncWorkflow.run,

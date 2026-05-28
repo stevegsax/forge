@@ -16,7 +16,6 @@ import sqlalchemy as sa
 from forge.store import (
     BatchJob,
     get_batch_job,
-    get_engine,
     record_batch_submission,
     run_migrations,
 )
@@ -29,8 +28,9 @@ if TYPE_CHECKING:
 
 def _setup_db(tmp_path: Path):
     db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path), db_path
+    url = f"sqlite:///{db_path}"
+    run_migrations(url)
+    return sa.create_engine(url), db_path
 
 
 def _read_created_at(engine: Engine, request_id: str) -> datetime:

@@ -241,7 +241,7 @@ class TestLoadPlaybooksGraceful:
     def test_missing_store_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from forge.activities.context import _load_playbooks_for_task
 
-        monkeypatch.setenv("FORGE_DB_PATH", "")
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
         task = TaskDefinition(
             task_id="t",
             description="Create module",

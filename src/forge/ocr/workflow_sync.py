@@ -26,9 +26,16 @@ with workflow.unsafe.imports_passed_through():
         FileContentRef,
         OcrDuplicateCheckResult,
         OcrStoreResult,
+        OcrSyncCallResult,
         OcrSyncInput,
         SplitResult,
     )
+    from forge.persist_models import PersistOcrResult
+    from forge.workflow_blocks import (
+        _PERSIST_RETRY,
+        _PERSIST_SCHEDULE_TO_CLOSE,
+    )
+    from forge.workflow_blocks import persist_block as _persist_block
 
 _IO_TIMEOUT = timedelta(seconds=30)
 _SPLIT_TIMEOUT = timedelta(seconds=120)
@@ -127,12 +134,34 @@ class OcrSyncWorkflow:
                     "workflow_id": workflow.info().workflow_id,
                 }
             )
-            result = await workflow.execute_activity(
+            call_result: OcrSyncCallResult = await workflow.execute_activity(
                 "call_ocr_sync",
                 ocr_data,
                 start_to_close_timeout=_OCR_CALL_TIMEOUT,
                 retry_policy=_OCR_RETRY,
-                result_type=OcrStoreResult,
+                result_type=OcrSyncCallResult,
+            )
+            # Survivably persist the ocr_results row (idempotent on document_id);
+            # the expensive OCR call already returned and is never re-run on a blip.
+            await _persist_block(
+                PersistOcrResult(
+                    document_id=call_result.document_id,
+                    file_path=call_result.file_path,
+                    text=call_result.text,
+                    model_name=call_result.model_name,
+                    input_tokens=call_result.input_tokens,
+                    output_tokens=call_result.output_tokens,
+                    page_count=call_result.page_count,
+                    batch_id="",
+                    workflow_id=workflow.info().workflow_id,
+                    file_hash=call_result.file_hash,
+                )
+            )
+            result = OcrStoreResult(
+                document_id=call_result.document_id,
+                text_length=len(call_result.text),
+                page_count=call_result.page_count,
+                stored=True,
             )
 
         # Step 4: If multi-chunk, reassemble
@@ -149,7 +178,8 @@ class OcrSyncWorkflow:
                 "reassemble_ocr_chunks",
                 reassemble_data,
                 start_to_close_timeout=_REASSEMBLE_TIMEOUT,
-                retry_policy=_IO_RETRY,
+                schedule_to_close_timeout=_PERSIST_SCHEDULE_TO_CLOSE,
+                retry_policy=_PERSIST_RETRY,
                 result_type=OcrStoreResult,
             )
 

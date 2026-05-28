@@ -23,7 +23,10 @@ def upgrade() -> None:
             "marked_for_removal",
             sa.Boolean,
             nullable=False,
-            server_default=sa.text("0"),
+            # sa.false() renders dialect-correctly ("0" on SQLite, "false" on
+            # Postgres); a literal "0" is an integer and Postgres rejects it for
+            # a BOOLEAN column.
+            server_default=sa.false(),
         ),
     )
 

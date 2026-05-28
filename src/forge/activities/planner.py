@@ -5,7 +5,7 @@ Decomposes a task into ordered steps using an LLM with structured output.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_planner_system_prompt, build_planner_user_prompt
 - Testable function: execute_planner_call (takes provider as argument)
-- Imperative shell: assemble_planner_context, call_planner, store.persist_interaction
+- Imperative shell: assemble_planner_context, call_planner
 """
 
 from __future__ import annotations
@@ -338,13 +338,4 @@ async def call_planner(input: PlannerInput) -> PlanCallResult:
             )
         )
 
-        from forge.store import persist_interaction
-
-        persist_interaction(
-            task_id=input.task_id,
-            role="planner",
-            system_prompt=input.system_prompt,
-            user_prompt=input.user_prompt,
-            llm_result=result,
-        )
         return result

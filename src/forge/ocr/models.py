@@ -127,6 +127,24 @@ class OcrParseResult(BaseModel):
     image_ids: list[str] = Field(default_factory=list)
 
 
+class OcrSyncCallResult(BaseModel):
+    """Parsed sync-OCR result returned by call_ocr_sync.
+
+    The activity performs the API call and image storage but no longer writes the
+    ``ocr_results`` row — OcrSyncWorkflow persists it survivably via
+    ``persist_to_store`` (so a DB blip never re-runs the expensive OCR call).
+    """
+
+    document_id: str
+    file_path: str
+    text: str
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    page_count: int = 0
+    file_hash: str | None = None
+
+
 class ChunkRef(BaseModel):
     """Reference to a single chunk of a split document."""
 

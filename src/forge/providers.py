@@ -331,13 +331,9 @@ def handle_past_runs(params: dict[str, str], repo_root: str, worktree_path: str)
     limit = int(params.get("limit", "5"))
 
     try:
-        from forge.store import get_db_path, get_engine, list_recent_runs
+        from forge.store import get_store_engine, list_recent_runs
 
-        db_path = get_db_path()
-        if db_path is None or not db_path.exists():
-            return "No store available."
-
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         runs = list_recent_runs(engine, limit=limit)
     except Exception as e:
         return f"Error querying runs: {e}"
@@ -360,13 +356,9 @@ def handle_playbooks(params: dict[str, str], repo_root: str, worktree_path: str)
     tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
 
     try:
-        from forge.store import get_db_path, get_engine, get_playbooks_by_tags
+        from forge.store import get_playbooks_by_tags, get_store_engine
 
-        db_path = get_db_path()
-        if db_path is None or not db_path.exists():
-            return "No store available."
-
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         entries = get_playbooks_by_tags(engine, tags, limit=5)
     except Exception as e:
         return f"Error querying playbooks: {e}"

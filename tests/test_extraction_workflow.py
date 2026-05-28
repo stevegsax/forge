@@ -18,10 +18,10 @@ from forge.models import (
     ExtractionWorkflowInput,
     FetchExtractionInput,
     PlaybookEntry,
-    SaveExtractionInput,
     ValidatePlaybookInput,
     ValidatePlaybookResult,
 )
+from forge.persist_models import PersistRequest, PersistResult
 
 TASK_QUEUE = "test-extraction-queue"
 
@@ -105,17 +105,18 @@ def _make_validate():
     return validate_playbook_entry
 
 
-def _make_save():
-    """Return a save activity that records calls."""
+def _make_persist():
+    """Return a persist_to_store activity that records the requests it receives."""
     from temporalio import activity
 
-    saved: list[SaveExtractionInput] = []
+    persisted: list[PersistRequest] = []
 
-    @activity.defn(name="save_extraction_results")
-    async def save_extraction_results(input: SaveExtractionInput) -> None:
-        saved.append(input)
+    @activity.defn(name="persist_to_store")
+    async def persist_to_store(req: PersistRequest) -> PersistResult:
+        persisted.append(req)
+        return PersistResult(kind=req.kind, applied=True)
 
-    return save_extraction_results, saved
+    return persist_to_store, persisted
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +127,7 @@ def _make_save():
 class TestForgeExtractionWorkflow:
     @pytest.mark.asyncio
     async def test_no_runs_returns_zero(self, env: WorkflowEnvironment) -> None:
-        save_fn, saved = _make_save()
+        persist_fn, persisted = _make_persist()
         async with Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -135,7 +136,7 @@ class TestForgeExtractionWorkflow:
                 _make_fetch_no_runs(),
                 _make_call_llm(),
                 _make_validate(),
-                save_fn,
+                persist_fn,
             ],
         ):
             result = await env.client.execute_workflow(
@@ -146,11 +147,12 @@ class TestForgeExtractionWorkflow:
             )
         assert result.entries_created == 0
         assert result.source_workflow_ids == []
-        assert len(saved) == 0
+        # No runs → the workflow returns before calling the LLM or persisting.
+        assert persisted == []
 
     @pytest.mark.asyncio
     async def test_runs_found_produces_entries(self, env: WorkflowEnvironment) -> None:
-        save_fn, saved = _make_save()
+        persist_fn, persisted = _make_persist()
         async with Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -159,7 +161,7 @@ class TestForgeExtractionWorkflow:
                 _make_fetch_with_runs(),
                 _make_call_llm(),
                 _make_validate(),
-                save_fn,
+                persist_fn,
             ],
         ):
             result = await env.client.execute_workflow(
@@ -170,12 +172,15 @@ class TestForgeExtractionWorkflow:
             )
         assert result.entries_created == 1
         assert result.source_workflow_ids == ["wf-1", "wf-2"]
-        assert len(saved) == 1
-        assert saved[0].entries[0].title == "Test lesson"
+        playbook_reqs = [r for r in persisted if r.kind == "playbooks"]
+        assert len(playbook_reqs) == 1
+        assert playbook_reqs[0].entries[0].title == "Test lesson"
+        # The extraction interaction is also persisted survivably.
+        assert any(r.kind == "interaction" for r in persisted)
 
     @pytest.mark.asyncio
     async def test_empty_entries_skips_save(self, env: WorkflowEnvironment) -> None:
-        save_fn, saved = _make_save()
+        persist_fn, persisted = _make_persist()
         async with Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -184,7 +189,7 @@ class TestForgeExtractionWorkflow:
                 _make_fetch_with_runs(),
                 _make_call_llm(entries=[]),
                 _make_validate(),
-                save_fn,
+                persist_fn,
             ],
         ):
             result = await env.client.execute_workflow(
@@ -194,4 +199,5 @@ class TestForgeExtractionWorkflow:
                 task_queue=TASK_QUEUE,
             )
         assert result.entries_created == 0
-        assert len(saved) == 0
+        # No validated entries → no playbooks persisted (the interaction still is).
+        assert [r for r in persisted if r.kind == "playbooks"] == []

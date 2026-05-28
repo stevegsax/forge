@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import sqlalchemy as sa
 from temporalio import activity, workflow
 from temporalio.client import WorkflowFailureError
 from temporalio.worker import Worker
@@ -56,11 +57,11 @@ from forge.ocr.models import (
 from forge.ocr.workflow_gather import OcrGatherWorkflow
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.ocr.workflow_submit import OcrSubmitWorkflow
+from forge.persist_models import PersistRequest, PersistResult
 from forge.store import (
     clear_ocr_removal_mark,
     delete_ocr_results,
     find_ocr_result_by_file_path,
-    get_engine,
     get_file_content,
     get_ocr_image,
     get_ocr_images,
@@ -84,11 +85,17 @@ if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment
 
 
+def _migrate(db_path: Path):
+    """Test helper: migrate a throwaway SQLite store and open a tracked engine."""
+    url = f"sqlite:///{db_path}"
+    run_migrations(url)
+    return sa.create_engine(url)
+
+
 def _setup_db(tmp_path: Path):
     """Create a test database with migrations applied."""
     db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path), db_path
+    return _migrate(db_path), db_path
 
 
 @workflow.defn(name="OcrStoreWorkflow")
@@ -430,16 +437,13 @@ class TestExecuteParseOcrResult:
 class TestExecuteStoreOcrResult:
     def test_stores_result(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             result = execute_store_ocr_result(
                 document_id="doc-123",
@@ -462,17 +466,17 @@ class TestExecuteStoreOcrResult:
             assert stored["text"] == "Extracted text content"
             assert stored["model_name"] == "pixtral-large"
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
-    def test_returns_not_stored_when_no_db(self) -> None:
-        import forge.store as store_module
+    def test_raises_when_store_unconfigured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from forge.store import StoreConfigError
 
-        original = store_module.get_db_path
-        try:
-            store_module.get_db_path = lambda: None
+        # Store is mandatory: an unconfigured store raises rather than silently
+        # returning a not-stored result.
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
 
-            result = execute_store_ocr_result(
+        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
+            execute_store_ocr_result(
                 document_id="doc-no-db",
                 file_path="/tmp/test.pdf",
                 text="Some text",
@@ -482,11 +486,6 @@ class TestExecuteStoreOcrResult:
                 batch_id="b-1",
                 workflow_id="wf-1",
             )
-
-            assert result.stored is False
-            assert result.text_length == len("Some text")
-        finally:
-            store_module.get_db_path = original
 
 
 # ---------------------------------------------------------------------------
@@ -547,10 +546,10 @@ class TestOcrStoreRoundtrip:
         assert result is not None
         assert result["page_count"] == 2
 
-    def test_unique_document_id(self, tmp_path: Path) -> None:
+    def test_duplicate_document_id_is_idempotent(self, tmp_path: Path) -> None:
         engine, _ = _setup_db(tmp_path)
 
-        save_ocr_result(
+        first = save_ocr_result(
             engine,
             document_id="doc-unique",
             file_path="/data/a.pdf",
@@ -561,22 +560,28 @@ class TestOcrStoreRoundtrip:
             batch_id="b-1",
             workflow_id="wf-1",
         )
+        assert first is True
 
-        # Inserting duplicate document_id should raise IntegrityError
-        from sqlalchemy.exc import IntegrityError
+        # A duplicate document_id is absorbed (idempotent on retry), not an error:
+        # the second write is a no-op and the original row is preserved.
+        second = save_ocr_result(
+            engine,
+            document_id="doc-unique",
+            file_path="/data/b.pdf",
+            text="Second",
+            model_name="model",
+            input_tokens=10,
+            output_tokens=5,
+            batch_id="b-2",
+            workflow_id="wf-2",
+        )
+        assert second is False
 
-        with pytest.raises(IntegrityError):
-            save_ocr_result(
-                engine,
-                document_id="doc-unique",
-                file_path="/data/b.pdf",
-                text="Second",
-                model_name="model",
-                input_tokens=10,
-                output_tokens=5,
-                batch_id="b-2",
-                workflow_id="wf-2",
-            )
+        from forge.store import get_ocr_result
+
+        row = get_ocr_result(engine, "doc-unique")
+        assert row is not None
+        assert row["text"] == "First"
 
 
 # ---------------------------------------------------------------------------
@@ -620,8 +625,7 @@ class TestReadAndStoreFileContent:
 
         # Set up test database
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         ref = execute_read_and_store_file(str(test_file), engine)
 
@@ -640,8 +644,7 @@ class TestReadAndStoreFileContent:
 
     def test_execute_read_and_store_file_not_found(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         with pytest.raises(FileNotFoundError):
             execute_read_and_store_file("/tmp/nonexistent_file_12345.pdf", engine)
@@ -650,8 +653,7 @@ class TestReadAndStoreFileContent:
     async def test_submit_ocr_batch_loads_from_db(self, tmp_path: Path) -> None:
         """Verify submit_ocr_batch loads content from DB using file_content_ref."""
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Pre-store file content
         test_data = b"fake pdf bytes"
@@ -688,11 +690,9 @@ class TestReadAndStoreFileContent:
 
         import forge.store as store_mod
 
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
+        original_get_store_engine = store_mod.get_store_engine
         try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
+            store_mod.get_store_engine = lambda: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
@@ -708,17 +708,18 @@ class TestReadAndStoreFileContent:
             assert "document" in requests[0]["body"]
             assert call_args.kwargs.get("endpoint") == "/v1/ocr"
         finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
+            store_mod.get_store_engine = original_get_store_engine
 
     @pytest.mark.asyncio
-    async def test_submit_ocr_batch_cleans_up_blob(self, tmp_path: Path) -> None:
-        """Verify BLOB is deleted after successful submission."""
-        db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+    async def test_submit_ocr_batch_leaves_blob_and_returns_ref(self, tmp_path: Path) -> None:
+        """submit_ocr_batch no longer writes to the store: it leaves the blob in
 
-        # Pre-store file content
+        place (the workflow deletes it after persisting the submission) and returns
+        the batch ref.
+        """
+        db_path = tmp_path / "test.db"
+        engine = _migrate(db_path)
+
         test_data = b"cleanup test bytes"
         content_id = "cleanup-content-id"
         save_file_content(
@@ -728,9 +729,6 @@ class TestReadAndStoreFileContent:
             mime_type="application/pdf",
             file_size_bytes=len(test_data),
         )
-
-        # Verify blob exists before submission
-        assert get_file_content(engine, content_id) is not None
 
         submit_input = OcrSubmitInput(
             file_path="/tmp/test.pdf",
@@ -754,22 +752,45 @@ class TestReadAndStoreFileContent:
 
         import forge.store as store_mod
 
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
+        original_get_store_engine = store_mod.get_store_engine
         try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
+            store_mod.get_store_engine = lambda: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
             with patch("sax_llm.get_provider", return_value=mock_provider):
-                await submit_ocr_batch(input_json)
+                ref = await submit_ocr_batch(input_json)
 
-            # Verify the BLOB was deleted after successful submission
+            assert ref.batch_id and ref.request_id
+            # The activity no longer deletes the blob — the workflow does.
+            assert get_file_content(engine, content_id) is not None
+        finally:
+            store_mod.get_store_engine = original_get_store_engine
+
+    async def test_delete_file_content_blob_activity_removes_blob(self, tmp_path: Path) -> None:
+        """The delete_file_content_blob activity removes the stored blob."""
+        db_path = tmp_path / "test.db"
+        engine = _migrate(db_path)
+        content_id = "del-content-id"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=b"to delete",
+            mime_type="application/pdf",
+            file_size_bytes=9,
+        )
+
+        import forge.store as store_mod
+
+        original_get_store_engine = store_mod.get_store_engine
+        try:
+            store_mod.get_store_engine = lambda: engine
+            from forge.ocr.activities import delete_file_content_blob
+
+            await delete_file_content_blob(content_id)
             assert get_file_content(engine, content_id) is None
         finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
+            store_mod.get_store_engine = original_get_store_engine
 
 
 # ---------------------------------------------------------------------------
@@ -799,11 +820,13 @@ class TestSubmitOcrBatchFailureRecording:
         )
 
     @pytest.mark.asyncio
-    async def test_records_failure_on_api_error(self, tmp_path: Path) -> None:
-        """When execute_submit_ocr_batch raises, record_batch_failure is called."""
+    async def test_raises_on_api_error_without_recording(self, tmp_path: Path) -> None:
+        """On API error, submit_ocr_batch raises and writes nothing — the workflow
+
+        records the failure survivably (PersistBatchFailure).
+        """
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Pre-store file content
         content_id = "fail-content-id"
@@ -820,11 +843,9 @@ class TestSubmitOcrBatchFailureRecording:
 
         import forge.store as store_mod
 
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
+        original_get_store_engine = store_mod.get_store_engine
         try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
+            store_mod.get_store_engine = lambda: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
@@ -836,70 +857,15 @@ class TestSubmitOcrBatchFailureRecording:
             ):
                 await submit_ocr_batch(input_json)
 
-            # Verify a failed record was inserted
+            # The activity wrote no batch_jobs row — recording is the workflow's job.
             from forge.store import BatchJob
 
             t = BatchJob.__table__
             with engine.connect() as conn:
-                rows = conn.execute(t.select().where(t.c.status == "failed")).mappings().all()
-
-            assert len(rows) == 1
-            row = dict(rows[0])
-            assert row["batch_id"] is None
-            assert row["status"] == "failed"
-            assert "400 Bad Request" in row["error_message"]
-            assert row["workflow_id"] == "wf-store-fail"
-            assert row["provider"] == "mistral"
-            # document_id flows through either from root_document_id in the
-            # submit JSON, or (as here) from ocr_input.document_id as fallback.
-            assert row["document_id"] == "doc-fail"
+                rows = conn.execute(t.select()).mappings().all()
+            assert rows == []
         finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
-
-    @pytest.mark.asyncio
-    async def test_original_exception_propagates_when_recording_fails(self, tmp_path: Path) -> None:
-        """When record_batch_failure itself raises, the original exception still propagates."""
-        db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
-
-        content_id = "fail-record-content-id"
-        save_file_content(
-            engine,
-            content_id=content_id,
-            data=b"fake pdf bytes",
-            mime_type="application/pdf",
-            file_size_bytes=14,
-        )
-
-        mock_provider = MagicMock()
-        mock_provider.submit_batch = AsyncMock(side_effect=RuntimeError("API exploded"))
-
-        import forge.store as store_mod
-
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
-        original_record_failure = store_mod.record_batch_failure
-        try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
-            store_mod.record_batch_failure = MagicMock(side_effect=RuntimeError("DB write failed"))
-
-            from forge.ocr.activities import submit_ocr_batch
-
-            input_json = self._build_input_json(content_id)
-
-            with (
-                patch("sax_llm.get_provider", return_value=mock_provider),
-                pytest.raises(RuntimeError, match="API exploded"),
-            ):
-                await submit_ocr_batch(input_json)
-        finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
-            store_mod.record_batch_failure = original_record_failure
-
+            store_mod.get_store_engine = original_get_store_engine
 
 # ---------------------------------------------------------------------------
 # OcrStoreWorkflow — workflow-level tests
@@ -1212,6 +1178,19 @@ class TestOcrSubmitWorkflow:
                 request_id=f"req-{doc_id}",
             )
 
+        persisted: list[PersistRequest] = []
+
+        @activity.defn(name="persist_to_store")
+        async def mock_persist_to_store(req: PersistRequest) -> PersistResult:
+            persisted.append(req)
+            return PersistResult(kind=req.kind, applied=True)
+
+        deleted_blobs: list[str] = []
+
+        @activity.defn(name="delete_file_content_blob")
+        async def mock_delete_file_content_blob(content_id: str) -> None:
+            deleted_blobs.append(content_id)
+
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -1221,6 +1200,8 @@ class TestOcrSubmitWorkflow:
                 mock_read_and_store_file_content,
                 mock_split_file_into_chunks,
                 mock_submit_ocr_batch,
+                mock_persist_to_store,
+                mock_delete_file_content_blob,
             ],
         ):
             result = await env.client.execute_workflow(
@@ -1241,6 +1222,9 @@ class TestOcrSubmitWorkflow:
         assert submitted_payloads[0]["store_workflow_id"] == "ocr-store-doc-abc__chunk_0"
         assert submitted_payloads[1]["submit_input"]["document_id"] == "doc-abc__chunk_1"
         assert submitted_payloads[1]["store_workflow_id"] == "ocr-store-doc-abc__chunk_1"
+        # Each chunk's submission is persisted survivably and its input blob cleaned up.
+        assert [r.kind for r in persisted] == ["batch_submission", "batch_submission"]
+        assert deleted_blobs == ["blob-chunk-0", "blob-chunk-1"]
 
 
 class TestOcrGatherWorkflow:
@@ -1820,8 +1804,7 @@ class TestExecuteParseOcrResultWithImages:
 class TestExecuteStoreOcrResultWithImages:
     def test_updates_image_document_ids(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Pre-store an image with empty document_id
         save_ocr_image(
@@ -1836,11 +1819,9 @@ class TestExecuteStoreOcrResultWithImages:
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             execute_store_ocr_result(
                 document_id="doc-with-images",
@@ -1859,21 +1840,17 @@ class TestExecuteStoreOcrResultWithImages:
             assert img is not None
             assert img["document_id"] == "doc-with-images"
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
     def test_no_image_ids_is_backward_compatible(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             result = execute_store_ocr_result(
                 document_id="doc-no-images",
@@ -1887,8 +1864,7 @@ class TestExecuteStoreOcrResultWithImages:
             )
             assert result.stored is True
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
 
 # ---------------------------------------------------------------------------

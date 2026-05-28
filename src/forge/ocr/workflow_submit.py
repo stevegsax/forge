@@ -33,11 +33,18 @@ with workflow.unsafe.imports_passed_through():
         OcrSubmitResult,
         SplitResult,
     )
+    from forge.persist_models import PersistBatchFailure, PersistBatchSubmission
+    from forge.workflow_blocks import persist_block as _persist_block
 
 _IO_TIMEOUT = timedelta(seconds=30)
 _SPLIT_TIMEOUT = timedelta(seconds=120)
 _SUBMIT_TIMEOUT = timedelta(seconds=60)
 _IO_RETRY = RetryPolicy(maximum_attempts=2)
+
+
+def _ocr_provider(model_name: str) -> str:
+    """Extract the provider prefix from a 'provider:model' id (e.g. 'mistral')."""
+    return model_name.split(":", 1)[0]
 
 
 @workflow.defn
@@ -177,13 +184,53 @@ class OcrSubmitWorkflow:
                     "root_document_id": document_id,
                 }
             )
-            batch_ref = await workflow.execute_activity(
-                "submit_ocr_batch",
-                submit_data,
-                start_to_close_timeout=_SUBMIT_TIMEOUT,
-                retry_policy=_IO_RETRY,
-                result_type=OcrBatchRef,
+            provider = _ocr_provider(input.model_name)
+            try:
+                batch_ref = await workflow.execute_activity(
+                    "submit_ocr_batch",
+                    submit_data,
+                    start_to_close_timeout=_SUBMIT_TIMEOUT,
+                    retry_policy=_IO_RETRY,
+                    result_type=OcrBatchRef,
+                )
+            except Exception as exc:
+                # The submit API call failed after retries: record a failure row
+                # survivably (deterministic id), then fail the workflow.
+                await _persist_block(
+                    PersistBatchFailure(
+                        request_id=f"{chunk_doc_id}:submit-failed",
+                        workflow_id=store_handle.id,
+                        error_message=str(exc),
+                        provider=provider,
+                        file_path=input.file_path,
+                        document_id=document_id,
+                    )
+                )
+                raise
+
+            # Record the submission survivably so the poller can find it; only
+            # after that's durable do we delete the now-redundant input blob.
+            await _persist_block(
+                PersistBatchSubmission(
+                    request_id=batch_ref.request_id,
+                    batch_id=batch_ref.batch_id,
+                    workflow_id=store_handle.id,
+                    provider=provider,
+                    file_path=input.file_path,
+                    document_id=document_id,
+                )
             )
+            try:
+                await workflow.execute_activity(
+                    "delete_file_content_blob",
+                    chunk.content_id,
+                    start_to_close_timeout=_IO_TIMEOUT,
+                    retry_policy=_IO_RETRY,
+                )
+            except Exception:
+                # Cleanup is best-effort — an orphan blob is harmless (S3 lifecycle
+                # reaps it) and must not fail an already-submitted batch.
+                workflow.logger.warning("Failed to delete blob %s after submit", chunk.content_id)
             batch_refs.append(batch_ref)
 
         # Step 5: Return immediately — do NOT await child workflows.

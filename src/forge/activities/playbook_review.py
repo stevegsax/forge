@@ -162,13 +162,9 @@ async def validate_playbook_entry(input: ValidatePlaybookInput) -> ValidatePlayb
 @activity.defn
 async def fetch_existing_playbooks(input: FetchExistingPlaybooksInput) -> list[dict]:
     """Query recent playbooks for duplication context."""
-    from forge.store import get_db_path, get_engine, list_recent_playbooks
+    from forge.store import get_store_engine, list_recent_playbooks
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        return []
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return list_recent_playbooks(engine, limit=input.limit)
 
 

@@ -32,6 +32,7 @@ with workflow.unsafe.imports_passed_through():
         RemoveWorktreeInput,
         ThinkingConfig,
     )
+    from forge.persist_models import PersistBatchSubmission, PersistRequest, PersistResult
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,38 @@ _LLM_RETRY = RetryPolicy(
 )
 _LOCAL_RETRY = RetryPolicy(maximum_attempts=2)
 
+# Survivable store writes (Phase C): a transient DB outage retries only the cheap
+# persist_to_store activity — the expensive LLM/OCR/batch call already returned to
+# the workflow and is never re-run. Backoff 1,2,4,8,16,32,60,60… fits ~18-20 tries
+# in the 20-minute schedule_to_close governor, after which the activity fails loudly.
+# ValueError is validation (never succeeds on retry); idempotency_key collisions are
+# absorbed by insert_or_ignore and never raise.
+_PERSIST_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=1),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=60),
+    maximum_attempts=20,
+    non_retryable_error_types=["ValueError"],
+)
+_PERSIST_START_TO_CLOSE = timedelta(seconds=30)
+_PERSIST_SCHEDULE_TO_CLOSE = timedelta(minutes=20)
+
+
+async def persist_block(req: PersistRequest) -> PersistResult:
+    """Survivable store write: invoke ``persist_to_store`` with the persist retry.
+
+    A transient DB outage retries only this cheap write; the expensive call that
+    produced ``req`` already returned to the workflow and is never re-run.
+    """
+    return await workflow.execute_activity(
+        "persist_to_store",
+        req,
+        start_to_close_timeout=_PERSIST_START_TO_CLOSE,
+        schedule_to_close_timeout=_PERSIST_SCHEDULE_TO_CLOSE,
+        retry_policy=_PERSIST_RETRY,
+        result_type=PersistResult,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Batch dispatch
@@ -79,7 +112,7 @@ async def batch_submit_and_wait(
 
     Generalized from _call_llm_batch_dispatch in workflows.py.
     """
-    await workflow.execute_activity(
+    submit_result: BatchSubmitResult = await workflow.execute_activity(
         "submit_batch_request",
         BatchSubmitInput(
             context=context,
@@ -91,6 +124,16 @@ async def batch_submit_and_wait(
         start_to_close_timeout=submit_timeout,
         retry_policy=_LLM_RETRY,
         result_type=BatchSubmitResult,
+    )
+    # Survivably record the submission before waiting, so the poller can find the
+    # job (and a DB blip retries only this cheap write, not the submit call).
+    await persist_block(
+        PersistBatchSubmission(
+            request_id=submit_result.request_id,
+            batch_id=submit_result.batch_id,
+            workflow_id=workflow.info().workflow_id,
+            provider=submit_result.provider,
+        )
     )
     await workflow.wait_condition(
         lambda: len(batch_results) > 0,

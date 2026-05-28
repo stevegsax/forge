@@ -48,6 +48,7 @@ from forge.activities import (
     fetch_playbook_ids,
     fulfill_context_requests,
     parse_llm_response,
+    persist_to_store,
     poll_batch_results,
     remove_worktree_activity,
     reset_worktree_activity,
@@ -80,6 +81,7 @@ from forge.ocr.activities import (
     call_ocr_sync,
     check_ocr_duplicate,
     clear_ocr_removal_mark,
+    delete_file_content_blob,
     export_ocr_document,
     list_ocr_jobs,
     mark_ocr_for_removal,
@@ -111,17 +113,20 @@ logger = logging.getLogger(__name__)
 def _init_store() -> None:
     """Run database migrations on startup.
 
-    If migrations fail, the database is broken and the worker should not start.
+    The store is mandatory: ``FORGE_DB_URL`` must be set (a ``sqlite:///`` URL
+    for dev/tests, a ``postgresql+psycopg2://`` URL for production). An unset
+    URL or an unreachable database raises, and the worker refuses to start.
     """
-    from forge.store import get_db_path, run_migrations
+    from sqlalchemy.engine import make_url
 
-    db_path = get_db_path()
-    if db_path is None:
-        logger.info("Observability store disabled (FORGE_DB_PATH is empty)")
-        return
+    from forge.store import get_store_url, run_migrations
 
-    run_migrations(db_path)
-    logger.info("Database migrations complete: %s", db_path)
+    url = get_store_url()
+    run_migrations(url)
+    logger.info(
+        "Database migrations complete: %s",
+        make_url(url).render_as_string(hide_password=True),
+    )
 
 
 def _register_output_types() -> None:
@@ -301,6 +306,7 @@ async def run_worker(
         fetch_playbook_ids,
         fulfill_context_requests,
         parse_llm_response,
+        persist_to_store,
         poll_batch_results,
         remove_worktree_activity,
         reset_worktree_activity,
@@ -316,6 +322,7 @@ async def run_worker(
         call_ocr_sync,
         check_ocr_duplicate,
         clear_ocr_removal_mark,
+        delete_file_content_blob,
         export_ocr_document,
         mark_ocr_for_removal,
         read_and_store_file_content,

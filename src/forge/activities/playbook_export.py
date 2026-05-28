@@ -50,13 +50,9 @@ def db_row_to_playbook_entry(row: dict) -> PlaybookEntry:
 @activity.defn
 async def fetch_playbook_ids(input: FetchPlaybookIdsInput) -> list[int]:
     """Query store for matching playbook IDs."""
-    from forge.store import get_db_path, get_engine, get_playbook_ids
+    from forge.store import get_playbook_ids, get_store_engine
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        return []
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return get_playbook_ids(
         engine,
         tags=input.tags if input.tags else None,
@@ -68,14 +64,9 @@ async def fetch_playbook_ids(input: FetchPlaybookIdsInput) -> list[int]:
 @activity.defn
 async def export_single_playbook(input: ExportSinglePlaybookInput) -> PlaybookEntry:
     """Fetch one playbook row by ID and convert to PlaybookEntry."""
-    from forge.store import get_db_path, get_engine, get_playbook_by_id
+    from forge.store import get_playbook_by_id, get_store_engine
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        msg = "No store available"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     row = get_playbook_by_id(engine, input.playbook_id)
     if row is None:
         msg = f"Playbook {input.playbook_id} not found"

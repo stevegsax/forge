@@ -239,17 +239,9 @@ async def fetch_extraction_input(input: FetchExtractionInput) -> ExtractionInput
 
     Returns an ExtractionInput with empty source_workflow_ids if no runs found.
     """
-    from forge.store import get_db_path, get_engine, get_unextracted_runs
+    from forge.store import get_store_engine, get_unextracted_runs
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        return ExtractionInput(
-            system_prompt="",
-            user_prompt="",
-            source_workflow_ids=[],
-        )
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     runs = get_unextracted_runs(engine, limit=input.limit)
 
     if not runs:
@@ -303,27 +295,14 @@ async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
             )
         )
 
-        from forge.store import persist_interaction
-
-        persist_interaction(
-            task_id="__extraction__",
-            role="extraction",
-            system_prompt=input.system_prompt,
-            user_prompt=input.user_prompt,
-            llm_result=result,
-        )
         return result
 
 
 @activity.defn
 async def save_extraction_results(input: SaveExtractionInput) -> None:
     """Write extracted playbook entries to the store."""
-    from forge.store import build_playbook_dict, get_db_path, get_engine, save_playbooks
+    from forge.store import build_playbook_dict, get_store_engine, save_playbooks
 
-    db_path = get_db_path()
-    if db_path is None:
-        return
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     dicts = [build_playbook_dict(entry, input.extraction_workflow_id) for entry in input.entries]
     save_playbooks(engine, dicts)

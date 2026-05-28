@@ -1094,6 +1094,10 @@ class BatchSubmitResult(BaseModel):
 
     request_id: str = Field(description="UUID used as Anthropic custom_id.")
     batch_id: str = Field(description="Anthropic batch ID (msgbatch_...).")
+    provider: str = Field(
+        default="anthropic",
+        description="Provider name, threaded to the workflow so it can persist the submission.",
+    )
 
 
 class BatchResult(BaseModel):

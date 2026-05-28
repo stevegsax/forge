@@ -7,8 +7,7 @@ Design follows Function Core / Imperative Shell:
 - Pure functions: build_sanity_check_system_prompt, build_sanity_check_user_prompt,
   build_step_digest
 - Testable function: execute_sanity_check_call (takes client as argument)
-- Imperative shell: assemble_sanity_check_context, call_sanity_check,
-  store.persist_interaction
+- Imperative shell: assemble_sanity_check_context, call_sanity_check
 """
 
 from __future__ import annotations
@@ -262,13 +261,4 @@ async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
             )
         )
 
-        from forge.store import persist_interaction
-
-        persist_interaction(
-            task_id=input.task_id,
-            role="sanity_check",
-            system_prompt=input.system_prompt,
-            user_prompt=input.user_prompt,
-            llm_result=result,
-        )
         return result

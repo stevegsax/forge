@@ -5,9 +5,10 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
+
 from forge.store import (
     get_batch_job,
-    get_engine,
     get_pending_batch_jobs,
     record_batch_failure,
     record_batch_submission,
@@ -22,8 +23,9 @@ if TYPE_CHECKING:
 def _setup_db(tmp_path: Path):
     """Create a test database with migrations applied."""
     db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path), db_path
+    url = f"sqlite:///{db_path}"
+    run_migrations(url)
+    return sa.create_engine(url), db_path
 
 
 # ---------------------------------------------------------------------------

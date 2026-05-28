@@ -1341,10 +1341,8 @@ class TestVerboseFlag:
 
     @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
-    @patch("forge.cli._persist_run")
     def test_verbose_flag_shows_stats(
         self,
-        mock_persist: object,
         mock_discover: object,
         mock_submit: MagicMock,
         cli_runner: CliRunner,
@@ -1391,21 +1389,21 @@ class TestStatusCommand:
         assert "--json" in result.output
 
     def test_no_store(self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_PATH", "")
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
         result = cli_runner.invoke(main, ["status"])
         assert result.exit_code == EXIT_FAILURE
-        assert "No store available" in result.stderr
+        assert "FORGE_DB_URL" in result.stderr
 
     def test_list_runs(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_run
+        from forge.store import get_store_engine, run_migrations, save_run
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_run(
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
@@ -1420,12 +1418,12 @@ class TestStatusCommand:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_run
+        from forge.store import get_store_engine, run_migrations, save_run
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_run(
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
@@ -1441,12 +1439,12 @@ class TestStatusCommand:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_run
+        from forge.store import get_store_engine, run_migrations, save_run
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_run(
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
@@ -1472,10 +1470,10 @@ class TestExtractCommand:
         assert "--dry-run" in result.output
 
     def test_dry_run_no_store(self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_PATH", "")
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
         result = cli_runner.invoke(main, ["extract", "--dry-run"])
         assert result.exit_code == EXIT_FAILURE
-        assert "No store available" in result.stderr
+        assert "FORGE_DB_URL" in result.stderr
 
     def test_dry_run_with_runs(
         self,
@@ -1484,12 +1482,12 @@ class TestExtractCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_run
+        from forge.store import get_store_engine, run_migrations, save_run
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_run(
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
@@ -1508,11 +1506,11 @@ class TestExtractCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
         from forge.store import run_migrations
 
-        run_migrations(db_path)
+        run_migrations(f"sqlite:///{db_path}")
 
         result = cli_runner.invoke(main, ["extract", "--dry-run"])
         assert result.exit_code == 0
@@ -1527,10 +1525,10 @@ class TestPlaybooksCommand:
         assert "--json" in result.output
 
     def test_no_store(self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_PATH", "")
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
         result = cli_runner.invoke(main, ["playbooks"])
         assert result.exit_code == EXIT_FAILURE
-        assert "No store available" in result.stderr
+        assert "FORGE_DB_URL" in result.stderr
 
     def test_list_playbooks(
         self,
@@ -1539,12 +1537,12 @@ class TestPlaybooksCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_playbooks
+        from forge.store import get_store_engine, run_migrations, save_playbooks
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_playbooks(
             engine,
             [
@@ -1571,12 +1569,12 @@ class TestPlaybooksCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_playbooks
+        from forge.store import get_store_engine, run_migrations, save_playbooks
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_playbooks(
             engine,
             [
@@ -1611,12 +1609,12 @@ class TestPlaybooksCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_playbooks
+        from forge.store import get_store_engine, run_migrations, save_playbooks
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_playbooks(
             engine,
             [
@@ -1644,11 +1642,11 @@ class TestPlaybooksCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
         from forge.store import run_migrations
 
-        run_migrations(db_path)
+        run_migrations(f"sqlite:///{db_path}")
 
         result = cli_runner.invoke(main, ["playbooks"])
         assert result.exit_code == 0
@@ -1801,12 +1799,12 @@ class TestPlaybooksCommand:
     ) -> None:
         """Backward compat: `forge playbooks` without subcommand still lists."""
         db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        from forge.store import get_engine, run_migrations, save_playbooks
+        from forge.store import get_store_engine, run_migrations, save_playbooks
 
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
         save_playbooks(
             engine,
             [
