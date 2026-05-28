@@ -192,7 +192,7 @@ class OcrResult(Base):
         sa.Boolean,
         nullable=False,
         default=False,
-        server_default=sa.text("0"),
+        server_default=sa.false(),
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

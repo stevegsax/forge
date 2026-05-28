@@ -1,19 +1,22 @@
 # Externalize the Forge store: Postgres backend + S3 OCR blobs + survivable writes
 
-**Status:** PHASES A, B, C ALL DONE on SQLite. Outstanding: validate migrations on a real Postgres; resolve the missing `test-inputs/` fixture (coverage gate).
+**Status:** PHASES A, B, C ALL DONE; migrations validated on real Postgres. Outstanding: open PR(s) against `main`; (env) the 85% coverage gate.
 **Last updated:** 2026-05-28
 **Owner:** stevegsax
 
 > **Resume pointer — next action:** All three phases (A: Postgres-ready store via
 > required `FORGE_DB_URL`; B: OCR blobs in S3; C: survivable idempotent writes via
-> `persist_to_store` + `_PERSIST_RETRY`) are implemented and green on SQLite (full
-> suite passes; the 85% coverage gate is unmet only because `test-inputs/2311.06440v1.pdf`
-> is absent — same environmental gap as A/B). **Remaining for full confidence:**
-> (1) run Alembic migrations (`008`'s + `014`/`015`'s `batch_alter_table`) against a
-> **real Postgres** (testcontainers/scratch PG) — engine build + SQLite DDL are
-> tested, PG DDL is not; (2) restore the missing OCR test-input PDF to clear the 3
-> `TestExecuteCheckOcrDuplicate` failures + the coverage gate. Then update DEPLOYMENT.md
-> "prerequisite code changes" → implemented and open the PR(s) against `main`.
+> `persist_to_store` + `_PERSIST_RETRY`) are implemented and green on SQLite (1479
+> passing). Alembic migrations are now **validated on a real Postgres** via
+> testcontainers (`tests/test_migrations_postgres.py`, marked `postgres`, excluded
+> from the default run; run with `uv run pytest -m postgres`). That test caught and
+> fixed a real Postgres-incompatibility: migration `010` used `BOOLEAN DEFAULT 0`
+> (integer) which Postgres rejects → now `sa.false()` (renders `0` on SQLite,
+> `false` on Postgres). **Remaining:** open the PR(s) against `main` and flip
+> DEPLOYMENT.md "prerequisite code changes" → implemented. *(Env note: the 85%
+> coverage gate is unmet locally at ~80% because the default run excludes e2e tests
+> that exercise providers/CLI/batch paths — a CI/config matter, not a regression;
+> HEAD measured ~78%.)*
 >
 > ---
 > *(historical resume notes below)*
@@ -618,6 +621,18 @@ idempotency tests pass; DEPLOYMENT.md updated; PR(s) opened against `main`
   suite: **1470 passed** (same 3 environmental PDF failures), ruff clean on `src/`
   and new tests. No inline-in-DB fallback — S3 is the only OCR blob store. Next:
   Phase C.
+- **2026-05-28** — **Validated migrations on a real Postgres** via testcontainers
+  (`tests/test_migrations_postgres.py`, `postgres` marker, opt-in/excluded by
+  default; added `testcontainers[postgres]` dev dep). The test runs `upgrade head`
+  on a throwaway `postgres:16-alpine`, asserts the Phase B/C schema (`s3_key`, no
+  `data`, `idempotency_key`), checks re-run is a no-op, and exercises the
+  postgresql `ON CONFLICT DO NOTHING` path + pooled engine. **It caught a real
+  pre-existing bug:** migration `010` added `marked_for_removal BOOLEAN DEFAULT 0`
+  — valid on SQLite, rejected by Postgres (integer default for a boolean) — which
+  would have broken the Supabase deploy. Fixed by using `sa.false()` (dialect-correct)
+  in both migration `010` and the `OcrResult` ORM model. Ran via podman
+  (`TESTCONTAINERS_RYUK_DISABLED=true`, podman machine forwarding to
+  `/var/run/docker.sock`). All 3 PG tests pass; SQLite full suite still 1479 passed.
 - **2026-05-28** — **Phase C complete (C1–C9), committed as 8 increments.** All
   store writes now flow through the survivable `persist_to_store` activity with
   `_PERSIST_RETRY` (20 attempts / 20-min schedule-to-close), invoked from the
