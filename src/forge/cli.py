@@ -40,6 +40,8 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
+    from sqlalchemy import Engine
+
     from forge.eval.models import DeterministicResult, PlanEvalResult
     from forge.models import (
         ExportPlaybookResult,
@@ -60,6 +62,17 @@ EXIT_FAILURE = 1
 EXIT_INFRASTRUCTURE_ERROR = 3
 
 _WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=48)
+
+
+def _require_store_engine() -> Engine:
+    """Resolve the store engine for a CLI command, exiting if it is unconfigured."""
+    from forge.store import StoreConfigError, get_store_engine
+
+    try:
+        return get_store_engine()
+    except StoreConfigError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_FAILURE)
 
 
 # ---------------------------------------------------------------------------
@@ -183,31 +196,29 @@ def format_verbose_result(result: TaskResult) -> str:
 
     # Query store for interaction details
     try:
-        from forge.store import get_db_path, get_engine, get_interactions
+        from forge.store import get_interactions, get_store_engine
 
-        db_path = get_db_path()
-        if db_path is not None and db_path.exists():
-            engine = get_engine(db_path)
-            interactions = get_interactions(engine, result.task_id)
-            if interactions:
-                lines.append("")
-                lines.append(f"Interactions ({len(interactions)}):")
-                for ix in interactions:
-                    role = ix["role"]
-                    model = ix["model_name"]
-                    tokens = f"{ix['input_tokens']}in/{ix['output_tokens']}out"
-                    latency = f"{ix['latency_ms']:.0f}ms"
-                    step_info = ""
-                    if ix.get("step_id"):
-                        step_info = f" step={ix['step_id']}"
-                    if ix.get("sub_task_id"):
-                        step_info += f" sub_task={ix['sub_task_id']}"
-                    cache_info = ""
-                    cache_write = ix.get("cache_creation_input_tokens", 0)
-                    cache_read = ix.get("cache_read_input_tokens", 0)
-                    if cache_write or cache_read:
-                        cache_info = f" cache={cache_write}write/{cache_read}read"
-                    lines.append(f"  [{role}]{step_info} {model} {tokens} {latency}{cache_info}")
+        engine = get_store_engine()
+        interactions = get_interactions(engine, result.task_id)
+        if interactions:
+            lines.append("")
+            lines.append(f"Interactions ({len(interactions)}):")
+            for ix in interactions:
+                role = ix["role"]
+                model = ix["model_name"]
+                tokens = f"{ix['input_tokens']}in/{ix['output_tokens']}out"
+                latency = f"{ix['latency_ms']:.0f}ms"
+                step_info = ""
+                if ix.get("step_id"):
+                    step_info = f" step={ix['step_id']}"
+                if ix.get("sub_task_id"):
+                    step_info += f" sub_task={ix['sub_task_id']}"
+                cache_info = ""
+                cache_write = ix.get("cache_creation_input_tokens", 0)
+                cache_read = ix.get("cache_read_input_tokens", 0)
+                if cache_write or cache_read:
+                    cache_info = f" cache={cache_write}write/{cache_read}read"
+                lines.append(f"  [{role}]{step_info} {model} {tokens} {latency}{cache_info}")
     except Exception:
         pass
 
@@ -438,13 +449,10 @@ async def _submit_no_wait(
 def _persist_run(result: TaskResult, workflow_id: str) -> None:
     """Best-effort persistence of run result to the store."""
     try:
-        from forge.store import get_db_path, get_engine
+        from forge.store import get_store_engine
         from forge.store import save_run as store_save_run
 
-        db_path = get_db_path()
-        if db_path is None:
-            return
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         store_save_run(engine, result, workflow_id)
     except Exception:
         pass
@@ -887,14 +895,9 @@ def status(
     """List recent runs or show details for a specific workflow."""
     import json as json_mod
 
-    from forge.store import get_db_path, get_engine, get_interactions, get_run, list_recent_runs
+    from forge.store import get_interactions, get_run, list_recent_runs
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        click.echo("No store available. Set FORGE_DB_PATH or run a workflow first.", err=True)
-        sys.exit(EXIT_FAILURE)
-
-    engine = get_engine(db_path)
+    engine = _require_store_engine()
 
     if workflow_id:
         run_data = get_run(engine, workflow_id)
@@ -1023,14 +1026,9 @@ def extract(
 ) -> None:
     """Extract knowledge from completed runs into playbooks."""
     if dry_run:
-        from forge.store import get_db_path, get_engine, get_unextracted_runs
+        from forge.store import get_unextracted_runs
 
-        db_path = get_db_path()
-        if db_path is None or not db_path.exists():
-            click.echo("No store available.", err=True)
-            sys.exit(EXIT_FAILURE)
-
-        engine = get_engine(db_path)
+        engine = _require_store_engine()
         runs = get_unextracted_runs(engine, limit=limit)
 
         if not runs:
@@ -1336,18 +1334,11 @@ def playbooks(
     import json as json_mod
 
     from forge.store import (
-        get_db_path,
-        get_engine,
         get_playbooks_by_tags,
         list_recent_playbooks,
     )
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        click.echo("No store available. Run a workflow first.", err=True)
-        sys.exit(EXIT_FAILURE)
-
-    engine = get_engine(db_path)
+    engine = _require_store_engine()
 
     if tag:
         entries = get_playbooks_by_tags(engine, list(tag), limit=limit)
@@ -1937,18 +1928,11 @@ def backfill_hashes(dry_run: bool) -> None:
     """Compute SHA-256 hashes for OCR results that are missing them."""
     from forge.ocr.activities import compute_file_hash
     from forge.store import (
-        get_db_path,
-        get_engine,
         get_ocr_results_missing_hash,
         update_ocr_file_hash,
     )
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
-        click.echo("Database not found.", err=True)
-        sys.exit(EXIT_FAILURE)
-
-    engine = get_engine(db_path)
+    engine = _require_store_engine()
     rows = get_ocr_results_missing_hash(engine)
 
     if not rows:

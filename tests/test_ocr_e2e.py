@@ -65,12 +65,13 @@ async def local_env():
 
 @pytest.fixture()
 def test_db(tmp_path, monkeypatch):
-    """Set up a test database with migrations and point FORGE_DB_PATH to it."""
+    """Set up a test database with migrations and point FORGE_DB_URL to it."""
     from forge.store import run_migrations
 
     db_path = tmp_path / "test_forge.db"
-    run_migrations(db_path)
-    monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+    url = f"sqlite:///{db_path}"
+    run_migrations(url)
+    monkeypatch.setenv("FORGE_DB_URL", url)
     return db_path
 
 
@@ -111,7 +112,7 @@ class TestOcrSyncE2E:
         expected_words: list[str],
     ) -> None:
         """Core test logic: submit sync OCR workflow, await result, verify."""
-        from forge.store import get_engine, get_ocr_result
+        from forge.store import get_ocr_result, get_store_engine
 
         ocr_input = OcrSyncInput(file_path=file_path, skip_duplicate_detection=True)
 
@@ -135,7 +136,7 @@ class TestOcrSyncE2E:
         assert result.stored is True, "result should be stored"
 
         # -- Assertions on database row --
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         row = get_ocr_result(engine, result.document_id)
         assert row is not None, f"No OCR result in DB for document_id={result.document_id}"
 

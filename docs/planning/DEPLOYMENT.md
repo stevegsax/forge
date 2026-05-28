@@ -455,8 +455,7 @@ way and set `FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233` locally.
 | Variable | Purpose | Production value |
 |---|---|---|
 | `FORGE_TEMPORAL_ADDRESS` | Temporal frontend address | `127.0.0.1:7233` |
-| `FORGE_DB_URL` | Forge store connection (overrides SQLite path) | `postgresql+psycopg2://…/forge?sslmode=require` |
-| `FORGE_DB_PATH` | SQLite fallback for local dev/tests (empty = disable store) | unset in production |
+| `FORGE_DB_URL` | **Required.** Forge store connection: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://…` (prod). Unset → hard error; no disable-store mode | `postgresql+psycopg2://…/forge?sslmode=require` |
 | `FORGE_OCR_S3_BUCKET` | S3 bucket for OCR blobs (unset = store inline, dev) | `forge-ocr-blobs-<acct>` |
 | `FORGE_OCR_S3_PREFIX` | Optional key prefix for OCR blobs | e.g. `ocr/` |
 | `FORGE_LOG_DIR` | Log directory (empty = disable file logging) | `/data/forge/logs` |

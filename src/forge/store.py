@@ -3,9 +3,10 @@
 Persists full LLM interaction data and run results to a local SQLite database.
 
 Design follows Function Core / Imperative Shell:
-- Pure functions: get_db_path, build_interaction_dict
-- Imperative shell: get_engine, run_migrations, save_interaction, save_run,
-  persist_interaction, get_interactions, get_run, list_recent_runs
+- Pure functions: build_interaction_dict, build_playbook_dict
+- Imperative shell: get_store_url, get_store_engine, run_migrations,
+  save_interaction, save_run, persist_interaction, get_interactions, get_run,
+  list_recent_runs
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from forge.models import BatchJobStatus
@@ -48,6 +50,10 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+class StoreConfigError(RuntimeError):
+    """The observability store is misconfigured (e.g. ``FORGE_DB_URL`` unset)."""
 
 
 # ---------------------------------------------------------------------------
@@ -230,29 +236,6 @@ class OcrImage(Base):
 # ---------------------------------------------------------------------------
 
 
-def get_db_path() -> Path | None:
-    """Resolve the database path.
-
-    Resolution order:
-    1. ``FORGE_DB_PATH`` environment variable.
-    2. ``$XDG_STATE_HOME/forge/forge.db``
-    3. ``~/.local/state/forge/forge.db``
-
-    Returns ``None`` if ``FORGE_DB_PATH`` is set to an empty string (disables store).
-    """
-    env_value = os.environ.get("FORGE_DB_PATH")
-    if env_value is not None:
-        if env_value == "":
-            return None
-        return Path(env_value)
-
-    xdg_state = os.environ.get("XDG_STATE_HOME")
-    if xdg_state:
-        return Path(xdg_state) / "forge" / "forge.db"
-
-    return Path.home() / ".local" / "state" / "forge" / "forge.db"
-
-
 def build_interaction_dict(
     *,
     task_id: str,
@@ -319,22 +302,56 @@ def build_playbook_dict(
 # ---------------------------------------------------------------------------
 
 
-def get_engine(db_path: Path) -> Engine:
-    """Create a SQLAlchemy engine with WAL mode for the given database path."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = sa.create_engine(f"sqlite:///{db_path}")
+def get_store_url() -> str:
+    """Return the configured store URL from ``FORGE_DB_URL``.
 
-    @sa.event.listens_for(engine, "connect")
-    def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
-        cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.close()
+    The store is mandatory infrastructure with no implicit default and no
+    runtime failover. A ``sqlite:///<path>`` URL is the dev/test configuration;
+    a ``postgresql+psycopg2://...`` URL is production. Unset or empty raises.
+    """
+    url = os.environ.get("FORGE_DB_URL")
+    if not url:
+        raise StoreConfigError(
+            "FORGE_DB_URL is not set. Set it to a 'sqlite:///<path>' URL for "
+            "development and tests, or a 'postgresql+psycopg2://...' URL for "
+            "production."
+        )
+    return url
 
-    return engine
+
+def _ensure_sqlite_parent(url: str) -> None:
+    """Create the parent directory for a file-based SQLite URL."""
+    database = make_url(url).database
+    if database and database != ":memory:":
+        Path(database).parent.mkdir(parents=True, exist_ok=True)
 
 
-def run_migrations(db_path: Path) -> None:
-    """Run Alembic migrations programmatically."""
+def get_store_engine() -> Engine:
+    """Build the store engine from ``FORGE_DB_URL``.
+
+    SQLite URLs get WAL journaling (and the parent directory is created);
+    Postgres URLs get connection pre-ping and a small bounded pool to respect
+    the managed-database connection caps. Connection errors are not caught here
+    — they propagate (no runtime failover).
+    """
+    url = get_store_url()
+    if make_url(url).get_backend_name() == "sqlite":
+        _ensure_sqlite_parent(url)
+        engine = sa.create_engine(url)
+
+        @sa.event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
+            cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
+        return engine
+
+    return sa.create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+
+
+def run_migrations(url: str) -> None:
+    """Run Alembic migrations against the store URL (SQLite or Postgres)."""
     from alembic import command
     from alembic.config import Config
 
@@ -344,8 +361,9 @@ def run_migrations(db_path: Path) -> None:
     cfg = Config(str(ini_path))
     cfg.set_main_option("script_location", str(alembic_dir))
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    if make_url(url).get_backend_name() == "sqlite":
+        _ensure_sqlite_parent(url)
+    cfg.set_main_option("sqlalchemy.url", url)
     command.upgrade(cfg, "head")
 
 
@@ -374,10 +392,6 @@ def persist_interaction(
     try:
         from forge.models import AssembledContext
 
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
         context = AssembledContext(
             task_id=task_id,
             system_prompt=system_prompt,
@@ -385,7 +399,7 @@ def persist_interaction(
             context_stats=context_stats,
         )
 
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         data = build_interaction_dict(
             task_id=task_id,
             step_id=step_id,

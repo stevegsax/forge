@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
+import forge.store as _store
 from forge.models import (
     AssembledContext,
     ContextStats,
@@ -15,15 +18,16 @@ from forge.models import (
     TransitionSignal,
 )
 from forge.store import (
+    StoreConfigError,
     build_interaction_dict,
     build_playbook_dict,
     delete_file_content,
-    get_db_path,
-    get_engine,
     get_file_content,
     get_interactions,
     get_playbooks_by_tags,
     get_run,
+    get_store_engine,
+    get_store_url,
     get_unextracted_runs,
     list_recent_playbooks,
     list_recent_runs,
@@ -37,38 +41,73 @@ from forge.store import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
+    from sqlalchemy import Engine
+
+
+def _migrate(db_path: Path) -> Engine:
+    """Test helper: migrate a throwaway SQLite store and open a tracked engine.
+
+    Uses ``forge.store``'s ``create_engine`` so the autouse ``dispose_store_engines``
+    fixture tracks and disposes the engine after the test.
+    """
+    url = f"sqlite:///{db_path}"
+    run_migrations(url)
+    return _store.sa.create_engine(url)
 
 
 # ---------------------------------------------------------------------------
-# get_db_path
+# get_store_url / get_store_engine
 # ---------------------------------------------------------------------------
 
 
-class TestGetDbPath:
-    def test_default_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FORGE_DB_PATH", raising=False)
-        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-        result = get_db_path()
-        assert result is not None
-        assert str(result).endswith(".local/state/forge/forge.db")
+class TestGetStoreUrl:
+    def test_returns_configured_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_DB_URL", "sqlite:///tmp/x.db")
+        assert get_store_url() == "sqlite:///tmp/x.db"
 
-    def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        db_file = tmp_path / "custom.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_file))
-        result = get_db_path()
-        assert result == db_file
+    def test_unset_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
+        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
+            get_store_url()
 
-    def test_empty_string_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_PATH", "")
-        result = get_db_path()
-        assert result is None
+    def test_empty_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_DB_URL", "")
+        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
+            get_store_url()
 
-    def test_xdg_state_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.delenv("FORGE_DB_PATH", raising=False)
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        result = get_db_path()
-        assert result == tmp_path / "forge" / "forge.db"
+
+class TestGetStoreEngine:
+    def test_sqlite_url_enables_wal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import sqlalchemy as sa
+
+        db_path = tmp_path / "wal.db"
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
+        engine = get_store_engine()
+        assert engine.dialect.name == "sqlite"
+        with engine.connect() as conn:
+            mode = conn.execute(sa.text("PRAGMA journal_mode")).scalar()
+        assert mode == "wal"
+
+    def test_postgres_url_builds_pooled_engine_without_wal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Building the engine imports the driver but never connects, so no
+        # Postgres server is needed — only the psycopg2 DBAPI module.
+        import pytest as _pytest
+
+        _pytest.importorskip("psycopg2")
+        monkeypatch.setenv(
+            "FORGE_DB_URL", "postgresql+psycopg2://user:pw@localhost:5432/forge_test"
+        )
+        engine = get_store_engine()
+        assert engine.dialect.name == "postgresql"
+
+    def test_unset_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
+        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
+            get_store_engine()
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +275,7 @@ class TestBuildInteractionDict:
 class TestInteractionRoundtrip:
     def test_save_and_get(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         context = _make_context(step_id="step-1")
         result = _make_llm_result()
@@ -259,8 +297,7 @@ class TestInteractionRoundtrip:
 
     def test_filter_by_step(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         for step in ["step-1", "step-2"]:
             context = _make_context(step_id=step)
@@ -281,8 +318,7 @@ class TestInteractionRoundtrip:
 
     def test_empty_result(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         rows = get_interactions(engine, "nonexistent")
         assert rows == []
@@ -296,8 +332,7 @@ class TestInteractionRoundtrip:
 class TestRunRoundtrip:
     def test_save_and_get(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         task_result = TaskResult(task_id="t1", status=TransitionSignal.SUCCESS)
         save_run(engine, task_result, "wf-123")
@@ -311,15 +346,13 @@ class TestRunRoundtrip:
 
     def test_get_nonexistent(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         assert get_run(engine, "nonexistent") is None
 
     def test_list_recent(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         for i in range(3):
             result = TaskResult(task_id=f"t{i}", status=TransitionSignal.SUCCESS)
@@ -330,22 +363,10 @@ class TestRunRoundtrip:
 
     def test_list_empty(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         runs = list_recent_runs(engine)
         assert runs == []
-
-
-# ---------------------------------------------------------------------------
-# Store disabled
-# ---------------------------------------------------------------------------
-
-
-class TestStoreDisabled:
-    def test_get_db_path_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_PATH", "")
-        assert get_db_path() is None
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +377,7 @@ class TestStoreDisabled:
 class TestRunMigrations:
     def test_creates_tables(self, tmp_path: Path) -> None:
         db_path = tmp_path / "fresh.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Should be able to insert and query
         context = _make_context()
@@ -375,9 +395,9 @@ class TestRunMigrations:
         assert len(rows) == 1
 
     def test_idempotent(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "fresh.db"
-        run_migrations(db_path)
-        run_migrations(db_path)  # Should not raise
+        url = f"sqlite:///{tmp_path / 'fresh.db'}"
+        run_migrations(url)
+        run_migrations(url)  # Should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -440,8 +460,7 @@ class TestPlaybookRoundtrip:
 
     def test_save_and_get_by_tags(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         self._insert_playbook(engine, tags=["python", "api"])
         self._insert_playbook(engine, title="JS lesson", tags=["javascript"])
@@ -452,8 +471,7 @@ class TestPlaybookRoundtrip:
 
     def test_get_by_tags_multiple_match(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         self._insert_playbook(engine, title="A", tags=["python"])
         self._insert_playbook(engine, title="B", tags=["python", "api"])
@@ -463,8 +481,7 @@ class TestPlaybookRoundtrip:
 
     def test_get_by_tags_no_match(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         self._insert_playbook(engine, tags=["python"])
         results = get_playbooks_by_tags(engine, ["rust"], limit=10)
@@ -472,16 +489,14 @@ class TestPlaybookRoundtrip:
 
     def test_get_by_tags_empty_input(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         results = get_playbooks_by_tags(engine, [], limit=10)
         assert results == []
 
     def test_list_recent_playbooks(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         self._insert_playbook(engine, title="A")
         self._insert_playbook(engine, title="B")
@@ -492,8 +507,7 @@ class TestPlaybookRoundtrip:
 
     def test_list_recent_playbooks_empty(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         results = list_recent_playbooks(engine)
         assert results == []
@@ -507,8 +521,7 @@ class TestPlaybookRoundtrip:
 class TestGetUnextractedRuns:
     def test_returns_runs_without_playbooks(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Add two runs
         for i in range(2):
@@ -525,8 +538,7 @@ class TestGetUnextractedRuns:
         import json
 
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Add two runs
         save_run(
@@ -563,8 +575,7 @@ class TestGetUnextractedRuns:
         import json
 
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         save_run(
             engine,
@@ -598,8 +609,7 @@ class TestGetUnextractedRuns:
 class TestMigration002:
     def test_creates_playbooks_table(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         import json
 
@@ -630,8 +640,7 @@ class TestMigration002:
 class TestMigration003:
     def test_cache_columns_exist(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         context = _make_context()
         result = LLMCallResult(
@@ -664,8 +673,7 @@ class TestMigration003:
 
     def test_cache_columns_default_zero(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         context = _make_context()
         result = _make_llm_result()
@@ -693,8 +701,7 @@ class TestMigration003:
 class TestFileContentBlob:
     def test_save_and_get_file_content(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         test_data = b"Hello, this is test file content."
         save_file_content(
@@ -714,16 +721,14 @@ class TestFileContentBlob:
 
     def test_get_file_content_missing(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         result = get_file_content(engine, "nonexistent-id")
         assert result is None
 
     def test_delete_file_content(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         test_data = b"Data to delete."
         save_file_content(
@@ -743,8 +748,7 @@ class TestFileContentBlob:
 
     def test_delete_nonexistent_is_noop(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Should not raise
         delete_file_content(engine, "does-not-exist")
@@ -758,8 +762,7 @@ class TestFileContentBlob:
 class TestMigration007:
     def test_creates_file_content_blobs_table(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         test_data = b"Migration test content"
         save_file_content(

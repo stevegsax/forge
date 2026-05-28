@@ -125,6 +125,22 @@ def build_mock_provider(
 
 
 @pytest.fixture(autouse=True)
+def forge_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Point every test at an isolated SQLite store via ``FORGE_DB_URL``.
+
+    The store is mandatory (no implicit default), so an unset URL raises. This
+    autouse fixture gives each test its own throwaway database file; tests that
+    manage their own path override ``FORGE_DB_URL``, and tests exercising the
+    unset-URL hard error delete it explicitly.
+    """
+    db_path = tmp_path / "forge.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("FORGE_DB_URL", url)
+    monkeypatch.delenv("FORGE_DB_PATH", raising=False)
+    return url
+
+
+@pytest.fixture(autouse=True)
 def dispose_store_engines(monkeypatch: pytest.MonkeyPatch):
     """Dispose SQLAlchemy engines created via forge.store.get_engine after each test."""
     import forge.store as store_module

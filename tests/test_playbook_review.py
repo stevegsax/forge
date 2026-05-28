@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from forge.activities.playbook_review import (
     apply_suggestions,
@@ -236,22 +232,19 @@ class TestValidatePlaybookEntryActivity:
 
 class TestFetchExistingPlaybooksActivity:
     @pytest.mark.asyncio
-    async def test_no_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_PATH", "")
+    async def test_empty_store_returns_empty(self, forge_db_url: str) -> None:
+        from forge.store import run_migrations
+
+        run_migrations(forge_db_url)
         result = await fetch_existing_playbooks(FetchExistingPlaybooksInput(limit=10))
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_with_entries(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_PATH", str(db_path))
+    async def test_with_entries(self, forge_db_url: str) -> None:
+        from forge.store import get_store_engine, run_migrations, save_playbooks
 
-        from forge.store import get_engine, run_migrations, save_playbooks
-
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        run_migrations(forge_db_url)
+        engine = get_store_engine()
         save_playbooks(engine, [{
             "title": "Existing lesson",
             "content": "Do X.",

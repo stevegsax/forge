@@ -24,9 +24,9 @@ Both files use `RotatingFileHandler` with 10 MB max size and 5 backups (e.g. `wo
 
 ## Observability Store
 
-Full LLM interaction data (prompts, tokens, latency, context stats) is persisted to a SQLite database at `$XDG_STATE_HOME/forge/forge.db` (default `~/.local/state/forge/forge.db`).
+Full LLM interaction data (prompts, tokens, latency, context stats) is persisted to the store configured by `FORGE_DB_URL`.
 
-Override the path with `FORGE_DB_PATH`. Set it to an empty string to disable the store entirely.
+The store is **mandatory** and selected by `FORGE_DB_URL`: a `sqlite:///<path>` URL for local dev/tests (e.g. `sqlite:///$HOME/.local/state/forge/forge.db`) or a `postgresql+psycopg2://...` URL for production. If `FORGE_DB_URL` is unset, the worker refuses to start and CLI store commands exit with an error. There is no disable-store mode and no runtime failover.
 
 ### Inspecting runs
 
@@ -132,7 +132,7 @@ temporal workflow describe --workflow-id <workflow-id>
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `FORGE_DB_PATH` | Override observability store path (empty string disables) | `~/.local/state/forge/forge.db` |
+| `FORGE_DB_URL` | **Required.** Store URL: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://...` (prod). Unset → hard error | _unset_ |
 | `FORGE_LOG_DIR` | Override log file directory (empty string disables file logging) | `~/.local/state/forge/` |
 | `FORGE_OTEL_EXPORTER` | OTel trace exporter type | `console` |
 | `FORGE_OTEL_ENDPOINT` | OTel exporter endpoint URL | Per exporter default |

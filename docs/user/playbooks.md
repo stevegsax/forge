@@ -227,7 +227,7 @@ When the Forge worker is running, extraction is scheduled automatically at a con
 
 ## Storage
 
-Playbooks are stored in the observability database at `$XDG_STATE_HOME/forge/forge.db` (default `~/.local/state/forge/forge.db`). Override the path with the `FORGE_DB_PATH` environment variable.
+Playbooks are stored in the observability database configured by the required `FORGE_DB_URL` environment variable — a `sqlite:///<path>` URL for local use (e.g. `sqlite:///~/.local/state/forge/forge.db`) or a `postgresql+psycopg2://...` URL in production.
 
 The `playbooks` table schema:
 

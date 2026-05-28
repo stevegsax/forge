@@ -125,18 +125,13 @@ class TestPersistInteraction:
         )
 
     @patch("forge.store.save_interaction")
-    @patch("forge.store.get_engine")
-    @patch("forge.store.get_db_path")
+    @patch("forge.store.get_store_engine")
     def test_calls_save_interaction(
         self,
-        mock_get_db_path: MagicMock,
-        mock_get_engine: MagicMock,
+        mock_get_store_engine: MagicMock,
         mock_save: MagicMock,
     ) -> None:
-        from pathlib import Path
-
-        mock_get_db_path.return_value = Path("/tmp/test.db")
-        mock_get_engine.return_value = MagicMock()
+        mock_get_store_engine.return_value = MagicMock()
 
         persist_interaction(
             task_id="llm-task",
@@ -147,10 +142,17 @@ class TestPersistInteraction:
         )
         mock_save.assert_called_once()
 
-    @patch("forge.store.get_db_path")
-    def test_skips_when_disabled(self, mock_get_db_path: MagicMock) -> None:
-        mock_get_db_path.return_value = None
-        # Should not raise
+    @patch("forge.store.save_interaction")
+    @patch("forge.store.get_store_engine")
+    def test_skips_when_store_unconfigured(
+        self,
+        mock_get_store_engine: MagicMock,
+        mock_save: MagicMock,
+    ) -> None:
+        from forge.store import StoreConfigError
+
+        mock_get_store_engine.side_effect = StoreConfigError("FORGE_DB_URL not set")
+        # Best-effort: an unconfigured store is swallowed, not raised.
         persist_interaction(
             task_id="llm-task",
             role="llm",
@@ -158,20 +160,16 @@ class TestPersistInteraction:
             user_prompt="usr",
             llm_result=self._make_result(),
         )
+        mock_save.assert_not_called()
 
     @patch("forge.store.save_interaction", side_effect=RuntimeError("db error"))
-    @patch("forge.store.get_engine")
-    @patch("forge.store.get_db_path")
+    @patch("forge.store.get_store_engine")
     def test_catches_exceptions(
         self,
-        mock_get_db_path: MagicMock,
-        mock_get_engine: MagicMock,
+        mock_get_store_engine: MagicMock,
         mock_save: MagicMock,
     ) -> None:
-        from pathlib import Path
-
-        mock_get_db_path.return_value = Path("/tmp/test.db")
-        mock_get_engine.return_value = MagicMock()
+        mock_get_store_engine.return_value = MagicMock()
 
         # Should not raise despite save_interaction throwing
         persist_interaction(

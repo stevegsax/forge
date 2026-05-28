@@ -10,7 +10,20 @@
 
 set -euo pipefail
 
-DB="${FORGE_DB_PATH:-${XDG_STATE_HOME:-$HOME/.local/state}/forge/forge.db}"
+# The store is configured by FORGE_DB_URL. This script only supports a local
+# SQLite store (sqlite:///<path>); strip the scheme to get the file path.
+if [[ -z "${FORGE_DB_URL:-}" ]]; then
+    echo "error: FORGE_DB_URL is not set (expected sqlite:///<path>)" >&2
+    exit 1
+fi
+
+case "$FORGE_DB_URL" in
+    sqlite:///*) DB="${FORGE_DB_URL#sqlite:///}" ;;
+    *)
+        echo "error: this script only supports a sqlite:/// FORGE_DB_URL, got: $FORGE_DB_URL" >&2
+        exit 1
+        ;;
+esac
 
 if [[ ! -f "$DB" ]]; then
     echo "error: database not found at $DB" >&2

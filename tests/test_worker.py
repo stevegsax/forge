@@ -13,30 +13,30 @@ import forge.worker as worker_mod
 
 
 class TestInitStore:
-    def test_skips_migrations_when_store_disabled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mock_run_migrations = MagicMock()
+    def test_raises_when_store_url_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from forge.store import StoreConfigError
 
-        monkeypatch.setattr("forge.store.get_db_path", lambda: None)
+        mock_run_migrations = MagicMock()
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
         monkeypatch.setattr("forge.store.run_migrations", mock_run_migrations)
 
-        worker_mod._init_store()
+        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
+            worker_mod._init_store()
 
         mock_run_migrations.assert_not_called()
 
-    def test_runs_migrations_when_store_enabled(
+    def test_runs_migrations_against_configured_url(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        db_path = tmp_path / "forge.db"
+        url = f"sqlite:///{tmp_path / 'forge.db'}"
         mock_run_migrations = MagicMock()
 
-        monkeypatch.setattr("forge.store.get_db_path", lambda: db_path)
+        monkeypatch.setenv("FORGE_DB_URL", url)
         monkeypatch.setattr("forge.store.run_migrations", mock_run_migrations)
 
         worker_mod._init_store()
 
-        mock_run_migrations.assert_called_once_with(db_path)
+        mock_run_migrations.assert_called_once_with(url)
 
 
 class TestEnsureSchedule:

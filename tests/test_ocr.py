@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import sqlalchemy as sa
 from temporalio import activity, workflow
 from temporalio.client import WorkflowFailureError
 from temporalio.worker import Worker
@@ -60,7 +61,6 @@ from forge.store import (
     clear_ocr_removal_mark,
     delete_ocr_results,
     find_ocr_result_by_file_path,
-    get_engine,
     get_file_content,
     get_ocr_image,
     get_ocr_images,
@@ -84,11 +84,17 @@ if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment
 
 
+def _migrate(db_path: Path):
+    """Test helper: migrate a throwaway SQLite store and open a tracked engine."""
+    url = f"sqlite:///{db_path}"
+    run_migrations(url)
+    return sa.create_engine(url)
+
+
 def _setup_db(tmp_path: Path):
     """Create a test database with migrations applied."""
     db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path), db_path
+    return _migrate(db_path), db_path
 
 
 @workflow.defn(name="OcrStoreWorkflow")
@@ -430,16 +436,13 @@ class TestExecuteParseOcrResult:
 class TestExecuteStoreOcrResult:
     def test_stores_result(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             result = execute_store_ocr_result(
                 document_id="doc-123",
@@ -462,17 +465,17 @@ class TestExecuteStoreOcrResult:
             assert stored["text"] == "Extracted text content"
             assert stored["model_name"] == "pixtral-large"
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
-    def test_returns_not_stored_when_no_db(self) -> None:
-        import forge.store as store_module
+    def test_raises_when_store_unconfigured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from forge.store import StoreConfigError
 
-        original = store_module.get_db_path
-        try:
-            store_module.get_db_path = lambda: None
+        # Store is mandatory: an unconfigured store raises rather than silently
+        # returning a not-stored result.
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
 
-            result = execute_store_ocr_result(
+        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
+            execute_store_ocr_result(
                 document_id="doc-no-db",
                 file_path="/tmp/test.pdf",
                 text="Some text",
@@ -482,11 +485,6 @@ class TestExecuteStoreOcrResult:
                 batch_id="b-1",
                 workflow_id="wf-1",
             )
-
-            assert result.stored is False
-            assert result.text_length == len("Some text")
-        finally:
-            store_module.get_db_path = original
 
 
 # ---------------------------------------------------------------------------
@@ -620,8 +618,7 @@ class TestReadAndStoreFileContent:
 
         # Set up test database
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         ref = execute_read_and_store_file(str(test_file), engine)
 
@@ -640,8 +637,7 @@ class TestReadAndStoreFileContent:
 
     def test_execute_read_and_store_file_not_found(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         with pytest.raises(FileNotFoundError):
             execute_read_and_store_file("/tmp/nonexistent_file_12345.pdf", engine)
@@ -650,8 +646,7 @@ class TestReadAndStoreFileContent:
     async def test_submit_ocr_batch_loads_from_db(self, tmp_path: Path) -> None:
         """Verify submit_ocr_batch loads content from DB using file_content_ref."""
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Pre-store file content
         test_data = b"fake pdf bytes"
@@ -688,11 +683,9 @@ class TestReadAndStoreFileContent:
 
         import forge.store as store_mod
 
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
+        original_get_store_engine = store_mod.get_store_engine
         try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
+            store_mod.get_store_engine = lambda: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
@@ -708,15 +701,13 @@ class TestReadAndStoreFileContent:
             assert "document" in requests[0]["body"]
             assert call_args.kwargs.get("endpoint") == "/v1/ocr"
         finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
+            store_mod.get_store_engine = original_get_store_engine
 
     @pytest.mark.asyncio
     async def test_submit_ocr_batch_cleans_up_blob(self, tmp_path: Path) -> None:
         """Verify BLOB is deleted after successful submission."""
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Pre-store file content
         test_data = b"cleanup test bytes"
@@ -754,11 +745,9 @@ class TestReadAndStoreFileContent:
 
         import forge.store as store_mod
 
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
+        original_get_store_engine = store_mod.get_store_engine
         try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
+            store_mod.get_store_engine = lambda: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
@@ -768,8 +757,7 @@ class TestReadAndStoreFileContent:
             # Verify the BLOB was deleted after successful submission
             assert get_file_content(engine, content_id) is None
         finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
+            store_mod.get_store_engine = original_get_store_engine
 
 
 # ---------------------------------------------------------------------------
@@ -802,8 +790,7 @@ class TestSubmitOcrBatchFailureRecording:
     async def test_records_failure_on_api_error(self, tmp_path: Path) -> None:
         """When execute_submit_ocr_batch raises, record_batch_failure is called."""
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Pre-store file content
         content_id = "fail-content-id"
@@ -820,11 +807,9 @@ class TestSubmitOcrBatchFailureRecording:
 
         import forge.store as store_mod
 
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
+        original_get_store_engine = store_mod.get_store_engine
         try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
+            store_mod.get_store_engine = lambda: engine
 
             from forge.ocr.activities import submit_ocr_batch
 
@@ -854,15 +839,13 @@ class TestSubmitOcrBatchFailureRecording:
             # submit JSON, or (as here) from ocr_input.document_id as fallback.
             assert row["document_id"] == "doc-fail"
         finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
+            store_mod.get_store_engine = original_get_store_engine
 
     @pytest.mark.asyncio
     async def test_original_exception_propagates_when_recording_fails(self, tmp_path: Path) -> None:
         """When record_batch_failure itself raises, the original exception still propagates."""
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         content_id = "fail-record-content-id"
         save_file_content(
@@ -878,12 +861,10 @@ class TestSubmitOcrBatchFailureRecording:
 
         import forge.store as store_mod
 
-        original_get_db_path = store_mod.get_db_path
-        original_get_engine = store_mod.get_engine
+        original_get_store_engine = store_mod.get_store_engine
         original_record_failure = store_mod.record_batch_failure
         try:
-            store_mod.get_db_path = lambda: db_path
-            store_mod.get_engine = lambda _path: engine
+            store_mod.get_store_engine = lambda: engine
             store_mod.record_batch_failure = MagicMock(side_effect=RuntimeError("DB write failed"))
 
             from forge.ocr.activities import submit_ocr_batch
@@ -896,8 +877,7 @@ class TestSubmitOcrBatchFailureRecording:
             ):
                 await submit_ocr_batch(input_json)
         finally:
-            store_mod.get_db_path = original_get_db_path
-            store_mod.get_engine = original_get_engine
+            store_mod.get_store_engine = original_get_store_engine
             store_mod.record_batch_failure = original_record_failure
 
 
@@ -1820,8 +1800,7 @@ class TestExecuteParseOcrResultWithImages:
 class TestExecuteStoreOcrResultWithImages:
     def test_updates_image_document_ids(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         # Pre-store an image with empty document_id
         save_ocr_image(
@@ -1836,11 +1815,9 @@ class TestExecuteStoreOcrResultWithImages:
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             execute_store_ocr_result(
                 document_id="doc-with-images",
@@ -1859,21 +1836,17 @@ class TestExecuteStoreOcrResultWithImages:
             assert img is not None
             assert img["document_id"] == "doc-with-images"
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
     def test_no_image_ids_is_backward_compatible(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
-        run_migrations(db_path)
-        engine = get_engine(db_path)
+        engine = _migrate(db_path)
 
         import forge.store as store_module
 
-        original_get_db_path = store_module.get_db_path
-        original_get_engine = store_module.get_engine
+        original_get_store_engine = store_module.get_store_engine
         try:
-            store_module.get_db_path = lambda: db_path
-            store_module.get_engine = lambda _path: engine
+            store_module.get_store_engine = lambda: engine
 
             result = execute_store_ocr_result(
                 document_id="doc-no-images",
@@ -1887,8 +1860,7 @@ class TestExecuteStoreOcrResultWithImages:
             )
             assert result.stored is True
         finally:
-            store_module.get_db_path = original_get_db_path
-            store_module.get_engine = original_get_engine
+            store_module.get_store_engine = original_get_store_engine
 
 
 # ---------------------------------------------------------------------------

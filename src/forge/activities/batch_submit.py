@@ -82,13 +82,9 @@ def _record_submission(
 ) -> None:
     """Best-effort store write. Never raises (D42)."""
     try:
-        from forge.store import get_db_path, get_engine, record_batch_submission
+        from forge.store import get_store_engine, record_batch_submission
 
-        db_path = get_db_path()
-        if db_path is None:
-            return
-
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         record_batch_submission(
             engine,
             request_id=result.request_id,

@@ -326,21 +326,13 @@ def execute_store_ocr_result(
     image_ids: list[str] | None = None,
 ) -> OcrStoreResult:
     """Store OCR result in the database."""
-    from forge.store import get_db_path, get_engine, save_ocr_result
-
-    db_path = get_db_path()
-    if db_path is None:
-        return OcrStoreResult(
-            document_id=document_id,
-            text_length=len(text),
-            stored=False,
-        )
+    from forge.store import get_store_engine, save_ocr_result
 
     file_hash = None
     if file_path and Path(file_path).is_file():
         file_hash = compute_file_hash(file_path)
 
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     save_ocr_result(
         engine,
         document_id=document_id,
@@ -704,15 +696,10 @@ async def read_and_store_file_content(file_path: str) -> FileContentRef:
     Returns a lightweight FileContentRef instead of the full file content,
     avoiding Temporal's 2MB payload limit for large files.
     """
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
 
     logger.info("Reading and storing file: %s", file_path)
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot store file content: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return execute_read_and_store_file(file_path, engine)
 
 
@@ -729,9 +716,8 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     from forge.ocr.models import OcrSubmitInput
     from forge.store import (
         delete_file_content,
-        get_db_path,
-        get_engine,
         get_file_content,
+        get_store_engine,
         record_batch_failure,
         record_batch_submission,
     )
@@ -742,12 +728,7 @@ async def submit_ocr_batch(input_json: str) -> OcrBatchRef:
     root_document_id = data.get("root_document_id") or ocr_input.document_id
 
     # Load file content from database
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot load file content: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
 
     file_content_ref = data["file_content_ref"]
     content_id = file_content_ref["content_id"]
@@ -835,15 +816,10 @@ async def update_batch_job_status(input_json: str) -> None:
     raises ``ValueError`` on unknown strings.
     """
     from forge.models import BatchJobStatus
-    from forge.store import get_db_path, get_engine, update_batch_status
+    from forge.store import get_store_engine, update_batch_status
 
     data = json.loads(input_json)
-    db_path = get_db_path()
-    if db_path is None:
-        logger.warning("Skipping batch job status update: database is disabled")
-        return
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     update_batch_status(
         engine,
         request_id=data["request_id"],
@@ -874,9 +850,8 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
     from sax_llm import get_provider, parse_model_id
 
     from forge.store import (
-        get_db_path,
-        get_engine,
         get_file_content,
+        get_store_engine,
         save_ocr_image,
     )
 
@@ -892,11 +867,7 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
 
     # Load file content — from blob store (chunks) or filesystem
     if content_id:
-        db_path = get_db_path()
-        if db_path is None:
-            msg = "Cannot load file content: database is disabled"
-            raise RuntimeError(msg)
-        engine = get_engine(db_path)
+        engine = get_store_engine()
         blob = get_file_content(engine, content_id)
         if blob is None:
             msg = f"File content not found for content_id={content_id}"
@@ -912,38 +883,35 @@ async def call_ocr_sync(input_json: str) -> OcrStoreResult:
     _provider_name, _ = parse_model_id(model_name)
 
     # Build image storage closure (mirrors batch poller pattern)
-    db_path = get_db_path()
-    store_images_fn = None
-    if db_path is not None:
-        engine = get_engine(db_path)
+    engine = get_store_engine()
 
-        def _store_images(images: list[ExtractedImage]) -> dict[str, str]:
-            mapping: dict[str, str] = {}
-            for img in images:
-                image_id = str(uuid.uuid4())
-                raw_b64 = img.image_base64
-                img_mime = img.mime_type
-                if raw_b64.startswith("data:"):
-                    header, raw_b64 = raw_b64.split(",", 1)
-                    img_mime = header.split(":")[1].split(";")[0]
-                img_data = base64.b64decode(raw_b64)
-                save_ocr_image(
-                    engine,
-                    image_id=image_id,
-                    page_index=img.page_index,
-                    original_image_id=img.original_image_id,
-                    data=img_data,
-                    mime_type=img_mime,
-                    file_size_bytes=len(img_data),
-                    top_left_x=img.top_left_x,
-                    top_left_y=img.top_left_y,
-                    bottom_right_x=img.bottom_right_x,
-                    bottom_right_y=img.bottom_right_y,
-                )
-                mapping[img.original_image_id] = image_id
-            return mapping
+    def _store_images(images: list[ExtractedImage]) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for img in images:
+            image_id = str(uuid.uuid4())
+            raw_b64 = img.image_base64
+            img_mime = img.mime_type
+            if raw_b64.startswith("data:"):
+                header, raw_b64 = raw_b64.split(",", 1)
+                img_mime = header.split(":")[1].split(";")[0]
+            img_data = base64.b64decode(raw_b64)
+            save_ocr_image(
+                engine,
+                image_id=image_id,
+                page_index=img.page_index,
+                original_image_id=img.original_image_id,
+                data=img_data,
+                mime_type=img_mime,
+                file_size_bytes=len(img_data),
+                top_left_x=img.top_left_x,
+                top_left_y=img.top_left_y,
+                bottom_right_x=img.bottom_right_x,
+                bottom_right_y=img.bottom_right_y,
+            )
+            mapping[img.original_image_id] = image_id
+        return mapping
 
-        store_images_fn = _store_images
+    store_images_fn = _store_images
 
     return await execute_call_ocr_sync(
         base64_data=b64_data,
@@ -964,17 +932,12 @@ async def split_file_into_chunks(input_json: str) -> SplitResult:
     Takes JSON with content_id, mime_type, file_size_bytes.
     Returns SplitResult with ordered ChunkRef list.
     """
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
 
     data = json.loads(input_json)
     logger.info("Splitting file into chunks: content_id=%s", data.get("content_id", ""))
 
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot split file: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return execute_split_file_into_chunks(
         content_id=data["content_id"],
         mime_type=data["mime_type"],
@@ -990,17 +953,12 @@ async def reassemble_ocr_chunks(input_json: str) -> OcrStoreResult:
     Takes JSON with document_id, chunk_document_ids, file_path, total_pages.
     Returns OcrStoreResult for the combined document.
     """
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
 
     data = json.loads(input_json)
     logger.info("Reassembling OCR chunks: document_id=%s", data.get("document_id", ""))
 
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot reassemble chunks: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return execute_reassemble_ocr_chunks(
         document_id=data["document_id"],
         chunk_document_ids=data["chunk_document_ids"],
@@ -1017,17 +975,12 @@ async def export_ocr_document(input_json: str) -> OcrExportResult:
     Takes JSON with document_id and optional output_dir.
     Returns OcrExportResult with export paths and image count.
     """
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
 
     data = json.loads(input_json)
     logger.info("Exporting OCR document: document_id=%s", data.get("document_id", ""))
 
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot export: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return execute_export_ocr_document(
         document_id=data["document_id"],
         output_dir=data.get("output_dir", ""),
@@ -1073,32 +1026,23 @@ def execute_check_ocr_duplicate(
 @activity.defn
 async def check_ocr_duplicate(file_path: str) -> OcrDuplicateCheckResult:
     """Activity: check if a file has already been successfully OCR'd."""
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
 
     logger.info("Checking for duplicate OCR result: %s", file_path)
 
-    db_path = get_db_path()
-    if db_path is None:
-        return OcrDuplicateCheckResult(is_duplicate=False)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return execute_check_ocr_duplicate(file_path, engine)
 
 
 @activity.defn
 async def mark_ocr_for_removal(document_id: str) -> OcrMarkResult:
     """Activity: set marked_for_removal=True on an OCR document."""
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
     from forge.store import mark_ocr_for_removal as _mark
 
     logger.info("Marking OCR document for removal: %s", document_id)
 
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot mark for removal: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     found = _mark(engine, document_id)
     return OcrMarkResult(document_id=document_id, found=found)
 
@@ -1107,16 +1051,11 @@ async def mark_ocr_for_removal(document_id: str) -> OcrMarkResult:
 async def clear_ocr_removal_mark(document_id: str) -> OcrMarkResult:
     """Activity: set marked_for_removal=False on an OCR document."""
     from forge.store import clear_ocr_removal_mark as _clear
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
 
     logger.info("Clearing removal mark on OCR document: %s", document_id)
 
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot clear removal mark: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     found = _clear(engine, document_id)
     return OcrMarkResult(document_id=document_id, found=found)
 
@@ -1260,7 +1199,7 @@ def execute_list_ocr_jobs(
 @activity.defn
 async def list_ocr_jobs(input_json: str) -> OcrListJobsResult:
     """Activity: list OCR job submissions grouped by file_path."""
-    from forge.store import get_db_path, get_engine
+    from forge.store import get_store_engine
 
     data = json.loads(input_json)
     logger.info(
@@ -1269,12 +1208,7 @@ async def list_ocr_jobs(input_json: str) -> OcrListJobsResult:
         data.get("status_filter", ""),
     )
 
-    db_path = get_db_path()
-    if db_path is None:
-        msg = "Cannot list OCR jobs: database is disabled"
-        raise RuntimeError(msg)
-
-    engine = get_engine(db_path)
+    engine = get_store_engine()
     return execute_list_ocr_jobs(
         engine,
         limit=data.get("limit", 50),
