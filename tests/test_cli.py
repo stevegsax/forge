@@ -1341,10 +1341,8 @@ class TestVerboseFlag:
 
     @patch("forge.cli._submit_and_wait")
     @patch("forge.cli.discover_repo_root")
-    @patch("forge.cli._persist_run")
     def test_verbose_flag_shows_stats(
         self,
-        mock_persist: object,
         mock_discover: object,
         mock_submit: MagicMock,
         cli_runner: CliRunner,

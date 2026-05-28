@@ -446,18 +446,6 @@ async def _submit_no_wait(
     return handle.id
 
 
-def _persist_run(result: TaskResult, workflow_id: str) -> None:
-    """Best-effort persistence of run result to the store."""
-    try:
-        from forge.store import get_store_engine
-        from forge.store import save_run as store_save_run
-
-        engine = get_store_engine()
-        store_save_run(engine, result, workflow_id)
-    except Exception:
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Click commands
 # ---------------------------------------------------------------------------
@@ -800,9 +788,7 @@ def run(
                 )
             )
 
-            # Persist run to store (best-effort)
-            workflow_id = f"forge-task-{task_def.task_id}"
-            _persist_run(result, workflow_id)
+            # The run result is persisted survivably inside ForgeTaskWorkflow.
 
             if output_json:
                 click.echo(result.model_dump_json(indent=2))

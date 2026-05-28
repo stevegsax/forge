@@ -181,6 +181,7 @@ async def _assemble_conflict_resolution(
 # ---------------------------------------------------------------------------
 
 with workflow.unsafe.imports_passed_through():
+    from forge.persist_models import PersistRun
     from forge.persist_models import build_persist_interaction as _build_persist_interaction
     from forge.workflow_blocks import (
         batch_submit_and_wait as _call_llm_batch_dispatch,
@@ -276,8 +277,16 @@ class ForgeTaskWorkflow:
             input.sync_mode,
         )
         if input.plan:
-            return await self._run_planned(input)
-        return await self._run_single_step(input)
+            result = await self._run_planned(input)
+        else:
+            result = await self._run_single_step(input)
+        # Survivably persist the run result (idempotent on workflow_id) so every
+        # execution records a row — including fire-and-forget submissions, which
+        # the old CLI-side _persist_run never covered.
+        await _persist_block(
+            PersistRun(workflow_id=workflow.info().workflow_id, task_result=result)
+        )
+        return result
 
     # ------------------------------------------------------------------
     # LLM dispatch methods (delegating to module-level shared functions)
