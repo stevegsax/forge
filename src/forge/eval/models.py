@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from forge.models import Plan, TaskDefinition  # noqa: TC001
+from forge.models import Plan, TaskDefinition
 
 
 class CheckStatus(StrEnum):

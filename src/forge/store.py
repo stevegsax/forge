@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -101,6 +102,7 @@ class Interaction(Base):
     __tablename__ = "interactions"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    idempotency_key: Mapped[str | None] = mapped_column(sa.String, nullable=True, unique=True)
     task_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
     step_id: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     sub_task_id: Mapped[str | None] = mapped_column(sa.String, nullable=True)
@@ -160,6 +162,7 @@ class Playbook(Base):
     __tablename__ = "playbooks"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    idempotency_key: Mapped[str | None] = mapped_column(sa.String, nullable=True, unique=True)
     title: Mapped[str] = mapped_column(sa.String, nullable=False)
     content: Mapped[str] = mapped_column(sa.Text, nullable=False)
     tags_json: Mapped[str] = mapped_column(sa.Text, nullable=False)
@@ -282,12 +285,18 @@ def build_interaction_dict(
     }
 
 
+def playbook_idempotency_key(extraction_workflow_id: str, title: str) -> str:
+    """Deterministic per-playbook idempotency key, stable across retries."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"playbook:{extraction_workflow_id}:{title}"))
+
+
 def build_playbook_dict(
     entry: PlaybookEntry,
     extraction_workflow_id: str,
 ) -> dict:
-    """Convert a PlaybookEntry to an insertable dict."""
+    """Convert a PlaybookEntry to an insertable dict (with a deterministic key)."""
     return {
+        "idempotency_key": playbook_idempotency_key(extraction_workflow_id, entry.title),
         "title": entry.title,
         "content": entry.content,
         "tags_json": json.dumps(entry.tags),
@@ -367,10 +376,42 @@ def run_migrations(url: str) -> None:
     command.upgrade(cfg, "head")
 
 
-def save_interaction(engine: Engine, **kwargs: object) -> None:
-    """Insert a row into the interactions table."""
+def insert_or_ignore(
+    engine: Engine,
+    table: sa.Table,
+    values: dict,
+    *,
+    index_elements: list[str],
+) -> bool:
+    """Idempotent insert via the dialect's ``ON CONFLICT DO NOTHING``.
+
+    Returns ``True`` if a new row was written, ``False`` if an existing row on
+    ``index_elements`` absorbed the insert (a no-op). This makes every write safe
+    to re-apply on a Temporal retry: a duplicate never raises, and the caller can
+    tell whether it was the first writer.
+    """
+    dialect = engine.dialect.name
+    if dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as _dialect_insert
+    elif dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as _dialect_insert
+    else:  # pragma: no cover - only sqlite/postgres are supported stores
+        msg = f"insert_or_ignore is unsupported on dialect {dialect!r}"
+        raise StoreConfigError(msg)
+
+    stmt = (
+        _dialect_insert(table).values(**values).on_conflict_do_nothing(index_elements=index_elements)
+    )
     with engine.begin() as conn:
-        conn.execute(sa.insert(Interaction.__table__).values(**kwargs))
+        result = conn.execute(stmt)
+    return bool(result.rowcount)
+
+
+def save_interaction(engine: Engine, **kwargs: object) -> bool:
+    """Insert a row into the interactions table (idempotent on idempotency_key)."""
+    return insert_or_ignore(
+        engine, Interaction.__table__, dict(kwargs), index_elements=["idempotency_key"]
+    )
 
 
 def persist_interaction(
@@ -413,18 +454,19 @@ def persist_interaction(
         logger.warning("Failed to persist %s interaction to store", role, exc_info=True)
 
 
-def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> None:
-    """Insert a row into the runs table."""
-    result_json = task_result.model_dump_json()
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(Run.__table__).values(
-                task_id=task_result.task_id,
-                workflow_id=workflow_id,
-                status=task_result.status.value,
-                result_json=result_json,
-            )
-        )
+def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> bool:
+    """Insert a row into the runs table (idempotent on workflow_id)."""
+    return insert_or_ignore(
+        engine,
+        Run.__table__,
+        {
+            "task_id": task_result.task_id,
+            "workflow_id": workflow_id,
+            "status": task_result.status.value,
+            "result_json": task_result.model_dump_json(),
+        },
+        index_elements=["workflow_id"],
+    )
 
 
 def get_interactions(
@@ -472,12 +514,18 @@ def list_recent_runs(engine: Engine, limit: int = 20) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def save_playbooks(engine: Engine, entries: list[dict]) -> None:
-    """Bulk insert rows into the playbooks table."""
-    if not entries:
-        return
-    with engine.begin() as conn:
-        conn.execute(sa.insert(Playbook.__table__), entries)
+def save_playbooks(engine: Engine, entries: list[dict]) -> bool:
+    """Insert playbook rows (idempotent per-entry on idempotency_key).
+
+    Returns ``True`` if at least one new row was written.
+    """
+    applied = False
+    for entry in entries:
+        if insert_or_ignore(
+            engine, Playbook.__table__, dict(entry), index_elements=["idempotency_key"]
+        ):
+            applied = True
+    return applied
 
 
 def get_playbooks_by_tags(
@@ -614,25 +662,29 @@ def record_batch_submission(
     provider: str = "anthropic",
     file_path: str | None = None,
     document_id: str | None = None,
-) -> None:
+) -> bool:
     """Insert a new batch job record with status 'submitted'.
 
     ``document_id`` groups chunks of a single submission together so
     that the list_ocr_jobs query can distinguish resubmissions of the
     same file. Defaults to ``request_id`` when not supplied.
+
+    Idempotent on the ``request_id`` primary key.
     """
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(BatchJob.__table__).values(
-                id=request_id,
-                batch_id=batch_id,
-                workflow_id=workflow_id,
-                status=BatchJobStatus.SUBMITTED,
-                provider=provider,
-                file_path=file_path,
-                document_id=document_id or request_id,
-            )
-        )
+    return insert_or_ignore(
+        engine,
+        BatchJob.__table__,
+        {
+            "id": request_id,
+            "batch_id": batch_id,
+            "workflow_id": workflow_id,
+            "status": BatchJobStatus.SUBMITTED,
+            "provider": provider,
+            "file_path": file_path,
+            "document_id": document_id or request_id,
+        },
+        index_elements=["id"],
+    )
 
 
 def record_batch_failure(
@@ -644,26 +696,28 @@ def record_batch_failure(
     provider: str = "anthropic",
     file_path: str | None = None,
     document_id: str | None = None,
-) -> None:
+) -> bool:
     """Insert a batch job record with status 'failed' and no batch_id.
 
     Used when the provider API call fails before returning a batch_id.
     ``document_id`` groups chunks of a single submission together; see
-    ``record_batch_submission``.
+    ``record_batch_submission``. Idempotent on the ``request_id`` primary key.
     """
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(BatchJob.__table__).values(
-                id=request_id,
-                batch_id=None,
-                workflow_id=workflow_id,
-                status=BatchJobStatus.FAILED,
-                provider=provider,
-                error_message=error_message,
-                file_path=file_path,
-                document_id=document_id or request_id,
-            )
-        )
+    return insert_or_ignore(
+        engine,
+        BatchJob.__table__,
+        {
+            "id": request_id,
+            "batch_id": None,
+            "workflow_id": workflow_id,
+            "status": BatchJobStatus.FAILED,
+            "provider": provider,
+            "error_message": error_message,
+            "file_path": file_path,
+            "document_id": document_id or request_id,
+        },
+        index_elements=["id"],
+    )
 
 
 def update_batch_status(
@@ -733,23 +787,25 @@ def save_ocr_result(
     batch_id: str,
     workflow_id: str,
     file_hash: str | None = None,
-) -> None:
-    """Insert a row into the ocr_results table."""
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(OcrResult.__table__).values(
-                document_id=document_id,
-                file_path=file_path,
-                text=text,
-                page_count=page_count,
-                model_name=model_name,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                batch_id=batch_id,
-                workflow_id=workflow_id,
-                file_hash=file_hash,
-            )
-        )
+) -> bool:
+    """Insert a row into the ocr_results table (idempotent on document_id)."""
+    return insert_or_ignore(
+        engine,
+        OcrResult.__table__,
+        {
+            "document_id": document_id,
+            "file_path": file_path,
+            "text": text,
+            "page_count": page_count,
+            "model_name": model_name,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "batch_id": batch_id,
+            "workflow_id": workflow_id,
+            "file_hash": file_hash,
+        },
+        index_elements=["document_id"],
+    )
 
 
 def delete_ocr_results(engine: Engine, document_ids: list[str]) -> None:
@@ -871,15 +927,17 @@ def save_file_content(
 
     s3_key = s3_blobs.build_key(content_id)
     s3_blobs.put(s3_key, data, mime_type)
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(FileContentBlob.__table__).values(
-                id=content_id,
-                s3_key=s3_key,
-                mime_type=mime_type,
-                file_size_bytes=file_size_bytes,
-            )
-        )
+    insert_or_ignore(
+        engine,
+        FileContentBlob.__table__,
+        {
+            "id": content_id,
+            "s3_key": s3_key,
+            "mime_type": mime_type,
+            "file_size_bytes": file_size_bytes,
+        },
+        index_elements=["id"],
+    )
 
 
 def get_file_content(engine: Engine, content_id: str) -> dict | None:
@@ -944,22 +1002,24 @@ def save_ocr_image(
 
     s3_key = s3_blobs.build_key(image_id)
     s3_blobs.put(s3_key, data, mime_type)
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(OcrImage.__table__).values(
-                id=image_id,
-                document_id=document_id,
-                page_index=page_index,
-                original_image_id=original_image_id,
-                s3_key=s3_key,
-                mime_type=mime_type,
-                file_size_bytes=file_size_bytes,
-                top_left_x=top_left_x,
-                top_left_y=top_left_y,
-                bottom_right_x=bottom_right_x,
-                bottom_right_y=bottom_right_y,
-            )
-        )
+    insert_or_ignore(
+        engine,
+        OcrImage.__table__,
+        {
+            "id": image_id,
+            "document_id": document_id,
+            "page_index": page_index,
+            "original_image_id": original_image_id,
+            "s3_key": s3_key,
+            "mime_type": mime_type,
+            "file_size_bytes": file_size_bytes,
+            "top_left_x": top_left_x,
+            "top_left_y": top_left_y,
+            "bottom_right_x": bottom_right_x,
+            "bottom_right_y": bottom_right_y,
+        },
+        index_elements=["id"],
+    )
 
 
 def update_ocr_images_document_id(

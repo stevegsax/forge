@@ -545,10 +545,10 @@ class TestOcrStoreRoundtrip:
         assert result is not None
         assert result["page_count"] == 2
 
-    def test_unique_document_id(self, tmp_path: Path) -> None:
+    def test_duplicate_document_id_is_idempotent(self, tmp_path: Path) -> None:
         engine, _ = _setup_db(tmp_path)
 
-        save_ocr_result(
+        first = save_ocr_result(
             engine,
             document_id="doc-unique",
             file_path="/data/a.pdf",
@@ -559,22 +559,28 @@ class TestOcrStoreRoundtrip:
             batch_id="b-1",
             workflow_id="wf-1",
         )
+        assert first is True
 
-        # Inserting duplicate document_id should raise IntegrityError
-        from sqlalchemy.exc import IntegrityError
+        # A duplicate document_id is absorbed (idempotent on retry), not an error:
+        # the second write is a no-op and the original row is preserved.
+        second = save_ocr_result(
+            engine,
+            document_id="doc-unique",
+            file_path="/data/b.pdf",
+            text="Second",
+            model_name="model",
+            input_tokens=10,
+            output_tokens=5,
+            batch_id="b-2",
+            workflow_id="wf-2",
+        )
+        assert second is False
 
-        with pytest.raises(IntegrityError):
-            save_ocr_result(
-                engine,
-                document_id="doc-unique",
-                file_path="/data/b.pdf",
-                text="Second",
-                model_name="model",
-                input_tokens=10,
-                output_tokens=5,
-                batch_id="b-2",
-                workflow_id="wf-2",
-            )
+        from forge.store import get_ocr_result
+
+        row = get_ocr_result(engine, "doc-unique")
+        assert row is not None
+        assert row["text"] == "First"
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ from forge.activities.git_activities import (
 )
 from forge.activities.llm import call_llm
 from forge.activities.output import write_files, write_output
+from forge.activities.persist import persist_to_store
 from forge.activities.planner import assemble_planner_context, call_planner
 from forge.activities.playbook_export import (
     export_single_playbook,
@@ -71,6 +72,7 @@ __all__ = [
     "fetch_playbook_ids",
     "fulfill_context_requests",
     "parse_llm_response",
+    "persist_to_store",
     "poll_batch_results",
     "remove_worktree_activity",
     "reset_worktree_activity",

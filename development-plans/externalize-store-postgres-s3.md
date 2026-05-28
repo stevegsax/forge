@@ -1,6 +1,6 @@
 # Externalize the Forge store: Postgres backend + S3 OCR blobs + survivable writes
 
-**Status:** PHASES A & B DONE. Phase C (survivable writes) not started.
+**Status:** PHASES A & B DONE. Phase C foundation (C1–C3) DONE; rewiring (C4–C8) + tests (C9) remain.
 **Last updated:** 2026-05-28
 **Owner:** stevegsax
 
@@ -12,8 +12,15 @@
 > passed; only failures are the 3 pre-existing environmental `TestExecuteCheckOcrDuplicate`
 > cases (missing `test-inputs/2311.06440v1.pdf`). **Still owed for full confidence:**
 > validate Alembic migrations (incl. `014`'s `batch_alter_table`) against a real
-> Postgres — engine build + SQLite DDL are tested, PG DDL is not. **Next:** Phase C
-> (survivable store writes; migration `015` follows `014`).
+> Postgres — engine build + SQLite DDL are tested, PG DDL is not.
+>
+> **Phase C is mid-flight.** The foundation (C1–C3) is implemented and verified, and
+> is intentionally **non-breaking**: the idempotent `save_*` functions are
+> backward-compatible and the old best-effort swallowers are still in place, so the
+> full suite is green (1470 passed). **Next: C4–C8** — remove the swallowers and
+> re-wire the LLM / batch / OCR / run families to persist via the new
+> `persist_to_store` activity with `_PERSIST_RETRY`; then C9 (pause-and-retry +
+> idempotency + regression tests). This is the risky, workflow-touching half.
 
 Prerequisite work for the AWS EC2 deployment in
 [docs/planning/DEPLOYMENT.md](../docs/planning/DEPLOYMENT.md). Today the Forge store
@@ -408,10 +415,10 @@ the workflow loudly. DB-unreachable surfaces as psycopg2 `OperationalError`/
   `ForgeTaskWorkflow.run` (also fixes that fire-and-forget submissions never persisted).
 
 ### Sub-tasks
-- [ ] C0. Confirm Phase A `get_store_engine()` has landed; number the migration after Phase B (`015`)
-- [ ] C1. `persist_models.py` union + `PersistResult`; `_PERSIST_RETRY` consts in `workflow_blocks.py`; add `provider` to `BatchSubmitResult`
-- [ ] C2. `insert_or_ignore` + rewrite `save_*`/`record_*` idempotent; migration `015` (idempotency_key on interactions+playbooks); deterministic `uuid5` ids (ocr_images, request_id threading)
-- [ ] C3. `activities/persist.py` `persist_to_store`; register in `worker.py` + `activities/__init__.py`
+- [x] C0. Phase A `get_store_engine()` landed; migration numbered `015` (after B's `014`)
+- [x] C1. `persist_models.py` discriminated union + `PersistResult` (round-trips via TypeAdapter); `_PERSIST_RETRY`/timeout consts in `workflow_blocks.py`; `provider` added to `BatchSubmitResult`
+- [x] C2. `insert_or_ignore` (dialect ON CONFLICT DO NOTHING, returns `applied`); `save_run`/`save_interaction`/`save_playbooks`/`record_batch_*`/`save_ocr_result`/`save_ocr_image`/`save_file_content` idempotent; migration `015` (nullable-unique `idempotency_key` on interactions+playbooks); `build_playbook_dict` adds `uuid5` key. (ocr_images deterministic `uuid5` id is at the call sites — deferred to C7.)
+- [x] C3. `activities/persist.py` `persist_to_store` (match on `kind`); registered in `worker.py` + `activities/__init__.py`. Verified via direct-call idempotency smoke test.
 - [ ] C4. Remove swallowers (`persist_interaction`, `_record_submission`, `_safe_update_status` + try/excepts, `_persist_run`)
 - [ ] C5. Re-wire LLM family; `persist_interaction_block`; fold `save_extraction_results`
 - [ ] C6. Re-wire batch submit/poll
@@ -597,6 +604,28 @@ idempotency tests pass; DEPLOYMENT.md updated; PR(s) opened against `main`
   suite: **1470 passed** (same 3 environmental PDF failures), ruff clean on `src/`
   and new tests. No inline-in-DB fallback — S3 is the only OCR blob store. Next:
   Phase C.
+- **2026-05-28** — Phase C foundation (C1–C3), kept deliberately non-breaking so it
+  can land before the risky rewiring. `persist_models.py`: pure discriminated-union
+  `PersistRequest` (kinds interaction/run/batch_submission/batch_failure/batch_status/
+  ocr_result/playbooks) + `PersistResult`; imports only `forge.models` (sandbox-safe);
+  verified to round-trip through pydantic `TypeAdapter` (needed for the Temporal
+  pydantic converter). `workflow_blocks.py`: `_PERSIST_RETRY` (20 attempts, 60s cap,
+  ValueError non-retryable) + 30s start-to-close / 20-min schedule-to-close consts.
+  `BatchSubmitResult` gains `provider`. `store.py`: `insert_or_ignore` dispatches on
+  dialect to sqlite/postgres `on_conflict_do_nothing` and returns whether a row was
+  written; `save_run` (workflow_id), `record_batch_submission`/`record_batch_failure`
+  (id), `save_ocr_result` (document_id), `save_ocr_image`/`save_file_content` (id),
+  `save_interaction`/`save_playbooks` (idempotency_key) are now idempotent.
+  `idempotency_key` is **nullable**-unique (migration `015`), so legacy/direct inserts
+  with no key still work (NULLs don't collide) while keyed writes dedupe — this is
+  what keeps C1–C3 non-breaking ahead of C5. `build_playbook_dict` adds a
+  `uuid5(extraction_workflow_id, title)` key. `activities/persist.py` `persist_to_store`
+  matches on `kind` and is registered on the worker. Updated the one regression test
+  tied to old behavior (`test_unique_document_id` → `test_duplicate_document_id_is_idempotent`).
+  Ruff: added `runtime-evaluated-base-classes = ["pydantic.BaseModel"]` to both ruff
+  configs (pydantic field-type imports must stay at runtime; also retired a now-redundant
+  `# noqa: TC001` in `eval/models.py`). Full suite green (1470 passed). **Remaining:
+  C4–C8 (rewiring) + C9 (tests).**
 
 ---
 

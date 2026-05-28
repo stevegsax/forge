@@ -1,0 +1,126 @@
+"""Survivable store-write activity (Phase C).
+
+Every store write a workflow needs is funneled through ``persist_to_store``, a
+dedicated, idempotent activity invoked with a generous-but-finite retry policy
+(see ``_PERSIST_RETRY`` in ``workflow_blocks``). A transient DB outage retries only
+this cheap write — the expensive LLM/OCR/batch call already returned to the workflow
+and is never re-run. A prolonged outage exhausts the schedule-to-close cap and fails
+the workflow loudly. Duplicate re-applies are absorbed by ``insert_or_ignore``.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import assert_never
+
+from temporalio import activity
+
+from forge.persist_models import (
+    PersistBatchFailure,
+    PersistBatchStatus,
+    PersistBatchSubmission,
+    PersistInteraction,
+    PersistOcrResult,
+    PersistPlaybooks,
+    PersistRequest,
+    PersistResult,
+    PersistRun,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@activity.defn
+async def persist_to_store(req: PersistRequest) -> PersistResult:
+    """Apply one idempotent store write, dispatched on ``req.kind``.
+
+    Resolves the engine via ``get_store_engine()`` — an unreachable DB raises, which
+    is exactly what triggers the Temporal retry that makes the write survivable.
+    """
+    from forge.store import (
+        build_playbook_dict,
+        get_store_engine,
+        record_batch_failure,
+        record_batch_submission,
+        save_interaction,
+        save_ocr_result,
+        save_playbooks,
+        save_run,
+        update_batch_status,
+    )
+
+    engine = get_store_engine()
+
+    match req:
+        case PersistInteraction():
+            applied = save_interaction(
+                engine,
+                idempotency_key=req.idempotency_key,
+                task_id=req.task_id,
+                step_id=req.step_id,
+                sub_task_id=req.sub_task_id,
+                role=req.role,
+                system_prompt=req.system_prompt,
+                user_prompt=req.user_prompt,
+                model_name=req.model_name,
+                input_tokens=req.input_tokens,
+                output_tokens=req.output_tokens,
+                latency_ms=req.latency_ms,
+                explanation=req.explanation,
+                context_stats_json=req.context_stats_json,
+                cache_creation_input_tokens=req.cache_creation_input_tokens,
+                cache_read_input_tokens=req.cache_read_input_tokens,
+            )
+        case PersistRun():
+            applied = save_run(engine, req.task_result, req.workflow_id)
+        case PersistBatchSubmission():
+            applied = record_batch_submission(
+                engine,
+                request_id=req.request_id,
+                batch_id=req.batch_id,
+                workflow_id=req.workflow_id,
+                provider=req.provider,
+                file_path=req.file_path,
+                document_id=req.document_id,
+            )
+        case PersistBatchFailure():
+            applied = record_batch_failure(
+                engine,
+                request_id=req.request_id,
+                workflow_id=req.workflow_id,
+                error_message=req.error_message,
+                provider=req.provider,
+                file_path=req.file_path,
+                document_id=req.document_id,
+            )
+        case PersistBatchStatus():
+            # A status transition is a plain UPDATE (no dedupe); always "applied".
+            update_batch_status(
+                engine,
+                request_id=req.request_id,
+                status=req.status,
+                error_message=req.error_message,
+            )
+            applied = True
+        case PersistOcrResult():
+            applied = save_ocr_result(
+                engine,
+                document_id=req.document_id,
+                file_path=req.file_path,
+                text=req.text,
+                page_count=req.page_count,
+                model_name=req.model_name,
+                input_tokens=req.input_tokens,
+                output_tokens=req.output_tokens,
+                batch_id=req.batch_id,
+                workflow_id=req.workflow_id,
+                file_hash=req.file_hash,
+            )
+        case PersistPlaybooks():
+            dicts = [build_playbook_dict(e, req.extraction_workflow_id) for e in req.entries]
+            applied = save_playbooks(engine, dicts)
+        case _ as unreachable:  # pragma: no cover - exhaustiveness guard
+            assert_never(unreachable)
+
+    logger.debug("persist_to_store kind=%s applied=%s", req.kind, applied)
+    return PersistResult(kind=req.kind, applied=applied)
