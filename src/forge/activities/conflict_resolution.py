@@ -10,7 +10,6 @@ Design follows Function Core / Imperative Shell:
 - Temporal activities: detect_file_conflicts_activity, assemble_conflict_resolution_context,
   call_conflict_resolution
 - Testable function: execute_conflict_resolution_call (takes client as argument)
-- Imperative shell: store.persist_interaction
 """
 
 from __future__ import annotations

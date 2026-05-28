@@ -5,7 +5,7 @@ Decomposes a task into ordered steps using an LLM with structured output.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_planner_system_prompt, build_planner_user_prompt
 - Testable function: execute_planner_call (takes provider as argument)
-- Imperative shell: assemble_planner_context, call_planner, store.persist_interaction
+- Imperative shell: assemble_planner_context, call_planner
 """
 
 from __future__ import annotations

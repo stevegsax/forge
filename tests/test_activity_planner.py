@@ -377,7 +377,6 @@ class TestCallPlannerModelNameThreading:
 
         with (
             patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -410,7 +409,6 @@ class TestCallPlannerModelNameThreading:
 
         with (
             patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -467,7 +465,6 @@ class TestCallPlannerThinkingThreading:
 
         with (
             patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.store.persist_interaction"),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()

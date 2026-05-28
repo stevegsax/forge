@@ -7,8 +7,7 @@ Design follows Function Core / Imperative Shell:
 - Pure functions: build_sanity_check_system_prompt, build_sanity_check_user_prompt,
   build_step_digest
 - Testable function: execute_sanity_check_call (takes client as argument)
-- Imperative shell: assemble_sanity_check_context, call_sanity_check,
-  store.persist_interaction
+- Imperative shell: assemble_sanity_check_context, call_sanity_check
 """
 
 from __future__ import annotations

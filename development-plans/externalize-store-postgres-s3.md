@@ -1,10 +1,24 @@
 # Externalize the Forge store: Postgres backend + S3 OCR blobs + survivable writes
 
-**Status:** PHASES A & B DONE. Phase C foundation (C1–C3) DONE; rewiring (C4–C8) + tests (C9) remain.
+**Status:** PHASES A, B, C ALL DONE on SQLite. Outstanding: validate migrations on a real Postgres; resolve the missing `test-inputs/` fixture (coverage gate).
 **Last updated:** 2026-05-28
 **Owner:** stevegsax
 
-> **Resume pointer — next action:** Phases A and B are complete on SQLite.
+> **Resume pointer — next action:** All three phases (A: Postgres-ready store via
+> required `FORGE_DB_URL`; B: OCR blobs in S3; C: survivable idempotent writes via
+> `persist_to_store` + `_PERSIST_RETRY`) are implemented and green on SQLite (full
+> suite passes; the 85% coverage gate is unmet only because `test-inputs/2311.06440v1.pdf`
+> is absent — same environmental gap as A/B). **Remaining for full confidence:**
+> (1) run Alembic migrations (`008`'s + `014`/`015`'s `batch_alter_table`) against a
+> **real Postgres** (testcontainers/scratch PG) — engine build + SQLite DDL are
+> tested, PG DDL is not; (2) restore the missing OCR test-input PDF to clear the 3
+> `TestExecuteCheckOcrDuplicate` failures + the coverage gate. Then update DEPLOYMENT.md
+> "prerequisite code changes" → implemented and open the PR(s) against `main`.
+>
+> ---
+> *(historical resume notes below)*
+>
+> Phases A and B are complete on SQLite.
 > `FORGE_DB_URL` is the single required store config (SQLite + Postgres engines
 > build; `psycopg2-binary` locked). OCR blobs live in S3: `data` columns dropped,
 > `s3_key` added (migration `014`), all blob I/O encapsulated in `ocr/s3_blobs.py`;
@@ -419,12 +433,12 @@ the workflow loudly. DB-unreachable surfaces as psycopg2 `OperationalError`/
 - [x] C1. `persist_models.py` discriminated union + `PersistResult` (round-trips via TypeAdapter); `_PERSIST_RETRY`/timeout consts in `workflow_blocks.py`; `provider` added to `BatchSubmitResult`
 - [x] C2. `insert_or_ignore` (dialect ON CONFLICT DO NOTHING, returns `applied`); `save_run`/`save_interaction`/`save_playbooks`/`record_batch_*`/`save_ocr_result`/`save_ocr_image`/`save_file_content` idempotent; migration `015` (nullable-unique `idempotency_key` on interactions+playbooks); `build_playbook_dict` adds `uuid5` key. (ocr_images deterministic `uuid5` id is at the call sites — deferred to C7.)
 - [x] C3. `activities/persist.py` `persist_to_store` (match on `kind`); registered in `worker.py` + `activities/__init__.py`. Verified via direct-call idempotency smoke test.
-- [~] C4. Swallower removal IN PROGRESS — LLM-family `persist_interaction` calls stripped from the 5 activities; the `persist_interaction` function + `_record_submission`/`_safe_update_status`/`_persist_run` remain for the final cleanup pass (with their families in C6–C8).
+- [x] C4. All best-effort swallowers removed: `persist_interaction` (store.py), `_record_submission` (batch_submit), `_safe_update_status` (batch_poll), `_persist_run` (cli) — and their obsolete test references/patches.
 - [x] C5. Re-wired LLM family: removed in-activity `persist_interaction` from llm/planner/sanity_check/conflict_resolution/extraction; persistence now happens in the workflow wrapper methods via a per-workflow monotonic-counter idempotency key (`{workflow_id}:{role}:{seq}`), `build_persist_interaction` (pure, preserves the old explanation rule) + `persist_block` (with `_PERSIST_RETRY`). Extraction workflow persists the interaction and routes playbooks through `persist_to_store(PersistPlaybooks)` (replaces `save_extraction_results`). Registered a `persist_to_store` mock across 12 lists in test_workflows + extraction/e2e test workers. Full suite green (1470 passed).
 - [x] C6. Batch submit: removed `_record_submission`; `submit_batch_request` threads `provider` on `BatchSubmitResult`; `batch_submit_and_wait` persists `PersistBatchSubmission` (via `persist_block`) before waiting. Batch poll: removed `_safe_update_status` and the image-store try/except — status/image writes propagate (whole-loop retry covers DB errors); image ids are deterministic (`ocr_image_id`, request_id threaded) so re-store is idempotent. Registered persist mock in ingestion test worker. Full suite green (1470).
 - [x] C7. **Submit:** `submit_ocr_batch` does no store writes (returns `OcrBatchRef` or raises); `OcrSubmitWorkflow` persists `PersistBatchSubmission`, deletes the blob via a new `delete_file_content_blob` activity, and persists `PersistBatchFailure` on API error (fixes double-submit-on-DB-error). **Sync:** `call_ocr_sync` returns a new `OcrSyncCallResult` (API + dedupe-keyed image store via deterministic `ocr_image_id`, no `ocr_results` write); `OcrSyncWorkflow` persists `PersistOcrResult` (fixes double-call-on-DB-error). **Store/reassembly:** bumped `store_ocr_result` and `reassemble_ocr_chunks` call-site retries to `_PERSIST_RETRY` (idempotent writes from C2). Updated OCR submit/sync tests + registered persist mocks. Full suite green (1470).
 - [x] C8. `ForgeTaskWorkflow.run` persists `PersistRun` (idempotent on workflow_id) before returning — covers fire-and-forget submissions too. Removed CLI `_persist_run` + its call and the obsolete test patch. Full suite green.
-- [ ] C9. Tests (below); update ~5 tests asserting old swallow behavior; full suite ≥ 85% on SQLite
+- [x] C9. New `tests/test_persist.py`: per-kind idempotency (run/interaction/ocr_result/batch_submission/playbooks double-apply → one row, `applied=False`; batch_status plain UPDATE) + **pause-and-retry** (flaky persist fails 2× then succeeds → `call_ocr_sync` ran once, persist ran 3×, workflow completes) + **prolonged-outage** (persist always fails → workflow fails via ScheduleToClose, time-skipped, no hang). Updated swallow-behavior tests (test_activity_llm/test_extraction/test_activity_planner/test_ocr). Full suite **1475 passed** on SQLite (coverage gate unmet only from the missing `test-inputs/` PDF, as in A/B).
 
 ### Tests
 - **Pause-and-retry (time-skipping env):** fake `persist_to_store` raises `K` times
@@ -604,6 +618,21 @@ idempotency tests pass; DEPLOYMENT.md updated; PR(s) opened against `main`
   suite: **1470 passed** (same 3 environmental PDF failures), ruff clean on `src/`
   and new tests. No inline-in-DB fallback — S3 is the only OCR blob store. Next:
   Phase C.
+- **2026-05-28** — **Phase C complete (C1–C9), committed as 8 increments.** All
+  store writes now flow through the survivable `persist_to_store` activity with
+  `_PERSIST_RETRY` (20 attempts / 20-min schedule-to-close), invoked from the
+  workflows: LLM family (per-workflow monotonic idempotency-key counter), batch
+  submit/poll, OCR submit (no store writes in the activity → fixes double-submit),
+  OCR sync (`OcrSyncCallResult`; ocr_results write moved to the workflow → fixes
+  double-call), OCR store/reassembly (retry bumped), and the run row from
+  `ForgeTaskWorkflow.run` (covers fire-and-forget). All four swallowers removed.
+  Idempotency via `insert_or_ignore` + deterministic ids (`ocr_image_id`,
+  playbook/interaction keys). New `tests/test_persist.py` proves pause-and-retry
+  (expensive call ran once while persist retried) and prolonged-outage (loud fail,
+  no hang) in the time-skipping env. **Sharp edge:** any workflow test that triggers
+  a persist MUST register a `persist_to_store` mock, else it hangs ~20 min on the
+  schedule-to-close cap; mocks were added across all workflow/e2e/ingestion test
+  workers. Full suite **1475 passed** on SQLite; ruff clean on `src/` + new tests.
 - **2026-05-28** — Phase C foundation (C1–C3), kept deliberately non-breaking so it
   can land before the risky rewiring. `persist_models.py`: pure discriminated-union
   `PersistRequest` (kinds interaction/run/batch_submission/batch_failure/batch_status/

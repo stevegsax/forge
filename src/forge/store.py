@@ -5,7 +5,7 @@ Persists full LLM interaction data and run results to a local SQLite database.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_interaction_dict, build_playbook_dict
 - Imperative shell: get_store_url, get_store_engine, run_migrations,
-  save_interaction, save_run, persist_interaction, get_interactions, get_run,
+  insert_or_ignore, save_interaction, save_run, get_interactions, get_run,
   list_recent_runs
 """
 
@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     from forge.models import (
         AssembledContext,
         ConflictResolutionCallResult,
-        ContextStats,
         ExtractionCallResult,
         LLMCallResult,
         PlanCallResult,
@@ -423,46 +422,6 @@ def save_interaction(engine: Engine, **kwargs: object) -> bool:
     return insert_or_ignore(
         engine, Interaction.__table__, dict(kwargs), index_elements=["idempotency_key"]
     )
-
-
-def persist_interaction(
-    *,
-    task_id: str,
-    role: str,
-    system_prompt: str,
-    user_prompt: str,
-    llm_result: _AnyLLMResult,
-    step_id: str | None = None,
-    sub_task_id: str | None = None,
-    context_stats: ContextStats | None = None,
-) -> None:
-    """Best-effort persist of an LLM interaction. Never raises (D42).
-
-    Consolidates the get_db_path → get_engine → build_interaction_dict →
-    save_interaction pattern used across all activity modules.
-    """
-    try:
-        from forge.models import AssembledContext
-
-        context = AssembledContext(
-            task_id=task_id,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            context_stats=context_stats,
-        )
-
-        engine = get_store_engine()
-        data = build_interaction_dict(
-            task_id=task_id,
-            step_id=step_id,
-            sub_task_id=sub_task_id,
-            role=role,
-            context=context,
-            llm_result=llm_result,
-        )
-        save_interaction(engine, **data)
-    except Exception:
-        logger.warning("Failed to persist %s interaction to store", role, exc_info=True)
 
 
 def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> bool:
