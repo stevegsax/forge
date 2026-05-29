@@ -17,6 +17,14 @@ the Temporal + Supabase + S3 combination.
 > store is on Postgres (see [Scaling](#scaling)), but the steps below describe a
 > single instance.
 
+> **Remote CLI access over the internet.** This document's base design keeps
+> Temporal loopback-only and reaches it via an SSM tunnel. If users must run the
+> `forge`/`ocr`/`pbook` CLIs directly over the internet, deploy the **mutual-TLS
+> gateway** in [`deploy/`](../../deploy/) and follow
+> [SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md), which is the authoritative
+> guide for that path (it adds an mTLS-gated `:443` listener; the rest of this
+> document still applies).
+
 ## Architecture
 
 ```
@@ -456,6 +464,11 @@ aws ssm start-session --target <instance-id> \
 To submit tasks from a laptop without exposing 7233, port-forward 7233 the same
 way and set `FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233` locally.
 
+For users who must submit **directly over the internet** (not via SSM),
+stand up the mutual-TLS gateway in [`deploy/`](../../deploy/) and have them follow
+[`deploy/client/ONBOARDING.md`](../../deploy/client/ONBOARDING.md); see
+[SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md).
+
 ## Configuration reference
 
 | Variable | Purpose | Production value |
@@ -475,11 +488,24 @@ way and set `FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233` locally.
 | `SAX_GITHUB_TOKEN` | Git access to private repos | from SSM |
 
 `FORGE_DB_URL` and `FORGE_OCR_S3_BUCKET` are introduced by the
-[prerequisite code changes](#prerequisite-code-changes). The worker connects to
-Temporal with only a data converter and optional identity — **no TLS** — which is
-correct for a co-located Temporal at `localhost:7233` and needs no code change.
-(The Supabase TLS is on the Postgres connections, configured via `FORGE_DB_URL`'s
-`sslmode=require` and Temporal's `SQL_TLS_ENABLED`.)
+[prerequisite code changes](#prerequisite-code-changes). The **worker** connects
+to a co-located Temporal at `127.0.0.1:7233` in plaintext (loopback, never
+exposed) — no TLS needed there. (The Supabase TLS is separate, on the Postgres
+connections, via `FORGE_DB_URL`'s `sslmode=require` and Temporal's
+`SQL_TLS_ENABLED`.)
+
+**Remote CLIs** that reach Temporal over the internet authenticate with mutual
+TLS through the gateway (see [SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md)).
+Both CLIs read these (forge uses `FORGE_…`, pbook uses `PBOOK_…`):
+
+| Variable | Purpose | Value (remote CLI) |
+|---|---|---|
+| `…_TEMPORAL_ADDRESS` | Gateway endpoint | `<public-dns-or-eip>:443` |
+| `…_TEMPORAL_TLS` | Enable TLS | `1` (unset on the on-box worker) |
+| `…_TEMPORAL_TLS_SERVER_CA` | PEM verifying the gateway | path to `server-ca.crt` |
+| `…_TEMPORAL_TLS_CLIENT_CERT` | User's client cert (mTLS) | path to `<user>.crt` |
+| `…_TEMPORAL_TLS_CLIENT_KEY` | User's private key (mTLS) | path to `<user>.key` |
+| `…_TEMPORAL_TLS_SERVER_NAME` | Server-name override (dialing by IP) | `temporal.forge.internal` |
 
 ## Supabase-specific gotchas
 
@@ -533,9 +559,13 @@ Supabase connection caps as worker count grows.
 
 ## Security checklist
 
-- No inbound ports; manage via SSM Session Manager; reach Temporal UI/gRPC via SSM
-  port forwarding only. Temporal OSS has **no built-in authentication** — never
-  expose 7233 publicly.
+- Manage via SSM Session Manager; reach the Temporal UI via SSM port forwarding.
+  Temporal OSS has **no built-in authentication**, so **never expose the raw 7233
+  frontend** — keep it loopback-only. For remote CLI access over the internet, the
+  *only* inbound port is the mutual-TLS gateway on `:443`, which rejects any
+  client without a CA-signed certificate (see
+  [SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md)). If you don't need remote
+  CLIs, run with **no inbound ports** at all and use SSM tunnels.
 - API keys and the Supabase password live in SSM/Secrets Manager, injected at
   boot; the instance role grants read on only those parameters.
 - S3 access is via the instance role, scoped to the OCR bucket only — no static S3

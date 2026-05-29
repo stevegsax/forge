@@ -1,0 +1,27 @@
+# /etc/systemd/system/forge-worker@.service
+# Run two for redundancy:  systemctl enable --now forge-worker@1 forge-worker@2
+#
+# The worker is a co-located client of Temporal: it connects to the LOOPBACK
+# frontend (127.0.0.1:7233) in plaintext. It does NOT go through the mTLS
+# gateway and needs no client cert — that gateway is only for remote CLIs.
+[Unit]
+Description=Forge worker %i
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/forge-app/forge
+EnvironmentFile=/etc/forge/forge.env
+Environment=FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233
+Environment=FORGE_OCR_S3_BUCKET=forge-ocr-blobs-CHANGEME
+Environment=FORGE_LOG_DIR=/data/forge/logs
+Environment=FORGE_OTEL_EXPORTER=none
+Environment=FORGE_WORKER_IDENTITY=ec2-forge-%i
+# FORGE_DB_URL and API keys come from /etc/forge/forge.env (from SSM).
+ExecStart=/usr/bin/env uv run forge worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

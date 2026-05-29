@@ -1,0 +1,25 @@
+# /etc/systemd/system/pbook-worker.service
+# Only needed if transcript ingestion (`forge ingest`) is in scope.
+# Run `uv run pbook migrate` ONCE at deploy time before starting this — the
+# pbook worker does NOT auto-run migrations (unlike the forge worker).
+#
+# Like the forge worker, this connects to the LOOPBACK Temporal frontend in
+# plaintext; it polls pbook-task-queue.
+[Unit]
+Description=pbook worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/forge-app/pbook
+EnvironmentFile=/etc/forge/forge.env
+Environment=PBOOK_TEMPORAL_ADDRESS=127.0.0.1:7233
+Environment=PBOOK_DB_PATH=/data/pbook/pbook.db
+# OPENAI_API_KEY (pbook embeddings) and ANTHROPIC_API_KEY come from forge.env.
+ExecStart=/usr/bin/env uv run pbook worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

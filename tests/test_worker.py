@@ -126,7 +126,7 @@ class TestRunWorker:
             patch.object(worker_mod, "_ensure_schedule", mock_ensure_schedule),
             patch.object(worker_mod, "set_temporal_client", mock_set_temporal_client),
             patch.object(
-                worker_mod.Client, "connect", AsyncMock(return_value=mock_client)
+                worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)
             ) as mock_connect,
             patch.object(worker_mod, "Worker", return_value=mock_worker_instance) as mock_worker,
             patch("forge.tracing.init_tracing", mock_init_tracing),
@@ -144,7 +144,6 @@ class TestRunWorker:
         mock_silence_noisy_loggers.assert_called_once_with()
         mock_connect.assert_awaited_once_with(
             "temporal.example:7233",
-            data_converter=worker_mod.pydantic_data_converter,
             identity="worker-123",
         )
         mock_set_temporal_client.assert_called_once_with(mock_client)

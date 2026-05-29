@@ -38,6 +38,7 @@ from forge.models import (
     TransitionSignal,
     ValidationConfig,
 )
+from forge.temporal_client import connect_temporal
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -363,12 +364,10 @@ async def _submit_and_wait(
     log_messages: bool = False,
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
 
     from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
 
-    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    client = await connect_temporal(temporal_address)
 
     result = await client.execute_workflow(
         ForgeTaskWorkflow.run,
@@ -414,12 +413,10 @@ async def _submit_no_wait(
     log_messages: bool = False,
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
 
     from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
 
-    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    client = await connect_temporal(temporal_address)
 
     handle = await client.start_workflow(
         ForgeTaskWorkflow.run,
@@ -961,14 +958,12 @@ async def _submit_extraction(
     since_hours: int,
 ) -> ExtractionWorkflowResult:
     """Submit extraction workflow to Temporal and wait for completion."""
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
 
     from forge.extraction_workflow import ForgeExtractionWorkflow
     from forge.models import ExtractionWorkflowInput
     from forge.workflows import FORGE_TASK_QUEUE
 
-    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    client = await connect_temporal(temporal_address)
 
     result = await client.execute_workflow(
         ForgeExtractionWorkflow.run,
@@ -1087,14 +1082,9 @@ async def _submit_ingestion(
     """Submit BatchIngestionWorkflow to Temporal and wait for completion."""
     import time
 
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
-
     from forge.workflows import FORGE_TASK_QUEUE
 
-    client = await Client.connect(
-        temporal_address, data_converter=pydantic_data_converter
-    )
+    client = await connect_temporal(temporal_address)
 
     import json as json_mod
 
@@ -1355,14 +1345,11 @@ async def _submit_manual_playbook(
     """Submit manual playbook workflow to Temporal and wait for completion."""
     from uuid import uuid4
 
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
-
     from forge.manual_playbook_workflow import ManualPlaybookWorkflow
     from forge.models import ManualPlaybookInput
     from forge.workflows import FORGE_TASK_QUEUE
 
-    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    client = await connect_temporal(temporal_address)
 
     return await client.execute_workflow(
         ManualPlaybookWorkflow.run,
@@ -1442,14 +1429,11 @@ async def _submit_export_playbooks(
     """Submit export playbook workflow to Temporal and wait for completion."""
     from uuid import uuid4
 
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
-
     from forge.export_playbook_workflow import ExportPlaybookWorkflow
     from forge.models import ExportPlaybookInput
     from forge.workflows import FORGE_TASK_QUEUE
 
-    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    client = await connect_temporal(temporal_address)
 
     return await client.execute_workflow(
         ExportPlaybookWorkflow.run,
@@ -1721,10 +1705,8 @@ async def _start_workflow(
     timeout_hours: float,
 ) -> str:
     """Start a Temporal workflow by string name and return its ID."""
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
 
-    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    client = await connect_temporal(temporal_address)
     handle = await client.start_workflow(
         workflow_name,
         workflow_input,
@@ -1745,10 +1727,8 @@ async def _start_workflow_and_wait(
     timeout_hours: float,
 ) -> object:
     """Start a Temporal workflow by string name and wait for its result."""
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
 
-    client = await Client.connect(temporal_address, data_converter=pydantic_data_converter)
+    client = await connect_temporal(temporal_address)
     result = await client.execute_workflow(
         workflow_name,
         workflow_input,
