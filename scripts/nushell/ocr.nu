@@ -5,13 +5,8 @@
 #
 #   use ocr.nu
 #
-#   ocr submit ./doc.pdf
-#   ocr submit --sync ./receipt.png
-#   ocr list | where status == "succeeded" | get document_id | each {|id| ocr export $id }
-#   ocr list | where file_path =~ "signed" | sort-by file_path
-#   ls *.pdf | par-each { |f| ocr submit $f.name }
-#   ocr mark a1b2c3d4-...
-#   ocr unmark a1b2c3d4-...
+# Per-command examples live on each exported command; run
+# `ocr <subcommand> --help` to see them.
 
 const TASK_QUEUE = "forge-task-queue"
 
@@ -134,6 +129,9 @@ def "nu-complete ocr status" [] {
 
 # Submit a document for OCR processing.
 # Returns a record with document_id. Use --sync to block until complete.
+@example "submit a document for batch OCR" { ocr submit ./doc.pdf }
+@example "submit and block until OCR completes" { ocr submit --sync ./receipt.png }
+@example "submit every PDF in the current directory in parallel" { ls *.pdf | par-each {|f| ocr submit $f.name } }
 export def submit [
     file_path: path                # Document to OCR
     --sync                         # Block until OCR completes (default: batch)
@@ -152,6 +150,8 @@ export def submit [
 
 # List OCR job submissions as a table.
 # Compose with where, sort-by, first for further filtering.
+@example "export every succeeded job" { ocr list | where status == "succeeded" | get document_id | each {|id| ocr export $id } }
+@example "find signed documents, newest first" { ocr list | where file_path =~ "signed" | sort-by file_path }
 export def list [
     --limit (-l): int = 50                                 # Max results (server-side)
     --status (-s): string@"nu-complete ocr status"         # Filter: processing, succeeded, errored
@@ -179,6 +179,7 @@ export def export [
 }
 
 # Mark a document for removal (soft-delete).
+@example "mark a document for removal" { ocr mark a1b2c3d4-5678-90ab-cdef-1234567890ab }
 export def mark [
     document_id: string            # Document to mark
 ]: nothing -> record {
@@ -186,6 +187,7 @@ export def mark [
 }
 
 # Clear a removal mark on a document.
+@example "clear a document's removal mark" { ocr unmark a1b2c3d4-5678-90ab-cdef-1234567890ab }
 export def unmark [
     document_id: string            # Document to unmark
 ]: nothing -> record {

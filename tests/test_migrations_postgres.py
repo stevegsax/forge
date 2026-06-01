@@ -107,3 +107,44 @@ def test_insert_or_ignore_idempotent_on_postgres(
         assert save_run(engine, task_result, "wf-pg-idem") is False
     finally:
         engine.dispose()
+
+
+def test_get_playbooks_by_tags_on_postgres(postgres_url: str) -> None:
+    """Tag-filtered playbook queries must run on Postgres (context assembly path).
+
+    ``get_playbooks_by_tags`` / ``get_playbook_ids`` unnest ``tags_json`` to match
+    tags. The SQLite ``json_each()`` table function does not exist on Postgres, so
+    this exercises the real prod path (``activities/context.py`` injects playbooks
+    into every task context).
+    """
+    import sqlalchemy as sa
+
+    from forge.store import (
+        Playbook,
+        get_playbook_ids,
+        get_playbooks_by_tags,
+        run_migrations,
+    )
+
+    run_migrations(postgres_url)
+    engine = sa.create_engine(postgres_url)
+    try:
+        row = {
+            "idempotency_key": "pg-tags-1",
+            "title": "Use uv for deps",
+            "content": "Always use uv sync.",
+            "tags_json": '["python", "tooling"]',
+            "source_task_id": "task-1",
+            "source_workflow_id": "wf-1",
+            "extraction_workflow_id": "ewf-1",
+        }
+        with engine.begin() as conn:
+            conn.execute(sa.insert(Playbook.__table__).values(**row))
+
+        matched = get_playbooks_by_tags(engine, ["python"], limit=5)
+        assert [m["title"] for m in matched] == ["Use uv for deps"]
+
+        ids = get_playbook_ids(engine, tags=["tooling"], limit=5)
+        assert len(ids) == 1
+    finally:
+        engine.dispose()
