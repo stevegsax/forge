@@ -21,7 +21,6 @@ from temporalio.client import (
     ScheduleUpdate,
     ScheduleUpdateInput,
 )
-from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
 from forge.activities import (
@@ -103,6 +102,7 @@ from forge.ocr.workflow_mark_removal import (
 from forge.ocr.workflow_store import OcrStoreWorkflow
 from forge.ocr.workflow_submit import OcrSubmitWorkflow
 from forge.ocr.workflow_sync import OcrSyncWorkflow
+from forge.temporal_client import connect_temporal
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
@@ -228,16 +228,7 @@ async def run_worker(
     init_tracing()
     silence_noisy_loggers()
 
-    connect_kwargs: dict[str, object] = {
-        "data_converter": pydantic_data_converter,
-    }
-    if identity is not None:
-        connect_kwargs["identity"] = identity
-
-    client = await Client.connect(
-        address,
-        **connect_kwargs,
-    )
+    client = await connect_temporal(address, identity=identity)
 
     # Inject Temporal client for poll activity signal delivery
     set_temporal_client(client)

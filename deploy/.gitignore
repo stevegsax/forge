@@ -1,0 +1,12 @@
+# Never commit private keys, real env files, or issued certs.
+certs/ca/
+certs/server/
+certs/clients/
+**/*.key
+**/*.pem
+temporal/.env
+*.tfvars
+!*.tfvars.example
+.terraform/
+*.tfstate
+*.tfstate.*
