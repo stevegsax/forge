@@ -2,7 +2,7 @@
 
 Every direct-DB CLI command (except ``pbook migrate``) routes through
 one of these activities. The worker process is the only place that
-opens the DB file — its ``PBOOK_DB_PATH`` is the single source of
+opens the database — its ``PBOOK_DATABASE_URL`` is the single source of
 truth for which DB the operation hits. CLI processes are thin clients
 that submit workflows and render results.
 
@@ -13,7 +13,6 @@ activity-level wrapper around an existing ``pbook.store`` helper.
 
 from __future__ import annotations
 
-import json
 import logging
 
 from temporalio import activity
@@ -40,24 +39,22 @@ def _strip_binary(row: dict) -> dict:
 
 
 def _engine():
-    """Open a SQLAlchemy engine against the worker's configured DB.
+    """Return the worker's cached store engine.
 
-    The worker resolves ``PBOOK_DB_PATH`` once per activity call. If the
-    DB hasn't been configured (env unset and no XDG fallback file),
-    raise — callers should see a clear error rather than a confusing
-    silent fallback.
+    The worker resolves ``PBOOK_DATABASE_URL`` once and caches the engine
+    (migrations run once at worker startup, not per call). If the store
+    isn't configured, raise — callers should see a clear error rather
+    than a confusing silent fallback.
     """
-    from pbook.store import get_db_path, get_engine, run_migrations
+    from pbook.store import get_store_engine
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         msg = (
-            "Worker has no DB configured. Set PBOOK_DB_PATH on the worker "
-            "process and restart."
+            "Worker has no DB configured. Set PBOOK_DATABASE_URL on the worker process and restart."
         )
         raise RuntimeError(msg)
-    run_migrations(db_path)
-    return get_engine(db_path)
+    return engine
 
 
 def group_review_by_experience(
@@ -114,7 +111,8 @@ async def list_entries_activity(input: dict) -> list[dict]:
     tags = input.get("tags") or []
     if tags:
         entries = get_entries_by_tags(
-            engine, tags,
+            engine,
+            tags,
             limit=input.get("limit", 20),
             include_rejected=input.get("include_rejected", False),
         )
@@ -191,9 +189,7 @@ async def review_queue_activity(input: dict) -> dict:
             "clusters": [
                 {
                     "experience_hash": h,
-                    "project_name": (
-                        ents[0].get("sources", [{}])[0].get("project_name", "")
-                    ),
+                    "project_name": (ents[0].get("sources", [{}])[0].get("project_name", "")),
                     "entries": [_strip_entry_for_wire(e) for e in ents],
                 }
                 for h, ents in clusters
@@ -289,7 +285,7 @@ async def add_entry_activity(input: dict) -> dict:
     that gap is a separate change.
     """
     from pbook.models import PlaybookEntry
-    from pbook.store import build_entry_dict, save_entry_returning_id
+    from pbook.store import build_entry_dict, insert_entry
     from pbook.tags import validate_tags
 
     entry_payload = input["entry"]
@@ -303,10 +299,8 @@ async def add_entry_activity(input: dict) -> dict:
     if needs_review:
         entry_model = entry_model.model_copy(update={"needs_review": True})
 
-    entry_dict = build_entry_dict(entry_model)
-
     engine = _engine()
-    new_id = save_entry_returning_id(engine, entry_dict)
+    new_id = insert_entry(engine, build_entry_dict(entry_model), entry_model.tags)
     return {
         "id": new_id,
         "title": entry_model.title,
@@ -454,7 +448,7 @@ async def record_started_sessions_activity(input: dict) -> dict:
 async def prune_activity(input: dict) -> dict:
     """Identify (and optionally apply) prune candidates."""
     from pbook.activities.maintenance import identify_prune_candidates
-    from pbook.store import list_all_entries, update_entry
+    from pbook.store import add_entry_tag, list_all_entries, update_entry
 
     engine = _engine()
     all_entries = list_all_entries(engine)
@@ -469,13 +463,8 @@ async def prune_activity(input: dict) -> dict:
     if input.get("apply"):
         for entry in candidates:
             entry_id = entry["id"]
-            existing_tags = json.loads(entry.get("tags_json", "[]"))
-            if "pattern:prune-candidate" not in existing_tags:
-                existing_tags.append("pattern:prune-candidate")
-            update_entry(engine, entry_id, {
-                "needs_review": True,
-                "tags_json": json.dumps(existing_tags),
-            })
+            add_entry_tag(engine, entry_id, "pattern:prune-candidate")
+            update_entry(engine, entry_id, {"needs_review": True})
             applied_count += 1
 
     return {

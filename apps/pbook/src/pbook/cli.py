@@ -2,8 +2,8 @@
 
 Thin Temporal client. Every direct-DB command (except ``migrate``)
 submits a workflow that runs against the worker's configured DB. The
-worker process is the only one that opens the DB file — its
-``PBOOK_DB_PATH`` is the single source of truth for which DB any
+worker process is the only one that opens the database — its
+``PBOOK_DATABASE_URL`` is the single source of truth for which DB any
 operation hits.
 
 ``migrate`` and ``skill-prompt`` are the lone exceptions: ``migrate``
@@ -89,21 +89,15 @@ def _strip_embedding(row: dict) -> dict:
 
 
 def _reshape_entry(row: dict) -> dict:
-    """Strip binary fields and parse `tags_json` into a `tags` list.
+    """Strip binary fields and ensure a `tags` list is present.
 
-    Used by every entry-shaped JSON output site so the skill consumer sees
-    a consistent shape regardless of which command produced the row.
+    Store read helpers already attach a `tags` list to each entry row;
+    this drops binary vector columns and guarantees the key exists so the
+    skill consumer sees a consistent shape regardless of which command
+    produced the row.
     """
     cleaned = _strip_embedding(row)
-    tags_raw = cleaned.pop("tags_json", None)
-    if tags_raw is not None:
-        if isinstance(tags_raw, str):
-            try:
-                cleaned["tags"] = json.loads(tags_raw)
-            except json.JSONDecodeError:
-                cleaned["tags"] = []
-        else:
-            cleaned["tags"] = list(tags_raw)
+    cleaned.setdefault("tags", [])
     return cleaned
 
 
@@ -141,8 +135,7 @@ def _emit_error(
 
 def _format_entry(entry: dict) -> str:
     """Format an entry dict for human-readable terminal output."""
-    tags_raw = entry.get("tags_json", "[]")
-    tags = json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+    tags = entry.get("tags", [])
     review = " [needs-review]" if entry.get("needs_review") else ""
 
     lines = [
@@ -367,7 +360,8 @@ def update(entry_id: int, file_path: Path) -> None:
             for err in tag_errors:
                 click.echo(f"Tag error: {err}", err=True)
             sys.exit(1)
-        updates["tags_json"] = json.dumps(updates.pop("tags"))
+        # `tags` passes through as a list; store.update_entry replaces the
+        # entry's tag rows (pbk_entry_tags) rather than a column.
 
     result = _execute_workflow(
         UpdateEntryWorkflow.run,
@@ -852,15 +846,15 @@ def migrate() -> None:
     The lone CLI command that opens the DB directly — schema bootstrap
     must precede the worker's first connection.
     """
-    from pbook.store import get_db_path, run_migrations
+    from pbook.store import get_database_url, run_migrations
 
-    db_path = get_db_path()
-    if db_path is None:
-        click.echo("Error: Store is disabled (PBOOK_DB_PATH is empty).", err=True)
+    url = get_database_url()
+    if url is None:
+        click.echo("Error: Store is disabled (PBOOK_DATABASE_URL is unset or empty).", err=True)
         sys.exit(1)
 
-    run_migrations(db_path)
-    click.echo(f"Migrations complete: {db_path}")
+    run_migrations(url)
+    click.echo("Migrations complete.")
 
 
 @main.command()

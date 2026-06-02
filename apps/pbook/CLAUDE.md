@@ -15,11 +15,13 @@ uv run ruff check src tests           # lint
 uv run ruff format src tests          # format
 uv run pbook <subcommand>             # CLI
 
-uv run pbook migrate                  # initialize the SQLite store
+uv run pbook migrate                  # apply Alembic migrations to the Postgres schema
 uv run pbook worker                   # start the Temporal worker on pbook-task-queue
 ```
 
-`pytest` runs with `asyncio_mode = "auto"` and a session-scoped event loop. `tests/conftest.py` autouse fixtures set `PBOOK_DB_PATH` to a per-test tmpdir and dispose every SQLAlchemy engine — tests never touch the developer's real database.
+The store is PostgreSQL only (Supabase-hosted). Set `PBOOK_DATABASE_URL` to a `postgresql://` (or `postgresql+psycopg://`) connection string before running `migrate`, the worker, or the CLI; bare `postgresql://` URLs are normalized to the psycopg v3 driver. The worker runs migrations once at startup.
+
+`pytest` runs with `asyncio_mode = "auto"` and a session-scoped event loop. `tests/conftest.py` provisions a real Postgres for the session: it uses `PBOOK_TEST_DATABASE_URL` if set, otherwise starts a `pgvector/pgvector:pg17` container via **podman** (so the test run needs a running podman machine, or that env var). Per-test isolation is a `TRUNCATE ... RESTART IDENTITY` of the `pbk_` tables, so entry ids restart at 1 each test — tests never touch the developer's real database.
 
 `sax-llm` is a git dependency pinned to a release tag in `[tool.uv.sources]` (currently `rev = "v0.1.0"` against `github.com/stevegsax/sax-llm`). Local edits to a `../sax-llm` checkout are no longer picked up — to change `sax-llm` types or providers, cut a new tag there and bump the pin with `uv add "sax-llm @ git+https://github.com/stevegsax/sax-llm.git@<tag>"`, or temporarily switch the source to an editable path for local iteration.
 
@@ -37,11 +39,11 @@ pbook is a knowledge playbook service: it stores curated advice and LLM-extracte
 
 ### Data model essentials
 
-One `entries` table holds both `pitfall` (extracted) and `curated` (human-submitted) entries — `entry_type` is the discriminator. Tags are namespaced with a controlled vocabulary (`lang:`, `lib:`, `domain:`, `project:`, `pattern:`); see `src/pbook/tags.py` for valid values. Tag validation is enforced on the CLI write path; LLM-extracted tags are tolerated even if imperfect. Each entry stores a float32 vector embedding (`embedding` BLOB) used for semantic deduplication and the `MaintenanceWorkflow`'s consolidation pass.
+All tables live in the `pbook` schema and are prefixed `pbk_`. One `pbk_entries` table holds both `pitfall` (extracted) and `curated` (human-submitted) entries — `entry_type` is the discriminator. Tags are namespaced with a controlled vocabulary (`lang:`, `lib:`, `domain:`, `project:`, `pattern:`); see `src/pbook/tags.py` for valid values, and they are normalized into the `pbk_entry_tags` child table (matching is a JOIN, not SQLite `json_each`). Tag validation is enforced on the CLI write path; LLM-extracted tags are tolerated even if imperfect. Store read helpers re-assemble a `tags` list onto each entry dict, so consumers never see a raw `tags_json` column. Each entry stores a pgvector `vector(1536)` embedding (`pbook.store.EMBEDDING_DIM`, for text-embedding-3-small) used for semantic dedup and the `MaintenanceWorkflow`'s consolidation pass; similarity is computed in the database via the `<=>` cosine-distance operator, never row-by-row in Python.
 
 `needs_review=True` is "optimistic review": LLM-extracted entries are visible by default; consumers who don't want them pass `approved_only=True` to retrieval. There is no separate staging table.
 
-The DB path follows XDG: `$PBOOK_DB_PATH > $XDG_STATE_HOME/pbook/pbook.db > ~/.local/state/pbook/pbook.db`. Setting `PBOOK_DB_PATH=""` disables the store entirely (some CLI commands exit with an error).
+The store is configured by `PBOOK_DATABASE_URL` (a PostgreSQL connection string). Setting it empty — or leaving it unset — disables the store entirely: `get_database_url()`/`get_store_engine()` return `None`, activities no-op, and `pbook migrate` exits with an error. Alembic uses a custom `version_table = pbk_alembic_version` so pbook's migration chain never collides with another tenant of the same database.
 
 ### Retrieval modes
 

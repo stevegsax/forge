@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 
 def build_consolidation_system_prompt() -> str:
     """System prompt instructing the LLM how to merge similar entries."""
@@ -25,10 +23,8 @@ def build_consolidation_user_prompt(entries: list[dict]) -> str:
     """User prompt containing the cluster of entries to merge."""
     parts = ["## Source Entries to Merge\n"]
     for e in entries:
-        tags = json.loads(e.get("tags_json", "[]"))
+        tags = e.get("tags", [])
         parts.append(
-            f"### {e['title']}\n"
-            f"**Content:** {e['content']}\n"
-            f"**Tags:** {', '.join(tags)}\n",
+            f"### {e['title']}\n**Content:** {e['content']}\n**Tags:** {', '.join(tags)}\n",
         )
     return "".join(parts)

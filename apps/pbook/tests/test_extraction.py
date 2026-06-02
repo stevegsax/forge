@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from typing import TYPE_CHECKING
 
@@ -22,14 +21,11 @@ from pbook.prompts.extraction import (
     build_extraction_system_prompt,
     build_extraction_user_prompt,
 )
-from pbook.store import (
-    get_engine,
-    list_recent_entries,
-    run_migrations,
-)
+from pbook.store import list_recent_entries
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflow_steps import LLMChatResult
 from pbook.workflows.extraction import ExtractionWorkflow
+from tests.conftest import encode_test_embedding, setup_db
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,10 +48,9 @@ def _cleanup_provider():
     reset_provider()
 
 
-def _setup_db(tmp_path: Path):
-    db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path)
+def _setup_db(_tmp_path: Path | None = None):
+    """Return the session test engine (migrations already applied)."""
+    return setup_db()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +88,14 @@ class TestBuildExtractionSystemPrompt:
     def test_multiple_experiences(self):
         exps = [
             PushExperienceInput(
-                project="forge", problem="Problem A", resolution="Fix A",
+                project="forge",
+                problem="Problem A",
+                resolution="Fix A",
             ),
             PushExperienceInput(
-                project="forge", problem="Problem B", resolution="Fix B",
+                project="forge",
+                problem="Problem B",
+                resolution="Fix B",
             ),
         ]
         prompt = build_extraction_system_prompt(exps)
@@ -123,7 +122,9 @@ class TestBuildExtractionSystemPrompt:
         where MISTRAL_API_KEY appeared in the Problem but was explicitly
         NOT the cause)."""
         exp = PushExperienceInput(
-            project="forge", problem="x", resolution="y",
+            project="forge",
+            problem="x",
+            resolution="y",
         )
         prompt = build_extraction_system_prompt([exp])
         assert "Resolution" in prompt
@@ -134,7 +135,9 @@ class TestBuildExtractionSystemPrompt:
         they should reflect distinct root causes, not different framings
         of the same lesson."""
         exp = PushExperienceInput(
-            project="forge", problem="x", resolution="y",
+            project="forge",
+            problem="x",
+            resolution="y",
         )
         prompt = build_extraction_system_prompt([exp])
         assert "0 or 1 entries" in prompt
@@ -160,21 +163,21 @@ class TestBuildExtractionUserPrompt:
 
 class TestSaveExtractedEntries:
     @pytest.mark.asyncio
-    async def test_saves_with_needs_review(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
-        _setup_db(tmp_path)
+    async def test_saves_with_needs_review(self, tmp_path):
+        engine = _setup_db(tmp_path)
 
-        input_data = json.dumps({
-            "entries": [
-                {"title": "Test", "content": "Content", "tags": ["lang:python"]},
-            ],
-            "project": "forge",
-        })
+        input_data = json.dumps(
+            {
+                "entries": [
+                    {"title": "Test", "content": "Content", "tags": ["lang:python"]},
+                ],
+                "project": "forge",
+            }
+        )
 
         count = await save_extracted_entries(input_data)
         assert count == 1
 
-        engine = get_engine(tmp_path / "test.db")
         entries = list_recent_entries(engine)
         assert len(entries) == 1
         assert entries[0]["needs_review"] is True
@@ -182,8 +185,7 @@ class TestSaveExtractedEntries:
         assert entries[0]["source_project"] == "forge"
 
     @pytest.mark.asyncio
-    async def test_empty_entries(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+    async def test_empty_entries(self):
         count = await save_extracted_entries(json.dumps({"entries": [], "project": ""}))
         assert count == 0
 
@@ -195,6 +197,7 @@ class TestSaveExtractedEntries:
 
 def _make_chat_stub(tool_input: dict):
     """Build an @activity.defn(name='llm_chat') closure returning canned tool_input."""
+
     @activity.defn(name="llm_chat")
     async def _llm_chat(_input) -> LLMChatResult:
         return LLMChatResult(
@@ -204,6 +207,7 @@ def _make_chat_stub(tool_input: dict):
             output_tokens=0,
             latency_ms=1.0,
         )
+
     return _llm_chat
 
 
@@ -211,27 +215,31 @@ def _make_embed_stub(value: str):
     @activity.defn(name="llm_embed")
     async def _llm_embed(_text: str) -> str:
         return value
+
     return _llm_embed
 
 
 class TestExtractionWorkflow:
     @pytest.mark.asyncio
     async def test_extraction_creates_entries(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
-        _setup_db(tmp_path)
+        engine = _setup_db(tmp_path)
 
-        mock_chat = _make_chat_stub({
-            "entries": [
-                {
-                    "title": "Mock lesson",
-                    "content": "Mock content",
-                    "tags": ["lang:python"],
-                },
-            ],
-        })
-        mock_embed = _make_embed_stub(base64.b64encode(b"fake-embedding").decode("ascii"))
+        mock_chat = _make_chat_stub(
+            {
+                "entries": [
+                    {
+                        "title": "Mock lesson",
+                        "content": "Mock content",
+                        "tags": ["lang:python"],
+                    },
+                ],
+            }
+        )
+        mock_embed = _make_embed_stub(encode_test_embedding(0.5))
 
         async with Worker(
             env.client,
@@ -241,32 +249,36 @@ class TestExtractionWorkflow:
         ):
             result = await env.client.execute_workflow(
                 ExtractionWorkflow.run,
-                json.dumps({
-                    "experiences": [
-                        {
-                            "project": "forge",
-                            "problem": "test problem",
-                            "resolution": "test resolution",
-                        },
-                    ],
-                    "project": "forge",
-                }),
+                json.dumps(
+                    {
+                        "experiences": [
+                            {
+                                "project": "forge",
+                                "problem": "test problem",
+                                "resolution": "test resolution",
+                            },
+                        ],
+                        "project": "forge",
+                    }
+                ),
                 id="test-extraction-1",
                 task_queue=PBOOK_TASK_QUEUE,
             )
 
         assert result["entries_created"] == 1
 
-        # Verify embedding was saved
-        engine = get_engine(tmp_path / "test.db")
+        # Verify embedding was saved (1536-dim, leading value preserved).
         entries = list_recent_entries(engine)
-        assert entries[0]["embedding"] == b"fake-embedding"
+        assert len(entries[0]["embedding"]) == 1536
+        assert entries[0]["embedding"][0] == pytest.approx(0.5)
 
     @pytest.mark.asyncio
     async def test_extraction_empty_experiences(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
 
         async with Worker(
             env.client,
@@ -285,9 +297,11 @@ class TestExtractionWorkflow:
 
     @pytest.mark.asyncio
     async def test_extraction_no_entries_extracted(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
 
         mock_chat = _make_chat_stub({"entries": []})
         mock_embed = _make_embed_stub("")
@@ -300,16 +314,18 @@ class TestExtractionWorkflow:
         ):
             result = await env.client.execute_workflow(
                 ExtractionWorkflow.run,
-                json.dumps({
-                    "experiences": [
-                        {
-                            "project": "forge",
-                            "problem": "normal thing",
-                            "resolution": "normal fix",
-                        }
-                    ],
-                    "project": "forge",
-                }),
+                json.dumps(
+                    {
+                        "experiences": [
+                            {
+                                "project": "forge",
+                                "problem": "normal thing",
+                                "resolution": "normal fix",
+                            }
+                        ],
+                        "project": "forge",
+                    }
+                ),
                 id="test-extraction-nothing",
                 task_queue=PBOOK_TASK_QUEUE,
             )
@@ -325,30 +341,28 @@ class TestExtractionWorkflow:
 class TestRecordIngestedSessionActivities:
     """Direct unit tests for the cross-queue lifecycle callbacks.
 
-    The activities are thin wrappers around the store helpers. We exercise
-    them via PBOOK_DB_PATH to avoid hitting the developer's real database.
+    The activities are thin wrappers around the store helpers. They run
+    against the session's isolated test database (see conftest), never the
+    developer's real store.
     """
 
     @pytest.mark.asyncio
-    async def test_completion_activity_writes_completed_row(
-        self, tmp_path, monkeypatch,
-    ):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "lifecycle.db"))
-
+    async def test_completion_activity_writes_completed_row(self):
         await record_ingested_session(
-            json.dumps({
-                "session_id": "s-good",
-                "project_name": "alpha",
-                "experiences_found": 4,
-                "entries_created": 3,
-            })
+            json.dumps(
+                {
+                    "session_id": "s-good",
+                    "project_name": "alpha",
+                    "experiences_found": 4,
+                    "entries_created": 3,
+                }
+            )
         )
 
-        from pbook.store import get_db_path, get_engine, list_ingested_sessions
+        from pbook.store import get_store_engine, list_ingested_sessions
 
-        db_path = get_db_path()
-        assert db_path is not None
-        engine = get_engine(db_path)
+        engine = get_store_engine()
+        assert engine is not None
         rows = list_ingested_sessions(engine)
         assert len(rows) == 1
         assert rows[0]["session_id"] == "s-good"
@@ -357,22 +371,21 @@ class TestRecordIngestedSessionActivities:
         assert rows[0]["entries_created"] == 3
 
     @pytest.mark.asyncio
-    async def test_error_activity_writes_error_row(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "lifecycle.db"))
-
+    async def test_error_activity_writes_error_row(self):
         await record_ingested_session_error(
-            json.dumps({
-                "session_id": "s-bad",
-                "project_name": "alpha",
-                "error_message": "malformed_llm_response",
-            })
+            json.dumps(
+                {
+                    "session_id": "s-bad",
+                    "project_name": "alpha",
+                    "error_message": "malformed_llm_response",
+                }
+            )
         )
 
-        from pbook.store import get_db_path, get_engine, list_ingested_sessions
+        from pbook.store import get_store_engine, list_ingested_sessions
 
-        db_path = get_db_path()
-        assert db_path is not None
-        engine = get_engine(db_path)
+        engine = get_store_engine()
+        assert engine is not None
         rows = list_ingested_sessions(engine)
         assert len(rows) == 1
         assert rows[0]["session_id"] == "s-bad"
@@ -381,12 +394,10 @@ class TestRecordIngestedSessionActivities:
 
     @pytest.mark.asyncio
     async def test_disabled_db_is_a_noop(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", "")
+        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
 
         # Should not raise when the store is disabled.
-        await record_ingested_session(
-            json.dumps({"session_id": "s-x"})
-        )
+        await record_ingested_session(json.dumps({"session_id": "s-x"}))
         await record_ingested_session_error(
             json.dumps({"session_id": "s-x", "error_message": "boom"})
         )

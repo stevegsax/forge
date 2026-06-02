@@ -12,7 +12,7 @@ from datetime import timedelta
 from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
-    from pbook.activities.maintenance import group_similar_entries, identify_prune_candidates
+    from pbook.activities.maintenance import identify_prune_candidates
     from pbook.llm import ConsolidationResult
     from pbook.models import CapabilityTier, ModelConfig, resolve_model
     from pbook.prompts.consolidation import (
@@ -59,12 +59,20 @@ class MaintenanceWorkflow:
                 result_type=int,
             )
 
-        # Update local list to exclude pruned entries
-        remaining_entries = [e for e in all_entries if e["id"] not in set(prune_ids)]
-
-        # Step 3: Identify clusters of semantically similar entries for consolidation
+        # Step 3: Identify clusters of semantically similar entries for
+        # consolidation. Clustering runs server-side (embeddings never
+        # cross the workflow boundary); the activity returns id-clusters
+        # which we map back to the embedding-free entry dicts.
         # ACE: Grow-and-refine mechanism balances expansion with redundancy control
-        clusters = group_similar_entries(remaining_entries, threshold=0.85)
+        cluster_id_lists = await workflow.execute_activity(
+            "cluster_similar_entries",
+            json.dumps({"threshold": 0.85, "exclude_ids": prune_ids}),
+            start_to_close_timeout=_FETCH_TIMEOUT,
+            result_type=list,
+        )
+        by_id = {e["id"]: e for e in all_entries}
+        clusters = [[by_id[i] for i in ids if i in by_id] for ids in cluster_id_lists]
+        clusters = [c for c in clusters if len(c) > 1]
 
         model = resolve_model(CapabilityTier.REASONING, ModelConfig())
 
@@ -110,15 +118,17 @@ class MaintenanceWorkflow:
             cluster_ids = [e["id"] for e in cluster]
             await workflow.execute_activity(
                 "save_consolidated_entry",
-                json.dumps({
-                    "merged_entry": {
-                        "title": result.merged_title,
-                        "content": result.merged_content,
-                        "tags": result.merged_tags,
-                        "embedding": embedding,
-                    },
-                    "cluster_ids": cluster_ids,
-                }),
+                json.dumps(
+                    {
+                        "merged_entry": {
+                            "title": result.merged_title,
+                            "content": result.merged_content,
+                            "tags": result.merged_tags,
+                            "embedding": embedding,
+                        },
+                        "cluster_ids": cluster_ids,
+                    }
+                ),
                 start_to_close_timeout=_SAVE_TIMEOUT,
                 result_type=int,
             )

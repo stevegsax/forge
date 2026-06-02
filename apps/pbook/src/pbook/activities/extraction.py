@@ -49,8 +49,7 @@ async def save_extracted_entries(input_json: str) -> int:
     pre-existing entries do not count toward this number — they're
     incremental enrichment.
     """
-    import base64
-
+    from pbook.embeddings import decode_embedding
     from pbook.models import EntryType, PlaybookEntry
     from pbook.store import (
         ENTRY_MATCH_THRESHOLD,
@@ -58,10 +57,8 @@ async def save_extracted_entries(input_json: str) -> int:
         build_entry_dict,
         find_semantic_duplicates,
         find_similar_source_contexts,
-        get_db_path,
-        get_engine,
-        run_migrations,
-        save_entry_returning_id,
+        get_store_engine,
+        insert_entry,
     )
 
     data = json.loads(input_json)
@@ -73,34 +70,30 @@ async def save_extracted_entries(input_json: str) -> int:
         logger.debug("No extracted entries to save")
         return 0
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return 0
-
-    run_migrations(db_path)
-    engine = get_engine(db_path)
 
     src_session_id = source.get("session_id", "")
     src_project_name = source.get("project_name", project)
     src_experience_hash = source.get("experience_hash")
     src_context = source.get("source_context", "")
     raw_src_embedding = source.get("source_context_embedding") or ""
-    src_context_embedding = (
-        base64.b64decode(raw_src_embedding) if raw_src_embedding else None
-    )
+    src_context_embedding = decode_embedding(raw_src_embedding) if raw_src_embedding else None
 
     new_entry_count = 0
 
     for raw in entries_raw:
         raw_embedding = raw.get("embedding")
-        embedding = base64.b64decode(raw_embedding) if raw_embedding else None
+        embedding = decode_embedding(raw_embedding) if raw_embedding else None
 
         target_entry_id: int | None = None
 
         # Step 1: try to attach to an existing semantically-similar entry.
         if embedding is not None:
             matches = find_semantic_duplicates(
-                engine, embedding,
+                engine,
+                embedding,
                 threshold=ENTRY_MATCH_THRESHOLD,
                 limit=1,
             )
@@ -109,7 +102,9 @@ async def save_extracted_entries(input_json: str) -> int:
                 logger.info(
                     "Match-or-attach: candidate '%s' matches existing entry %d "
                     "(similarity=%.3f). Attaching source instead of inserting.",
-                    raw.get("title", ""), target_entry_id, matches[0]["similarity"],
+                    raw.get("title", ""),
+                    target_entry_id,
+                    matches[0]["similarity"],
                 )
 
         # Step 2: no match — insert a new entry.
@@ -123,19 +118,22 @@ async def save_extracted_entries(input_json: str) -> int:
                 needs_review=True,
                 embedding=embedding,
             )
-            target_entry_id = save_entry_returning_id(engine, build_entry_dict(entry))
+            target_entry_id = insert_entry(engine, build_entry_dict(entry), entry.tags)
             new_entry_count += 1
 
         # Step 3: source-row dedup, then write.
         if src_context_embedding is not None:
             similar = find_similar_source_contexts(
-                engine, target_entry_id, src_context_embedding,
+                engine,
+                target_entry_id,
+                src_context_embedding,
             )
             if similar:
                 logger.info(
                     "Source dedup: justification for entry %d already recorded "
                     "(similarity=%.3f). Skipping source row.",
-                    target_entry_id, similar[0]["similarity"],
+                    target_entry_id,
+                    similar[0]["similarity"],
                 )
                 continue
 
@@ -159,18 +157,16 @@ async def record_ingested_session(input_json: str) -> None:
     Accepts JSON with keys: session_id, project_name, experiences_found, entries_created.
     Called cross-queue from forge's IngestionWorkflow.
     """
-    from pbook.store import get_db_path, get_engine, run_migrations
+    from pbook.store import get_store_engine
     from pbook.store import record_ingested_session as _record
 
     data = json.loads(input_json)
     session_id = data["session_id"]
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
     _record(
         engine,
         session_id=session_id,
@@ -187,11 +183,7 @@ async def record_ingested_session_error(input_json: str) -> None:
     Accepts JSON with keys: session_id, error_message, project_name (optional).
     Called cross-queue from forge's IngestionWorkflow on failure paths.
     """
-    from pbook.store import (
-        get_db_path,
-        get_engine,
-        run_migrations,
-    )
+    from pbook.store import get_store_engine
     from pbook.store import (
         record_ingested_session_error as _record_error,
     )
@@ -199,12 +191,10 @@ async def record_ingested_session_error(input_json: str) -> None:
     data = json.loads(input_json)
     session_id = data["session_id"]
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
     _record_error(
         engine,
         session_id=session_id,

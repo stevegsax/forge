@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from pbook.models import EntryType, PlaybookEntry
 from pbook.store import (
     SESSION_STATUS_COMPLETED,
@@ -15,13 +13,15 @@ from pbook.store import (
     check_duplicate,
     delete_entry,
     find_similar_source_contexts,
-    get_db_path,
+    get_database_url,
     get_entries_by_tags,
     get_entry_by_id,
     get_ingested_session_ids,
+    insert_entry,
     list_entry_sources_for_entry,
     list_ingested_sessions,
     list_recent_entries,
+    normalize_url,
     record_feedback,
     record_ingested_session,
     record_ingested_session_error,
@@ -29,37 +29,33 @@ from pbook.store import (
     record_retrieval,
     reparent_entry_sources,
     save_entries,
-    save_entry_returning_id,
     update_entry,
 )
-from tests.conftest import setup_db
+from tests.conftest import make_embedding, setup_db
 
 # ---------------------------------------------------------------------------
-# get_db_path
+# get_database_url / normalize_url
 # ---------------------------------------------------------------------------
 
 
-class TestGetDbPath:
-    def test_env_var(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", "/tmp/custom.db")
-        assert get_db_path() == Path("/tmp/custom.db")
+class TestDatabaseUrl:
+    def test_env_var_normalized_to_psycopg(self, monkeypatch):
+        monkeypatch.setenv("PBOOK_DATABASE_URL", "postgresql://u:p@host:5432/db")
+        assert get_database_url() == "postgresql+psycopg://u:p@host:5432/db"
 
     def test_empty_disables(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", "")
-        assert get_db_path() is None
+        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
+        assert get_database_url() is None
 
-    def test_xdg_state(self, monkeypatch):
-        monkeypatch.delenv("PBOOK_DB_PATH", raising=False)
-        monkeypatch.setenv("XDG_STATE_HOME", "/tmp/xdg")
-        assert get_db_path() == Path("/tmp/xdg/pbook/pbook.db")
+    def test_unset_disables(self, monkeypatch):
+        monkeypatch.delenv("PBOOK_DATABASE_URL", raising=False)
+        assert get_database_url() is None
 
-    def test_default(self, monkeypatch):
-        monkeypatch.delenv("PBOOK_DB_PATH", raising=False)
-        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-        result = get_db_path()
-        assert result is not None
-        assert result.name == "pbook.db"
-        assert "pbook" in str(result)
+    def test_normalize_url_variants(self):
+        assert normalize_url("postgres://u@h/db") == "postgresql+psycopg://u@h/db"
+        assert normalize_url("postgresql://u@h/db") == "postgresql+psycopg://u@h/db"
+        # Already-qualified URLs pass through untouched.
+        assert normalize_url("postgresql+psycopg://u@h/db") == "postgresql+psycopg://u@h/db"
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +73,7 @@ class TestBuildEntryDict:
         d = build_entry_dict(entry)
         assert d["title"] == "Test"
         assert d["content"] == "Content"
-        assert d["tags_json"] == '["lang:python"]'
+        assert d["tags"] == ["lang:python"]
         assert d["entry_type"] == "curated"
         assert d["needs_review"] is False
 
@@ -163,14 +159,25 @@ class TestCrud:
 class TestTagQueries:
     def test_get_by_tags(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="Python tip", content="Use type hints", tags=["lang:python"],
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="Go tip", content="Use interfaces", tags=["lang:go"],
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="Python tip",
+                        content="Use type hints",
+                        tags=["lang:python"],
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="Go tip",
+                        content="Use interfaces",
+                        tags=["lang:go"],
+                    )
+                ),
+            ],
+        )
 
         results = get_entries_by_tags(engine, ["lang:python"])
         assert len(results) == 1
@@ -178,17 +185,32 @@ class TestTagQueries:
 
     def test_or_matching(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="A", content="a", tags=["lang:python"],
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="B", content="b", tags=["lang:go"],
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="C", content="c", tags=["lang:rust"],
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="a",
+                        tags=["lang:python"],
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="B",
+                        content="b",
+                        tags=["lang:go"],
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="C",
+                        content="c",
+                        tags=["lang:rust"],
+                    )
+                ),
+            ],
+        )
 
         results = get_entries_by_tags(engine, ["lang:python", "lang:go"])
         assert len(results) == 2
@@ -197,14 +219,27 @@ class TestTagQueries:
 
     def test_approved_only(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="Reviewed", content="ok", tags=["lang:python"], needs_review=False,
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="Unreviewed", content="maybe", tags=["lang:python"], needs_review=True,
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="Reviewed",
+                        content="ok",
+                        tags=["lang:python"],
+                        needs_review=False,
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="Unreviewed",
+                        content="maybe",
+                        tags=["lang:python"],
+                        needs_review=True,
+                    )
+                ),
+            ],
+        )
 
         all_results = get_entries_by_tags(engine, ["lang:python"])
         assert len(all_results) == 2
@@ -226,13 +261,18 @@ class TestTagQueries:
 class TestDuplicateChecking:
     def test_finds_duplicate(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="Use dispose() in tests",
-                content="SQLAlchemy engines cache by URL.",
-                tags=["lib:sqlalchemy"],
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="Use dispose() in tests",
+                        content="SQLAlchemy engines cache by URL.",
+                        tags=["lib:sqlalchemy"],
+                    )
+                ),
+            ],
+        )
 
         matches = check_duplicate(engine, "dispose")
         assert len(matches) == 1
@@ -240,25 +280,43 @@ class TestDuplicateChecking:
 
     def test_no_match(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="Unrelated", content="Nothing to do", tags=["lang:go"],
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="Unrelated",
+                        content="Nothing to do",
+                        tags=["lang:go"],
+                    )
+                ),
+            ],
+        )
 
         matches = check_duplicate(engine, "dispose")
         assert len(matches) == 0
 
     def test_tag_ordering(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="SQLAlchemy tip A", content="a", tags=["lib:sqlalchemy", "domain:testing"],
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="SQLAlchemy tip B", content="b", tags=["lib:sqlalchemy"],
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="SQLAlchemy tip A",
+                        content="a",
+                        tags=["lib:sqlalchemy", "domain:testing"],
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="SQLAlchemy tip B",
+                        content="b",
+                        tags=["lib:sqlalchemy"],
+                    )
+                ),
+            ],
+        )
 
         matches = check_duplicate(engine, "SQLAlchemy", tags=["lib:sqlalchemy", "domain:testing"])
         assert len(matches) == 2
@@ -274,9 +332,12 @@ class TestDuplicateChecking:
 class TestFeedbackCounters:
     def test_new_entry_has_zero_counters(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+            ],
+        )
         entry = list_recent_entries(engine)[0]
         assert entry["helpful_count"] == 0
         assert entry["harmful_count"] == 0
@@ -284,9 +345,12 @@ class TestFeedbackCounters:
 
     def test_record_retrieval_increments(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+            ],
+        )
         entry_id = list_recent_entries(engine)[0]["id"]
 
         record_retrieval(engine, [entry_id])
@@ -297,10 +361,13 @@ class TestFeedbackCounters:
 
     def test_record_retrieval_bulk(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(title="A", content="a", tags=["lang:python"])),
-            build_entry_dict(PlaybookEntry(title="B", content="b", tags=["lang:python"])),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(PlaybookEntry(title="A", content="a", tags=["lang:python"])),
+                build_entry_dict(PlaybookEntry(title="B", content="b", tags=["lang:python"])),
+            ],
+        )
         entries = list_recent_entries(engine)
         ids = [e["id"] for e in entries]
 
@@ -314,9 +381,12 @@ class TestFeedbackCounters:
 
     def test_record_feedback_helpful(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+            ],
+        )
         entry_id = list_recent_entries(engine)[0]["id"]
 
         record_feedback(engine, entry_id, helpful=True)
@@ -326,9 +396,12 @@ class TestFeedbackCounters:
 
     def test_record_feedback_harmful(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+            ],
+        )
         entry_id = list_recent_entries(engine)[0]["id"]
 
         record_feedback(engine, entry_id, helpful=False)
@@ -338,9 +411,12 @@ class TestFeedbackCounters:
 
     def test_record_feedback_accumulates(self, tmp_path):
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(PlaybookEntry(title="T", content="C", tags=["lang:python"])),
+            ],
+        )
         entry_id = list_recent_entries(engine)[0]["id"]
 
         record_feedback(engine, entry_id, helpful=True)
@@ -366,10 +442,18 @@ class TestListIngestedSessions:
     def test_returns_recorded_sessions_newest_first(self, tmp_path):
         engine, _ = setup_db(tmp_path)
         record_ingested_session(
-            engine, "s1", project_name="alpha", experiences_found=2, entries_created=1,
+            engine,
+            "s1",
+            project_name="alpha",
+            experiences_found=2,
+            entries_created=1,
         )
         record_ingested_session(
-            engine, "s2", project_name="bravo", experiences_found=0, entries_created=0,
+            engine,
+            "s2",
+            project_name="bravo",
+            experiences_found=0,
+            entries_created=0,
         )
 
         rows = list_ingested_sessions(engine)
@@ -415,7 +499,8 @@ class TestRecordIngestedSessionStarted:
     def test_seeds_running_row(self, tmp_path):
         engine, _ = setup_db(tmp_path)
         record_ingested_session_started(
-            engine, "s1",
+            engine,
+            "s1",
             project_name="alpha",
             workflow_id="wf-1",
             run_id="run-1",
@@ -433,11 +518,18 @@ class TestRecordIngestedSessionStarted:
     def test_completion_callback_flips_running_to_completed(self, tmp_path):
         engine, _ = setup_db(tmp_path)
         record_ingested_session_started(
-            engine, "s1", project_name="alpha", workflow_id="wf-1", run_id="run-1",
+            engine,
+            "s1",
+            project_name="alpha",
+            workflow_id="wf-1",
+            run_id="run-1",
         )
         record_ingested_session(
-            engine, "s1", project_name="alpha",
-            experiences_found=3, entries_created=2,
+            engine,
+            "s1",
+            project_name="alpha",
+            experiences_found=3,
+            entries_created=2,
         )
 
         rows = list_ingested_sessions(engine)
@@ -455,12 +547,20 @@ class TestRecordIngestedSessionStarted:
         should reset status and clear the old error message."""
         engine, _ = setup_db(tmp_path)
         record_ingested_session_started(
-            engine, "s1", project_name="alpha", workflow_id="wf-1", run_id="run-1",
+            engine,
+            "s1",
+            project_name="alpha",
+            workflow_id="wf-1",
+            run_id="run-1",
         )
         record_ingested_session_error(engine, "s1", "boom")
 
         record_ingested_session_started(
-            engine, "s1", project_name="alpha", workflow_id="wf-2", run_id="run-2",
+            engine,
+            "s1",
+            project_name="alpha",
+            workflow_id="wf-2",
+            run_id="run-2",
         )
 
         rows = list_ingested_sessions(engine)
@@ -474,7 +574,11 @@ class TestRecordIngestedSessionError:
     def test_flips_running_row_to_error(self, tmp_path):
         engine, _ = setup_db(tmp_path)
         record_ingested_session_started(
-            engine, "s1", project_name="alpha", workflow_id="wf-1", run_id="run-1",
+            engine,
+            "s1",
+            project_name="alpha",
+            workflow_id="wf-1",
+            run_id="run-1",
         )
         record_ingested_session_error(engine, "s1", "malformed_llm_response")
 
@@ -488,7 +592,10 @@ class TestRecordIngestedSessionError:
         never ran (e.g. workflow blew up before the seed)."""
         engine, _ = setup_db(tmp_path)
         record_ingested_session_error(
-            engine, "s1", "boom", project_name="alpha",
+            engine,
+            "s1",
+            "boom",
+            project_name="alpha",
         )
 
         rows = list_ingested_sessions(engine)
@@ -520,26 +627,34 @@ def _seed_entries(engine, n: int = 2) -> list[int]:
     ids: list[int] = []
     for i in range(n):
         entry = PlaybookEntry(
-            title=f"Entry {i}", content=f"Body {i}", tags=["lang:python"],
+            title=f"Entry {i}",
+            content=f"Body {i}",
+            tags=["lang:python"],
         )
-        ids.append(save_entry_returning_id(engine, build_entry_dict(entry)))
+        ids.append(insert_entry(engine, build_entry_dict(entry)))
     return ids
 
 
-def _vec(*coords: float) -> bytes:
-    """Pack a small float32 vector (for similarity testing)."""
-    import struct
-    return struct.pack(f"{len(coords)}f", *coords)
+def _vec(*coords: float) -> list[float]:
+    """Build a full-width float vector (for similarity testing)."""
+    return make_embedding(*coords)
 
 
-class TestSaveEntryReturningId:
+class TestInsertEntry:
     def test_returns_new_id(self, tmp_path):
         engine, _ = setup_db(tmp_path)
         entry = PlaybookEntry(title="X", content="Y", tags=[])
-        new_id = save_entry_returning_id(engine, build_entry_dict(entry))
+        new_id = insert_entry(engine, build_entry_dict(entry))
         assert isinstance(new_id, int) and new_id > 0
         rows = list_recent_entries(engine)
         assert any(r["id"] == new_id for r in rows)
+
+    def test_persists_tags(self, tmp_path):
+        engine, _ = setup_db(tmp_path)
+        entry = PlaybookEntry(title="X", content="Y", tags=["lang:python", "lib:pytest"])
+        new_id = insert_entry(engine, build_entry_dict(entry))
+        row = get_entry_by_id(engine, new_id)
+        assert sorted(row["tags"]) == ["lang:python", "lib:pytest"]
 
 
 class TestAddEntrySource:
@@ -561,11 +676,17 @@ class TestAddEntrySource:
         engine, _ = setup_db(tmp_path)
         [eid] = _seed_entries(engine, 1)
         first = add_entry_source(
-            engine, entry_id=eid, session_id="s", experience_hash="h",
+            engine,
+            entry_id=eid,
+            session_id="s",
+            experience_hash="h",
             source_context="a",
         )
         second = add_entry_source(
-            engine, entry_id=eid, session_id="s", experience_hash="h",
+            engine,
+            entry_id=eid,
+            session_id="s",
+            experience_hash="h",
             source_context="b",  # different content but same key triplet
         )
         assert first is not None
@@ -581,12 +702,18 @@ class TestFindSimilarSourceContexts:
         engine, _ = setup_db(tmp_path)
         [eid] = _seed_entries(engine, 1)
         add_entry_source(
-            engine, entry_id=eid, session_id="s1", experience_hash="h1",
+            engine,
+            entry_id=eid,
+            session_id="s1",
+            experience_hash="h1",
             source_context_embedding=_vec(1.0, 0.0),
         )
         # Orthogonal vector → cosine 0 → below threshold.
         out = find_similar_source_contexts(
-            engine, eid, _vec(0.0, 1.0), threshold=SOURCE_DEDUP_THRESHOLD,
+            engine,
+            eid,
+            _vec(0.0, 1.0),
+            threshold=SOURCE_DEDUP_THRESHOLD,
         )
         assert out == []
 
@@ -594,11 +721,16 @@ class TestFindSimilarSourceContexts:
         engine, _ = setup_db(tmp_path)
         [eid] = _seed_entries(engine, 1)
         add_entry_source(
-            engine, entry_id=eid, session_id="s1", experience_hash="h1",
+            engine,
+            entry_id=eid,
+            session_id="s1",
+            experience_hash="h1",
             source_context_embedding=_vec(1.0, 0.0),
         )
         out = find_similar_source_contexts(
-            engine, eid, _vec(1.0, 0.0001),
+            engine,
+            eid,
+            _vec(1.0, 0.0001),
         )
         assert len(out) == 1
 
@@ -620,10 +752,12 @@ class TestReparentEntrySources:
         the source's row is deleted instead of moved."""
         engine, _ = setup_db(tmp_path)
         a, b = _seed_entries(engine, 2)
-        add_entry_source(engine, entry_id=a, session_id="s", experience_hash="h",
-                         source_context="from-a")
-        add_entry_source(engine, entry_id=b, session_id="s", experience_hash="h",
-                         source_context="from-b")
+        add_entry_source(
+            engine, entry_id=a, session_id="s", experience_hash="h", source_context="from-a"
+        )
+        add_entry_source(
+            engine, entry_id=b, session_id="s", experience_hash="h", source_context="from-b"
+        )
         reparent_entry_sources(engine, from_entry_ids=[a], to_entry_id=b)
         rows_b = list_entry_sources_for_entry(engine, b)
         assert len(rows_b) == 1
@@ -722,7 +856,9 @@ class TestRejectedFiltering:
         mark_rejected(engine, ids[0])
 
         rows = get_entries_by_tags(
-            engine, ["lang:python"], include_rejected=True,
+            engine,
+            ["lang:python"],
+            include_rejected=True,
         )
         assert {r["id"] for r in rows} == set(ids)
 
@@ -732,16 +868,25 @@ class TestListTagValuesInUse:
         from pbook.store import list_tag_values_in_use
 
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="A", content="x",
-                tags=["lang:python", "lib:pytest", "domain:testing"],
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="B", content="y",
-                tags=["lang:go", "lib:cobra"],
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="x",
+                        tags=["lang:python", "lib:pytest", "domain:testing"],
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="B",
+                        content="y",
+                        tags=["lang:go", "lib:cobra"],
+                    )
+                ),
+            ],
+        )
 
         result = list_tag_values_in_use(engine)
         assert result["lang"] == ["go", "python"]
@@ -755,17 +900,29 @@ class TestListTagValuesInUse:
         from pbook.store import list_tag_values_in_use, mark_rejected
 
         engine, _ = setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="kept", content="x", tags=["lang:python"],
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="dropped", content="x", tags=["lang:elixir"],
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="kept",
+                        content="x",
+                        tags=["lang:python"],
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="dropped",
+                        content="x",
+                        tags=["lang:elixir"],
+                    )
+                ),
+            ],
+        )
         # The "dropped" entry's id depends on insert order — find it.
         rejected_id = next(
-            r["id"] for r in list_recent_entries(engine, include_rejected=True)
+            r["id"]
+            for r in list_recent_entries(engine, include_rejected=True)
             if r["title"] == "dropped"
         )
         mark_rejected(engine, rejected_id)
@@ -775,23 +932,34 @@ class TestListTagValuesInUse:
         assert "elixir" not in result["lang"]
 
     def test_handles_malformed_tags_gracefully(self, tmp_path):
+        from sqlalchemy import text
+
         from pbook.store import list_tag_values_in_use
 
         engine, _ = setup_db(tmp_path)
-        # Tags without colons or with empty values shouldn't crash.
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="A", content="x", tags=["lang:python"],
-            )),
-        ])
-        # Direct DB poke to introduce malformed tags_json (sim. a
-        # historical bad row):
-        from sqlalchemy import text
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="x",
+                        tags=["lang:python"],
+                    )
+                ),
+            ],
+        )
+        # Direct DB poke to introduce malformed tag rows (no colon, empty
+        # value) the way a historical bad row might look.
         with engine.begin() as conn:
-            conn.execute(text(
-                "UPDATE entries SET tags_json = '[\"malformed\", \"\", \"x:\"]' WHERE id = 1",
-            ))
+            conn.execute(
+                text(
+                    "INSERT INTO pbook.pbk_entry_tags (entry_id, tag) "
+                    "VALUES (1, 'malformed'), (1, 'x:')",
+                )
+            )
 
         result = list_tag_values_in_use(engine)
-        # No crash; the well-formed namespaces are still empty for this entry.
+        # No crash; the well-formed namespaces are still correct.
         assert all(isinstance(v, list) for v in result.values())
+        assert result["lang"] == ["python"]

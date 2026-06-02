@@ -12,6 +12,8 @@ dependencies = [
     "sax-llm",
     "openai>=2.31.0",
     "numpy>=2.4.4",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3.6",
 ]
 
 [tool.uv.sources]

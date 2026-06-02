@@ -15,7 +15,6 @@ loaded inside ``compute_similarities_by_id`` and never cross the wire.
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 
@@ -44,12 +43,12 @@ def score_entry(
 ) -> float:
     """Score an entry by tag overlap, mode boost, and helpfulness signal.
 
-    Operates on minimal fields: ``tags_json``, ``entry_type``,
+    Operates on minimal fields: ``tags``, ``entry_type``,
     ``helpful_count``, ``harmful_count``, ``retrieval_count``. Title and
     content are not consulted, so this works on the lightweight metadata
     dicts returned by ``fetch_candidates``.
     """
-    entry_tags = set(json.loads(entry.get("tags_json", "[]")))
+    entry_tags = set(entry.get("tags", []))
     overlap = len(entry_tags & query_tags)
 
     if overlap == 0:
@@ -60,14 +59,12 @@ def score_entry(
 
     if mode == RetrievalMode.CREATE:
         general_overlap = sum(
-            1 for t in entry_tags & query_tags
-            if _tag_namespace(t) in GENERAL_NAMESPACES
+            1 for t in entry_tags & query_tags if _tag_namespace(t) in GENERAL_NAMESPACES
         )
         score += general_overlap * 0.5
     elif mode == RetrievalMode.FIX:
         extracted_overlap = sum(
-            1 for t in entry_tags & query_tags
-            if _tag_namespace(t) in EXTRACTED_NAMESPACES
+            1 for t in entry_tags & query_tags if _tag_namespace(t) in EXTRACTED_NAMESPACES
         )
         score += extracted_overlap * 0.5
         if entry_type == EntryType.PITFALL:
@@ -182,8 +179,12 @@ def pack_within_budget(
 _MAX_QUERY_ONLY_CANDIDATES = 200
 _TOP_K_FULL_LOAD = 50  # Cap on how many full entries score_and_pack loads
 _MINIMAL_FIELDS = (
-    "id", "tags_json", "entry_type",
-    "helpful_count", "harmful_count", "retrieval_count",
+    "id",
+    "tags",
+    "entry_type",
+    "helpful_count",
+    "harmful_count",
+    "retrieval_count",
 )
 
 
@@ -205,26 +206,19 @@ async def fetch_candidates(input_json: str) -> list[dict]:
     content for only the top-N entries that fit the token budget.
     """
     from pbook.models import RetrievalInput
-    from pbook.store import (
-        Entry,
-        get_db_path,
-        get_engine,
-        get_entries_by_tags,
-        run_migrations,
-    )
+    from pbook.store import get_entries_by_tags, get_store_engine, list_embedded_entries
 
     inp = RetrievalInput.model_validate_json(input_json)
     logger.info(
         "Fetching candidates: tags=%s mode=%s query=%r",
-        inp.tags, inp.mode, inp.query,
+        inp.tags,
+        inp.mode,
+        inp.query,
     )
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return []
-
-    run_migrations(db_path)
-    engine = get_engine(db_path)
 
     if inp.tags:
         candidates = get_entries_by_tags(
@@ -237,15 +231,12 @@ async def fetch_candidates(input_json: str) -> list[dict]:
     elif inp.query:
         # Query-only: pull a broad pool of entries with embeddings so
         # the semantic step has signal to rank them.
-        t = Entry.__table__
-        stmt = t.select().where(t.c.embedding.is_not(None))
-        if inp.approved_only:
-            stmt = stmt.where(t.c.needs_review == False)  # noqa: E712
-        if not inp.include_rejected:
-            stmt = stmt.where(t.c.rejected == False)  # noqa: E712
-        stmt = stmt.order_by(t.c.created_at.desc()).limit(_MAX_QUERY_ONLY_CANDIDATES)
-        with engine.connect() as conn:
-            candidates = [dict(r) for r in conn.execute(stmt).mappings().all()]
+        candidates = list_embedded_entries(
+            engine,
+            approved_only=inp.approved_only,
+            include_rejected=inp.include_rejected,
+            limit=_MAX_QUERY_ONLY_CANDIDATES,
+        )
     else:
         candidates = []
 
@@ -271,32 +262,21 @@ async def compute_similarities_by_id(input_json: str) -> dict[str, float]:
     keys; the workflow re-keys to int as needed.) Entries with NULL
     embeddings or IDs not found in the DB are silently absent.
     """
-    from pbook.embeddings import cosine_similarity
-    from pbook.store import (
-        get_db_path,
-        get_embeddings_by_ids,
-        get_engine,
-        run_migrations,
-    )
+    from pbook.embeddings import decode_embedding
+    from pbook.store import cosine_similarities_for_ids, get_store_engine
 
     data = json.loads(input_json)
-    query_embedding = base64.b64decode(data["query_embedding_b64"])
+    query_embedding = decode_embedding(data["query_embedding_b64"])
     ids: list[int] = data.get("ids", [])
     if not ids:
         return {}
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return {}
-    run_migrations(db_path)
-    engine = get_engine(db_path)
 
-    out: dict[str, float] = {}
-    for entry_id, emb in get_embeddings_by_ids(engine, ids):
-        if emb is None:
-            continue
-        out[str(entry_id)] = cosine_similarity(query_embedding, emb)
-    return out
+    sims = cosine_similarities_for_ids(engine, query_embedding, ids)
+    return {str(entry_id): sim for entry_id, sim in sims.items()}
 
 
 @activity.defn
@@ -325,19 +305,13 @@ async def score_and_pack(input_json: str) -> dict:
         ``similarity`` annotation when applicable)
       - ``token_count``: total tokens packed
     """
-    from pbook.store import (
-        get_db_path,
-        get_engine,
-        get_entries_by_ids,
-        run_migrations,
-    )
+    from pbook.store import get_entries_by_ids, get_store_engine
 
     data = json.loads(input_json)
     meta_list: list[dict] = data["meta"]
     similarities_raw = data.get("similarities")
     similarities: dict[int, float] | None = (
-        {int(k): float(v) for k, v in similarities_raw.items()}
-        if similarities_raw else None
+        {int(k): float(v) for k, v in similarities_raw.items()} if similarities_raw else None
     )
     tags: list[str] = data.get("tags", [])
     mode = RetrievalMode(data["mode"])
@@ -345,28 +319,34 @@ async def score_and_pack(input_json: str) -> dict:
     threshold: float = data.get("threshold", 0.0)
 
     scored = rank_meta(
-        meta_list, tags, mode,
-        similarities=similarities, threshold=threshold,
+        meta_list,
+        tags,
+        mode,
+        similarities=similarities,
+        threshold=threshold,
     )
     if not scored:
         return {"packed": [], "token_count": 0}
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return {"packed": [], "token_count": 0}
-    run_migrations(db_path)
-    engine = get_engine(db_path)
 
     top_ids = [entry_id for _, _, entry_id in scored[:_TOP_K_FULL_LOAD]]
     full_by_id = {e["id"]: e for e in get_entries_by_ids(engine, top_ids)}
 
     packed, total_tokens = pack_within_budget(
-        scored, full_by_id, token_budget,
+        scored,
+        full_by_id,
+        token_budget,
         annotate_similarity=similarities is not None,
     )
     logger.debug(
         "Ranked %d candidates; packed %d within %d-token budget (%d tokens used)",
-        len(meta_list), len(packed), token_budget, total_tokens,
+        len(meta_list),
+        len(packed),
+        token_budget,
+        total_tokens,
     )
     return {"packed": packed, "token_count": total_tokens}
 
@@ -379,17 +359,15 @@ async def record_retrieval_event(entry_ids_json: str) -> None:
     retrieval_count for each entry. Failures are logged but do not
     propagate.
     """
-    from pbook.store import get_db_path, get_engine, record_retrieval, run_migrations
+    from pbook.store import get_store_engine, record_retrieval
 
     entry_ids = json.loads(entry_ids_json)
     if not entry_ids:
         return
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
     record_retrieval(engine, entry_ids)
     logger.info("Recording retrieval for %d entries", len(entry_ids))

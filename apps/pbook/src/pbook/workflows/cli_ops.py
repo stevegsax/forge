@@ -4,7 +4,7 @@ Each workflow is a thin wrapper over a single activity in
 ``pbook.activities.cli_ops``. The CLI submits one of these for every
 direct-DB command (``pbook get``, ``pbook approve``, etc.), and the
 worker runs the activity against its configured DB. The worker's
-``PBOOK_DB_PATH`` is the single source of truth for which DB any
+``PBOOK_DATABASE_URL`` is the single source of truth for which DB any
 operation hits.
 
 These workflows do not call LLMs or do anything time-skipping; they

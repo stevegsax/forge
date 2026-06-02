@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from typing import TYPE_CHECKING
 
@@ -23,15 +22,11 @@ from pbook.prompts.review import (
     build_review_system_prompt,
     build_review_user_prompt,
 )
-from pbook.store import (
-    build_entry_dict,
-    get_engine,
-    run_migrations,
-    save_entries,
-)
+from pbook.store import build_entry_dict, save_entries
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflow_steps import LLMChatResult
 from pbook.workflows.manual_entry import ManualEntryWorkflow
+from tests.conftest import encode_test_embedding, setup_db
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -54,10 +49,9 @@ def _cleanup_provider():
     reset_provider()
 
 
-def _setup_db(tmp_path: Path):
-    db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path)
+def _setup_db(_tmp_path: Path | None = None):
+    """Return the session test engine (migrations already applied)."""
+    return setup_db()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +68,7 @@ class TestBuildReviewSystemPrompt:
 
     def test_includes_existing_entries(self):
         existing = [
-            {"title": "Existing tip", "tags_json": '["lang:python"]'},
+            {"title": "Existing tip", "tags": ["lang:python"]},
         ]
         prompt = build_review_system_prompt(existing)
         assert "Existing tip" in prompt
@@ -170,8 +164,7 @@ class TestValidateEntry:
 
 class TestFetchExistingEntries:
     @pytest.mark.asyncio
-    async def test_returns_recent_entries(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
+    async def test_returns_recent_entries(self, tmp_path):
         engine = _setup_db(tmp_path)
 
         entry = PlaybookEntry(title="Existing", content="Content", tags=["lang:python"])
@@ -180,16 +173,17 @@ class TestFetchExistingEntries:
         result = await fetch_existing_entries(50)
         assert len(result) == 1
         assert result[0]["title"] == "Existing"
+        # Embeddings are stripped before crossing the wire.
+        assert "embedding" not in result[0]
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_db(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "nonexistent.db"))
+    async def test_returns_empty_when_store_empty(self):
         result = await fetch_existing_entries(50)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", "")
+        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
         result = await fetch_existing_entries(50)
         assert result == []
 
@@ -209,6 +203,7 @@ def _make_chat_stub(tool_input: dict):
             output_tokens=0,
             latency_ms=1.0,
         )
+
     return _llm_chat
 
 
@@ -216,6 +211,7 @@ def _make_embed_stub(value: str):
     @activity.defn(name="llm_embed")
     async def _llm_embed(_text: str) -> str:
         return value
+
     return _llm_embed
 
 
@@ -223,31 +219,37 @@ def _make_find_duplicates_stub():
     @activity.defn(name="find_duplicates")
     async def _find_duplicates(_input_json: str) -> list:
         return []
+
     return _find_duplicates
 
 
 class TestManualEntryWorkflow:
     @pytest.mark.asyncio
     async def test_approved_entry(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
-        mock_chat = _make_chat_stub({
-            "approved": True,
-            "rejection_reason": "",
-            "suggested_title": "",
-            "suggested_content": "",
-            "suggested_tags": [],
-        })
-        mock_embed = _make_embed_stub(base64.b64encode(b"fake-embedding").decode("ascii"))
+        mock_chat = _make_chat_stub(
+            {
+                "approved": True,
+                "rejection_reason": "",
+                "suggested_title": "",
+                "suggested_content": "",
+                "suggested_tags": [],
+            }
+        )
+        mock_embed = _make_embed_stub(encode_test_embedding(0.1))
 
-        raw_json = json.dumps({
-            "title": "Good entry",
-            "content": "Useful advice",
-            "tags": ["lang:python"],
-        })
+        raw_json = json.dumps(
+            {
+                "title": "Good entry",
+                "content": "Useful advice",
+                "tags": ["lang:python"],
+            }
+        )
 
         async with Worker(
             env.client,
@@ -274,25 +276,30 @@ class TestManualEntryWorkflow:
 
     @pytest.mark.asyncio
     async def test_rejected_entry(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
-        mock_chat = _make_chat_stub({
-            "approved": False,
-            "rejection_reason": "Too generic",
-            "suggested_title": "",
-            "suggested_content": "",
-            "suggested_tags": [],
-        })
-        mock_embed = _make_embed_stub(base64.b64encode(b"fake-embedding").decode("ascii"))
+        mock_chat = _make_chat_stub(
+            {
+                "approved": False,
+                "rejection_reason": "Too generic",
+                "suggested_title": "",
+                "suggested_content": "",
+                "suggested_tags": [],
+            }
+        )
+        mock_embed = _make_embed_stub(encode_test_embedding(0.1))
 
-        raw_json = json.dumps({
-            "title": "Bad entry",
-            "content": "Write clean code",
-            "tags": ["lang:python"],
-        })
+        raw_json = json.dumps(
+            {
+                "title": "Bad entry",
+                "content": "Write clean code",
+                "tags": ["lang:python"],
+            }
+        )
 
         async with Worker(
             env.client,
@@ -319,9 +326,11 @@ class TestManualEntryWorkflow:
 
     @pytest.mark.asyncio
     async def test_invalid_json(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
 
         async with Worker(
             env.client,

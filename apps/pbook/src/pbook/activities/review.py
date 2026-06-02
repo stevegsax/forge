@@ -34,54 +34,56 @@ async def validate_entry(raw_json: str) -> str:
     try:
         entry = PlaybookEntry.model_validate_json(raw_json)
         logger.debug("Entry validated: %s", entry.title)
-        return json.dumps({
-            "valid": True,
-            "entry": entry.model_dump(),
-            "error": None,
-        })
+        return json.dumps(
+            {
+                "valid": True,
+                "entry": entry.model_dump(),
+                "error": None,
+            }
+        )
     except (ValidationError, ValueError) as exc:
         logger.warning("Entry validation failed: %s", exc)
-        return json.dumps({
-            "valid": False,
-            "entry": None,
-            "error": str(exc),
-        })
+        return json.dumps(
+            {
+                "valid": False,
+                "entry": None,
+                "error": str(exc),
+            }
+        )
 
 
 @activity.defn
 async def fetch_existing_entries(limit: int = 50) -> list[dict]:
-    """Query recent entries for duplication context."""
-    from pbook.store import get_db_path, get_engine, list_recent_entries, run_migrations
+    """Query recent entries for duplication context.
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
+    Embeddings are stripped before crossing the wire — the review prompt
+    only needs titles and tags, and vectors would bloat the payload.
+    """
+    from pbook.store import get_store_engine, list_recent_entries
+
+    engine = get_store_engine()
+    if engine is None:
         return []
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
-    return list_recent_entries(engine, limit=limit)
+    rows = list_recent_entries(engine, limit=limit)
+    return [{k: v for k, v in row.items() if k != "embedding"} for row in rows]
 
 
 @activity.defn
 async def find_duplicates(input_json: str) -> list[dict]:
     """Find semantic duplicates for a proposed entry.
 
-    Accepts JSON with keys: embedding (bytes), threshold (float).
+    Accepts JSON with keys: embedding (base64 float32 string), threshold (float).
     """
-    import base64
-
-    from pbook.store import find_semantic_duplicates, get_db_path, get_engine, run_migrations
+    from pbook.embeddings import decode_embedding
+    from pbook.store import find_semantic_duplicates, get_store_engine
 
     data = json.loads(input_json)
-    embedding = base64.b64decode(data["embedding"])
+    embedding = decode_embedding(data["embedding"])
     threshold = data.get("threshold", 0.85)
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
+    engine = get_store_engine()
+    if engine is None:
         return []
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
     return find_semantic_duplicates(engine, embedding, threshold=threshold)
-
-

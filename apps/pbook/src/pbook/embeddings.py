@@ -1,20 +1,28 @@
 """Embedding utilities for the playbook service.
 
-Uses OpenAI API to generate vector embeddings for semantic search
-and de-duplication, as prescribed by the ACE framework.
+Uses the OpenAI API to generate vector embeddings for semantic search
+and de-duplication. Vectors are plain ``list[float]`` throughout — that
+is what pgvector columns accept and return. For the Temporal payload
+boundary they are base64-encoded as float32 bytes (compact and
+deterministic); see :func:`encode_embedding` / :func:`decode_embedding`.
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+from typing import TYPE_CHECKING
 
 import numpy as np
 from openai import AsyncOpenAI
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 logger = logging.getLogger(__name__)
 
-# Default model for embeddings
+# Default model for embeddings (1536-dim — see pbook.store.EMBEDDING_DIM).
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 _client: AsyncOpenAI | None = None
@@ -39,10 +47,11 @@ def get_client() -> AsyncOpenAI:
     return _client
 
 
-async def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> bytes:
+async def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> list[float]:
     """Generate a vector embedding for the given text.
 
-    Returns the embedding as a float32 byte array (BLOB-compatible).
+    Returns the embedding as a ``list[float]`` ready to store in a
+    pgvector column.
     """
     client = get_client()
     logger.debug("Generating embedding for text (len=%d) using %s", len(text), model)
@@ -51,15 +60,27 @@ async def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> byte
         input=[text.replace("\n", " ")],
         model=model,
     )
-
-    vector = response.data[0].embedding
-    return np.array(vector, dtype=np.float32).tobytes()
+    return list(response.data[0].embedding)
 
 
-def cosine_similarity(a: bytes, b: bytes) -> float:
-    """Compute cosine similarity between two float32-encoded vector blobs."""
-    vec_a = np.frombuffer(a, dtype=np.float32)
-    vec_b = np.frombuffer(b, dtype=np.float32)
+def encode_embedding(vector: Sequence[float]) -> str:
+    """Encode a vector as base64 float32 bytes for the Temporal boundary."""
+    return base64.b64encode(np.asarray(vector, dtype=np.float32).tobytes()).decode("ascii")
+
+
+def decode_embedding(encoded: str) -> list[float]:
+    """Decode a base64 float32 byte string back into a ``list[float]``."""
+    raw = base64.b64decode(encoded)
+    return np.frombuffer(raw, dtype=np.float32).tolist()
+
+
+def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+    """Compute cosine similarity between two float vectors.
+
+    Accepts any float sequence (``list`` or ``numpy.ndarray``).
+    """
+    vec_a = np.asarray(a, dtype=np.float32)
+    vec_b = np.asarray(b, dtype=np.float32)
 
     norm_a = np.linalg.norm(vec_a)
     norm_b = np.linalg.norm(vec_b)
