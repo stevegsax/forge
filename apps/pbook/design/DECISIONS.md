@@ -1,14 +1,14 @@
 # Architectural Decisions
 
-## Separate database
+## Dedicated schema in the shared Postgres
 
-pbook uses its own SQLite database (`pbook.db`), not a shared database with any client. This means:
+pbook stores its data in a dedicated `pbook` schema (all tables/indexes prefixed `pbk_`) inside the Supabase project's PostgreSQL database, with its own Alembic version table (`pbk_alembic_version`). It does not own a separate database: a separate database within a Supabase project is reachable only over the direct 5432 connection and is invisible to the Supabase tooling (MCP, pooler, dashboard, advisors), whereas a dedicated schema keeps all of that working while still isolating pbook. This means:
 
-- Clients cannot accidentally corrupt playbook data through schema migrations or direct writes.
-- The database can be backed up, migrated, or reset independently.
+- Another tenant of the database cannot collide with pbook's tables or its migration chain.
+- The schema can be migrated or reset independently of any client's tables.
 - Multiple projects share the same playbook store without coordination.
 
-Database path follows XDG: `$PBOOK_DB_PATH` > `$XDG_STATE_HOME/pbook/pbook.db` > `~/.local/state/pbook/pbook.db`. Set `PBOOK_DB_PATH=""` to disable the store entirely.
+The connection string comes from `PBOOK_DATABASE_URL` (a `postgresql://`/`postgresql+psycopg://` URL; bare URLs are normalized to the psycopg v3 driver). Setting it empty — or leaving it unset — disables the store entirely. There is no SQLite fallback. Use the direct 5432 connection for migrations; if connecting through Supabase's transaction-mode pooler (6543), psycopg prepared statements are disabled automatically.
 
 ## Separate Temporal queue
 

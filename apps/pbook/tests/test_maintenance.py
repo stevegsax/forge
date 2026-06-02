@@ -17,7 +17,7 @@ class TestIdentifyPruneCandidates:
             "id": 1,
             "title": "Test",
             "content": "Content",
-            "tags_json": '["lang:python"]',
+            "tags": ["lang:python"],
             "entry_type": "curated",
             "helpful_count": 0,
             "harmful_count": 0,
@@ -125,6 +125,8 @@ class TestIdentifyPruneCandidates:
         )
         # Default min_retrievals=5 would skip this, but custom=3 catches it
         candidates = identify_prune_candidates(
-            [entry], min_retrievals=3, max_harmful_ratio=0.5,
+            [entry],
+            min_retrievals=3,
+            max_harmful_ratio=0.5,
         )
         assert len(candidates) == 1

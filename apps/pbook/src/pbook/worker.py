@@ -44,6 +44,7 @@ from pbook.activities.extraction import (
     save_extracted_entries,
 )
 from pbook.activities.maintenance import (
+    cluster_similar_entries,
     fetch_all_entries_for_maintenance,
     prune_entries,
     save_consolidated_entry,
@@ -121,6 +122,23 @@ def _register_output_types() -> None:
     logger.info("Registered output types: ExtractionResult, ReviewResult, ConsolidationResult")
 
 
+def _migrate_if_configured() -> None:
+    """Run Alembic migrations to head once at startup, if a store is configured.
+
+    This is the worker's single migration point — activities no longer
+    migrate per call. If ``PBOOK_DATABASE_URL`` is unset the store is
+    disabled and migration is skipped.
+    """
+    from pbook.store import get_database_url, run_migrations
+
+    url = get_database_url()
+    if url is None:
+        logger.warning("PBOOK_DATABASE_URL not set — skipping migrations (store disabled)")
+        return
+    run_migrations(url)
+    logger.info("Database migrations applied (head)")
+
+
 async def run_worker(address: str = "localhost:7233") -> None:
     """Connect to Temporal and run the pbook worker."""
     from pbook.log_config import setup_logging
@@ -128,6 +146,7 @@ async def run_worker(address: str = "localhost:7233") -> None:
     setup_logging(console=True)
     _register_llm_provider()
     _register_output_types()
+    _migrate_if_configured()
     logger.info("Connecting to Temporal at %s", address)
 
     # Use the official Pydantic v2 data converter end-to-end so Pydantic
@@ -144,7 +163,8 @@ async def run_worker(address: str = "localhost:7233") -> None:
     # deterministic and safe to share across runs.
     runner = SandboxedWorkflowRunner(
         restrictions=SandboxRestrictions.default.with_passthrough_modules(
-            "pydantic", "pydantic_core",
+            "pydantic",
+            "pydantic_core",
         ),
     )
 
@@ -189,6 +209,7 @@ async def run_worker(address: str = "localhost:7233") -> None:
             fetch_existing_entries,
             find_duplicates,
             fetch_all_entries_for_maintenance,
+            cluster_similar_entries,
             prune_entries,
             save_consolidated_entry,
             record_ingested_session,

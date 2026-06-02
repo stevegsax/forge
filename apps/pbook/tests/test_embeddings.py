@@ -13,8 +13,8 @@ from pbook.embeddings import cosine_similarity, get_client
 
 
 class TestCosineSimilarity:
-    def _vec(self, values: list[float]) -> bytes:
-        return np.array(values, dtype=np.float32).tobytes()
+    def _vec(self, values: list[float]) -> list[float]:
+        return list(values)
 
     def test_identical_vectors(self):
         v = self._vec([1.0, 0.0, 0.0])
@@ -56,6 +56,7 @@ class TestGetClient:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         # Reset cached client
         import pbook.embeddings as mod
+
         monkeypatch.setattr(mod, "_client", None)
 
         with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
@@ -69,8 +70,8 @@ class TestGetClient:
 
 class TestGetEmbedding:
     @pytest.mark.asyncio
-    async def test_returns_float32_bytes(self, monkeypatch):
-        """get_embedding calls the OpenAI API and returns float32 bytes."""
+    async def test_returns_float_list(self, monkeypatch):
+        """get_embedding calls the OpenAI API and returns a list[float]."""
         from typing import ClassVar
 
         import pbook.embeddings as mod
@@ -94,9 +95,8 @@ class TestGetEmbedding:
 
         result = await mod.get_embedding("test text")
 
-        assert isinstance(result, bytes)
-        decoded = np.frombuffer(result, dtype=np.float32)
-        np.testing.assert_allclose(decoded, fake_vector, rtol=1e-6)
+        assert isinstance(result, list)
+        np.testing.assert_allclose(result, fake_vector, rtol=1e-6)
 
     @pytest.mark.asyncio
     async def test_strips_newlines(self, monkeypatch):

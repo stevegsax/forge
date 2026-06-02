@@ -14,9 +14,10 @@ from pbook.activities.export import (
     fetch_entry_ids,
 )
 from pbook.models import PlaybookEntry
-from pbook.store import build_entry_dict, get_engine, run_migrations, save_entries
+from pbook.store import build_entry_dict, save_entries
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflows.export import ExportWorkflow
+from tests.conftest import setup_db
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -33,10 +34,9 @@ async def env():
         yield env
 
 
-def _setup_db(tmp_path: Path):
-    db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path)
+def _setup_db(_tmp_path: Path | None = None):
+    """Return the session test engine (migrations already applied)."""
+    return setup_db()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ class TestDbRowToEntryDict:
             "id": 1,
             "title": "Test",
             "content": "Content",
-            "tags_json": '["lang:python"]',
+            "tags": ["lang:python"],
             "entry_type": "curated",
             "source_project": "forge",
             "source_task_id": "task-1",
@@ -73,9 +73,11 @@ class TestDbRowToEntryDict:
 class TestExportWorkflow:
     @pytest.mark.asyncio
     async def test_export_entries(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
 
         entry = PlaybookEntry(
@@ -105,9 +107,11 @@ class TestExportWorkflow:
 
     @pytest.mark.asyncio
     async def test_export_empty(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         import json

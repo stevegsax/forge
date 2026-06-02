@@ -17,16 +17,16 @@ from pbook.activities.retrieval import (
     score_and_pack,
     score_entry,
 )
+from pbook.embeddings import encode_embedding
 from pbook.models import PlaybookEntry, RetrievalInput, RetrievalMode
 from pbook.store import (
     build_entry_dict,
-    get_engine,
     get_entry_by_id,
-    run_migrations,
     save_entries,
 )
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflows.retrieval import RetrievalWorkflow
+from tests.conftest import make_embedding, setup_db
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -43,19 +43,20 @@ async def env():
         yield env
 
 
-def _setup_db(tmp_path: Path):
-    db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path)
+def _setup_db(_tmp_path: Path | None = None):
+    """Return the session test engine (migrations already applied)."""
+    return setup_db()[0]
 
 
 def _make_entry(title: str, tags: list[str], entry_type: str = "curated") -> dict:
-    return build_entry_dict(PlaybookEntry(
-        title=title,
-        content=f"Content for {title}",
-        tags=tags,
-        entry_type=entry_type,
-    ))
+    return build_entry_dict(
+        PlaybookEntry(
+            title=title,
+            content=f"Content for {title}",
+            tags=tags,
+            entry_type=entry_type,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -65,48 +66,56 @@ def _make_entry(title: str, tags: list[str], entry_type: str = "curated") -> dic
 
 class TestScoreEntry:
     def test_no_overlap_returns_zero(self):
-        entry = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        entry = {"tags": ["lang:python"], "entry_type": "curated"}
         assert score_entry(entry, {"lang:go"}, RetrievalMode.CREATE) == 0.0
 
     def test_single_overlap(self):
-        entry = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        entry = {"tags": ["lang:python"], "entry_type": "curated"}
         score = score_entry(entry, {"lang:python"}, RetrievalMode.CREATE)
         assert score > 0
 
     def test_create_mode_boosts_general(self):
-        general = {"tags_json": '["lang:python"]', "entry_type": "curated"}
-        extracted = {"tags_json": '["project:forge"]', "entry_type": "pitfall"}
+        general = {"tags": ["lang:python"], "entry_type": "curated"}
+        extracted = {"tags": ["project:forge"], "entry_type": "pitfall"}
 
         general_score = score_entry(
-            general, {"lang:python", "project:forge"}, RetrievalMode.CREATE,
+            general,
+            {"lang:python", "project:forge"},
+            RetrievalMode.CREATE,
         )
         extracted_score = score_entry(
-            extracted, {"lang:python", "project:forge"}, RetrievalMode.CREATE,
+            extracted,
+            {"lang:python", "project:forge"},
+            RetrievalMode.CREATE,
         )
         assert general_score > extracted_score
 
     def test_fix_mode_boosts_extracted(self):
-        general = {"tags_json": '["lang:python"]', "entry_type": "curated"}
-        extracted = {"tags_json": '["project:forge"]', "entry_type": "pitfall"}
+        general = {"tags": ["lang:python"], "entry_type": "curated"}
+        extracted = {"tags": ["project:forge"], "entry_type": "pitfall"}
 
         general_score = score_entry(
-            general, {"lang:python", "project:forge"}, RetrievalMode.FIX,
+            general,
+            {"lang:python", "project:forge"},
+            RetrievalMode.FIX,
         )
         extracted_score = score_entry(
-            extracted, {"lang:python", "project:forge"}, RetrievalMode.FIX,
+            extracted,
+            {"lang:python", "project:forge"},
+            RetrievalMode.FIX,
         )
         assert extracted_score > general_score
 
     def test_pitfall_boost_in_fix(self):
-        curated = {"tags_json": '["project:forge"]', "entry_type": "curated"}
-        pitfall = {"tags_json": '["project:forge"]', "entry_type": "pitfall"}
+        curated = {"tags": ["project:forge"], "entry_type": "curated"}
+        pitfall = {"tags": ["project:forge"], "entry_type": "pitfall"}
 
         curated_score = score_entry(curated, {"project:forge"}, RetrievalMode.FIX)
         pitfall_score = score_entry(pitfall, {"project:forge"}, RetrievalMode.FIX)
         assert pitfall_score > curated_score
 
     def test_helpful_entry_boosted(self):
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        base = {"tags": ["lang:python"], "entry_type": "curated"}
         no_feedback = {**base}
         helpful = {**base, "helpful_count": 5, "harmful_count": 0, "retrieval_count": 5}
 
@@ -115,7 +124,7 @@ class TestScoreEntry:
         assert boosted_score > base_score
 
     def test_harmful_entry_penalized(self):
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        base = {"tags": ["lang:python"], "entry_type": "curated"}
         no_feedback = {**base}
         harmful = {**base, "helpful_count": 0, "harmful_count": 5, "retrieval_count": 5}
 
@@ -124,7 +133,7 @@ class TestScoreEntry:
         assert penalized_score < base_score
 
     def test_insufficient_retrievals_ignored(self):
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        base = {"tags": ["lang:python"], "entry_type": "curated"}
         no_feedback = {**base}
         # Only 2 retrievals — below threshold of 3
         few = {**base, "helpful_count": 2, "harmful_count": 0, "retrieval_count": 2}
@@ -134,7 +143,7 @@ class TestScoreEntry:
         assert base_score == few_score
 
     def test_mixed_feedback(self):
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        base = {"tags": ["lang:python"], "entry_type": "curated"}
         no_feedback = {**base}
         mixed = {**base, "helpful_count": 3, "harmful_count": 1, "retrieval_count": 5}
 
@@ -144,7 +153,7 @@ class TestScoreEntry:
         assert mixed_score > base_score
 
     def test_zero_counters_unchanged(self):
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        base = {"tags": ["lang:python"], "entry_type": "curated"}
         no_counters = {**base}
         zero_counters = {**base, "helpful_count": 0, "harmful_count": 0, "retrieval_count": 0}
 
@@ -164,12 +173,13 @@ class TestRankMeta:
 
     def test_ranks_by_tag_score(self):
         meta = [
-            {"id": 1, "tags_json": '["lang:python"]', "entry_type": "curated"},
-            {"id": 2, "tags_json": '["lang:python", "lib:sqlalchemy"]',
-             "entry_type": "curated"},
+            {"id": 1, "tags": ["lang:python"], "entry_type": "curated"},
+            {"id": 2, "tags": ["lang:python", "lib:sqlalchemy"], "entry_type": "curated"},
         ]
         scored = rank_meta(
-            meta, ["lang:python", "lib:sqlalchemy"], RetrievalMode.CREATE,
+            meta,
+            ["lang:python", "lib:sqlalchemy"],
+            RetrievalMode.CREATE,
         )
         assert scored[0][2] == 2  # higher overlap ranks first
 
@@ -179,23 +189,27 @@ class TestRankMeta:
     def test_semantic_primary_when_similarities_provided(self):
         """With similarities, ordering is similarity-first; tag overlap is
         the tiebreaker."""
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        base = {"tags": ["lang:python"], "entry_type": "curated"}
         meta = [
             {"id": 1, **base},
             {"id": 2, **base},
         ]
         scored = rank_meta(
-            meta, ["lang:python"], RetrievalMode.CREATE,
+            meta,
+            ["lang:python"],
+            RetrievalMode.CREATE,
             similarities={1: 0.5, 2: 0.95},
         )
         assert scored[0][2] == 2
         assert scored[0][0] == 0.95
 
     def test_threshold_filters_low_similarity(self):
-        base = {"tags_json": '["lang:python"]', "entry_type": "curated"}
+        base = {"tags": ["lang:python"], "entry_type": "curated"}
         meta = [{"id": 1, **base}, {"id": 2, **base}]
         scored = rank_meta(
-            meta, [], RetrievalMode.CREATE,
+            meta,
+            [],
+            RetrievalMode.CREATE,
             similarities={1: 0.4, 2: 0.9},
             threshold=0.6,
         )
@@ -206,7 +220,7 @@ class TestRankMeta:
         """When no similarities are provided, the secondary (tiebreaker)
         score is 0; the primary carries the tag-overlap score."""
         meta = [
-            {"id": 1, "tags_json": '["lang:python"]', "entry_type": "curated"},
+            {"id": 1, "tags": ["lang:python"], "entry_type": "curated"},
         ]
         scored = rank_meta(meta, ["lang:python"], RetrievalMode.CREATE)
         assert scored[0][1] == 0.0
@@ -281,77 +295,100 @@ class TestComputeSimilaritiesByID:
     body never ferries embedding bytes."""
 
     @pytest.mark.asyncio
-    async def test_aligned_query_scores_high(self, tmp_path: Path, monkeypatch):
-        import base64 as _b64
+    async def test_aligned_query_scores_high(self, tmp_path: Path):
         import json as _json
-        import struct
 
         from pbook.models import EntryType, PlaybookEntry
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
 
-        emb_a = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        emb_b = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="A", content="A", tags=["lang:python"],
-                entry_type=EntryType.CURATED, embedding=emb_a,
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="B", content="B", tags=["lang:python"],
-                entry_type=EntryType.CURATED, embedding=emb_b,
-            )),
-        ])
+        emb_a = make_embedding(1.0, 0.0, 0.0, 0.0)
+        emb_b = make_embedding(0.0, 1.0, 0.0, 0.0)
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="A",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb_a,
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="B",
+                        content="B",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb_b,
+                    )
+                ),
+            ],
+        )
 
         # Query embedding aligned with A.
-        query = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        result = await compute_similarities_by_id(_json.dumps({
-            "query_embedding_b64": _b64.b64encode(query).decode("ascii"),
-            "ids": [1, 2],
-        }))
-        assert result["1"] > 0.99   # aligned
-        assert result["2"] < 0.01   # orthogonal
+        query = make_embedding(1.0, 0.0, 0.0, 0.0)
+        result = await compute_similarities_by_id(
+            _json.dumps(
+                {
+                    "query_embedding_b64": encode_embedding(query),
+                    "ids": [1, 2],
+                }
+            )
+        )
+        assert result["1"] > 0.99  # aligned
+        assert result["2"] < 0.01  # orthogonal
 
     @pytest.mark.asyncio
-    async def test_skips_entries_without_embeddings(self, tmp_path: Path, monkeypatch):
-        import base64 as _b64
+    async def test_skips_entries_without_embeddings(self, tmp_path: Path):
         import json as _json
-        import struct
 
         from pbook.models import EntryType, PlaybookEntry
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="No emb", content="x", tags=["lang:python"],
-                entry_type=EntryType.CURATED,
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="No emb",
+                        content="x",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                    )
+                ),
+            ],
+        )
 
-        query = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        result = await compute_similarities_by_id(_json.dumps({
-            "query_embedding_b64": _b64.b64encode(query).decode("ascii"),
-            "ids": [1],
-        }))
+        query = make_embedding(1.0, 0.0, 0.0, 0.0)
+        result = await compute_similarities_by_id(
+            _json.dumps(
+                {
+                    "query_embedding_b64": encode_embedding(query),
+                    "ids": [1],
+                }
+            )
+        )
         assert "1" not in result
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_empty_ids_returns_empty_dict(self, tmp_path: Path, monkeypatch):
-        import base64 as _b64
+    async def test_empty_ids_returns_empty_dict(self, tmp_path: Path):
         import json as _json
-        import struct
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
-        query = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        result = await compute_similarities_by_id(_json.dumps({
-            "query_embedding_b64": _b64.b64encode(query).decode("ascii"),
-            "ids": [],
-        }))
+        query = make_embedding(1.0, 0.0, 0.0, 0.0)
+        result = await compute_similarities_by_id(
+            _json.dumps(
+                {
+                    "query_embedding_b64": encode_embedding(query),
+                    "ids": [],
+                }
+            )
+        )
         assert result == {}
 
 
@@ -371,28 +408,37 @@ class TestFetchCandidatesWireFormat:
     the JSON encoder to choke on."""
 
     _MINIMAL_KEYS: ClassVar[set[str]] = {
-        "id", "tags_json", "entry_type",
-        "helpful_count", "harmful_count", "retrieval_count",
+        "id",
+        "tags",
+        "entry_type",
+        "helpful_count",
+        "harmful_count",
+        "retrieval_count",
     }
 
     @pytest.mark.asyncio
     async def test_query_only_branch_returns_minimal_dicts(
-        self, tmp_path: Path, monkeypatch,
+        self,
+        tmp_path: Path,
     ) -> None:
-        import struct
-
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
-        engine = _setup_db(tmp_path)
-        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
         from pbook.models import EntryType, PlaybookEntry
 
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="A", content="content with stuff",
-                tags=["lang:python"], entry_type=EntryType.CURATED,
-                embedding=emb,
-            )),
-        ])
+        engine = _setup_db(tmp_path)
+        emb = make_embedding(1.0, 0.0, 0.0, 0.0)
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="content with stuff",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb,
+                    )
+                ),
+            ],
+        )
 
         result = await fetch_candidates(
             RetrievalInput(query="anything", token_budget=5000).model_dump_json(),
@@ -409,28 +455,34 @@ class TestFetchCandidatesWireFormat:
 
     @pytest.mark.asyncio
     async def test_tag_branch_returns_minimal_dicts(
-        self, tmp_path: Path, monkeypatch,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Same minimal contract for the tag branch — forge consumers
         get the same wire shape; full content is loaded by score_and_pack."""
-        import struct
-
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
-        engine = _setup_db(tmp_path)
-        emb = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
         from pbook.models import EntryType, PlaybookEntry
 
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="B", content="content",
-                tags=["lang:python"], entry_type=EntryType.CURATED,
-                embedding=emb,
-            )),
-        ])
+        engine = _setup_db(tmp_path)
+        emb = make_embedding(0.0, 1.0, 0.0, 0.0)
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="B",
+                        content="content",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb,
+                    )
+                ),
+            ],
+        )
 
         result = await fetch_candidates(
             RetrievalInput(
-                tags=["lang:python"], token_budget=5000,
+                tags=["lang:python"],
+                token_budget=5000,
             ).model_dump_json(),
         )
 
@@ -455,14 +507,19 @@ _WORKFLOW_ACTIVITIES = [
 class TestRetrievalWorkflow:
     @pytest.mark.asyncio
     async def test_retrieval_returns_entries(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
-        save_entries(engine, [
-            _make_entry("Python advice", ["lang:python"]),
-            _make_entry("Go advice", ["lang:go"]),
-        ])
+        save_entries(
+            engine,
+            [
+                _make_entry("Python advice", ["lang:python"]),
+                _make_entry("Go advice", ["lang:go"]),
+            ],
+        )
 
         async with Worker(
             env.client,
@@ -483,15 +540,20 @@ class TestRetrievalWorkflow:
 
     @pytest.mark.asyncio
     async def test_retrieval_respects_token_budget(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         # Create entries that total more than a tiny budget
         for i in range(10):
-            save_entries(engine, [
-                _make_entry(f"Entry {i}", ["lang:python"]),
-            ])
+            save_entries(
+                engine,
+                [
+                    _make_entry(f"Entry {i}", ["lang:python"]),
+                ],
+            )
 
         async with Worker(
             env.client,
@@ -512,9 +574,11 @@ class TestRetrievalWorkflow:
 
     @pytest.mark.asyncio
     async def test_retrieval_empty_store(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         async with Worker(
@@ -535,13 +599,18 @@ class TestRetrievalWorkflow:
 
     @pytest.mark.asyncio
     async def test_retrieval_records_served_entries(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
-        save_entries(engine, [
-            _make_entry("Python advice", ["lang:python"]),
-        ])
+        save_entries(
+            engine,
+            [
+                _make_entry("Python advice", ["lang:python"]),
+            ],
+        )
 
         async with Worker(
             env.client,
@@ -563,40 +632,50 @@ class TestRetrievalWorkflow:
 
     @pytest.mark.asyncio
     async def test_retrieval_with_query_uses_semantic_ranking(
-        self, env: WorkflowEnvironment, tmp_path: Path, monkeypatch,
+        self,
+        env: WorkflowEnvironment,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
         """When `query` is non-empty, the workflow embeds it via llm_embed
         and ranks candidates by cosine similarity. Mocking llm_embed lets
         us test the wiring without needing OpenAI."""
-        import base64
-        import struct
-
         from temporalio import activity
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
 
         # Two entries with deliberately different stored embeddings.
         # We'll mock the query embedding so it aligns with the second.
-        emb_a = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        emb_b = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
+        emb_a = make_embedding(1.0, 0.0, 0.0, 0.0)
+        emb_b = make_embedding(0.0, 1.0, 0.0, 0.0)
         from pbook.models import EntryType, PlaybookEntry
 
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="A entry", content="content A",
-                tags=["lang:python"], entry_type=EntryType.CURATED,
-                embedding=emb_a,
-            )),
-            build_entry_dict(PlaybookEntry(
-                title="B entry", content="content B",
-                tags=["lang:python"], entry_type=EntryType.CURATED,
-                embedding=emb_b,
-            )),
-        ])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A entry",
+                        content="content A",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb_a,
+                    )
+                ),
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="B entry",
+                        content="content B",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb_b,
+                    )
+                ),
+            ],
+        )
 
         # Query embedding aligned with B
-        query_b64 = base64.b64encode(emb_b).decode("ascii")
+        query_b64 = encode_embedding(emb_b)
 
         @activity.defn(name="llm_embed")
         async def mock_embed(_text: str) -> str:

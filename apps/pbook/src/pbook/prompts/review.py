@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -51,9 +50,7 @@ def build_review_system_prompt(existing_entries: list[dict]) -> str:
         lines.append("## Existing entries (check for duplication)")
         lines.append("")
         for entry in existing_entries:
-            tags = entry.get("tags_json", "[]")
-            if isinstance(tags, str):
-                tags = json.loads(tags)
+            tags = entry.get("tags", [])
             lines.append(f"- **{entry['title']}** (tags: {', '.join(tags)})")
 
     return "\n".join(lines)
@@ -76,7 +73,8 @@ def build_review_user_prompt(entry: PlaybookEntry) -> str:
 
 
 def apply_suggestions(
-    entry: PlaybookEntry, review: ReviewResult,
+    entry: PlaybookEntry,
+    review: ReviewResult,
 ) -> PlaybookEntry:
     """Return a new entry with suggested improvements applied.
 

@@ -59,11 +59,11 @@ def identify_prune_candidates(
         if retrieval_count >= min_retrievals:
             ratio = harmful_count / retrieval_count
             if ratio > max_harmful_ratio:
-                candidates.append({
-                    **entry,
-                    "prune_reason": f"harmful ratio {ratio:.0%} exceeds {max_harmful_ratio:.0%} "
-                                    f"({harmful_count}/{retrieval_count} retrievals)",
-                })
+                reason = (
+                    f"harmful ratio {ratio:.0%} exceeds {max_harmful_ratio:.0%} "
+                    f"({harmful_count}/{retrieval_count} retrievals)"
+                )
+                candidates.append({**entry, "prune_reason": reason})
                 continue
 
         # Rule 2: never retrieved and stale
@@ -76,11 +76,13 @@ def identify_prune_candidates(
                     created_at = created_at.replace(tzinfo=UTC)
                 age_days = (now - created_at).days
                 if age_days > max_stale_days:
-                    candidates.append({
-                        **entry,
-                        "prune_reason": f"never retrieved and {age_days} days old "
-                                        f"(threshold: {max_stale_days} days)",
-                    })
+                    candidates.append(
+                        {
+                            **entry,
+                            "prune_reason": f"never retrieved and {age_days} days old "
+                            f"(threshold: {max_stale_days} days)",
+                        }
+                    )
 
     return candidates
 
@@ -137,32 +139,58 @@ def group_similar_entries(
 
 @activity.defn
 async def fetch_all_entries_for_maintenance() -> list[dict]:
-    """Fetch all entries from the store for maintenance analysis."""
-    from pbook.store import get_db_path, get_engine, list_all_entries, run_migrations
+    """Fetch all entries for maintenance analysis (prune + prompt building).
 
-    db_path = get_db_path()
-    if db_path is None or not db_path.exists():
+    Embeddings are stripped before crossing the wire — pruning keys off
+    counters and age, and clustering happens server-side in
+    :func:`cluster_similar_entries` so vectors never leave the database.
+    """
+    from pbook.store import get_store_engine, list_all_entries
+
+    engine = get_store_engine()
+    if engine is None:
         return []
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
-    return list_all_entries(engine)
+    rows = list_all_entries(engine)
+    return [{k: v for k, v in row.items() if k != "embedding"} for row in rows]
+
+
+@activity.defn
+async def cluster_similar_entries(input_json: str) -> list[list[int]]:
+    """Cluster entries by semantic similarity, server-side.
+
+    Loads entries WITH embeddings inside the activity (vectors stay
+    server-side), reuses the pure :func:`group_similar_entries`, and
+    returns clusters as lists of entry ids. Accepts JSON with keys:
+    ``threshold`` (float) and ``exclude_ids`` (list[int], e.g. entries
+    already pruned this run).
+    """
+    from pbook.store import get_store_engine, list_all_entries
+
+    data = json.loads(input_json)
+    threshold = data.get("threshold", 0.85)
+    exclude = set(data.get("exclude_ids", []))
+
+    engine = get_store_engine()
+    if engine is None:
+        return []
+
+    entries = [e for e in list_all_entries(engine) if e["id"] not in exclude]
+    clusters = group_similar_entries(entries, threshold=threshold)
+    return [[e["id"] for e in cluster] for cluster in clusters]
 
 
 @activity.defn
 async def prune_entries(entry_ids: list[int]) -> int:
     """Delete the given entries from the store."""
-    from pbook.store import delete_entry, get_db_path, get_engine, run_migrations
+    from pbook.store import delete_entry, get_store_engine
 
     if not entry_ids:
         return 0
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return 0
-
-    run_migrations(db_path)
-    engine = get_engine(db_path)
 
     for entry_id in entry_ids:
         delete_entry(engine, entry_id)
@@ -185,31 +213,25 @@ async def save_consolidated_entry(input_json: str) -> int:
     entry, and returns the new entry's id. The maintenance workflow is
     responsible for pruning the original cluster ids after this call.
     """
-    import base64
-
+    from pbook.embeddings import decode_embedding
     from pbook.models import EntryType, PlaybookEntry
     from pbook.store import (
         build_entry_dict,
-        get_db_path,
-        get_engine,
+        get_store_engine,
+        insert_entry,
         reparent_entry_sources,
-        run_migrations,
-        save_entry_returning_id,
     )
 
     data = json.loads(input_json)
     merged = data["merged_entry"]
     cluster_ids = list(data.get("cluster_ids", []))
 
-    db_path = get_db_path()
-    if db_path is None:
+    engine = get_store_engine()
+    if engine is None:
         return 0
 
-    run_migrations(db_path)
-    engine = get_engine(db_path)
-
     raw_embedding = merged.get("embedding") or ""
-    embedding = base64.b64decode(raw_embedding) if raw_embedding else None
+    embedding = decode_embedding(raw_embedding) if raw_embedding else None
 
     entry = PlaybookEntry(
         title=merged["title"],
@@ -219,7 +241,7 @@ async def save_consolidated_entry(input_json: str) -> int:
         needs_review=False,
         embedding=embedding,
     )
-    new_id = save_entry_returning_id(engine, build_entry_dict(entry))
+    new_id = insert_entry(engine, build_entry_dict(entry), entry.tags)
 
     if cluster_ids:
         reparent_entry_sources(
@@ -229,5 +251,3 @@ async def save_consolidated_entry(input_json: str) -> int:
         )
 
     return new_id
-
-

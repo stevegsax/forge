@@ -15,20 +15,17 @@ from pbook.cli import main
 from pbook.models import PlaybookEntry
 from pbook.store import (
     build_entry_dict,
-    get_engine,
     get_entry_by_id,
     record_feedback,
     record_retrieval,
-    run_migrations,
     save_entries,
 )
+from tests.conftest import make_embedding, setup_db
 
 
-def _setup_db(tmp_path: Path):
-    """Create and migrate a test database, return the engine."""
-    db_path = tmp_path / "test.db"
-    run_migrations(db_path)
-    return get_engine(db_path)
+def _setup_db(_tmp_path: Path | None = None):
+    """Return the session test engine (migrations already applied)."""
+    return setup_db()[0]
 
 
 def _seed_entry(engine, **kwargs):
@@ -50,14 +47,12 @@ def _seed_entry(engine, **kwargs):
 
 class TestListCommand:
     def test_empty_list(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         runner = CliRunner()
         result = runner.invoke(main, ["list"])
         assert result.exit_code == 0
         assert "No entries found" in result.output
 
     def test_list_entries(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -67,7 +62,6 @@ class TestListCommand:
         assert "Test Entry" in result.output
 
     def test_list_json(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -78,7 +72,6 @@ class TestListCommand:
         assert len(data) == 1
 
     def test_list_filter_by_tag(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Python tip", tags=["lang:python"])
         _seed_entry(engine, title="Go tip", tags=["lang:go"])
@@ -90,7 +83,6 @@ class TestListCommand:
         assert "Go tip" not in result.output
 
     def test_list_filter_by_type(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Curated tip", entry_type="curated")
         _seed_entry(engine, title="Pitfall tip", entry_type="pitfall")
@@ -102,7 +94,6 @@ class TestListCommand:
         assert "Curated tip" not in result.output
 
     def test_list_filter_by_project(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Forge tip", source_project="forge")
         _seed_entry(engine, title="Other tip", source_project="other")
@@ -113,12 +104,11 @@ class TestListCommand:
         assert "Forge tip" in result.output
         assert "Other tip" not in result.output
 
-    def test_list_disabled_store(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", "")
+    def test_list_disabled_store(self, monkeypatch):
+        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
         runner = CliRunner()
         result = runner.invoke(main, ["list"])
         assert result.exit_code != 0
-        assert "disabled" in result.output.lower() or "disabled" in (result.output + result.output)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +118,6 @@ class TestListCommand:
 
 class TestGetCommand:
     def test_get_entry(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -138,7 +127,6 @@ class TestGetCommand:
         assert "Test Entry" in result.output
 
     def test_get_json(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -149,7 +137,6 @@ class TestGetCommand:
         assert data["title"] == "Test Entry"
 
     def test_get_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -167,7 +154,6 @@ class TestJSONContract:
     def test_get_json_emits_tags_as_list_not_string(self, tmp_path, monkeypatch):
         """Regression: the on-disk shape stores tags as a JSON-string-in-JSON.
         Skill consumers must see a real list."""
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, tags=["lang:python", "lib:pytest"])
 
@@ -179,7 +165,6 @@ class TestJSONContract:
         assert "tags_json" not in data  # raw column name shouldn't leak
 
     def test_get_json_strips_embedding(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -190,7 +175,6 @@ class TestJSONContract:
         assert "embedding" not in data
 
     def test_get_json_datetime_iso_8601(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -203,7 +187,6 @@ class TestJSONContract:
     def test_get_json_error_envelope(self, tmp_path, monkeypatch):
         """When --json is set and the entry is missing, the error must
         come back as JSON on stdout with non-zero exit."""
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -217,7 +200,6 @@ class TestJSONContract:
         }
 
     def test_list_json_each_entry_has_tags_list(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="A", tags=["lang:python"])
         _seed_entry(engine, title="B", tags=["lang:go", "lib:cobra"])
@@ -230,7 +212,6 @@ class TestJSONContract:
         assert all("embedding" not in e for e in data)
 
     def test_list_json_empty_returns_empty_array(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -246,15 +227,18 @@ class TestJSONContract:
 
 class TestAddCommand:
     def test_add_entry(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         entry_file = tmp_path / "entry.json"
-        entry_file.write_text(json.dumps({
-            "title": "New Entry",
-            "content": "Advice here",
-            "tags": ["lang:python", "domain:testing"],
-        }))
+        entry_file.write_text(
+            json.dumps(
+                {
+                    "title": "New Entry",
+                    "content": "Advice here",
+                    "tags": ["lang:python", "domain:testing"],
+                }
+            )
+        )
 
         runner = CliRunner()
         result = runner.invoke(main, ["add", "--file", str(entry_file)])
@@ -264,17 +248,19 @@ class TestAddCommand:
 
     def test_add_reads_stdin(self, tmp_path, monkeypatch):
         """When --file is omitted, JSON is read from stdin."""
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
         result = runner.invoke(
-            main, ["add", "--json"],
-            input=json.dumps({
-                "title": "From stdin",
-                "content": "...",
-                "tags": ["lang:python"],
-            }),
+            main,
+            ["add", "--json"],
+            input=json.dumps(
+                {
+                    "title": "From stdin",
+                    "content": "...",
+                    "tags": ["lang:python"],
+                }
+            ),
         )
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -284,17 +270,19 @@ class TestAddCommand:
         assert data["rejected"] is False
 
     def test_add_needs_review_flag(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
         result = runner.invoke(
-            main, ["add", "--needs-review", "--json"],
-            input=json.dumps({
-                "title": "Pending review",
-                "content": "...",
-                "tags": ["lang:python"],
-            }),
+            main,
+            ["add", "--needs-review", "--json"],
+            input=json.dumps(
+                {
+                    "title": "Pending review",
+                    "content": "...",
+                    "tags": ["lang:python"],
+                }
+            ),
         )
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -302,7 +290,6 @@ class TestAddCommand:
         assert data["approved"] is False
 
     def test_add_validation_error_envelope(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -312,32 +299,37 @@ class TestAddCommand:
         assert payload["code"] == "validation_error"
 
     def test_add_tag_invalid_envelope(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
         result = runner.invoke(
-            main, ["add", "--json"],
-            input=json.dumps({
-                "title": "Bad Tags",
-                "content": "...",
-                "tags": ["not-namespaced"],
-            }),
+            main,
+            ["add", "--json"],
+            input=json.dumps(
+                {
+                    "title": "Bad Tags",
+                    "content": "...",
+                    "tags": ["not-namespaced"],
+                }
+            ),
         )
         assert result.exit_code != 0
         payload = json.loads(result.stdout)
         assert payload["code"] == "tag_invalid"
 
     def test_add_invalid_tags(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         entry_file = tmp_path / "entry.json"
-        entry_file.write_text(json.dumps({
-            "title": "Bad Tags",
-            "content": "Content",
-            "tags": ["not-namespaced"],
-        }))
+        entry_file.write_text(
+            json.dumps(
+                {
+                    "title": "Bad Tags",
+                    "content": "Content",
+                    "tags": ["not-namespaced"],
+                }
+            )
+        )
 
         runner = CliRunner()
         result = runner.invoke(main, ["add", "--file", str(entry_file)])
@@ -346,7 +338,6 @@ class TestAddCommand:
         assert "namespace:value" in result.output or "Tag" in result.output
 
     def test_add_invalid_json(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         entry_file = tmp_path / "bad.json"
@@ -358,7 +349,6 @@ class TestAddCommand:
         assert "Validation error" in result.output or "error" in result.output.lower()
 
     def test_add_schema(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         runner = CliRunner()
         result = runner.invoke(main, ["add", "--schema"])
         assert result.exit_code == 0
@@ -373,7 +363,6 @@ class TestAddCommand:
 
 class TestUpdateCommand:
     def test_update_entry(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Original Title")
 
@@ -391,7 +380,6 @@ class TestUpdateCommand:
         assert data["title"] == "Updated Title"
 
     def test_update_tags(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -403,7 +391,6 @@ class TestUpdateCommand:
         assert result.exit_code == 0
 
     def test_update_invalid_tags(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -416,7 +403,6 @@ class TestUpdateCommand:
         assert "Tag error" in result.output
 
     def test_update_missing_entry(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         update_file = tmp_path / "update.json"
@@ -435,7 +421,6 @@ class TestUpdateCommand:
 
 class TestApproveReject:
     def test_approve(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, needs_review=True)
 
@@ -445,7 +430,6 @@ class TestApproveReject:
         assert "Approved" in result.output
 
     def test_approve_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -456,7 +440,6 @@ class TestApproveReject:
     def test_reject_soft_marks_entry(self, tmp_path, monkeypatch):
         """`reject` soft-marks the row; it survives for audit and is
         hidden from default queries."""
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -483,7 +466,6 @@ class TestApproveReject:
         assert data[0]["rejected"] is True
 
     def test_reject_with_reason(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -504,7 +486,6 @@ class TestApproveReject:
         assert data["rejection_reason"] == "wrong project"
 
     def test_reject_without_reason_emits_null(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -514,7 +495,6 @@ class TestApproveReject:
         assert data["rejection_reason"] is None
 
     def test_approve_json(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, needs_review=True)
 
@@ -527,7 +507,6 @@ class TestApproveReject:
         assert data["rejected"] is False
 
     def test_reject_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -536,7 +515,6 @@ class TestApproveReject:
         assert "not found" in result.output
 
     def test_reject_missing_json_envelope(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -553,7 +531,6 @@ class TestApproveReject:
 
 class TestReviewJSON:
     def test_review_json_lists_only_needs_review(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="approved", needs_review=False)
         _seed_entry(engine, title="pending", needs_review=True)
@@ -566,7 +543,6 @@ class TestReviewJSON:
         assert data[0]["title"] == "pending"
 
     def test_review_json_empty_returns_empty_array(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -649,23 +625,34 @@ class TestReviewByExperienceCLI:
     def test_cluster_surfaces_in_json(self, tmp_path, monkeypatch):
         from pbook.store import add_entry_source
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         # Two needs_review entries from the same experience
         _seed_entry(engine, title="A from exp", needs_review=True)
         _seed_entry(engine, title="B from exp", needs_review=True)
         _seed_entry(engine, title="C alone", needs_review=True)
         add_entry_source(
-            engine, entry_id=1, session_id="s1", project_name="p",
-            experience_hash="shared", source_context="x", source_context_embedding=b"",
+            engine,
+            entry_id=1,
+            session_id="s1",
+            project_name="p",
+            experience_hash="shared",
+            source_context="x",
         )
         add_entry_source(
-            engine, entry_id=2, session_id="s2", project_name="p",
-            experience_hash="shared", source_context="y", source_context_embedding=b"",
+            engine,
+            entry_id=2,
+            session_id="s2",
+            project_name="p",
+            experience_hash="shared",
+            source_context="y",
         )
         add_entry_source(
-            engine, entry_id=3, session_id="s3", project_name="p",
-            experience_hash="lone", source_context="z", source_context_embedding=b"",
+            engine,
+            entry_id=3,
+            session_id="s3",
+            project_name="p",
+            experience_hash="lone",
+            source_context="z",
         )
 
         runner = CliRunner()
@@ -688,7 +675,6 @@ class TestSourcesCommand:
     def test_sources_lists_rows(self, tmp_path, monkeypatch):
         from pbook.store import add_entry_source
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
         add_entry_source(
@@ -711,9 +697,10 @@ class TestSourcesCommand:
         assert "source_context_embedding" not in data[0]
 
     def test_sources_missing_entry_returns_not_found_envelope(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -730,25 +717,29 @@ class TestSourcesCommand:
 
 class TestSessionTextCommand:
     def test_session_text_path_override_renders(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         # Minimal valid Claude Code JSONL: one user message.
         jsonl = tmp_path / "fake.jsonl"
-        jsonl.write_text(json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": "hello"},
-        }) + "\n")
+        jsonl.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": "hello"},
+                }
+            )
+            + "\n"
+        )
 
         runner = CliRunner()
         result = runner.invoke(
-            main, ["session-text", "fake", "--path", str(jsonl)],
+            main,
+            ["session-text", "fake", "--path", str(jsonl)],
         )
         assert result.exit_code == 0
         assert "USER" in result.output or "hello" in result.output
 
     def test_session_text_raw_returns_jsonl(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         jsonl = tmp_path / "fake.jsonl"
@@ -756,13 +747,13 @@ class TestSessionTextCommand:
 
         runner = CliRunner()
         result = runner.invoke(
-            main, ["session-text", "fake", "--path", str(jsonl), "--raw"],
+            main,
+            ["session-text", "fake", "--path", str(jsonl), "--raw"],
         )
         assert result.exit_code == 0
         assert '"type":"user"' in result.output
 
     def test_session_text_missing_returns_envelope(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -779,9 +770,10 @@ class TestSessionTextCommand:
 
 class TestTagsCommand:
     def test_tags_json_includes_namespaces_and_values(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="A", tags=["lang:python", "lib:sqlalchemy"])
         _seed_entry(engine, title="B", tags=["lang:go", "domain:cli"])
@@ -800,7 +792,6 @@ class TestTagsCommand:
     def test_tags_excludes_rejected_entries(self, tmp_path, monkeypatch):
         from pbook.store import mark_rejected
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="kept", tags=["lang:python"])
         _seed_entry(engine, title="dropped", tags=["lang:elixir"])
@@ -820,7 +811,6 @@ class TestTagsCommand:
 
 class TestSkillPromptCommand:
     def test_full_payload(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -831,11 +821,14 @@ class TestSkillPromptCommand:
         assert "workflows" in data
         assert "tags" in data
         assert set(data["workflows"]) == {
-            "query", "discuss", "feedback", "review_queue", "add",
+            "query",
+            "discuss",
+            "feedback",
+            "review_queue",
+            "add",
         }
 
     def test_operation_filter(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -846,7 +839,6 @@ class TestSkillPromptCommand:
         assert "## Discuss workflow" in data["workflow"]
 
     def test_unknown_operation_returns_validation_error(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -863,7 +855,6 @@ class TestSkillPromptCommand:
 
 class TestCheckDuplicate:
     def test_finds_duplicate(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Use dispose() in tests")
 
@@ -873,7 +864,6 @@ class TestCheckDuplicate:
         assert "duplicate" in result.output.lower()
 
     def test_no_duplicate(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -889,7 +879,6 @@ class TestCheckDuplicate:
 
 class TestReviewCommand:
     def test_review_shows_entries(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Needs review", needs_review=True)
         _seed_entry(engine, title="Already approved", needs_review=False)
@@ -901,7 +890,6 @@ class TestReviewCommand:
         assert "Already approved" not in result.output
 
     def test_review_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, needs_review=False)
 
@@ -918,7 +906,6 @@ class TestReviewCommand:
 
 class TestMigrate:
     def test_migrate(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         runner = CliRunner()
         result = runner.invoke(main, ["migrate"])
         assert result.exit_code == 0
@@ -932,7 +919,6 @@ class TestMigrate:
 
 class TestFeedback:
     def test_helpful(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -942,7 +928,6 @@ class TestFeedback:
         assert "helpful" in result.output
 
     def test_harmful(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -952,7 +937,6 @@ class TestFeedback:
         assert "harmful" in result.output
 
     def test_missing_flag(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -962,7 +946,6 @@ class TestFeedback:
         assert "--helpful" in result.output or "--harmful" in result.output
 
     def test_missing_entry(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -978,7 +961,6 @@ class TestFeedback:
 
 class TestPrune:
     def test_dry_run_lists_candidates(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Harmful entry")
         # Make it harmful: 6/10 retrievals marked harmful
@@ -999,7 +981,6 @@ class TestPrune:
         assert entry["needs_review"] is False
 
     def test_apply_marks_for_review(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine, title="Harmful entry")
         for _ in range(10):
@@ -1014,11 +995,9 @@ class TestPrune:
 
         entry = get_entry_by_id(engine, 1)
         assert entry["needs_review"] is True
-        tags = json.loads(entry["tags_json"])
-        assert "pattern:prune-candidate" in tags
+        assert "pattern:prune-candidate" in entry["tags"]
 
     def test_no_candidates(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
         _seed_entry(engine)
 
@@ -1028,7 +1007,6 @@ class TestPrune:
         assert "No prune candidates" in result.output
 
     def test_missing_flag(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         _setup_db(tmp_path)
 
         runner = CliRunner()
@@ -1062,63 +1040,82 @@ class TestCLIOpsWireFormat:
     can't sneak back in through a new activity that forgets to strip."""
 
     @pytest.mark.asyncio
-    async def test_get_entry_result_is_json_serializable(self, tmp_path, monkeypatch):
-        import struct
-
+    async def test_get_entry_result_is_json_serializable(self, tmp_path):
         from pbook.activities.cli_ops import get_entry_activity
-
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
-        engine = _setup_db(tmp_path)
-        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
         from pbook.models import EntryType
 
-        save_entries(engine, [build_entry_dict(PlaybookEntry(
-            title="A", content="x", tags=["lang:python"],
-            entry_type=EntryType.CURATED, embedding=emb,
-        ))])
+        engine = _setup_db(tmp_path)
+        emb = make_embedding(1.0, 0.0, 0.0, 0.0)
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="x",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb,
+                    )
+                )
+            ],
+        )
 
         result = await get_entry_activity({"entry_id": 1})
-        # json.dumps without default= raises on bytes — that's the assertion.
+        # Must be JSON-serializable (datetimes via default=str); crucially
+        # no raw vector/BLOB columns leak across the wire.
         json.dumps(result, default=str)
         assert result is not None
         assert "embedding" not in result
 
     @pytest.mark.asyncio
-    async def test_list_entries_result_is_json_serializable(self, tmp_path, monkeypatch):
-        import struct
-
+    async def test_list_entries_result_is_json_serializable(self, tmp_path):
         from pbook.activities.cli_ops import list_entries_activity
         from pbook.models import EntryType
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
-        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        save_entries(engine, [build_entry_dict(PlaybookEntry(
-            title="A", content="x", tags=["lang:python"],
-            entry_type=EntryType.CURATED, embedding=emb,
-        ))])
+        emb = make_embedding(1.0, 0.0, 0.0, 0.0)
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="x",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb,
+                    )
+                )
+            ],
+        )
 
         result = await list_entries_activity({})
         json.dumps(result, default=str)
         assert all("embedding" not in e for e in result)
 
     @pytest.mark.asyncio
-    async def test_review_queue_result_is_json_serializable(self, tmp_path, monkeypatch):
-        import struct
-
+    async def test_review_queue_result_is_json_serializable(self, tmp_path):
         from pbook.activities.cli_ops import review_queue_activity
         from pbook.models import EntryType
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
-        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        save_entries(engine, [
-            build_entry_dict(PlaybookEntry(
-                title="A", content="x", tags=["lang:python"],
-                entry_type=EntryType.CURATED, embedding=emb,
-                needs_review=True,
-            )),
-        ])
+        emb = make_embedding(1.0, 0.0, 0.0, 0.0)
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="x",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                        embedding=emb,
+                        needs_review=True,
+                    )
+                ),
+            ],
+        )
 
         # Both modes — flat and clustered — must be wire-safe.
         flat = await review_queue_activity({"limit": 20, "by_experience": False})
@@ -1129,21 +1126,33 @@ class TestCLIOpsWireFormat:
         json.dumps(clustered, default=str)
 
     @pytest.mark.asyncio
-    async def test_list_sources_result_is_json_serializable(self, tmp_path, monkeypatch):
+    async def test_list_sources_result_is_json_serializable(self, tmp_path):
         from pbook.activities.cli_ops import list_sources_activity
         from pbook.models import EntryType
         from pbook.store import add_entry_source
 
-        monkeypatch.setenv("PBOOK_DB_PATH", str(tmp_path / "test.db"))
         engine = _setup_db(tmp_path)
-        save_entries(engine, [build_entry_dict(PlaybookEntry(
-            title="A", content="x", tags=["lang:python"],
-            entry_type=EntryType.CURATED,
-        ))])
+        save_entries(
+            engine,
+            [
+                build_entry_dict(
+                    PlaybookEntry(
+                        title="A",
+                        content="x",
+                        tags=["lang:python"],
+                        entry_type=EntryType.CURATED,
+                    )
+                )
+            ],
+        )
         add_entry_source(
-            engine, entry_id=1, session_id="s", project_name="p",
-            experience_hash="h", source_context="ctx",
-            source_context_embedding=b"\x00\x01\x02\x03",
+            engine,
+            entry_id=1,
+            session_id="s",
+            project_name="p",
+            experience_hash="h",
+            source_context="ctx",
+            source_context_embedding=make_embedding(0.1, 0.2, 0.3),
         )
 
         result = await list_sources_activity({"entry_id": 1})

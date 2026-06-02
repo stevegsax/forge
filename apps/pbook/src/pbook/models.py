@@ -45,7 +45,7 @@ class PlaybookEntry(BaseModel):
     helpful_count: int = 0
     harmful_count: int = 0
     retrieval_count: int = 0
-    embedding: bytes | None = None
+    embedding: list[float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +163,8 @@ def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
 # CLI-op workflow inputs/outputs
 #
 # Every CLI command that touches the DB submits a workflow; the worker
-# is the only process that opens the DB file. The worker's
-# PBOOK_DB_PATH is the single source of truth for which DB is in play.
+# is the only process that opens the database. The worker's
+# PBOOK_DATABASE_URL is the single source of truth for which DB is in play.
 # `pbook migrate` is the lone exception (schema setup must precede the
 # worker's connection).
 # ---------------------------------------------------------------------------
