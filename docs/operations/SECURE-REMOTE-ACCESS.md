@@ -6,6 +6,8 @@ over the public internet. It is the security companion to
 [DEPLOYMENT.md](DEPLOYMENT.md) and the concrete artifacts in
 [`deploy/`](../../deploy/).
 
+> **Temporal reference:** the worker and CLIs build their mTLS client connection in `src/forge/temporal_client.py` (`build_tls_config`); the canonical SDK pattern is the [hello_mtls sample](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/hello/hello_mtls.py).
+
 It supersedes DEPLOYMENT.md's original "no inbound ports; reach Temporal only via
 an SSM tunnel" stance for the case where users must submit work directly over the
 internet.

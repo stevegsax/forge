@@ -313,6 +313,8 @@ flowchart TD
 
 Sub-tasks can themselves contain `sub_tasks`, creating recursive fan-out bounded by `max_fan_out_depth` (default 1 = flat fan-out only). The child workflow checks whether it should execute as a leaf (single-step) or recurse (nested fan-out) based on its current depth vs. the maximum.
 
+> **Temporal reference:** child-workflow fan-out follows the SDK [child-workflow sample](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/hello/hello_child_workflow.py) ([concept docs](https://docs.temporal.io/develop/python/workflows/child-workflows)).
+
 ---
 
 ## Model Routing
@@ -509,7 +511,7 @@ The universal workflow step is the spine, but several shipped subsystems run alo
 
 ### Batch execution (default path)
 
-All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to a provider Batch API by default (`sync_mode=False`); the scheduled `BatchPollerWorkflow` polls and delivers each result back to the waiting workflow via signal. Submission/parse/poll: `activities/batch_submit.py`, `activities/batch_parse.py`, `activities/batch_poll.py`; lifecycle states: `models.py::BatchJobStatus`. The wait is signal-based (D77) rather than terminate-and-restart — Temporal's [durable signals](https://docs.temporal.io/develop/python/message-passing#signals) keep all workflow state alive across the wait.
+All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to a provider Batch API by default (`sync_mode=False`); the scheduled `BatchPollerWorkflow` polls and delivers each result back to the waiting workflow via signal. Submission/parse/poll: `activities/batch_submit.py`, `activities/batch_parse.py`, `activities/batch_poll.py`; lifecycle states: `models.py::BatchJobStatus`. The wait is signal-based (D77) rather than terminate-and-restart — Temporal's [durable signals](https://docs.temporal.io/develop/python/workflows/message-passing) keep all workflow state alive across the wait (SDK [signal sample](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/hello/hello_signal.py)).
 
 ### OCR pipeline
 

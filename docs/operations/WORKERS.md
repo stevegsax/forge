@@ -66,3 +66,4 @@ Deploy at least two workers per task queue for redundancy.
 - [Worker deployment and performance](https://docs.temporal.io/best-practices/worker) — Production deployment, monitoring metrics, and task queue separation.
 - [Worker Versioning](https://docs.temporal.io/production-deployment/worker-deployments/worker-versioning) — Pinning workflow versions to specific worker builds for safe rollouts.
 - [Temporal Best Practices](https://docs.temporal.io/best-practices) — General best practices covering design patterns, testing, and production readiness.
+- [Schedules — Python SDK](https://docs.temporal.io/develop/python/workflows/schedules) — Forge runs the batch poller and knowledge extraction as Temporal Schedules (D81); see the SDK [schedule sample](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/schedules/start_schedule.py).

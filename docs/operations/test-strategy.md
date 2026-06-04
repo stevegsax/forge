@@ -39,6 +39,7 @@ This guide is for new engineers who need a practical, repeatable way to write Py
 - Start with unit tests for pure logic; add contract tests for service boundaries; add a small number of scenario tests across the CLI to protect the golden paths.
 - Use `conftest.py` fixtures for shared setup (e.g., temp git repo, ruff config) and keep them focused.
 - Mock or fake external systems (Temporal server, network) to keep tests fast and isolated; prefer fakes over deep mocking when behaviour matters.
+- Respect the [Temporal workflow sandbox](https://docs.temporal.io/develop/python/best-practices/python-sdk-sandbox): workflow code cannot read module-level mutable state, so canned results must be returned from (mocked) activities, not module globals.
 - Parametrize edge cases (empty inputs, large payloads, invalid configs) to increase coverage with minimal code.
 - Keep assertions high-level (results, side effects, emitted files) and supplement with trace/log checks where appropriate.
 - Run `pytest -q` locally before pushing; use `ruff` to catch style and lint drift early.
@@ -51,6 +52,7 @@ This guide is for new engineers who need a practical, repeatable way to write Py
 
 ## 8) Tools for repeatable, reliable tests
 - **pytest** with **pytest-asyncio** (already configured) for async-friendly, expressive tests.
+- **Temporal time-skipping test environment** for workflow tests — `WorkflowEnvironment.start_time_skipping()` (wired in `conftest.py`) runs workflows without real waits. See the [Python testing guide](https://docs.temporal.io/develop/python/best-practices/testing-suite) and the SDK [samples test harness](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/tests/conftest.py).
 - **Pytest fixtures** for controlled, reusable setup; scope them appropriately (function by default; session for expensive resources).
 - **Ruff** for linting to keep tests tidy and consistent.
 - **uv** for locked, reproducible environments; prefer `uv run pytest` to ensure deps match `uv.lock`.
