@@ -1214,13 +1214,12 @@ def ingest(
     # assume nothing is ingested rather than failing.
     if not force:
         try:
-            from pbook.store import get_db_path as pbook_get_db_path
-            from pbook.store import get_engine as pbook_get_engine
-            from pbook.store import get_ingested_session_ids
+            from pbook.store import get_ingested_session_ids, get_store_engine
 
-            pbook_db = pbook_get_db_path()
-            if pbook_db is not None and pbook_db.exists():
-                engine = pbook_get_engine(pbook_db)
+            # get_store_engine() returns None when pbook's store is disabled
+            # (PBOOK_DATABASE_URL unset); otherwise a connected engine.
+            engine = get_store_engine()
+            if engine is not None:
                 ingested_ids = get_ingested_session_ids(engine)
                 before = len(sessions)
                 sessions = [s for s in sessions if s.session_id not in ingested_ids]

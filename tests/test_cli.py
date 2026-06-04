@@ -2135,7 +2135,7 @@ class TestIngestCommand:
 
     def test_no_args_shows_error(self, cli_runner: CliRunner) -> None:
         # Prevent the "already ingested" filter from hitting a real pbook DB.
-        with patch("pbook.store.get_db_path", return_value=None):
+        with patch("pbook.store.get_store_engine", return_value=None):
             result = cli_runner.invoke(main, ["ingest"])
         assert result.exit_code == EXIT_FAILURE
         assert "TRANSCRIPT_PATH" in result.stderr or "--all" in result.stderr
@@ -2143,7 +2143,7 @@ class TestIngestCommand:
     def test_dry_run_all_with_no_sessions(self, cli_runner: CliRunner) -> None:
         with (
             patch("pbook.transcript.discover_sessions", return_value=[]),
-            patch("pbook.store.get_db_path", return_value=None),
+            patch("pbook.store.get_store_engine", return_value=None),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all", "--dry-run"])
         assert result.exit_code == 0
@@ -2156,7 +2156,7 @@ class TestIngestCommand:
         ]
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_db_path", return_value=None),
+            patch("pbook.store.get_store_engine", return_value=None),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all", "--dry-run"])
         assert result.exit_code == 0
@@ -2169,7 +2169,7 @@ class TestIngestCommand:
     ) -> None:
         fake = tmp_path / "sess-xyz.jsonl"
         fake.write_text('{"type": "user", "sessionId": "sess-xyz"}\n')
-        with patch("pbook.store.get_db_path", return_value=None):
+        with patch("pbook.store.get_store_engine", return_value=None):
             result = cli_runner.invoke(
                 main, ["ingest", str(fake), "--project", "demo", "--dry-run"]
             )
@@ -2186,7 +2186,7 @@ class TestIngestCommand:
         ]
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_db_path", return_value=None),
+            patch("pbook.store.get_store_engine", return_value=None),
         ):
             result = cli_runner.invoke(
                 main, ["ingest", "--all", "--project", "forge", "--dry-run"]
@@ -2204,12 +2204,9 @@ class TestIngestCommand:
             _make_session_info("new-one"),
         ]
 
-        fake_db = pathlib.Path("/tmp/pretend-pbook.db")
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_db_path", return_value=fake_db),
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pbook.store.get_engine", return_value=MagicMock()),
+            patch("pbook.store.get_store_engine", return_value=MagicMock()),
             patch(
                 "pbook.store.get_ingested_session_ids",
                 return_value={"already-done"},
@@ -2253,7 +2250,7 @@ class TestIngestCommand:
         )
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_db_path", return_value=None),
+            patch("pbook.store.get_store_engine", return_value=None),
             patch("forge.cli._submit_ingestion", mock_submit),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all"])
@@ -2283,7 +2280,7 @@ class TestIngestCommand:
         )
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_db_path", return_value=None),
+            patch("pbook.store.get_store_engine", return_value=None),
             patch("forge.cli._submit_ingestion", mock_submit),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all", "--json"])
@@ -2304,7 +2301,7 @@ class TestIngestCommand:
 
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_db_path", return_value=None),
+            patch("pbook.store.get_store_engine", return_value=None),
             patch("forge.cli._submit_ingestion", side_effect=_raise),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all"])
