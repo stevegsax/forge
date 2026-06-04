@@ -22,6 +22,7 @@ from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
     from pbook.models import RetrievalInput, RetrievalResult
+    from pbook.workflow_steps.retry import LLM_RETRY_POLICY
 
 
 _FETCH_TIMEOUT = timedelta(seconds=30)
@@ -57,6 +58,7 @@ class RetrievalWorkflow:
                 input.query,
                 start_to_close_timeout=_EMBED_TIMEOUT,
                 result_type=str,
+                retry_policy=LLM_RETRY_POLICY,
             )
             similarities = await workflow.execute_activity(
                 "compute_similarities_by_id",

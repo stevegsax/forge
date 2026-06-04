@@ -20,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
         build_consolidation_user_prompt,
     )
     from pbook.workflow_steps.llm import LLMChatInput, LLMChatResult
+    from pbook.workflow_steps.retry import LLM_RETRY_POLICY
 
 _FETCH_TIMEOUT = timedelta(seconds=60)
 _PRUNE_TIMEOUT = timedelta(seconds=60)
@@ -96,6 +97,7 @@ class MaintenanceWorkflow:
                 start_to_close_timeout=_CONSOLIDATE_TIMEOUT,
                 heartbeat_timeout=_CONSOLIDATE_HEARTBEAT,
                 result_type=LLMChatResult,
+                retry_policy=LLM_RETRY_POLICY,
             )
             result = ConsolidationResult.model_validate(chat_result.tool_input)
 
@@ -109,6 +111,7 @@ class MaintenanceWorkflow:
                 text_to_embed,
                 start_to_close_timeout=_EMBEDDING_TIMEOUT,
                 result_type=str,
+                retry_policy=LLM_RETRY_POLICY,
             )
 
             # Save the consolidated entry directly (bypassing match-or-

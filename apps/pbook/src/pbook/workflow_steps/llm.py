@@ -24,8 +24,10 @@ import time
 from pydantic import BaseModel, Field
 from sax_llm.models import text_messages
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from pbook.llm import get_provider
+from pbook.workflow_steps._errors import is_nonretryable_auth_error
 from pbook.workflow_steps._heartbeat import heartbeat_during
 from pbook.workflow_steps.output_types import resolve_output_type
 
@@ -103,8 +105,24 @@ async def llm_chat(input: LLMChatInput) -> LLMChatResult:
     )
 
     start = time.monotonic()
-    async with heartbeat_during():
-        response = await provider.call(params)
+    try:
+        async with heartbeat_during():
+            response = await provider.call(params)
+    except Exception as exc:
+        # A missing/invalid API key or unresolved auth method will never
+        # succeed on retry — mark it non-retryable so the activity fails on
+        # the first attempt instead of exhausting LLM_RETRY_POLICY's budget
+        # (which would leave the ingestion session stuck at "running").
+        # All other provider errors (timeouts, 429/5xx) propagate unchanged
+        # and stay retryable.
+        if is_nonretryable_auth_error(exc):
+            raise ApplicationError(
+                f"llm_chat: provider authentication/configuration error "
+                f"({type(exc).__name__}): {exc}",
+                type=type(exc).__name__,
+                non_retryable=True,
+            ) from exc
+        raise
     latency_ms = (time.monotonic() - start) * 1000
 
     logger.info(

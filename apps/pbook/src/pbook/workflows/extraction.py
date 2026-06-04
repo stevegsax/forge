@@ -26,6 +26,7 @@ with workflow.unsafe.imports_passed_through():
         build_extraction_user_prompt,
     )
     from pbook.workflow_steps.llm import LLMChatInput, LLMChatResult
+    from pbook.workflow_steps.retry import LLM_RETRY_POLICY
 
 _LLM_TIMEOUT = timedelta(minutes=5)
 _LLM_HEARTBEAT = timedelta(seconds=60)
@@ -82,6 +83,7 @@ class ExtractionWorkflow:
                 start_to_close_timeout=_LLM_TIMEOUT,
                 heartbeat_timeout=_LLM_HEARTBEAT,
                 result_type=LLMChatResult,
+                retry_policy=LLM_RETRY_POLICY,
             )
             extraction = ExtractionResult.model_validate(chat_result.tool_input)
             entries = [e.model_dump() for e in extraction.entries]
@@ -96,6 +98,7 @@ class ExtractionWorkflow:
                     text_to_embed,
                     start_to_close_timeout=_EMBED_TIMEOUT,
                     result_type=str,
+                    retry_policy=LLM_RETRY_POLICY,
                 )
 
             # Step 3: embed the situation once per experience (shared
@@ -107,6 +110,7 @@ class ExtractionWorkflow:
                     situation_text,
                     start_to_close_timeout=_EMBED_TIMEOUT,
                     result_type=str,
+                    retry_policy=LLM_RETRY_POLICY,
                 )
 
             # Step 4: match-or-attach each entry plus its source row.

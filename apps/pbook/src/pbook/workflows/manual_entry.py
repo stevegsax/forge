@@ -26,6 +26,7 @@ with workflow.unsafe.imports_passed_through():
         build_review_user_prompt,
     )
     from pbook.workflow_steps.llm import LLMChatInput, LLMChatResult
+    from pbook.workflow_steps.retry import LLM_RETRY_POLICY
 
 _VALIDATE_TIMEOUT = timedelta(seconds=30)
 _FETCH_TIMEOUT = timedelta(seconds=30)
@@ -65,6 +66,7 @@ class ManualEntryWorkflow:
             text_to_embed,
             start_to_close_timeout=_EMBED_TIMEOUT,
             result_type=str,
+            retry_policy=LLM_RETRY_POLICY,
         )
         entry_dict["embedding"] = entry_embedding
 
@@ -112,6 +114,7 @@ class ManualEntryWorkflow:
             start_to_close_timeout=_REVIEW_TIMEOUT,
             heartbeat_timeout=_REVIEW_HEARTBEAT,
             result_type=LLMChatResult,
+            retry_policy=LLM_RETRY_POLICY,
         )
         review = ReviewResult.model_validate(chat_result.tool_input)
 
