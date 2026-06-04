@@ -500,3 +500,15 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   forge-contracts now exports: db, models, s3_blobs, types, temporal, constants. Next (b part 2):
   move the OCR store tables + functions into the `ocr` repo (own `Base` + Alembic chain + new
   `ocr_` status table), then the OCR package files + import rewrites + delete the sync path.
+- 2026-06-04 — **Increment (b) part 2a landed** (ocr store module; ruff clean; round-trip smoke
+  green — result idempotency, S3-backed image via moto, status upsert; tables created). Wrote
+  `ocr/src/ocr/store.py`: own `Base`; tables `ocr_results`, `ocr_images`, `file_content_blobs`
+  (rename → `ocr_*` deferred to the squash), and the NEW `ocr_job_status` table (PK `request_id`
+  == custom_id == platform `batch_jobs` PK; holds `document_id`/`file_path` that leave `batch_jobs`,
+  + coarse `OcrProcessingStatus` submitted/processing/stored/failed). All ~20 OCR functions moved,
+  using `forge_contracts.db` (insert_or_ignore/get_store_engine) + `forge_contracts.s3_blobs` +
+  `forge_contracts.types.UTCDateTime` — zero `forge.*` imports. Re-exports get_store_engine/
+  get_store_url so the package import-rewrite is a simple `forge.store` → `ocr.store`. Alembic chain
+  (own env.py + version_table + include_object) deferred to the migrations increment; tests use
+  `Base.metadata.create_all` meanwhile. Next (b part 2b): move the OCR package files
+  (`workflow_*.py`, `activities.py`, `models.py`), rewrite imports, delete the sync path.
