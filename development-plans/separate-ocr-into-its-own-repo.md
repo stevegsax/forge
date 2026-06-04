@@ -490,3 +490,13 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   is forge_contracts.models.BatchResult`). `BatchJobStatus` kept FULL for now — narrowing waits
   until OCR is out (it still writes SUCCEEDED/STORING/ERRORED). Next: increment (b) — scaffold
   the `ocr` repo, move `src/forge/ocr/` + the OCR store, rewrite imports to contracts/local.
+- 2026-06-04 — **Increment (b) part 1 landed & green** (full forge suite: 1499 passed; ocr
+  scaffold imports; forge-contracts ruff clean). Scaffolded the `ocr` repo (pyproject deps
+  forge-contracts/sax-llm/mistralai/pymupdf/sqlalchemy/alembic/temporalio; src/ocr package;
+  README; own ruff/pytest config) — own queue/store/alembic come next. Moved the generic
+  DB-engine helpers (`StoreConfigError`, `get_store_url`, `get_store_engine`, `insert_or_ignore`,
+  and `ensure_sqlite_parent` — renamed public) → `forge_contracts.db`; `forge.store` re-exports
+  them (identity verified). Each repo keeps its OWN `run_migrations` (Alembic-chain-specific).
+  forge-contracts now exports: db, models, s3_blobs, types, temporal, constants. Next (b part 2):
+  move the OCR store tables + functions into the `ocr` repo (own `Base` + Alembic chain + new
+  `ocr_` status table), then the OCR package files + import rewrites + delete the sync path.
