@@ -8,7 +8,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Phases 1–12 and 14 are implemented (Phase 13, tree-sitter multi-language support, is deferred to Release 2). The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, knowledge extraction with playbook generation and injection into future task contexts, LLM-guided context exploration where the LLM requests context from providers before generating code, error-aware retries that feed validation errors back to the LLM on retry, prompt caching via Anthropic cache control headers with cache-efficient prompt ordering and cache token tracking, fuzzy edit matching with a four-level fallback chain, model routing with capability tiers, extended thinking for planning, and batch processing via the Anthropic Batch API. The OCR pipeline supports both synchronous and batch modes. The synchronous path (`OcrSyncWorkflow`) calls the Mistral OCR API directly and returns results immediately. The batch path (`OcrSubmitWorkflow`) submits to the Mistral Batch API and waits for a polling signal. Both paths extract images from documents, store them in the `ocr_images` table, and rewrite markdown references to unique `ocr-image://` URIs. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented. Transcript ingestion (`forge ingest`) reads Claude Code JSONL session files, analyzes them via the batch API, and hands extracted experiences to pbook's ExtractionWorkflow cross-queue for storage as playbook entries.
+Current status — completed and remaining requirements, plus known issues and technical debt — is in [docs/OVERVIEW.md](docs/OVERVIEW.md) (the status-of-record). Phase roadmap: [docs/PHASES.md](docs/PHASES.md). Live task list: [development-plans/TASKS.md](development-plans/TASKS.md).
 
 ## Cross-Project Dependencies
 
@@ -66,7 +66,7 @@ The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-s
 4. **Planning is the hard part.** Invest the most expensive models and highest token budgets in planning. Everything downstream is bounded by plan quality.
 5. **Halt when confused.** When the orchestrator encounters a situation it cannot classify, it stops and escalates to a human.
 6. **The LLM call is the universal primitive.** Every task is an instance of: construct message, send, receive, serialize, transition.
-7. **Follow Temporal best practices.** Before planning changes that touch Temporal workflows, activities, or worker configuration, check [Temporal Best Practices](https://docs.temporal.io/best-practices) and [docs/planning/WORKERS.md](docs/planning/WORKERS.md) to ensure the approach aligns with Temporal's guidance.
+7. **Follow Temporal best practices.** Before planning changes that touch Temporal workflows, activities, or worker configuration, check [Temporal Best Practices](https://docs.temporal.io/best-practices) and [docs/operations/WORKERS.md](docs/operations/WORKERS.md) to ensure the approach aligns with Temporal's guidance.
 
 ## Test Patterns
 
@@ -80,7 +80,7 @@ Cross-queue workflow tests (e.g., ingestion) run two `Worker` instances in paral
 
 ## The Universal Workflow Step
 
-Every operation follows: construct message, send to LLM, receive response, serialize result, evaluate transition. Temporal provides the workflow engine; the LLM call and transition evaluation are separate activities. Every LLM call is structured as a document completion for batch API compatibility. See [docs/planning/DESIGN.md](docs/planning/DESIGN.md) for details.
+Every operation follows: construct message, send to LLM, receive response, serialize result, evaluate transition. Temporal provides the workflow engine; the LLM call and transition evaluation are separate activities. Every LLM call is structured as a document completion for batch API compatibility. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ## Git Strategy
 
@@ -95,12 +95,12 @@ Every operation follows: construct message, send to LLM, receive response, seria
 - **Planned** (`plan=True`): Planner decomposes task into ordered steps; each step commits on success.
 - **Fan-out** (planned steps with `sub_tasks`): Parallel child workflows per sub-task, gathered and merged by the parent.
 
-All modes include automatic context discovery (Phase 4), LLM-guided exploration (Phase 7), diff-based output (D50), and error-aware retries (Phase 8) by default. See [docs/planning/ARCHITECTURE.md](docs/planning/ARCHITECTURE.md) for details and CLI flags.
+All modes include automatic context discovery (Phase 4), LLM-guided exploration (Phase 7), diff-based output (D50), and error-aware retries (Phase 8) by default. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details and CLI flags.
 
 ## Release Roadmap
 
 - **Release 1** (current): Phases 1–14 — the core orchestrator with batch processing. Focus on hardening and confidence before expanding scope.
-- **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md).
+- **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md) and [docs/PHASES.md](docs/PHASES.md).
 
 ## Development Plans
 

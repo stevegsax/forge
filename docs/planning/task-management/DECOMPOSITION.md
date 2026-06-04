@@ -1,6 +1,8 @@
 # Task Decomposition Strategy
 
-**Status:** Draft
+> **⚠ Draft design — NOT IMPLEMENTED.** This document proposes a multi-transform DAG planner that has not been built. The shipped planner is the single-pass `src/forge/activities/planner.py` (`Plan` / `PlanStep`). None of the artifacts described below — `DecompositionWorkflow`, `PlanDAG`/`PlanNode`/`PlanEdge`, the plan database, the workflow-template tree, or the adversarial-judge pipeline — exist in the codebase (verified 2026-06-04). Tracked as future direction in [../../OVERVIEW.md](../../OVERVIEW.md). Do not treat any of it as current behavior.
+
+**Status:** Draft (proposed; not implemented)
 **Date:** 2026-03-06
 
 ---

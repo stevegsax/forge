@@ -10,6 +10,7 @@ docs/requirements/
 ├── task_execution.feature
 ├── planning.feature
 ├── fan_out.feature
+├── human_in_the_loop.feature
 ├── context_assembly.feature
 ├── exploration.feature
 ├── validation.feature
@@ -20,6 +21,8 @@ docs/requirements/
 ├── llm_providers.feature
 ├── knowledge_management.feature
 ├── ocr_pipeline.feature
+├── ocr_cli.feature
+├── ocr_web_api.feature
 ├── cli.feature
 └── observability.feature
 ```
@@ -74,6 +77,7 @@ Map scenarios to system capabilities:
 | `task_execution.feature` | Core workflow step, transitions, domains | `workflows.py`, `activities/transition.py`, `domains.py` |
 | `planning.feature` | Planner, step execution, sanity checks | `activities/planner.py`, `activities/sanity_check.py` |
 | `fan_out.feature` | Parallel sub-tasks, conflict resolution | `workflows.py`, `activities/conflict_resolution.py` |
+| `human_in_the_loop.feature` | Workflow pause/resume, structured human input *(not implemented)* | planned — only batch/OCR signals exist (`workflows.py`) |
 | `context_assembly.feature` | Import graph, PageRank, token budget | `activities/context.py`, `code_intel/` |
 | `exploration.feature` | LLM-guided exploration, 12 providers | `activities/exploration.py`, `providers.py` |
 | `validation.feature` | Fix-then-check, error-aware retries | `activities/validate.py`, `activities/context.py` |
@@ -84,8 +88,12 @@ Map scenarios to system capabilities:
 | `llm_providers.feature` | Provider abstraction, degradation | `llm_providers/` |
 | `knowledge_management.feature` | Extraction, playbooks, injection | `extraction_workflow.py`, `activities/extraction.py` |
 | `ocr_pipeline.feature` | OCR workflows, PDF chunking, blobs | `ocr/` |
+| `ocr_cli.feature` | OCR job listing/status CLI | `cli.py` (`ocr-jobs`), `ocr/workflow_list_jobs.py` |
+| `ocr_web_api.feature` | OCR OpenAPI web service, pagination *(not implemented)* | none — no web framework in repo |
 | `cli.feature` | CLI commands, flags, exit codes | `cli.py` |
 | `observability.feature` | SQLite store, 7 tables, migrations | `store.py` |
+
+> **Implementation status:** 16 of these 18 specs are implemented. `ocr_web_api.feature` and `human_in_the_loop.feature` describe capabilities that are **not yet built** — see [../OVERVIEW.md](../OVERVIEW.md).
 
 ## Conventions
 
