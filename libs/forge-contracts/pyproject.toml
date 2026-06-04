@@ -1,0 +1,34 @@
+[project]
+name = "forge-contracts"
+version = "0.1.0"
+description = "Shared wire contracts and platform primitives for Forge and its consumer apps (OCR, etc.)"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10.0",
+    "sqlalchemy>=2.0",
+    "temporalio>=1.9.0",
+    "boto3>=1.34",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forge_contracts"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "TCH", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+]
