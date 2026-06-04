@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import BaseModel
 from sax_llm.models import ProviderResponse
+from temporalio.exceptions import ApplicationError
 
 from pbook.llm import reset_provider, set_provider
 from pbook.workflow_steps import (
@@ -17,6 +18,14 @@ from pbook.workflow_steps import (
     reset_registry,
     resolve_output_type,
 )
+
+
+def _raising_provider(exc: BaseException) -> MagicMock:
+    """An LLMProvider whose call() raises ``exc``."""
+    provider = MagicMock()
+    provider.build_request_params.return_value = {"mock": True}
+    provider.call = AsyncMock(side_effect=exc)
+    return provider
 
 
 class _ToyResult(BaseModel):
@@ -206,3 +215,46 @@ class TestLLMChat:
         )
         kwargs = provider.build_request_params.call_args.kwargs
         assert kwargs["model"] == "claude-haiku-4-5-20251001"
+
+
+class TestLLMChatRetryClassification:
+    """An auth/config failure must surface as a non-retryable
+    ApplicationError so the bounded retry policy doesn't waste attempts;
+    every other provider error propagates unchanged (and stays retryable)."""
+
+    @pytest.mark.asyncio
+    async def test_auth_error_raises_non_retryable_application_error(self):
+        register_output_type("ToyResult", _ToyResult)
+        set_provider(
+            _raising_provider(
+                TypeError(
+                    "Could not resolve authentication method. Expected "
+                    "either api_key or auth_token to be set."
+                ),
+            ),
+        )
+
+        with pytest.raises(ApplicationError) as excinfo:
+            await llm_chat(
+                LLMChatInput(
+                    system_prompt="s", user_prompt="u",
+                    output_type_name="ToyResult", model="anthropic:m",
+                ),
+            )
+
+        assert excinfo.value.non_retryable is True
+        assert excinfo.value.type == "TypeError"
+        assert isinstance(excinfo.value.__cause__, TypeError)
+
+    @pytest.mark.asyncio
+    async def test_transient_error_propagates_unwrapped(self):
+        register_output_type("ToyResult", _ToyResult)
+        set_provider(_raising_provider(ConnectionError("connection reset")))
+
+        with pytest.raises(ConnectionError, match="connection reset"):
+            await llm_chat(
+                LLMChatInput(
+                    system_prompt="s", user_prompt="u",
+                    output_type_name="ToyResult", model="anthropic:m",
+                ),
+            )
