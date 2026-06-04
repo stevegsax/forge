@@ -1,6 +1,6 @@
 # Separate OCR into its own repo (Forge = Temporal platform, OCR = consumer)
 
-**Status:** NOT STARTED (plan only)
+**Status:** IN PROGRESS — Phase 0 (forge-contracts foundation)
 **Last updated:** 2026-06-04
 **Owner:** stevegsax
 
@@ -148,12 +148,16 @@ The split is correct only if the **soundness invariant** holds. Concretely:
   the constant. `uv lock`.
 
 ### Sub-tasks
-- [ ] Scaffold `forge-contracts` package (pyproject, src layout, README).
-- [ ] Move `s3_blobs` to contracts; re-point `forge.store` blob funcs; delete `forge.ocr.s3_blobs`.
-- [ ] Move `UTCDateTime`, connect helper (+ namespace const), `persist_block` + presets.
-- [ ] Define `BatchResult` (+`s3_key`), `BatchJobStatus` (narrowed), submit-SPI request, `batch_jobs` read model.
+- [x] Scaffold `forge-contracts` package (pyproject, src layout, README).
+- [x] Move `s3_blobs` to contracts; re-point `forge.store` (6 sites); delete `forge.ocr.s3_blobs`.
+- [x] Wire forge editable pin (`[tool.uv.sources]`); `uv lock`/`uv sync`; forge imports from contracts.
+- [x] Move `UTCDateTime` → `forge_contracts.types`; re-point `forge.store`.
+- [ ] Move the Temporal connect helper (`connect_temporal` + `build_tls_config`) + namespace const.
+- [ ] Move `persist_block` + retry/timeout presets (each repo registers its own `persist_to_store`).
 - [ ] Define queue/namespace/signal constants; replace bare literals in forge.
-- [ ] Wire forge editable pin; `uv lock`; forge imports from contracts.
+- [ ] ~~Define `BatchResult` (+`s3_key`), `BatchJobStatus` (narrowed)~~ **→ moved to Phase 1**: the
+  shape changes can't be done in isolation (consumers updated in lockstep). The submit-SPI request +
+  `batch_jobs` read model are likewise introduced when Phase 1 adds the opaque-blob submit.
 
 ### Tests / Verification
 - `rg "forge\.ocr\.s3_blobs" src/forge` → only inside `ocr/` (cycle from `store.py` gone).
@@ -441,3 +445,19 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   and the B1–B6 adversarial sweep (`wkwh24osi`). Nothing implemented. Prereqs already
   landed: client retries disabled + OCR wait-timeout caught (commit `7cce5dc`); pbook
   ingest API fix (commit `a981d2a`).
+- 2026-06-04 — **Phase 0 foundation landed & green** (full forge suite: 1499 passed;
+  forge-contracts standalone: 4 tests, ruff clean). Done: scaffolded `forge-contracts`
+  (deps pydantic/sqlalchemy/temporalio/boto3); moved `s3_blobs` — the
+  `store → ocr.s3_blobs` cycle is **broken** (`store.py` no longer imports `forge.ocr`);
+  moved `UTCDateTime` → `forge_contracts.types` (re-imported into `store.py`, so
+  `forge.store.UTCDateTime` still resolves for existing callers/tests); added the
+  forge-contracts editable pin + `uv lock` (resolved clean — the memory-noted uv-lock
+  risk is git-pinning, not local editable). **Decisions:** kept the `FORGE_OCR_S3_*` env
+  names (generalization deferred); left `boto3` in forge deps (its blob-test imports need
+  it transitively; removal deferred to Phase 5); added `boto3` to forge-contracts.
+  **Sequencing correction discovered during impl:** the wire-model SHAPE changes
+  (`BatchResult` +`s3_key`; `BatchJobStatus` narrowing) were slated for Phase 0 but cannot
+  be done safely in isolation — their consumers (poller, `batch_submit_and_wait`, store
+  validation) must change in lockstep, which is Phase 1 work → moved to Phase 1.
+  **Remaining Phase 0:** Temporal connect helper, `persist_block` + presets, constants
+  (+ replace bare literals).

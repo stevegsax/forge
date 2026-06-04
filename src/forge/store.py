@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
+from forge_contracts.types import UTCDateTime
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -54,38 +55,6 @@ logger = logging.getLogger(__name__)
 
 class StoreConfigError(RuntimeError):
     """The observability store is misconfigured (e.g. ``FORGE_DB_URL`` unset)."""
-
-
-# ---------------------------------------------------------------------------
-# Custom SQLAlchemy types
-# ---------------------------------------------------------------------------
-
-
-class UTCDateTime(sa.types.TypeDecorator):
-    """Always-UTC DateTime column type.
-
-    SQLite cannot preserve tzinfo on DateTime columns, so we normalize
-    to UTC on the way in (stripping tz for storage) and re-attach UTC
-    on the way out. Naive inputs are assumed to already be UTC, per
-    project convention. Callers always receive tz-aware UTC datetimes.
-    """
-
-    impl = sa.DateTime
-    cache_ok = True
-
-    def process_bind_param(self, value, dialect):
-        if value is None:
-            return None
-        if value.tzinfo is not None:
-            return value.astimezone(UTC).replace(tzinfo=None)
-        return value
-
-    def process_result_value(self, value, dialect):
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +863,7 @@ def save_file_content(
     Uploads to S3 first (so a DB failure leaves only a harmless orphan object,
     never a row pointing at missing bytes). An unset bucket or S3 error raises.
     """
-    from forge.ocr import s3_blobs
+    from forge_contracts import s3_blobs
 
     s3_key = s3_blobs.build_key(content_id)
     s3_blobs.put(s3_key, data, mime_type)
@@ -918,7 +887,7 @@ def get_file_content(engine: Engine, content_id: str) -> dict | None:
     ``data`` key holding the bytes fetched from S3 (preserving the historical
     byte-out shape for callers). An S3 fetch error raises.
     """
-    from forge.ocr import s3_blobs
+    from forge_contracts import s3_blobs
 
     t = FileContentBlob.__table__
     stmt = t.select().where(t.c.id == content_id)
@@ -934,7 +903,7 @@ def get_file_content(engine: Engine, content_id: str) -> dict | None:
 
 def delete_file_content(engine: Engine, content_id: str) -> None:
     """Delete file content by ID, removing both the DB row and the S3 object."""
-    from forge.ocr import s3_blobs
+    from forge_contracts import s3_blobs
 
     t = FileContentBlob.__table__
     with engine.begin() as conn:
@@ -969,7 +938,7 @@ def save_ocr_image(
     Uploads to S3 first (a DB failure leaves only a harmless orphan object). An
     unset bucket or S3 error raises.
     """
-    from forge.ocr import s3_blobs
+    from forge_contracts import s3_blobs
 
     s3_key = s3_blobs.build_key(image_id)
     s3_blobs.put(s3_key, data, mime_type)
@@ -1048,7 +1017,7 @@ def get_ocr_images(engine: Engine, document_id: str) -> list[dict]:
 
 def get_ocr_image(engine: Engine, image_id: str) -> dict | None:
     """Get a single image, fetching its bytes from S3 under the ``data`` key."""
-    from forge.ocr import s3_blobs
+    from forge_contracts import s3_blobs
 
     t = OcrImage.__table__
     stmt = t.select().where(t.c.id == image_id)
@@ -1066,7 +1035,7 @@ def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> No
     """Delete OCR images by document IDs, removing both rows and S3 objects."""
     if not document_ids:
         return
-    from forge.ocr import s3_blobs
+    from forge_contracts import s3_blobs
 
     t = OcrImage.__table__
     with engine.begin() as conn:

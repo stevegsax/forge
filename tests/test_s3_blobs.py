@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING
 import boto3
 import pytest
 from botocore.exceptions import ClientError
+from forge_contracts import s3_blobs
+from forge_contracts.s3_blobs import S3ConfigError
 
-from forge.ocr import s3_blobs
-from forge.ocr.s3_blobs import S3ConfigError
 from forge.store import (
     delete_file_content,
     delete_ocr_images_by_document,
