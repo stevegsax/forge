@@ -14,6 +14,12 @@ from forge_contracts.models import (
 from forge_contracts.models import (
     BatchResult as BatchResult,
 )
+from forge_contracts.models import (
+    BatchSubmitResult as BatchSubmitResult,
+)
+from forge_contracts.models import (
+    BatchSubmitSpiInput as BatchSubmitSpiInput,
+)
 from pydantic import BaseModel, Field
 
 ThinkingEffort = Literal["low", "medium", "high", "max"]
@@ -1046,17 +1052,6 @@ class BatchSubmitInput(BaseModel):
     workflow_id: str = Field(description="Temporal workflow ID for audit linkage.")
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     max_tokens: int = Field(default=4096, description="Max output tokens.")
-
-
-class BatchSubmitResult(BaseModel):
-    """Output of submit_batch_request activity."""
-
-    request_id: str = Field(description="UUID used as Anthropic custom_id.")
-    batch_id: str = Field(description="Anthropic batch ID (msgbatch_...).")
-    provider: str = Field(
-        default="anthropic",
-        description="Provider name, threaded to the workflow so it can persist the submission.",
-    )
 
 
 class ParseResponseInput(BaseModel):
