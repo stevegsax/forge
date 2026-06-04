@@ -66,11 +66,25 @@ class OcrStoreWorkflow:
             input.document_id,
         )
 
-        # Step 1: Wait for batch result signal
-        await workflow.wait_condition(
-            lambda: len(self._batch_results) > 0,
-            timeout=_BATCH_WAIT_TIMEOUT,
-        )
+        # Step 1: Wait for batch result signal. If the poller never delivers
+        # within the window (a genuinely stuck provider batch), wait_condition
+        # raises TimeoutError *inside* the workflow — catch it, record a clean
+        # terminal failure on the batch_jobs row, and surface an
+        # ApplicationError instead of dying with a raw timeout that leaves the
+        # row stuck. (A workflow execution timeout is not catchable, so the
+        # safety net has to live here.) input.request_id is the batch_jobs PK,
+        # available before any signal arrives.
+        try:
+            await workflow.wait_condition(
+                lambda: len(self._batch_results) > 0,
+                timeout=_BATCH_WAIT_TIMEOUT,
+            )
+        except TimeoutError as exc:
+            await self._mark_errored(
+                input.request_id,
+                f"OCR batch wait timed out after {_BATCH_WAIT_TIMEOUT}",
+            )
+            raise ApplicationError("OCR batch wait timed out") from exc
         result = self._batch_results.pop(0)
         request_id = result.request_id
 

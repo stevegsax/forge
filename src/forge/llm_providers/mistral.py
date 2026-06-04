@@ -216,9 +216,17 @@ class MistralProvider:
 
     def __init__(self) -> None:
         from mistralai import Mistral
+        from mistralai.utils.retries import BackoffStrategy, RetryConfig
 
         api_key = os.environ.get("MISTRAL_API_KEY", "")
-        self._client = Mistral(api_key=api_key)
+        # Retries belong to Temporal's activity RetryPolicy, not the SDK. A
+        # "none" strategy disables the client's own retry loop so it can't stack
+        # on top of (and hide failures from) Temporal's durable retries. The
+        # backoff values are required by the dataclass but unused when disabled.
+        self._client = Mistral(
+            api_key=api_key,
+            retry_config=RetryConfig("none", BackoffStrategy(1, 50, 1.1, 100), False),
+        )
 
     def build_request_params(
         self,
