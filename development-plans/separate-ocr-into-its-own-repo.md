@@ -1,6 +1,9 @@
 # Separate OCR into its own repo (Forge = Temporal platform, OCR = consumer)
 
-**Status:** IN PROGRESS — Phase 0 (forge-contracts foundation)
+**Status:** IN PROGRESS — Phase 0 done; OCR-out cut underway. **Execution reordered**
+(approved): do the OCR extraction (Phase 2) BEFORE platform de-contamination (Phase 1),
+because Phase 1's symbol removals break in-repo OCR at import time — the two are one
+big-bang cut, OCR-out-first. Running increment-by-increment.
 **Last updated:** 2026-06-04
 **Owner:** stevegsax
 
@@ -477,3 +480,13 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   **Phase 0 is now effectively complete** except the two deferred items above (both intentionally
   moved to Phase 1). Note: Pyright LSP shows `forge_contracts` as unresolved in forge files — an
   LSP venv-config artifact only; `uv run`, ruff, and the test suite all resolve the editable install.
+- 2026-06-04 — **Reorder approved + OCR-out cut increment (a) landed & green** (full forge
+  suite: 1499 passed). Discovered that Phase 1's substantive changes (narrow `BatchJobStatus`,
+  strip the poller, drop `batch_jobs` columns, remove `PersistOcrResult`) break the in-repo OCR
+  code at IMPORT time, so Phase 1 and Phase 2 are one atomic big-bang cut — reordered to
+  OCR-out-first, increment-by-increment. **Increment (a):** relocated the wire models
+  `BatchResult` (with the new optional `s3_key` field) and `BatchJobStatus` →
+  `forge_contracts.models`; `forge.models` re-exports them (verified `forge.models.BatchResult
+  is forge_contracts.models.BatchResult`). `BatchJobStatus` kept FULL for now — narrowing waits
+  until OCR is out (it still writes SUCCEEDED/STORING/ERRORED). Next: increment (b) — scaffold
+  the `ocr` repo, move `src/forge/ocr/` + the OCR store, rewrite imports to contracts/local.
