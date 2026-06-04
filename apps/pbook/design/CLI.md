@@ -10,6 +10,14 @@ pbook worker [--temporal-address localhost:7233]
 
 Start the pbook Temporal worker. Connects to the Temporal server, registers all workflows and activities, and runs until interrupted. Registers the Anthropic LLM provider via sax-llm at startup.
 
+Required environment:
+
+- `PBOOK_DATABASE_URL` — Postgres connection string (migrations run once at startup; activities are no-ops without it).
+- `ANTHROPIC_API_KEY` — the sax-llm provider for extraction, review, and consolidation.
+- `OPENAI_API_KEY` — embeddings (`text-embedding-3-small`).
+
+Both API keys are required. A missing or invalid key makes the LLM activities fail fast and non-retryably, so the calling workflow fails and the ingestion session flips to `error` (rather than hanging at `running`).
+
 ## Entry management
 
 ### List entries

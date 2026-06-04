@@ -4,7 +4,7 @@ pbook is designed to be consumed by other projects. Clients interact with pbook 
 
 ## Temporal workflow API
 
-Clients call pbook workflows via cross-queue workflow execution on `pbook-task-queue`. The pbook worker must be running.
+Clients call pbook workflows via cross-queue workflow execution on `pbook-task-queue`. The pbook worker must be running, with `PBOOK_DATABASE_URL` and both LLM API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) set in its environment — see the worker section of [CLI.md](CLI.md).
 
 ### Retrieving playbook entries
 
@@ -163,7 +163,7 @@ provider = get_provider("anthropic:claude-haiku-4-5-20251001")
 set_provider(provider)
 ```
 
-See the sax-llm project documentation for provider configuration and available models.
+See the sax-llm project documentation for provider configuration and available models. Operations that embed text (extraction, manual entry, retrieval by free-text query, consolidation) additionally require `OPENAI_API_KEY` for `text-embedding-3-small`; the Anthropic provider above does not cover embeddings.
 
 ## Planned: SKILL.md interface
 
