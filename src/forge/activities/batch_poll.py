@@ -15,6 +15,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from forge_contracts.constants import BATCH_RESULT_SIGNAL
 from sax_llm.models import BatchPollStatus
 from temporalio import activity
 
@@ -130,7 +131,7 @@ async def execute_poll_batch_results(
             )
             try:
                 handle = temporal_client.get_workflow_handle(workflow_id)
-                await handle.signal("batch_result_received", signal)
+                await handle.signal(BATCH_RESULT_SIGNAL, signal)
                 signals_sent += 1
             except Exception:
                 logger.warning(
@@ -185,7 +186,7 @@ async def execute_poll_batch_results(
 
             try:
                 handle = temporal_client.get_workflow_handle(workflow_id)
-                await handle.signal("batch_result_received", signal)
+                await handle.signal(BATCH_RESULT_SIGNAL, signal)
                 job_signals += 1
                 signals_sent += 1
             except Exception:

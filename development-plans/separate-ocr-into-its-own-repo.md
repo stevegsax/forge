@@ -152,9 +152,14 @@ The split is correct only if the **soundness invariant** holds. Concretely:
 - [x] Move `s3_blobs` to contracts; re-point `forge.store` (6 sites); delete `forge.ocr.s3_blobs`.
 - [x] Wire forge editable pin (`[tool.uv.sources]`); `uv lock`/`uv sync`; forge imports from contracts.
 - [x] Move `UTCDateTime` → `forge_contracts.types`; re-point `forge.store`.
-- [ ] Move the Temporal connect helper (`connect_temporal` + `build_tls_config`) + namespace const.
-- [ ] Move `persist_block` + retry/timeout presets (each repo registers its own `persist_to_store`).
-- [ ] Define queue/namespace/signal constants; replace bare literals in forge.
+- [x] Move the Temporal connect helper (`connect_temporal` + `build_tls_config`) → `forge_contracts.temporal`;
+  `forge.temporal_client` is now a re-export shim. `connect_temporal` takes `namespace=TEMPORAL_NAMESPACE`.
+- [x] Define queue/namespace/signal constants (`forge_contracts.constants`); re-point the `batch_result_received`
+  sender in `batch_poll.py` to `BATCH_RESULT_SIGNAL`. (FORGE_TASK_QUEUE single-sourcing deferred — forge's
+  literal already equals the contracts value; re-pointing the sandboxed `workflows.py` is low-value churn.)
+- [ ] Move `persist_block` + retry/timeout presets — **DEFERRED to Phase 1**: `persist_block`'s
+  `PersistRequest`/`PersistResult` embed OCR variants that Phase 1 removes; moving it cleanly waits for that
+  (each repo then registers its own `persist_to_store`).
 - [ ] ~~Define `BatchResult` (+`s3_key`), `BatchJobStatus` (narrowed)~~ **→ moved to Phase 1**: the
   shape changes can't be done in isolation (consumers updated in lockstep). The submit-SPI request +
   `batch_jobs` read model are likewise introduced when Phase 1 adds the opaque-blob submit.
@@ -461,3 +466,14 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   validation) must change in lockstep, which is Phase 1 work → moved to Phase 1.
   **Remaining Phase 0:** Temporal connect helper, `persist_block` + presets, constants
   (+ replace bare literals).
+- 2026-06-04 — **Phase 0 increment 0.2 landed & green** (full forge suite: 1499 passed;
+  forge-contracts ruff clean). Moved the Temporal connect helper → `forge_contracts.temporal`
+  (`forge.temporal_client` is now a thin re-export shim; `connect_temporal` gained an explicit
+  `namespace=TEMPORAL_NAMESPACE` — value `"default"`, identical to the prior implicit default).
+  Added `forge_contracts.constants` (TEMPORAL_NAMESPACE, FORGE_TASK_QUEUE, OCR_TASK_QUEUE,
+  BATCH_RESULT_SIGNAL) and re-pointed the `batch_poll.py` signal sender to `BATCH_RESULT_SIGNAL`.
+  **Deferred (with rationale):** `persist_block` → Phase 1 (PersistRequest entanglement);
+  FORGE_TASK_QUEUE single-sourcing (sandboxed `workflows.py`, low value — literal already matches).
+  **Phase 0 is now effectively complete** except the two deferred items above (both intentionally
+  moved to Phase 1). Note: Pyright LSP shows `forge_contracts` as unresolved in forge files — an
+  LSP venv-config artifact only; `uv run`, ruff, and the test suite all resolve the editable install.
