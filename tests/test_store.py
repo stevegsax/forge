@@ -400,6 +400,30 @@ class TestRunMigrations:
         run_migrations(url)
         run_migrations(url)  # Should not raise
 
+    def test_percent_encoded_url_round_trips_through_alembic(self) -> None:
+        """Percent-encoded URL parts (e.g. special chars in a Supabase password)
+        must not trip ConfigParser interpolation, and must read back unchanged.
+
+        Without escaping, ``cfg.set_main_option`` raises ``ValueError: invalid
+        interpolation syntax`` on the ``%23``/``%21``/``%40`` in the password.
+        """
+        from unittest.mock import patch
+
+        url = (
+            "postgresql+psycopg2://user:p%23ss%21word%40h@"
+            "host.pooler.supabase.com:5432/postgres"
+        )
+        captured: dict[str, str | None] = {}
+
+        def _capture(cfg: object, _revision: str) -> None:
+            captured["url"] = cfg.get_main_option("sqlalchemy.url")  # type: ignore[attr-defined]
+
+        with patch("alembic.command.upgrade", side_effect=_capture):
+            run_migrations(url)
+
+        # ConfigParser interpolation restores the doubled '%%' back to '%'.
+        assert captured["url"] == url
+
 
 # ---------------------------------------------------------------------------
 # build_playbook_dict

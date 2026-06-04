@@ -382,7 +382,11 @@ def run_migrations(url: str) -> None:
 
     if make_url(url).get_backend_name() == "sqlite":
         _ensure_sqlite_parent(url)
-    cfg.set_main_option("sqlalchemy.url", url)
+    # Alembic stores the URL in a ConfigParser, which treats '%' as interpolation
+    # syntax. Percent-encoded URL components (e.g. special characters in a
+    # Supabase password like '%23' for '#') must be escaped to '%%' so they
+    # round-trip back to the literal '%' when env.py reads the option.
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
     command.upgrade(cfg, "head")
 
 
