@@ -512,3 +512,20 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   (own env.py + version_table + include_object) deferred to the migrations increment; tests use
   `Base.metadata.create_all` meanwhile. Next (b part 2b): move the OCR package files
   (`workflow_*.py`, `activities.py`, `models.py`), rewrite imports, delete the sync path.
+- 2026-06-04 — **Increment (b) part 2b landed (leaf subset)** — ocr import-clean, ruff clean
+  (`rg "forge\."` in ocr/src → only `forge_contracts`/`sax_llm`/local). COPIED (forge untouched
+  & green) + import-rewrote the cleanly-movable files into `ocr/src/ocr/`: `models.py` (sync model
+  classes `OcrSyncInput`/`OcrSyncCallResult` deleted), `workflow_export/gather/list_jobs/
+  mark_removal/store.py`. Added `ocr/persist.py` (the retry/timeout presets `workflow_store` uses;
+  `persist_block` itself is Phase-3). Import rewrites: `forge.store`→`ocr.store`,
+  `forge.models`→`forge_contracts.models`, `forge.ocr.models`→`ocr.models`,
+  `forge.workflow_blocks`→`ocr.persist`.
+  **DEFERRED — `activities.py` + `workflow_submit.py` are inseparable from the cross-queue
+  re-architecture** (Phase 3), not a mechanical move: they're built on the old model (OCR writes
+  `batch_jobs` via `persist_block`/`PersistBatchSubmission`, `update_batch_status`; `execute_list_ocr_jobs`
+  joins the platform `BatchJob` table; the submit path calls the provider directly). Re-creating that
+  machinery OCR-side would be throwaway — instead the submit→platform-SPI, the batch_jobs read model,
+  the status-write redirect to `ocr_job_status`, and the sync-path deletion in `activities.py` happen
+  together in the cross-queue/de-contamination increment. The raw copies were removed from ocr to
+  avoid leaving forge-importing files. **The remaining OCR-out + Phase-1 + Phase-3 work is one
+  coordinated re-architecture, no longer a clean mechanical-move increment.**
