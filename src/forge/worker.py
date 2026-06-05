@@ -22,6 +22,10 @@ from temporalio.client import (
     ScheduleUpdateInput,
 )
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import (
+    SandboxedWorkflowRunner,
+    SandboxRestrictions,
+)
 
 from forge.activities import (
     assemble_conflict_resolution_context,
@@ -53,6 +57,7 @@ from forge.activities import (
     reset_worktree_activity,
     review_manual_playbook,
     save_extraction_results,
+    submit_batch_blob,
     submit_batch_request,
     validate_output,
     validate_playbook_entry,
@@ -76,38 +81,25 @@ except ImportError:
     TranscriptIngestionWorkflow = None  # type: ignore[assignment,misc]
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
-from forge.ocr.activities import (
-    call_ocr_sync,
-    check_ocr_duplicate,
-    clear_ocr_removal_mark,
-    delete_file_content_blob,
-    export_ocr_document,
-    list_ocr_jobs,
-    mark_ocr_for_removal,
-    parse_ocr_result,
-    read_and_store_file_content,
-    reassemble_ocr_chunks,
-    split_file_into_chunks,
-    store_ocr_result,
-    submit_ocr_batch,
-    update_batch_job_status,
-)
-from forge.ocr.workflow_export import OcrExportWorkflow
-from forge.ocr.workflow_gather import OcrGatherWorkflow
-from forge.ocr.workflow_list_jobs import OcrListJobsWorkflow
-from forge.ocr.workflow_mark_removal import (
-    OcrClearRemovalMarkWorkflow,
-    OcrMarkForRemovalWorkflow,
-)
-from forge.ocr.workflow_store import OcrStoreWorkflow
-from forge.ocr.workflow_submit import OcrSubmitWorkflow
-from forge.ocr.workflow_sync import OcrSyncWorkflow
 from forge.temporal_client import connect_temporal
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
 logger = logging.getLogger(__name__)
+
+# Pass the pydantic native modules through the workflow sandbox. The shared
+# pydantic data converter serializes workflow args/results, so pydantic_core (the
+# Rust extension) gets imported lazily the first time a model is (de)serialized
+# inside a workflow run — after the sandbox has snapshotted its modules, which
+# triggers a "imported after initial workflow load" UserWarning. Reusing the
+# host's already-loaded modules is safe (they're deterministic) and silences it.
+_SANDBOX_RUNNER = SandboxedWorkflowRunner(
+    restrictions=SandboxRestrictions.default.with_passthrough_modules(
+        "pydantic",
+        "pydantic_core",
+    )
+)
 
 
 def _init_store() -> None:
@@ -257,14 +249,6 @@ async def run_worker(
         ExportPlaybookWorkflow,
         ManualPlaybookWorkflow,
         BatchPollerWorkflow,
-        OcrSubmitWorkflow,
-        OcrSyncWorkflow,
-        OcrStoreWorkflow,
-        OcrGatherWorkflow,
-        OcrExportWorkflow,
-        OcrListJobsWorkflow,
-        OcrMarkForRemovalWorkflow,
-        OcrClearRemovalMarkWorkflow,
     ]
     if _INGESTION_AVAILABLE:
         assert TranscriptIngestionWorkflow is not None
@@ -303,26 +287,12 @@ async def run_worker(
         reset_worktree_activity,
         review_manual_playbook,
         save_extraction_results,
+        submit_batch_blob,
         submit_batch_request,
         validate_output,
         validate_playbook_entry,
         write_files,
         write_output,
-        # OCR activities
-        list_ocr_jobs,
-        call_ocr_sync,
-        check_ocr_duplicate,
-        clear_ocr_removal_mark,
-        delete_file_content_blob,
-        export_ocr_document,
-        mark_ocr_for_removal,
-        read_and_store_file_content,
-        split_file_into_chunks,
-        submit_ocr_batch,
-        parse_ocr_result,
-        store_ocr_result,
-        update_batch_job_status,
-        reassemble_ocr_chunks,
     ]
     if _INGESTION_AVAILABLE:
         assert prepare_transcript is not None
@@ -333,6 +303,7 @@ async def run_worker(
         task_queue=FORGE_TASK_QUEUE,
         workflows=workflows,
         activities=activities,
+        workflow_runner=_SANDBOX_RUNNER,
         graceful_shutdown_timeout=timedelta(seconds=30),
     )
 

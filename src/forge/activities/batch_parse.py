@@ -72,11 +72,25 @@ async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
         logger.info(
             "Parse response: task_id=%s output_type=%s", input.task_id, input.output_type_name
         )
+        # The body arrives inline or via an S3 pointer (a result envelope); fetch
+        # and unwrap when only s3_key is set. The generic path ignores any images.
+        if input.s3_key is not None:
+            from forge_contracts.models import BatchResult, resolve_batch_result
+
+            raw_json, _images = resolve_batch_result(
+                BatchResult(request_id="", batch_id="", s3_key=input.s3_key, result_type="")
+            )
+        else:
+            raw_json = input.raw_response_json
+        if raw_json is None:
+            msg = "parse_llm_response: no body resolved (both raw_response_json and s3_key empty)"
+            raise ValueError(msg)
+
         if input.log_messages and input.worktree_path:
-            write_message_log(input.worktree_path, "response", input.raw_response_json)
+            write_message_log(input.worktree_path, "response", raw_json)
 
         result = execute_parse_llm_response(
-            input.raw_response_json,
+            raw_json,
             input.output_type_name,
             provider_name=input.provider,
         )

@@ -5,6 +5,21 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
+# BatchResult and BatchJobStatus are the cross-queue wire contract; they now live
+# in forge-contracts and are re-exported here so existing `from forge.models
+# import ...` call sites keep working.
+from forge_contracts.models import (
+    BatchJobStatus as BatchJobStatus,
+)
+from forge_contracts.models import (
+    BatchResult as BatchResult,
+)
+from forge_contracts.models import (
+    BatchSubmitResult as BatchSubmitResult,
+)
+from forge_contracts.models import (
+    BatchSubmitSpiInput as BatchSubmitSpiInput,
+)
 from pydantic import BaseModel, Field
 
 ThinkingEffort = Literal["low", "medium", "high", "max"]
@@ -1029,56 +1044,6 @@ class ExtractionWorkflowResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class BatchJobStatus(StrEnum):
-    """Lifecycle state of a batch_jobs row.
-
-    Happy path: SUBMITTED -> STORING -> SUCCEEDED.
-
-    Failure paths:
-    - FAILED: provider API refused the submission before returning a batch_id.
-    - ERRORED: per-entry failure from the provider, or the parse/store step
-      raised after signal delivery.
-    - EXPIRED / CANCELED: terminal provider states propagated from
-      BatchPollStatus.
-    - MISSING: batch unretrievable after 24h; the poller gave up.
-    """
-
-    SUBMITTED = "submitted"
-    """Row created; batch in flight at the provider, waiting for completion."""
-
-    STORING = "storing"
-    """Provider reported the batch complete and the poller delivered the
-    result signal to the waiting workflow. Parse + write to ``ocr_results``
-    (or the equivalent consumer for non-OCR batches) is in progress. A row
-    stuck in this state past the store workflow's retry budget is a genuine
-    failure."""
-
-    SUCCEEDED = "succeeded"
-    """End-to-end complete: the downstream consumer (e.g. OcrStoreWorkflow)
-    has committed its output. Only the consumer writes this value, and only
-    after its write succeeds."""
-
-    ERRORED = "errored"
-    """Per-entry failure from the provider, or the parse/store step raised
-    after signal delivery."""
-
-    FAILED = "failed"
-    """Provider API refused the submission before returning a batch_id.
-    Written by ``record_batch_failure`` when the submit activity raises."""
-
-    EXPIRED = "expired"
-    """Provider marked the batch as expired. Written from
-    ``poll_result.status.value`` in the poller's terminal-failure branch."""
-
-    CANCELED = "canceled"
-    """Provider marked the batch as canceled. Written from
-    ``poll_result.status.value`` in the poller's terminal-failure branch."""
-
-    MISSING = "missing"
-    """Batch unretrievable after 24h. The poller gave up and marked the row
-    so it stops being re-polled."""
-
-
 class BatchSubmitInput(BaseModel):
     """Input to the submit_batch_request activity."""
 
@@ -1089,31 +1054,16 @@ class BatchSubmitInput(BaseModel):
     max_tokens: int = Field(default=4096, description="Max output tokens.")
 
 
-class BatchSubmitResult(BaseModel):
-    """Output of submit_batch_request activity."""
-
-    request_id: str = Field(description="UUID used as Anthropic custom_id.")
-    batch_id: str = Field(description="Anthropic batch ID (msgbatch_...).")
-    provider: str = Field(
-        default="anthropic",
-        description="Provider name, threaded to the workflow so it can persist the submission.",
-    )
-
-
-class BatchResult(BaseModel):
-    """Signal payload for delivering a batch result to a waiting workflow (14b)."""
-
-    request_id: str
-    batch_id: str
-    raw_response_json: str | None = None
-    error: str | None = None
-    result_type: str = Field(description="Output type name for deserialization.")
-
-
 class ParseResponseInput(BaseModel):
-    """Input to a parse activity that deserializes a batch response (14b)."""
+    """Input to a parse activity that deserializes a batch response (14b).
 
-    raw_response_json: str
+    The result body travels either inline (``raw_response_json``) or by reference
+    (``s3_key``, fetched by the activity); exactly one is set. ``s3_key`` points at
+    a result envelope, so the activity unwraps it before parsing.
+    """
+
+    raw_response_json: str | None = None
+    s3_key: str | None = None
     output_type_name: str | None = None
     task_id: str
     provider: str = Field(default="anthropic", description="LLM provider name for parsing.")

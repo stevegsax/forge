@@ -12,8 +12,9 @@ Current status — completed and remaining requirements, plus known issues and t
 
 ## Cross-Project Dependencies
 
-Forge depends on two sibling editable packages (via `[tool.uv.sources]` in pyproject.toml):
+Forge depends on sibling editable packages (via `[tool.uv.sources]` in pyproject.toml):
 
+- **forge-contracts** (`../forge-contracts`) — the shared SPI surface between the platform and its consumer apps: batch wire models (`BatchResult`, `BatchSubmitSpiInput`, `BatchJobStatus`, the result-payload envelope), the survivable `persist_block` primitive, `s3_blobs`, the Temporal connect helper, generic DB helpers, queue/namespace/signal constants, and the read-only `batch_jobs` schema. Both Forge and the OCR app import it; neither imports the other.
 - **sax-llm** (`../sax-llm`) — shared LLM provider abstraction, output type registry, and batch response parsing.
 - **pbook** (`../pbook`, optional) — cross-project knowledge store. Forge's transcript ingestion workflows call pbook's `ExtractionWorkflow` and `record_ingested_session` activity cross-queue on `pbook-task-queue`. The dependency is guarded: if pbook is not installed, the worker starts without ingestion workflows and `forge ingest` exits with a clear error. Forge's own playbook store (`forge.db` `playbooks` table) is separate from pbook's `entries` table — the two stores are parallel and do not share data. See `diataxis/explanation/learning-loops.md` for the design discussion.
 

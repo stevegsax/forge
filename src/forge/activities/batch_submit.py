@@ -19,9 +19,15 @@ from sax_llm.models import text_messages
 from temporalio import activity
 
 from forge.message_log import write_message_log
-from forge.models import BatchSubmitInput, BatchSubmitResult
+
+# BatchSubmitResult is instantiated below (runtime); BatchSubmitInput/BatchSubmitSpiInput
+# are activity-parameter types Temporal resolves at registration, so all three must be
+# real runtime imports (not TYPE_CHECKING-guarded).
+from forge.models import BatchSubmitInput, BatchSubmitResult, BatchSubmitSpiInput
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sax_llm.protocol import LLMProvider
 
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
@@ -109,3 +115,61 @@ async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
         # Thread the provider back to the workflow, which persists the submission
         # survivably (Phase C) — the activity no longer writes to the store.
         return result.model_copy(update={"provider": provider_name})
+
+
+# ---------------------------------------------------------------------------
+# Opaque-blob submit SPI (Option 1) — the cross-queue batch service
+# ---------------------------------------------------------------------------
+
+
+async def execute_submit_batch_blob(
+    input: BatchSubmitSpiInput,
+    provider: LLMProvider,
+    fetch_blob: Callable[[str], bytes],
+) -> BatchSubmitResult:
+    """Fetch the pre-built request blob and submit it verbatim.
+
+    The platform never parses the body — it treats the blob as opaque, so the
+    submit path is domain-agnostic. Writes nothing: the caller records the
+    submission separately, so a provider submit and a ``batch_jobs`` write never
+    share a re-runnable activity (double-submit safety). Separated from the shell
+    so tests can inject a mock provider and a fake blob fetcher.
+    """
+    import json
+
+    raw = fetch_blob(input.s3_key)
+    requests = json.loads(raw.decode("utf-8"))
+    batch_id = await provider.submit_batch(requests, input.model, endpoint=input.endpoint)
+    return BatchSubmitResult(
+        request_id=input.custom_id,
+        batch_id=batch_id,
+        provider=input.provider,
+    )
+
+
+@activity.defn
+async def submit_batch_blob(input: BatchSubmitSpiInput) -> BatchSubmitResult:
+    """Activity: submit an opaque pre-built request blob to the provider.
+
+    Wires the real provider (by ``input.provider``) and S3 blob fetch. Used by
+    consumer apps (e.g. OCR) cross-queue; the generic in-platform path keeps its
+    own ``submit_batch_request`` builder.
+    """
+    from forge_contracts import s3_blobs
+    from sax_llm import get_provider_by_name
+
+    from forge.tracing import get_tracer
+
+    tracer = get_tracer()
+    with tracer.start_as_current_span("forge.submit_batch_blob") as span:
+        provider = get_provider_by_name(input.provider)
+        result = await execute_submit_batch_blob(input, provider, s3_blobs.get)
+        span.set_attributes(
+            {
+                "forge.batch.request_id": result.request_id,
+                "forge.batch.batch_id": result.batch_id,
+                "forge.batch.provider": input.provider,
+                "forge.batch.endpoint": input.endpoint or "",
+            }
+        )
+        return result

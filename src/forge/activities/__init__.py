@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from forge.activities.batch_parse import parse_llm_response
 from forge.activities.batch_poll import poll_batch_results
-from forge.activities.batch_submit import submit_batch_request
+from forge.activities.batch_submit import submit_batch_blob, submit_batch_request
 from forge.activities.conflict_resolution import (
     assemble_conflict_resolution_context,
     call_conflict_resolution,
@@ -78,6 +78,7 @@ __all__ = [
     "reset_worktree_activity",
     "review_manual_playbook",
     "save_extraction_results",
+    "submit_batch_blob",
     "submit_batch_request",
     "validate_output",
     "validate_playbook_entry",

@@ -27,9 +27,6 @@ _EXPECTED_TABLES = {
     "runs",
     "batch_jobs",
     "playbooks",
-    "ocr_results",
-    "file_content_blobs",
-    "ocr_images",
 }
 
 
@@ -67,13 +64,16 @@ def test_migrations_apply_cleanly_on_postgres(postgres_url: str) -> None:
         insp = sa.inspect(engine)
         assert set(insp.get_table_names()) >= _EXPECTED_TABLES
 
-        # Phase B: OCR blobs reference S3 — s3_key present, inline data dropped.
-        for table in ("file_content_blobs", "ocr_images"):
-            cols = {c["name"] for c in insp.get_columns(table)}
-            assert "s3_key" in cols, (table, cols)
-            assert "data" not in cols, (table, cols)
+        # The platform chain owns its own version table and no OCR tables.
+        assert "alembic_version_forge" in insp.get_table_names()
+        assert "ocr_results" not in insp.get_table_names()
 
-        # Phase C: idempotency_key added to interactions + playbooks.
+        # batch_jobs is generic — no OCR domain columns.
+        batch_cols = {c["name"] for c in insp.get_columns("batch_jobs")}
+        assert "file_path" not in batch_cols
+        assert "document_id" not in batch_cols
+
+        # idempotency_key present on interactions + playbooks.
         for table in ("interactions", "playbooks"):
             cols = {c["name"] for c in insp.get_columns(table)}
             assert "idempotency_key" in cols, (table, cols)

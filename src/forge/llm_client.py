@@ -257,5 +257,8 @@ def get_anthropic_client():
     if _client is None:
         from anthropic import AsyncAnthropic
 
-        _client = AsyncAnthropic()
+        # Retries belong to Temporal's activity RetryPolicy, not the SDK.
+        # max_retries=0 stops the client's own retry loop from stacking on top
+        # of (and hiding failures from) Temporal's durable retries.
+        _client = AsyncAnthropic(max_retries=0)
     return _client

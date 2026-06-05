@@ -20,7 +20,6 @@ from forge.persist_models import (
     PersistBatchStatus,
     PersistBatchSubmission,
     PersistInteraction,
-    PersistOcrResult,
     PersistPlaybooks,
     PersistRequest,
     PersistResult,
@@ -43,7 +42,6 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
         record_batch_failure,
         record_batch_submission,
         save_interaction,
-        save_ocr_result,
         save_playbooks,
         save_run,
         update_batch_status,
@@ -80,8 +78,6 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
                 batch_id=req.batch_id,
                 workflow_id=req.workflow_id,
                 provider=req.provider,
-                file_path=req.file_path,
-                document_id=req.document_id,
             )
         case PersistBatchFailure():
             applied = record_batch_failure(
@@ -90,8 +86,6 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
                 workflow_id=req.workflow_id,
                 error_message=req.error_message,
                 provider=req.provider,
-                file_path=req.file_path,
-                document_id=req.document_id,
             )
         case PersistBatchStatus():
             # A status transition is a plain UPDATE (no dedupe); always "applied".
@@ -102,20 +96,6 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
                 error_message=req.error_message,
             )
             applied = True
-        case PersistOcrResult():
-            applied = save_ocr_result(
-                engine,
-                document_id=req.document_id,
-                file_path=req.file_path,
-                text=req.text,
-                page_count=req.page_count,
-                model_name=req.model_name,
-                input_tokens=req.input_tokens,
-                output_tokens=req.output_tokens,
-                batch_id=req.batch_id,
-                workflow_id=req.workflow_id,
-                file_hash=req.file_hash,
-            )
         case PersistPlaybooks():
             dicts = [build_playbook_dict(e, req.extraction_workflow_id) for e in req.entries]
             applied = save_playbooks(engine, dicts)

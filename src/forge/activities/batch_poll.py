@@ -10,11 +10,12 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from forge_contracts.constants import BATCH_RESULT_SIGNAL
+from forge_contracts.models import dump_batch_result_payload
 from sax_llm.models import BatchPollStatus
 from temporalio import activity
 
@@ -29,20 +30,24 @@ from forge.models import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from sax_llm.models import ExtractedImage
     from temporalio.client import Client
 
 logger = logging.getLogger(__name__)
 
 _MISSING_THRESHOLD = timedelta(hours=24)
 
-_TERMINAL_FAILURE_STATUSES = frozenset(
-    {
-        BatchPollStatus.FAILED,
-        BatchPollStatus.EXPIRED,
-        BatchPollStatus.CANCELED,
-    }
-)
+# Deliver the result inline when small; stash to S3 and signal a pointer when the
+# payload is large or carries images (well under Temporal's signal payload limit).
+_INLINE_THRESHOLD_BYTES = 256 * 1024
+
+# Provider terminal-failure statuses → the generic batch_jobs failure state. The
+# coarse status needs no cancel/fail distinction, so CANCELED collapses to FAILED.
+_POLL_TO_JOB_STATUS = {
+    BatchPollStatus.FAILED: BatchJobStatus.FAILED,
+    BatchPollStatus.EXPIRED: BatchJobStatus.EXPIRED,
+    BatchPollStatus.CANCELED: BatchJobStatus.FAILED,
+}
+_TERMINAL_FAILURE_STATUSES = frozenset(_POLL_TO_JOB_STATUS)
 
 # ---------------------------------------------------------------------------
 # Module-global Temporal client (set by worker.py before activities run)
@@ -74,16 +79,23 @@ async def execute_poll_batch_results(
     pending_jobs: list[dict[str, Any]],
     temporal_client: Client,
     update_status_fn: Callable[..., None],
-    store_images_fn: Callable[[list[ExtractedImage], str], dict[str, str]] | None = None,
+    put_result_blob: Callable[[str, bytes], str],
+    *,
+    inline_threshold: int = _INLINE_THRESHOLD_BYTES,
 ) -> BatchPollerResult:
     """Poll LLM providers for batch results and signal waiting workflows.
+
+    Domain-agnostic: the poller forwards the verbatim provider result (the body
+    plus any images sax-llm extracted) to the waiting consumer and never stores or
+    decodes images itself. Small image-free results travel inline in the signal;
+    large or image-bearing results are stashed to a blob and delivered by pointer.
 
     Args:
         pending_jobs: Rows from get_pending_batch_jobs() (dicts with batch job fields).
         temporal_client: Temporal client for sending signals to workflows.
         update_status_fn: Callable to update batch job status in the store.
-        store_images_fn: Optional callable to store extracted OCR images.
-            Accepts a list of ExtractedImage, returns {original_image_id: uuid} mapping.
+        put_result_blob: Uploads ``(custom_id, bytes) -> s3_key`` for pointer delivery.
+        inline_threshold: Max inline payload size (bytes) before switching to a pointer.
     """
     from sax_llm import get_provider_by_name
 
@@ -130,7 +142,7 @@ async def execute_poll_batch_results(
             )
             try:
                 handle = temporal_client.get_workflow_handle(workflow_id)
-                await handle.signal("batch_result_received", signal)
+                await handle.signal(BATCH_RESULT_SIGNAL, signal)
                 signals_sent += 1
             except Exception:
                 logger.warning(
@@ -141,12 +153,9 @@ async def execute_poll_batch_results(
                 )
                 errors_found += 1
 
-            # BatchPollStatus.FAILED/EXPIRED/CANCELED values match the
-            # corresponding BatchJobStatus members by string value, so the
-            # raw .value is valid for the store column.
             update_status_fn(
                 request_id=request_id,
-                status=BatchJobStatus(poll_result.status.value),
+                status=_POLL_TO_JOB_STATUS[poll_result.status],
                 error_message=error_msg,
             )
             continue
@@ -157,23 +166,8 @@ async def execute_poll_batch_results(
         job_signals = 0
         for entry in poll_result.entries:
             if entry.succeeded:
-                raw_json = entry.raw_response_json
-                # Store extracted images before signaling (Temporal payload limit).
-                # Idempotent (deterministic image ids); a DB/S3 error propagates so
-                # the whole poll activity retries rather than dropping images.
-                if entry.extracted_images and store_images_fn is not None:
-                    image_mapping = store_images_fn(entry.extracted_images, entry.custom_id)
-                    # Embed mapping in raw_response_json for parse activity
-                    if image_mapping and raw_json:
-                        data = json.loads(raw_json)
-                        data["_image_mapping"] = image_mapping
-                        raw_json = json.dumps(data)
-
-                signal = BatchResult(
-                    request_id=entry.custom_id,
-                    batch_id=batch_id,
-                    raw_response_json=raw_json,
-                    result_type="succeeded",
+                signal = _build_success_signal(
+                    entry, batch_id, put_result_blob, inline_threshold
                 )
             else:
                 signal = BatchResult(
@@ -185,7 +179,7 @@ async def execute_poll_batch_results(
 
             try:
                 handle = temporal_client.get_workflow_handle(workflow_id)
-                await handle.signal("batch_result_received", signal)
+                await handle.signal(BATCH_RESULT_SIGNAL, signal)
                 job_signals += 1
                 signals_sent += 1
             except Exception:
@@ -197,12 +191,11 @@ async def execute_poll_batch_results(
                 )
                 errors_found += 1
 
-        # On signal delivery we advance the row to STORING — not SUCCEEDED.
-        # SUCCEEDED is reserved for the downstream store workflow to write
-        # after it has actually committed its output (e.g. ocr_results row).
-        # This prevents the list view from showing "done" for a submission
-        # whose store step later failed or is still in progress.
-        final_status = BatchJobStatus.STORING if job_signals > 0 else BatchJobStatus.ERRORED
+        # On signal delivery the provider lifecycle is done from the platform's
+        # view: advance to PROCESSING (handed to the consumer) so the poller stops
+        # re-polling. The consumer tracks its own stored/failed lifecycle in its
+        # own status table. No succeeded entry to deliver => terminal FAILED.
+        final_status = BatchJobStatus.PROCESSING if job_signals > 0 else BatchJobStatus.FAILED
         update_status_fn(request_id=request_id, status=final_status)
 
     result = BatchPollerResult(
@@ -216,6 +209,38 @@ async def execute_poll_batch_results(
         raise RuntimeError(msg)
 
     return result
+
+
+def _build_success_signal(
+    entry: Any,
+    batch_id: str,
+    put_result_blob: Callable[[str, bytes], str],
+    inline_threshold: int,
+) -> BatchResult:
+    """Build a succeeded BatchResult, choosing inline vs pointer delivery.
+
+    Images (or a large body) force pointer delivery: the verbatim body plus any
+    sax-llm-extracted images are wrapped in the result envelope and stashed; the
+    platform never decodes or stores the images itself.
+    """
+    body = entry.raw_response_json
+    images = [img.model_dump(mode="json") for img in entry.extracted_images]
+    too_big = body is not None and len(body.encode("utf-8")) > inline_threshold
+    if images or too_big:
+        envelope = dump_batch_result_payload(body, images)
+        s3_key = put_result_blob(entry.custom_id, envelope.encode("utf-8"))
+        return BatchResult(
+            request_id=entry.custom_id,
+            batch_id=batch_id,
+            s3_key=s3_key,
+            result_type="succeeded",
+        )
+    return BatchResult(
+        request_id=entry.custom_id,
+        batch_id=batch_id,
+        raw_response_json=body,
+        result_type="succeeded",
+    )
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -266,43 +291,15 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
                 error_message=error_message,
             )
 
-        # Build store_images closure over the engine
-        from forge.store import ocr_image_id, save_ocr_image
+        # Stash large/image-bearing results to S3 for pointer delivery. The key
+        # lands in a reapable namespace (bucket TTL GC); the platform never opens
+        # the blob — the consumer fetches and parses it.
+        from forge_contracts import s3_blobs
 
-        def store_images_fn(images: list[ExtractedImage], request_id: str) -> dict[str, str]:
-            """Decode base64, store each image, return {original_id: uuid}.
-
-            Image ids are deterministic (``ocr_image_id``) so a poll retry re-stores
-            idempotently instead of creating duplicates.
-            """
-            import base64
-
-            mapping: dict[str, str] = {}
-            for img in images:
-                image_id = ocr_image_id(request_id, img.original_image_id, img.page_index)
-                raw_b64 = img.image_base64
-                mime_type = img.mime_type
-                # Strip data URI prefix if present (e.g. "data:image/png;base64,")
-                # and extract the real MIME type from the header
-                if raw_b64.startswith("data:"):
-                    header, raw_b64 = raw_b64.split(",", 1)
-                    mime_type = header.split(":")[1].split(";")[0]
-                data = base64.b64decode(raw_b64)
-                save_ocr_image(
-                    engine,
-                    image_id=image_id,
-                    page_index=img.page_index,
-                    original_image_id=img.original_image_id,
-                    data=data,
-                    mime_type=mime_type,
-                    file_size_bytes=len(data),
-                    top_left_x=img.top_left_x,
-                    top_left_y=img.top_left_y,
-                    bottom_right_x=img.bottom_right_x,
-                    bottom_right_y=img.bottom_right_y,
-                )
-                mapping[img.original_image_id] = image_id
-            return mapping
+        def put_result_blob(custom_id: str, data: bytes) -> str:
+            key = s3_blobs.build_key(f"batch-result-{custom_id}")
+            s3_blobs.put(key, data, "application/json")
+            return key
 
         temporal_client = get_temporal_client()
 
@@ -311,7 +308,7 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
                 pending_jobs=pending_jobs,
                 temporal_client=temporal_client,
                 update_status_fn=update_status_fn,
-                store_images_fn=store_images_fn,
+                put_result_blob=put_result_blob,
             )
 
         span.set_attributes(

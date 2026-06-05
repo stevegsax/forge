@@ -163,9 +163,9 @@ class TestRunWorker:
         mock_worker.assert_called_once()
         worker_kwargs = mock_worker.call_args.kwargs
         assert worker_kwargs["task_queue"] == worker_mod.FORGE_TASK_QUEUE
-        assert worker_mod.OcrSubmitWorkflow in worker_kwargs["workflows"]
-        assert worker_mod.OcrGatherWorkflow in worker_kwargs["workflows"]
+        assert worker_mod.BatchPollerWorkflow in worker_kwargs["workflows"]
         assert worker_mod.poll_batch_results in worker_kwargs["activities"]
+        assert worker_mod.submit_batch_blob in worker_kwargs["activities"]
         assert worker_kwargs["graceful_shutdown_timeout"] == timedelta(seconds=30)
 
         # Ingestion workflows and activity should be registered when pbook
