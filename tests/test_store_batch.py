@@ -103,11 +103,11 @@ class TestUpdateBatchStatus:
             workflow_id="wf-1",
         )
 
-        update_batch_status(engine, request_id="req-010", status="succeeded")
+        update_batch_status(engine, request_id="req-010", status="processing")
 
         job = get_batch_job(engine, "req-010")
         assert job is not None
-        assert job["status"] == "succeeded"
+        assert job["status"] == "processing"
 
     def test_update_rejects_unknown_status(self, tmp_path: Path) -> None:
         """Unknown status strings must raise at the boundary — no silent writes."""
@@ -136,13 +136,13 @@ class TestUpdateBatchStatus:
         update_batch_status(
             engine,
             request_id="req-011",
-            status="errored",
+            status="failed",
             error_message="Rate limit exceeded",
         )
 
         job = get_batch_job(engine, "req-011")
         assert job is not None
-        assert job["status"] == "errored"
+        assert job["status"] == "failed"
         assert job["error_message"] == "Rate limit exceeded"
 
     def test_updated_at_changes(self, tmp_path: Path) -> None:
@@ -158,7 +158,7 @@ class TestUpdateBatchStatus:
         assert job_before is not None
 
         time.sleep(0.05)
-        update_batch_status(engine, request_id="req-012", status="succeeded")
+        update_batch_status(engine, request_id="req-012", status="processing")
 
         job_after = get_batch_job(engine, "req-012")
         assert job_after is not None
@@ -177,7 +177,7 @@ class TestGetPendingBatchJobs:
         record_batch_submission(engine, request_id="req-b", batch_id="b2", workflow_id="wf-2")
         record_batch_submission(engine, request_id="req-c", batch_id="b3", workflow_id="wf-3")
 
-        update_batch_status(engine, request_id="req-b", status="succeeded")
+        update_batch_status(engine, request_id="req-b", status="processing")
 
         pending = get_pending_batch_jobs(engine)
         ids = [j["id"] for j in pending]

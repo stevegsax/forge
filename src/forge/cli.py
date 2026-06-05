@@ -2,7 +2,7 @@
 
 Provides ``forge run``, ``forge worker``, ``forge status``,
 ``forge eval-planner``, ``forge extract``, ``forge playbooks``,
-``forge start``, and ``forge backfill-hashes`` subcommands.
+and ``forge start`` subcommands.
 
 Follows Function Core / Imperative Shell:
 - Pure functions: format_task_result, format_validation_results,
@@ -1835,98 +1835,3 @@ def start(
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(EXIT_INFRASTRUCTURE_ERROR)
-
-
-@main.command("ocr-jobs")
-@click.option(
-    "--limit",
-    default=50,
-    show_default=True,
-    type=int,
-    help="Maximum number of jobs to return.",
-)
-@click.option(
-    "--status",
-    "status_filter",
-    default="",
-    type=click.Choice(["", "processing", "succeeded", "errored", "unknown"], case_sensitive=False),
-    help="Filter by aggregate status.",
-)
-@click.option(
-    "--temporal-address",
-    envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
-)
-def ocr_jobs(limit: int, status_filter: str, temporal_address: str) -> None:
-    """List OCR job submissions with file path, document ID, status, and timestamp."""
-    import json as json_mod
-
-    from forge.ocr.models import OcrListJobsInput
-
-    wf_input = OcrListJobsInput(limit=limit, status_filter=status_filter)
-
-    try:
-        result = asyncio.run(
-            _start_workflow_and_wait(
-                "OcrListJobsWorkflow",
-                wf_input.model_dump(),
-                workflow_id=f"ocr-list-jobs-{__import__('uuid').uuid4().hex[:8]}",
-                task_queue="forge-task-queue",
-                temporal_address=temporal_address,
-                timeout_hours=1.0,
-            )
-        )
-        if hasattr(result, "model_dump_json"):
-            click.echo(result.model_dump_json(indent=2))
-        else:
-            click.echo(json_mod.dumps(result, indent=2, default=str))
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
-
-
-@main.command("backfill-hashes")
-@click.option("--dry-run", is_flag=True, help="Show what would be updated without writing.")
-def backfill_hashes(dry_run: bool) -> None:
-    """Compute SHA-256 hashes for OCR results that are missing them."""
-    from forge.ocr.activities import compute_file_hash
-    from forge.store import (
-        get_ocr_results_missing_hash,
-        update_ocr_file_hash,
-    )
-
-    engine = _require_store_engine()
-    rows = get_ocr_results_missing_hash(engine)
-
-    if not rows:
-        click.echo("All OCR results already have hashes.")
-        return
-
-    click.echo(f"Found {len(rows)} result(s) missing hashes.")
-
-    updated = 0
-    skipped = 0
-    for row in rows:
-        file_path = row["file_path"]
-        doc_id = row["document_id"]
-        path = Path(file_path)
-
-        if not path.is_file():
-            click.echo(f"  SKIP {doc_id} — file not found: {file_path}")
-            skipped += 1
-            continue
-
-        file_hash = compute_file_hash(file_path)
-        if dry_run:
-            click.echo(f"  WOULD UPDATE {doc_id} — {file_hash[:16]}… ({file_path})")
-        else:
-            update_ocr_file_hash(engine, doc_id, file_hash)
-            click.echo(f"  UPDATED {doc_id} — {file_hash[:16]}… ({file_path})")
-        updated += 1
-
-    if dry_run:
-        click.echo(f"\nDry run: {updated} would be updated, {skipped} skipped.")
-    else:
-        click.echo(f"\nDone: {updated} updated, {skipped} skipped.")

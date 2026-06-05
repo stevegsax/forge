@@ -77,8 +77,6 @@ class TestUTCDateTime:
                     workflow_id="wf-la",
                     status="submitted",
                     provider="mistral",
-                    file_path="/data/la.pdf",
-                    document_id="doc-la",
                     created_at=la_dt,
                     updated_at=la_dt,
                 )
@@ -105,8 +103,6 @@ class TestUTCDateTime:
                     workflow_id="wf-naive",
                     status="submitted",
                     provider="mistral",
-                    file_path="/data/naive.pdf",
-                    document_id="doc-naive",
                     created_at=naive,
                     updated_at=naive,
                 )
@@ -137,8 +133,6 @@ class TestUTCDateTime:
                     workflow_id="wf-default",
                     status="submitted",
                     provider="mistral",
-                    file_path="/data/default.pdf",
-                    document_id="doc-default",
                 )
             )
 
@@ -165,8 +159,6 @@ class TestUTCDateTime:
                     workflow_id="wf-off",
                     status="submitted",
                     provider="mistral",
-                    file_path="/data/off.pdf",
-                    document_id="doc-off",
                     created_at=local_dt,
                     updated_at=local_dt,
                 )
@@ -177,17 +169,11 @@ class TestUTCDateTime:
         assert read_back == expected_utc
 
     def test_all_models_emit_utc(self, tmp_path: Path) -> None:
-        """Every model with a datetime column returns tz-aware UTC."""
+        """Every platform model with a datetime column returns tz-aware UTC."""
         from forge.store import (
-            FileContentBlob,
             Interaction,
-            OcrImage,
-            OcrResult,
             Playbook,
             Run,
-            save_file_content,
-            save_ocr_image,
-            save_ocr_result,
         )
 
         engine, _ = _setup_db(tmp_path)
@@ -226,33 +212,6 @@ class TestUTCDateTime:
                 )
             )
 
-        save_ocr_result(
-            engine,
-            document_id="doc-all",
-            file_path="/data/all.pdf",
-            text="text",
-            model_name="m",
-            input_tokens=0,
-            output_tokens=0,
-            batch_id="b",
-            workflow_id="wf",
-        )
-        save_file_content(
-            engine,
-            content_id="blob-all",
-            data=b"bytes",
-            mime_type="application/pdf",
-            file_size_bytes=5,
-        )
-        save_ocr_image(
-            engine,
-            image_id="img-all",
-            page_index=0,
-            original_image_id="orig",
-            data=b"img",
-            mime_type="image/png",
-            file_size_bytes=3,
-        )
         record_batch_submission(
             engine,
             request_id="req-all",
@@ -265,9 +224,6 @@ class TestUTCDateTime:
             ("runs", Run.__table__),
             ("batch_jobs", BatchJob.__table__),
             ("playbooks", Playbook.__table__),
-            ("ocr_results", OcrResult.__table__),
-            ("file_content_blobs", FileContentBlob.__table__),
-            ("ocr_images", OcrImage.__table__),
         ]
         with engine.connect() as conn:
             for name, table in checks:

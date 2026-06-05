@@ -77,32 +77,6 @@ except ImportError:
     TranscriptIngestionWorkflow = None  # type: ignore[assignment,misc]
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
-from forge.ocr.activities import (
-    call_ocr_sync,
-    check_ocr_duplicate,
-    clear_ocr_removal_mark,
-    delete_file_content_blob,
-    export_ocr_document,
-    list_ocr_jobs,
-    mark_ocr_for_removal,
-    parse_ocr_result,
-    read_and_store_file_content,
-    reassemble_ocr_chunks,
-    split_file_into_chunks,
-    store_ocr_result,
-    submit_ocr_batch,
-    update_batch_job_status,
-)
-from forge.ocr.workflow_export import OcrExportWorkflow
-from forge.ocr.workflow_gather import OcrGatherWorkflow
-from forge.ocr.workflow_list_jobs import OcrListJobsWorkflow
-from forge.ocr.workflow_mark_removal import (
-    OcrClearRemovalMarkWorkflow,
-    OcrMarkForRemovalWorkflow,
-)
-from forge.ocr.workflow_store import OcrStoreWorkflow
-from forge.ocr.workflow_submit import OcrSubmitWorkflow
-from forge.ocr.workflow_sync import OcrSyncWorkflow
 from forge.temporal_client import connect_temporal
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
@@ -258,14 +232,6 @@ async def run_worker(
         ExportPlaybookWorkflow,
         ManualPlaybookWorkflow,
         BatchPollerWorkflow,
-        OcrSubmitWorkflow,
-        OcrSyncWorkflow,
-        OcrStoreWorkflow,
-        OcrGatherWorkflow,
-        OcrExportWorkflow,
-        OcrListJobsWorkflow,
-        OcrMarkForRemovalWorkflow,
-        OcrClearRemovalMarkWorkflow,
     ]
     if _INGESTION_AVAILABLE:
         assert TranscriptIngestionWorkflow is not None
@@ -310,21 +276,6 @@ async def run_worker(
         validate_playbook_entry,
         write_files,
         write_output,
-        # OCR activities
-        list_ocr_jobs,
-        call_ocr_sync,
-        check_ocr_duplicate,
-        clear_ocr_removal_mark,
-        delete_file_content_blob,
-        export_ocr_document,
-        mark_ocr_for_removal,
-        read_and_store_file_content,
-        split_file_into_chunks,
-        submit_ocr_batch,
-        parse_ocr_result,
-        store_ocr_result,
-        update_batch_job_status,
-        reassemble_ocr_chunks,
     ]
     if _INGESTION_AVAILABLE:
         assert prepare_transcript is not None

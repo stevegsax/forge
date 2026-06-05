@@ -2023,11 +2023,11 @@ class TestStartCommand:
     def test_auto_generated_id_format(self, cli_runner: CliRunner) -> None:
         with patch("forge.cli._start_workflow") as mock_start:
             mock_start.side_effect = _async_result("wf-123")
-            cli_runner.invoke(main, ["start", "OcrSubmitWorkflow"])
+            cli_runner.invoke(main, ["start", "ForgeTaskWorkflow"])
             call_kwargs = mock_start.call_args[1]
             wf_id = call_kwargs["workflow_id"]
-            assert wf_id.startswith("ocrsubmitworkflow-")
-            assert len(wf_id) == len("ocrsubmitworkflow-") + 8
+            assert wf_id.startswith("forgetaskworkflow-")
+            assert len(wf_id) == len("forgetaskworkflow-") + 8
 
 
 # ---------------------------------------------------------------------------

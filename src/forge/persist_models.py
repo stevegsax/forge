@@ -15,6 +15,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Literal
 
+from forge_contracts.persist import (
+    PersistBatchFailure as PersistBatchFailure,
+)
+from forge_contracts.persist import (
+    PersistBatchSubmission as PersistBatchSubmission,
+)
+from forge_contracts.persist import (
+    PersistResult as PersistResult,
+)
 from pydantic import BaseModel, Field
 
 from forge.models import (
@@ -70,30 +79,6 @@ class PersistRun(BaseModel):
     task_result: TaskResult
 
 
-class PersistBatchSubmission(BaseModel):
-    """A submitted batch job (batch_jobs table), keyed by request_id."""
-
-    kind: Literal["batch_submission"] = "batch_submission"
-    request_id: str
-    batch_id: str
-    workflow_id: str
-    provider: str = "anthropic"
-    file_path: str | None = None
-    document_id: str | None = None
-
-
-class PersistBatchFailure(BaseModel):
-    """A failed batch submission (batch_jobs table), keyed by request_id."""
-
-    kind: Literal["batch_failure"] = "batch_failure"
-    request_id: str
-    workflow_id: str
-    error_message: str
-    provider: str = "anthropic"
-    file_path: str | None = None
-    document_id: str | None = None
-
-
 class PersistBatchStatus(BaseModel):
     """A batch job status transition (plain UPDATE on batch_jobs.id)."""
 
@@ -101,22 +86,6 @@ class PersistBatchStatus(BaseModel):
     request_id: str
     status: str
     error_message: str | None = None
-
-
-class PersistOcrResult(BaseModel):
-    """An OCR result row (ocr_results table), keyed by document_id."""
-
-    kind: Literal["ocr_result"] = "ocr_result"
-    document_id: str
-    file_path: str
-    text: str
-    model_name: str
-    input_tokens: int
-    output_tokens: int
-    batch_id: str
-    workflow_id: str
-    page_count: int = 0
-    file_hash: str | None = None
 
 
 class PersistPlaybooks(BaseModel):
@@ -133,17 +102,9 @@ PersistRequest = Annotated[
     | PersistBatchSubmission
     | PersistBatchFailure
     | PersistBatchStatus
-    | PersistOcrResult
     | PersistPlaybooks,
     Field(discriminator="kind"),
 ]
-
-
-class PersistResult(BaseModel):
-    """Outcome of a persist: which kind ran and whether a new row was written."""
-
-    kind: str
-    applied: bool
 
 
 def build_persist_interaction(

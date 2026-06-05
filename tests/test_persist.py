@@ -11,37 +11,31 @@ Two guarantees are proven here:
 
 from __future__ import annotations
 
-import json
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
-from temporalio import activity
+from temporalio import activity, workflow
 from temporalio.client import WorkflowFailureError
+from temporalio.common import RetryPolicy
 from temporalio.worker import Worker
 
 from forge.activities.persist import persist_to_store
 from forge.models import PlaybookEntry, TaskResult, TransitionSignal
-from forge.ocr.models import (
-    ChunkRef,
-    FileContentRef,
-    OcrDuplicateCheckResult,
-    OcrSyncCallResult,
-    OcrSyncInput,
-    SplitResult,
-)
-from forge.ocr.workflow_sync import OcrSyncWorkflow
 from forge.persist_models import (
     PersistBatchStatus,
     PersistBatchSubmission,
     PersistInteraction,
-    PersistOcrResult,
     PersistPlaybooks,
     PersistRequest,
     PersistResult,
     PersistRun,
 )
-from forge.store import get_ocr_result, get_run, get_store_engine, run_migrations
+from forge.store import get_run, get_store_engine, run_migrations
 from forge.workflows import FORGE_TASK_QUEUE
+
+with workflow.unsafe.imports_passed_through():
+    from forge_contracts.persist import persist_block
 
 if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment
@@ -88,23 +82,6 @@ class TestPersistIdempotency:
         assert (first.applied, second.applied) == (True, False)
 
     @pytest.mark.asyncio
-    async def test_ocr_result_idempotent(self, migrated: str) -> None:
-        req = PersistOcrResult(
-            document_id="doc-1",
-            file_path="/x.pdf",
-            text="hello",
-            model_name="m",
-            input_tokens=1,
-            output_tokens=2,
-            batch_id="",
-            workflow_id="wf",
-        )
-        first = await persist_to_store(req)
-        second = await persist_to_store(req)
-        assert (first.applied, second.applied) == (True, False)
-        assert get_ocr_result(get_store_engine(), "doc-1")["text"] == "hello"
-
-    @pytest.mark.asyncio
     async def test_batch_submission_idempotent(self, migrated: str) -> None:
         req = PersistBatchSubmission(
             request_id="req-1", batch_id="b-1", workflow_id="wf", provider="mistral"
@@ -134,59 +111,44 @@ class TestPersistIdempotency:
         )
         # A status transition is a plain UPDATE (no dedupe) — always "applied".
         result = await persist_to_store(
-            PersistBatchStatus(request_id="req-s", status="succeeded")
+            PersistBatchStatus(request_id="req-s", status="processing")
         )
         assert result.applied is True
 
 
 # ---------------------------------------------------------------------------
-# Pause-and-retry — proven via OcrSyncWorkflow in the time-skipping env
+# Pause-and-retry — a probe workflow runs one "expensive" activity, then a
+# survivable persist_block. The flaky persist must retry without re-running the
+# expensive call.
 # ---------------------------------------------------------------------------
 
 
-def _sync_ocr_mocks(call_count: dict[str, int]) -> list:
-    """Mock activities for OcrSyncWorkflow with an instrumented expensive call."""
+@workflow.defn
+class _PersistRetryProbe:
+    """Run an expensive activity once, then persist survivably via persist_block."""
 
-    @activity.defn(name="check_ocr_duplicate")
-    async def mock_dup(_file_path: str) -> OcrDuplicateCheckResult:
-        return OcrDuplicateCheckResult(is_duplicate=False)
-
-    @activity.defn(name="read_and_store_file_content")
-    async def mock_read(_file_path: str) -> FileContentRef:
-        return FileContentRef(content_id="c", mime_type="application/pdf", file_size_bytes=10)
-
-    @activity.defn(name="split_file_into_chunks")
-    async def mock_split(_input_json: str) -> SplitResult:
-        return SplitResult(
-            chunks=[
-                ChunkRef(
-                    content_id="c",
-                    mime_type="application/pdf",
-                    file_size_bytes=10,
-                    chunk_index=0,
-                    page_start=1,
-                    page_end=1,
-                )
-            ],
-            total_pages=1,
-            original_content_id="c",
+    @workflow.run
+    async def run(self, workflow_id: str) -> bool:
+        await workflow.execute_activity(
+            "expensive_op",
+            start_to_close_timeout=timedelta(seconds=5),
+            retry_policy=RetryPolicy(maximum_attempts=1),
         )
-
-    @activity.defn(name="call_ocr_sync")
-    async def mock_call_ocr_sync(input_json: str) -> OcrSyncCallResult:
-        call_count["ocr"] += 1
-        data = json.loads(input_json)
-        return OcrSyncCallResult(
-            document_id=data["document_id"],
-            file_path="/x.pdf",
-            text="hello",
-            model_name="m",
-            input_tokens=1,
-            output_tokens=2,
-            page_count=1,
+        result = await persist_block(
+            PersistRun(
+                workflow_id=workflow_id,
+                task_result=TaskResult(task_id="t", status=TransitionSignal.SUCCESS),
+            )
         )
+        return result.applied
 
-    return [mock_dup, mock_read, mock_split, mock_call_ocr_sync]
+
+def _probe_mocks(call_count: dict[str, int]) -> list:
+    @activity.defn(name="expensive_op")
+    async def expensive_op() -> None:
+        call_count["expensive"] += 1
+
+    return [expensive_op]
 
 
 class TestPauseAndRetry:
@@ -194,7 +156,7 @@ class TestPauseAndRetry:
     async def test_persist_retries_without_rerunning_expensive_call(
         self, env: WorkflowEnvironment
     ) -> None:
-        call_count = {"ocr": 0, "persist": 0}
+        call_count = {"expensive": 0, "persist": 0}
 
         @activity.defn(name="persist_to_store")
         async def flaky_persist(req: PersistRequest) -> PersistResult:
@@ -206,26 +168,26 @@ class TestPauseAndRetry:
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
-            workflows=[OcrSyncWorkflow],
-            activities=[*_sync_ocr_mocks(call_count), flaky_persist],
+            workflows=[_PersistRetryProbe],
+            activities=[*_probe_mocks(call_count), flaky_persist],
         ):
-            result = await env.client.execute_workflow(
-                OcrSyncWorkflow.run,
-                OcrSyncInput(file_path="/tmp/x.pdf"),
+            applied = await env.client.execute_workflow(
+                _PersistRetryProbe.run,
+                "probe-wf-1",
                 id="test-persist-pause-retry",
                 task_queue=FORGE_TASK_QUEUE,
             )
 
-        assert result.stored is True
-        # The expensive OCR call ran exactly once; only the cheap persist retried.
-        assert call_count["ocr"] == 1
+        assert applied is True
+        # The expensive call ran exactly once; only the cheap persist retried.
+        assert call_count["expensive"] == 1
         assert call_count["persist"] == 3  # two failures + one success
 
     @pytest.mark.asyncio
     async def test_prolonged_outage_fails_workflow_without_hang(
         self, env: WorkflowEnvironment
     ) -> None:
-        call_count = {"ocr": 0, "persist": 0}
+        call_count = {"expensive": 0, "persist": 0}
 
         @activity.defn(name="persist_to_store")
         async def always_fail(req: PersistRequest) -> PersistResult:
@@ -235,18 +197,18 @@ class TestPauseAndRetry:
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
-            workflows=[OcrSyncWorkflow],
-            activities=[*_sync_ocr_mocks(call_count), always_fail],
+            workflows=[_PersistRetryProbe],
+            activities=[*_probe_mocks(call_count), always_fail],
         ):
             with pytest.raises(WorkflowFailureError):
                 await env.client.execute_workflow(
-                    OcrSyncWorkflow.run,
-                    OcrSyncInput(file_path="/tmp/x.pdf"),
+                    _PersistRetryProbe.run,
+                    "probe-wf-2",
                     id="test-persist-prolonged-outage",
                     task_queue=FORGE_TASK_QUEUE,
                 )
 
         # The schedule-to-close cap was reached (time-skipped) and the workflow
         # failed loudly; the expensive call still ran only once.
-        assert call_count["ocr"] == 1
+        assert call_count["expensive"] == 1
         assert call_count["persist"] > 1

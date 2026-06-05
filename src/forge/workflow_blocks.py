@@ -17,6 +17,11 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
+    from forge_contracts.persist import (
+        PersistBatchSubmission,
+        persist_block,
+    )
+
     from forge.models import (
         AssembledContext,
         BatchResult,
@@ -32,7 +37,6 @@ with workflow.unsafe.imports_passed_through():
         RemoveWorktreeInput,
         ThinkingConfig,
     )
-    from forge.persist_models import PersistBatchSubmission, PersistRequest, PersistResult
 
 
 # ---------------------------------------------------------------------------
@@ -58,38 +62,6 @@ _LLM_RETRY = RetryPolicy(
     ],
 )
 _LOCAL_RETRY = RetryPolicy(maximum_attempts=2)
-
-# Survivable store writes (Phase C): a transient DB outage retries only the cheap
-# persist_to_store activity — the expensive LLM/OCR/batch call already returned to
-# the workflow and is never re-run. Backoff 1,2,4,8,16,32,60,60… fits ~18-20 tries
-# in the 20-minute schedule_to_close governor, after which the activity fails loudly.
-# ValueError is validation (never succeeds on retry); idempotency_key collisions are
-# absorbed by insert_or_ignore and never raise.
-_PERSIST_RETRY = RetryPolicy(
-    initial_interval=timedelta(seconds=1),
-    backoff_coefficient=2.0,
-    maximum_interval=timedelta(seconds=60),
-    maximum_attempts=20,
-    non_retryable_error_types=["ValueError"],
-)
-_PERSIST_START_TO_CLOSE = timedelta(seconds=30)
-_PERSIST_SCHEDULE_TO_CLOSE = timedelta(minutes=20)
-
-
-async def persist_block(req: PersistRequest) -> PersistResult:
-    """Survivable store write: invoke ``persist_to_store`` with the persist retry.
-
-    A transient DB outage retries only this cheap write; the expensive call that
-    produced ``req`` already returned to the workflow and is never re-run.
-    """
-    return await workflow.execute_activity(
-        "persist_to_store",
-        req,
-        start_to_close_timeout=_PERSIST_START_TO_CLOSE,
-        schedule_to_close_timeout=_PERSIST_SCHEDULE_TO_CLOSE,
-        retry_policy=_PERSIST_RETRY,
-        result_type=PersistResult,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -142,11 +114,15 @@ async def batch_submit_and_wait(
     result = batch_results.pop(0)
     if result.error:
         raise ApplicationError(f"Batch error: {result.error}")
-    assert result.raw_response_json is not None
+    if result.raw_response_json is None and result.s3_key is None:
+        raise ApplicationError("Batch result has neither inline body nor s3_key")
+    # The body travels inline or by S3 pointer (size-chosen by the poller); the
+    # parse activity fetches the blob when only s3_key is set.
     return await workflow.execute_activity(
         "parse_llm_response",
         ParseResponseInput(
             raw_response_json=result.raw_response_json,
+            s3_key=result.s3_key,
             output_type_name=output_type_name,
             task_id=context.task_id,
             log_messages=context.log_messages,

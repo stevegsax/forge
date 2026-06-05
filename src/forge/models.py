@@ -1055,9 +1055,15 @@ class BatchSubmitInput(BaseModel):
 
 
 class ParseResponseInput(BaseModel):
-    """Input to a parse activity that deserializes a batch response (14b)."""
+    """Input to a parse activity that deserializes a batch response (14b).
 
-    raw_response_json: str
+    The result body travels either inline (``raw_response_json``) or by reference
+    (``s3_key``, fetched by the activity); exactly one is set. ``s3_key`` points at
+    a result envelope, so the activity unwraps it before parsing.
+    """
+
+    raw_response_json: str | None = None
+    s3_key: str | None = None
     output_type_name: str | None = None
     task_id: str
     provider: str = Field(default="anthropic", description="LLM provider name for parsing.")

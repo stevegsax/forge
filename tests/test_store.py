@@ -21,8 +21,6 @@ from forge.store import (
     StoreConfigError,
     build_interaction_dict,
     build_playbook_dict,
-    delete_file_content,
-    get_file_content,
     get_interactions,
     get_playbooks_by_tags,
     get_run,
@@ -32,7 +30,6 @@ from forge.store import (
     list_recent_playbooks,
     list_recent_runs,
     run_migrations,
-    save_file_content,
     save_interaction,
     save_playbooks,
     save_run,
@@ -719,88 +716,3 @@ class TestMigration003:
         assert len(rows) == 1
         assert rows[0]["cache_creation_input_tokens"] == 0
         assert rows[0]["cache_read_input_tokens"] == 0
-
-
-# ---------------------------------------------------------------------------
-# File content blob CRUD
-# ---------------------------------------------------------------------------
-
-
-class TestFileContentBlob:
-    def test_save_and_get_file_content(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "test.db"
-        engine = _migrate(db_path)
-
-        test_data = b"Hello, this is test file content."
-        save_file_content(
-            engine,
-            content_id="blob-001",
-            data=test_data,
-            mime_type="application/pdf",
-            file_size_bytes=len(test_data),
-        )
-
-        result = get_file_content(engine, "blob-001")
-        assert result is not None
-        assert result["id"] == "blob-001"
-        assert result["data"] == test_data
-        assert result["mime_type"] == "application/pdf"
-        assert result["file_size_bytes"] == len(test_data)
-
-    def test_get_file_content_missing(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "test.db"
-        engine = _migrate(db_path)
-
-        result = get_file_content(engine, "nonexistent-id")
-        assert result is None
-
-    def test_delete_file_content(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "test.db"
-        engine = _migrate(db_path)
-
-        test_data = b"Data to delete."
-        save_file_content(
-            engine,
-            content_id="blob-del",
-            data=test_data,
-            mime_type="text/plain",
-            file_size_bytes=len(test_data),
-        )
-
-        # Verify it exists
-        assert get_file_content(engine, "blob-del") is not None
-
-        # Delete and verify it's gone
-        delete_file_content(engine, "blob-del")
-        assert get_file_content(engine, "blob-del") is None
-
-    def test_delete_nonexistent_is_noop(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "test.db"
-        engine = _migrate(db_path)
-
-        # Should not raise
-        delete_file_content(engine, "does-not-exist")
-
-
-# ---------------------------------------------------------------------------
-# Migration 007
-# ---------------------------------------------------------------------------
-
-
-class TestMigration007:
-    def test_creates_file_content_blobs_table(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "test.db"
-        engine = _migrate(db_path)
-
-        test_data = b"Migration test content"
-        save_file_content(
-            engine,
-            content_id="mig-007-test",
-            data=test_data,
-            mime_type="application/octet-stream",
-            file_size_bytes=len(test_data),
-        )
-
-        result = get_file_content(engine, "mig-007-test")
-        assert result is not None
-        assert result["data"] == test_data
