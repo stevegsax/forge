@@ -40,7 +40,7 @@
 > idempotency + regression tests). This is the risky, workflow-touching half.
 
 Prerequisite work for the AWS EC2 deployment in
-[docs/planning/DEPLOYMENT.md](../docs/planning/DEPLOYMENT.md). Today the Forge store
+[docs/operations/DEPLOYMENT.md](../docs/operations/DEPLOYMENT.md). Today the Forge store
 is SQLite-only and OCR blobs live in `LargeBinary` columns. The target deployment
 keeps the whole store in Supabase Postgres and OCR blobs in S3, leaving the EC2
 instance with no durable local state and unlocking multi-host workers. **Phase C**
@@ -156,7 +156,7 @@ only by OCR workflows.
       unset-URL hard error, the S3 write/read/delete paths (mocked), the
       bucket-unset → OCR-task-fails behavior, and the survivable-write/idempotency
       paths.
-- [ ] `docs/planning/DEPLOYMENT.md` env vars/behavior match the implementation.
+- [ ] `docs/operations/DEPLOYMENT.md` env vars/behavior match the implementation.
 
 ---
 
@@ -483,7 +483,7 @@ Phase C introduces no env vars (it adds the `persist_to_store` activity, the
 `idempotency_key` columns, and the `_PERSIST_RETRY` policy).
 
 **Docs:** DEPLOYMENT.md already references these as "prerequisite code changes";
-update its [Prerequisite code changes](../docs/planning/DEPLOYMENT.md) section to
+update its [Prerequisite code changes](../docs/operations/DEPLOYMENT.md) section to
 "implemented" once merged, and reconcile any naming differences.
 
 ---
