@@ -7,14 +7,7 @@ payload limits), so both the platform and consumer apps import this module from
 
 The bucket is configured by ``FORGE_OCR_S3_BUCKET``; an optional
 ``FORGE_OCR_S3_PREFIX`` namespaces keys. Credentials come from the default AWS
-chain (env / instance role).
-
-To target an S3-COMPATIBLE backend (e.g. Supabase Storage, MinIO, Cloudflare R2)
-set ``FORGE_OCR_S3_ENDPOINT_URL`` to the service's S3 endpoint. When set, the
-client uses path-style addressing (required by most non-AWS S3 services, and by
-bucket names that aren't DNS-safe) and the region from ``AWS_DEFAULT_REGION`` /
-``AWS_REGION`` — which for these services must match the backend's region, and the
-credentials must be that backend's S3 keys, not AWS keys. Unset → plain AWS S3.
+chain (e.g. the EC2 instance role) — no static keys in code or env.
 
 S3 is the only blob store: an unset bucket or an S3 error raises, which fails the
 calling task. There is no inline-in-DB fallback and no runtime failover.
@@ -55,22 +48,7 @@ def _client():
     # keeps this module free of import-time / module-level I/O state.
     import boto3
 
-    endpoint = os.environ.get("FORGE_OCR_S3_ENDPOINT_URL") or None
-    region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or None
-    if endpoint is None:
-        # Plain AWS S3: default endpoint + default credential/region chain.
-        return boto3.client("s3", region_name=region)
-
-    # S3-compatible backend: path-style addressing is required by most non-AWS
-    # services (and by non-DNS-safe bucket names).
-    from botocore.config import Config
-
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        region_name=region,
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    return boto3.client("s3")
 
 
 def put(key: str, data: bytes, content_type: str) -> None:
