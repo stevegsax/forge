@@ -529,3 +529,32 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   together in the cross-queue/de-contamination increment. The raw copies were removed from ocr to
   avoid leaving forge-importing files. **The remaining OCR-out + Phase-1 + Phase-3 work is one
   coordinated re-architecture, no longer a clean mechanical-move increment.**
+- 2026-06-04 — **CUT COMPLETE — all phases done; all three repos green.** Landed as
+  increments c1–c3 across the repos.
+  - **c1 (additive, forge green @1501):** `forge_contracts` gains `BatchSubmitSpiInput`,
+    `BatchSubmitResult`, the result-payload envelope (`dump/parse/resolve_batch_result`),
+    and `PROCESSING` on `BatchJobStatus`; forge gains the platform `submit_batch_blob`
+    activity (opaque-blob submit SPI; writes nothing).
+  - **c2 (atomic cut, forge green @1325):** `forge_contracts.persist` (persist_block +
+    presets + slim `PersistBatchSubmission/Failure`); `BatchJobStatus` narrowed to
+    provider-only `{submitted, processing, failed, expired, missing}`. Poller
+    de-contaminated (no image storage/`_image_mapping`; verbatim result forwarded inline or
+    via S3 envelope by size; PROCESSING on delivery, FAILED on terminal, CANCELED→FAILED).
+    `batch_submit_and_wait` + `parse_llm_response` branch on `s3_key`. `batch_jobs` slimmed
+    (no `file_path`/`document_id`). `PersistOcrResult` removed. `src/forge/ocr/` deleted;
+    OCR store tables/funcs, CLI, scripts/queries/features/fixtures, OCR-only deps removed.
+    Alembic squashed to one platform baseline (`alembic_version_forge` + `include_object`).
+  - **c3 + OCR build (ocr suite green @23):** `forge_contracts.batch_jobs` read model; OCR
+    repo runtime-complete (activities/submit/store workflows on the new SPI, status join,
+    worker on ocr-task-queue, CLI, own Alembic chain `alembic_version_ocr`, tests incl. a
+    two-worker cross-queue submit test).
+  - **Verification:** forge 1325 / ocr 23 / forge-contracts 10 passed; ruff clean (pre-existing
+    forge test-lint debt untouched). Postgres (podman): forge 4 + ocr 1 postgres tests pass;
+    a manual both-real-chains run applied forge+ocr `run_migrations` to ONE Postgres →
+    4 platform + 4 OCR tables + both `alembic_version_*` coexist, `batch_jobs` slim.
+    Acceptance §3.1–§3.7 verified.
+  - **Follow-ups (not blockers):** rotate AWS creds in `forge-contracts/.envrc` (SECURITY);
+    the both-real-chains dual-chain check is a manual cross-repo run (no single repo imports
+    both, by design); OCR e2e image fixtures are gitignored (regenerate via
+    `ocr/scripts/generate_ocr_fixtures.py`); FORGE_TASK_QUEUE single-sourcing; generalize
+    `FORGE_OCR_S3_*` env names + per-kind blob GC; two-worker DB connection-pressure review.

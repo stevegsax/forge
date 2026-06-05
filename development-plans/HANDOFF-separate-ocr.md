@@ -2,12 +2,19 @@
 
 **Date:** 2026-06-04
 **Branch (forge):** `separate-ocr`
-**Status:** OCR-out cut in progress. The shared-contracts foundation, the OCR store,
-and the OCR "leaf" modules are done & committed. The remaining work is one
-coordinated re-architecture (cross-queue submit SPI + poller de-contamination +
-status wiring + migrations + final cutover). forge is green throughout
-(`uv run pytest` → 1499 passed); the `ocr` repo is import-clean but not yet
-runtime-complete (by design — see "What remains").
+**Status:** ✅ **CUT COMPLETE.** All of "What remains" below is done. Forge is an
+OCR-agnostic batch platform; OCR is a runtime-complete consumer app; both import only
+`forge-contracts`. Verification: forge `uv run pytest` → 1325 passed; ocr → 23 passed;
+forge-contracts → 10 passed; ruff clean across all three. Postgres (podman): forge 4 +
+ocr 1 postgres-marked tests pass, and a manual both-real-chains `run_migrations` against
+ONE Postgres shows both chains' tables + `alembic_version_forge`/`alembic_version_ocr`
+coexisting with a slim `batch_jobs`. See the Progress log in
+`development-plans/separate-ocr-into-its-own-repo.md` (entry dated 2026-06-04
+"CUT COMPLETE") for the per-increment detail and the residual follow-ups (AWS cred
+rotation, env-name generalization, connection-pressure review). Merges to `main` remain
+human-gated.
+
+The remainder of this document is the original navigation layer, kept for context.
 
 Read these two first — they are the authority; this handoff is the navigation layer:
 
