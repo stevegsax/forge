@@ -1,0 +1,388 @@
+> **ARCHIVED 2026-06-04 — not authoritative.** Superseded by `docs/ARCHITECTURE.md` and `docs/OVERVIEW.md`.
+
+# Forge: Design Document
+
+## Overview
+
+Forge is an LLM task orchestrator built around batch mode with document completion rather than iterative streaming. The core insight is that by investing heavily in upfront planning, we can identify parallelizable work units and submit them as independent batch requests. Each request is a single step in a state machine, not a turn in a conversation.
+
+Forge is suitable for any task that benefits from structured decomposition, parallel execution, and deterministic validation: code generation, research, analysis, content production, data processing, and more. The architecture is task-agnostic -- the differentiation between use cases lives entirely in prompts, context, and validation criteria.
+
+Git and worktrees serve as the general-purpose data store and isolation mechanism. Just as worktrees isolate parallel code branches, they equally isolate parallel research threads, analysis tracks, or any body of work that benefits from independent progress with controlled reconciliation.
+
+## Principles
+
+**Deterministic work should be deterministic.** Never ask the LLM to figure out something you can compute. Pre-calculate facts and include them in context. Use the LLM for reasoning and generation, not information gathering. If an answer won't change, compute it client-side.
+
+**Context isolation is a feature.** Each task gets a tightly constrained definition of "done" and a customized context. Agents don't inherit conversation history. They receive exactly the information they need, assembled fresh for each request.
+
+**Planning is the hard part.** Invest the most expensive models and highest token budgets in planning and conflict resolution. A good plan reduces conflicts, improves validation coverage, and produces better results. Everything downstream is bounded by plan quality.
+
+**Halt when confused.** When the orchestrator encounters a situation it cannot classify, it stops and escalates to a human. The failure modes of continuing with a bad plan are worse than the cost of pausing.
+
+**The LLM call is the universal primitive.** Every task -- code generation, review, conflict resolution, knowledge extraction, sanity checking -- is an instance of the same workflow step with different prompts and context.
+
+## Architecture
+
+### The Universal Workflow Step
+
+Every operation in Forge follows the same pattern:
+
+1. **Construct message.** Assemble the prompt and context for the LLM call.
+2. **Send.** Submit the request to the selected model.
+3. **Receive.** Get the response.
+4. **Serialize.** Store the structured result.
+5. **Transition.** Evaluate the result and determine the next state.
+
+The differentiation between "types" of work lives entirely in the prompt and context, not in the workflow machinery.
+
+### LLM Output Format
+
+The LLM response supports two output modes within a single `LLMResponse`:
+
+- **`files`**: Full file content for new files that don't exist yet.
+- **`edits`**: Search/replace edit sequences for existing files. Each edit specifies an exact search string (must match exactly once) and its replacement.
+
+A file path must not appear in both lists. The `write_output` activity writes new files directly and applies edits sequentially to existing files. This avoids the failure mode of full-file replacement, where the LLM must reproduce every line of an existing file to change a few — wasting output tokens and silently destroying code when the full file isn't in context (D50).
+
+Step and sub-task contexts always include current target file contents from the worktree so the LLM has the source material needed to produce precise edits.
+
+### Temporal Orchestration
+
+Temporal provides the workflow engine. The orchestrator owns the task DAG, assigns tasks to agents, and manages state transitions.
+
+**Activity boundaries:**
+
+- The LLM call is one activity (idempotent via caching).
+- The transition evaluation is a separate activity.
+- Context assembly is a separate activity.
+- Deterministic validation (lint, type check, tests) is a separate activity.
+
+**Fan-out/gather** uses Temporal child workflows. A parent workflow creates child workflows for each sub-task, awaits their completion signals, and processes the gathered results. This is hub-and-spoke by construction: the parent is always the coordination point.
+
+**Recursion** is tree-shaped. Any workflow step can fan out to child workflows, and those children can fan out again. Recursion depth is configurable per prompt and should be bounded. Fan out when sub-tasks are genuinely independent and can be validated independently; keep work inline when sub-tasks share context that would be expensive to reconstruct.
+
+### Task Structure
+
+There are two levels of agent:
+
+**Task-level agents** receive work directly from the orchestrator. They decompose their assigned task into internal steps, execute those steps in order, and commit to their git worktree after each step completes. Task-level agents are the primary unit of work.
+
+**Sub-agents** are transitory. They are spawned by task-level agents (or by other sub-agents) via fan-out. They produce artifacts consumed by their parent but do not commit to git. Their output is gathered by the parent and incorporated into the parent's work.
+
+### Git Strategy
+
+Each task-level agent works in its own git worktree, branched from the current state of `main`.
+
+**Merge policy:** All merges to `main` are human-gated. The system never auto-merges.
+
+**Conflict avoidance:** Task ordering from the plan is the primary mechanism for preventing conflicts. The planner draws explicit boundaries around each task's write scope ("what not to touch"). For the initial version, we trade parallelism for conflict avoidance -- tasks execute in a sequence that minimizes overlap.
+
+**Worktree lifecycle:** Worktrees are disposable. On task failure, document the problem, create a fresh worktree, and start over. On repeated failure, halt and escalate.
+
+**Future (deferred):** Parallel execution of tasks with optimistic concurrency. Conflict resolution treated as another instance of the universal workflow step with a specialized prompt and larger context budget.
+
+### Model Routing
+
+The planner specifies a **capability tier** per task rather than a concrete model. The orchestrator resolves tiers to specific models at dispatch time.
+
+**Capability tiers** (indicative, not final):
+
+| Tier | Use Cases | Examples |
+|------|-----------|---------|
+| Reasoning | Planning, conflict resolution, complex architectural decisions | Claude Opus, GPT-4o |
+| Generation | Code generation, test writing, documentation | Claude Sonnet, GPT-4o-mini |
+| Summarization | Leaf result summaries, progress digests, knowledge extraction | Flash models, local LLMs |
+| Classification | Transition signal extraction, simple validation | Cheapest available model |
+
+**Model selection** is part of the task definition emitted by the planner, not a global setting. As cheaper models improve, update the tier-to-model mapping without changing prompts or workflow logic.
+
+**Evaluation data:** Track task success rates per model tier. Tasks that fail on a light model and succeed on a heavy one reveal capability boundaries. Over time, shift tasks downward as cheaper models improve. The knowledge extraction workflow can produce these insights automatically.
+
+### Context Assembly
+
+Context assembly is deterministic, budget-aware, and pre-computed. It is the system's core competency alongside prompt construction.
+
+**Progressive disclosure (default).** By default, only target file contents and the repo map are assembled upfront. Dependency file contents (direct imports) and transitive symbol signatures are omitted to keep prompts lean. The LLM can pull dependencies on demand via Phase 7's exploration providers (`read_file`, `symbol_list`, `discover_context`, etc.). This prevents overwhelming the model with large prompts that degrade output quality. Use `--include-deps` to include dependency contents upfront (the pre-Phase 8 behavior).
+
+**Sources:**
+
+- Task-specific analysis tools: tree-sitter and LSPs for code tasks; other domain-appropriate tools for non-code tasks.
+- Git: Diff context, file history, branch state, prior work products.
+- Playbooks: Structured lessons from prior tasks, indexed by task type and domain.
+- Task metadata: The plan node, task description, boundaries, validation criteria.
+- Domain context: Reference documents, specifications, prior research, external data.
+
+**Budget management:** Each model has a token limit. Context assembly is a packing problem with a priority ordering:
+
+1. Task description and definition of "done"
+2. Immediate working context (files the task will read/write, reference material)
+3. Interface context (type signatures, API contracts, schemas, specifications) — only with `--include-deps`
+4. Deterministic analysis results (existing validation output, computed facts)
+5. Relevant playbooks
+6. Broader project context (structure, conventions, related work)
+
+Graceful truncation: lower-priority items are dropped first. The token budget for the target model is known at assembly time.
+
+### Validation
+
+**Deterministic checks first.** The specific checks depend on the task domain:
+
+- Code tasks: linting (ruff for Python), type checking, test execution, import resolution.
+- Research tasks: citation verification, format validation, completeness checks against requirements.
+- Any task: schema validation of structured outputs, constraint checking, task-specific scripts (agents can write and run their own).
+
+**LLM-based review** for subjective quality: coherence, consistency with prior work, whether the output matches the intent. Routed to an appropriate model tier.
+
+**Disagreement resolution:** If two review agents disagree, escalate to a more expensive model to break the tie.
+
+**Feedback format:** Validation results sent back to agents should be concise summaries with pointers to details, not raw dumps. Pre-compute aggregate statistics. Respect output discipline to avoid context pollution.
+
+### Knowledge Extraction
+
+Runs as an independent workflow on its own schedule, not on the critical path of task execution.
+
+**Inputs:** Completed task results, execution traces, human escalation resolutions.
+
+**Outputs:** Structured playbooks indexed by task type, domain, error pattern, and model tier.
+
+**Feedback loop:** Playbooks are injected into future task contexts by the assembly step. The latest available playbooks at assembly time are included, with a timestamp indicating freshness.
+
+**Human escalation learning:** When a human resolves an escalation, capture not just the escalation but the resolution. The knowledge extraction workflow turns these into playbook entries. The system learns from its own failures.
+
+### Observability
+
+**Observability Store.** Full LLM interaction data — assembled prompts, model responses, token usage, context assembly statistics — is persisted to a local SQLite database at `$XDG_STATE_HOME/forge/forge.db`. This separates heavyweight observability data from Temporal's workflow results, which carry only lightweight statistics (model name, token counts, latency). The CLI queries the store for detailed inspection (`forge run --verbose`, `forge status --verbose`).
+
+The store is managed by SQLAlchemy with Alembic migrations. Schema changes are versioned and reviewable. Activities write to the store as a best-effort side effect (D42) — store failures never block workflow execution.
+
+**OpenTelemetry** traces covering the full hierarchy:
+
+- Pipeline run
+- Workflow instance
+- Activity (LLM call, validation, context assembly)
+- Individual LLM request/response
+
+OTel tracing is initialized in the worker and spans are emitted by LLM, planner, context assembly, and validation activities.
+
+**Execution journal:** Records decisions (why this task was assigned to this model, why this transition was chosen), not just events (timing, status codes). The journal makes traces legible to human reviewers during escalation.
+
+**Plan-to-execution linking:** Execution spans are linked back to the plan DAG nodes they correspond to. A human reviewing a trace can see "this subtree corresponds to plan task 7: implement authentication middleware."
+
+**Escalation reports:** When the system halts, it produces a structured summary: the current plan, completed task summaries, the triggering task and failure reason, and the orchestrator's understanding of what went wrong. This is a summarization task that can run on a cheap model.
+
+### Human Interaction
+
+**Merge gating:** Humans review and merge task worktrees to `main`.
+
+**Escalation handling:** When the system pauses, the human retrieves the state summary, works with external tools (Claude Code, etc.) to correct course, updates the task list, clarifies requirements, and unpauses the affected tasks.
+
+**Escalation types:**
+
+- *Confused halt:* The orchestrator receives a result it can't classify. Immediate full stop.
+- *Degraded halt:* Performance metrics suggest something is wrong (high retry rates, increasing failures). Softer escalation: notification with option to intervene or continue.
+
+### Recurring Meta-Tasks
+
+**Sanity check the task list.** Periodically re-evaluate whether the current plan still makes sense given completed work. Currently triggered by time (every N completed steps via `--sanity-check-interval`) or thresholds (failure rate exceeds limit). In a future dynamic task evolution model, `new_tasks_discovered` transitions will be an additional trigger. Consumes knowledge extraction summaries rather than raw task outputs. Output: either "plan is valid, continue" or a revised task DAG.
+
+## Plan Format
+
+The planner's output is the critical design surface. It must be machine-readable (for the orchestrator to create workflow instances) and rich enough (for executing agents to work independently).
+
+Each task in the plan specifies:
+
+- **Objective:** What the task should produce (expected outputs, acceptance criteria, behavioral description).
+- **Boundaries:** What the task should not touch (explicit scope limits to reduce conflicts).
+- **Context requirements:** Which files, types, tests, and playbooks the task needs.
+- **Validation criteria:** Deterministic checks first, then LLM-based if needed.
+- **Dependencies:** Other task IDs that must complete before this task can start.
+- **Capability tier:** The minimum model capability required.
+- **Recursion budget:** How many levels of fan-out the task is allowed.
+
+## Transition Vocabulary
+
+The orchestrator needs a finite set of outcome signals to act on:
+
+| Signal | Meaning | Action | Status |
+|--------|---------|--------|--------|
+| `success` | Task completed, validation passed | Proceed to next task or gather | Implemented |
+| `failure_retryable` | Task failed, worth retrying | Fresh worktree, retry (up to limit) | Implemented |
+| `failure_terminal` | Task failed, cannot recover | Halt and escalate | Implemented |
+| `new_tasks_discovered` | Agent identified work not in the plan | Trigger sanity check / re-planning | Deferred (see below) |
+| `blocked_on_human` | Needs clarification or decision | Pause and escalate | Deferred (see below) |
+| `blocked_on_sibling` | Discovered unexpected dependency | Re-evaluate task ordering | Deferred (see below) |
+
+The three deferred signals are not needed by the current plan-then-execute architecture but are required for dynamic task evolution in future releases. See [Plan-Then-Execute vs. Dynamic Task Evolution](#plan-then-execute-vs-dynamic-task-evolution) for the full rationale.
+
+## Retry and Failure
+
+1. On failure: document where the task got stuck (structured failure report).
+2. Create a new worktree and start the task from scratch.
+3. If the second attempt also fails, halt and escalate to a human.
+4. The failure documentation from both attempts is included in the escalation report.
+
+## Plan-Then-Execute vs. Dynamic Task Evolution
+
+The current architecture follows a **plan-then-execute** model: the planner commits to a full decomposition upfront, and execution proceeds deterministically within that plan. Future releases will introduce **dynamic task evolution**, where tasks can emerge, block, and re-order during execution. The three deferred transition signals (`new_tasks_discovered`, `blocked_on_human`, `blocked_on_sibling`) exist to support this future model.
+
+### Current Model: Plan-Then-Execute
+
+In the current system, each of the three deferred signals is handled by existing mechanisms:
+
+**`new_tasks_discovered` is eliminated by upfront planning.** The planner receives the full task description, target files, repo map, and context files, then decomposes the entire task into an ordered sequence of steps before any execution begins. Executing steps have no mechanism to signal "I found work not in the plan." Instead, periodic sanity checks (`--sanity-check-interval`) re-evaluate the remaining plan against completed work and can revise or abort — handling plan staleness without a discovery signal.
+
+**`blocked_on_human` is covered by `failure_terminal`.** Any condition requiring human judgment becomes a validation failure, which maps to `failure_terminal`. The human receives a structured result with full context (error summary, validation results, worktree path) and decides what to do. There is no pause-and-resume mechanism where the workflow waits for human input and then continues — it terminates and the human triages. A separate signal would add a distinction without a functional difference.
+
+**`blocked_on_sibling` is eliminated by dependency ordering and fan-out design.** The planner declares step ordering and dependencies upfront. Fan-out sub-tasks run fully independently to completion, then results are gathered and merged by the parent workflow. If two sub-tasks touch the same file, the system detects the conflict at gather time and either resolves it via LLM or returns `failure_terminal`. Sibling blocking cannot happen by construction — there is no channel for a running sub-task to depend on another sub-task's output.
+
+### Future Model: Dynamic Task Evolution
+
+In dynamic task evolution, tasks will be allowed to evolve as they progress. An executing step may discover that the original plan is incomplete, that it needs human input to proceed, or that it depends on work assigned to a sibling. This requires the three deferred signals:
+
+**`new_tasks_discovered`** enables agents to report emergent work. An agent executing a step realizes the task requires changes to files or modules not in the plan. Rather than silently exceeding its scope or failing, it emits `new_tasks_discovered` with a structured description of the new work. The orchestrator triggers a sanity check or re-planning pass that incorporates the discovery, potentially adding steps, re-ordering remaining work, or splitting the current task.
+
+**`blocked_on_human`** enables pause-and-resume. Unlike `failure_terminal`, which halts execution permanently, `blocked_on_human` pauses the specific task while the rest of the plan continues. The human receives a structured query (not just a failure report), provides input, and the paused task resumes with the answer injected into its context. This is important for tasks where the system can identify exactly what it needs from a human without abandoning all progress.
+
+**`blocked_on_sibling`** enables runtime dependency discovery. During execution, an agent discovers that it needs an artifact (a type definition, a shared module, test fixtures) that another in-flight task is producing. Rather than failing or producing incomplete output, it emits `blocked_on_sibling` with the dependency. The orchestrator re-evaluates task ordering, potentially serializing the two tasks or injecting a synchronization point.
+
+### What Changes
+
+| Aspect | Plan-Then-Execute | Dynamic Task Evolution |
+|--------|-------------------|----------------------|
+| Plan completeness | Plan is complete before execution starts | Plan is a starting point that evolves |
+| Discovery | Not possible — steps execute within fixed scope | Steps can report emergent work |
+| Human interaction | Terminal — halt and hand off | Conversational — pause, ask, resume |
+| Sibling coordination | Prevented by ordering; conflicts detected post-hoc | Runtime dependency signaling between tasks |
+| Sanity checks | Periodic, time-based | Also triggered by discovery events |
+| Workflow lifecycle | Submit → execute → terminal result | Submit → execute → pause/evolve → resume → terminal result |
+
+The plan-then-execute model is simpler, more predictable, and sufficient for tasks where the planner can anticipate the full scope of work. Dynamic task evolution adds complexity but enables tasks where the scope genuinely cannot be known until execution is underway.
+
+## Technology Stack
+
+**Core:**
+
+| Component | Technology |
+|-----------|-----------|
+| Workflow orchestration | Temporal |
+| Observability | OpenTelemetry |
+| Output validation | Pydantic |
+| Package management | uv |
+| LLM providers | Anthropic, Mistral |
+| LLM client library | anthropic (direct SDK) |
+| Data store / isolation | git, git worktrees |
+| Observability store | SQLite + SQLAlchemy |
+| Schema migrations | Alembic |
+
+**Code generation domain (initial use case):**
+
+| Component | Technology |
+|-----------|-----------|
+| Code analysis | tree-sitter, LSPs |
+| Python linting/formatting | ruff |
+
+## Development Phases
+
+### Phase 0: Project Skeleton and Design Document (complete)
+
+- This design document.
+- Project structure, dependencies, and configuration.
+- Temporal running locally.
+- Basic tracing infrastructure.
+
+### Phase 1: The Minimal Loop (complete)
+
+Single workflow executing one LLM call with hardcoded context. One model (Anthropic), one task domain (Python code generation as the initial use case). No fan-out, no planning step, no model routing.
+
+Proves out: the universal workflow step, activity boundaries, git worktree lifecycle, tracing infrastructure.
+
+Deliverable: Describe a small task, Forge executes it in a worktree, validates the output, and presents the result for human review.
+
+### Phase 2: Planning and Multi-Step (complete)
+
+Add a planning step that decomposes a task into ordered sub-steps. Task-level agent executes steps sequentially, committing after each. Still single-model, no fan-out.
+
+Proves out: plan format, transition logic, incremental commit strategy.
+
+Deliverable: Describe a larger task, Forge plans the steps, executes them in order, with a reviewable commit history showing incremental progress.
+
+### Phase 3: Fan-Out / Gather (complete)
+
+Plan steps can declare independent sub-tasks that execute in parallel via Temporal child workflows. Each sub-task runs in its own git worktree (compound task ID, branched from the parent branch). Results are gathered, checked for file conflicts, merged into the parent worktree, validated, and committed. Sub-tasks do not commit; the parent owns the commit.
+
+Proves out: child workflows, fan-out/gather primitive, compound task IDs, sub-task isolation and cleanup.
+
+Deliverable: Describe a task where a plan step has independent sub-tasks, Forge fans out child workflows, gathers their outputs, and commits the merged result.
+
+### Phase 4: Intelligent Context Assembly (complete)
+
+Automatic context discovery and importance ranking via import graph analysis, PageRank, and token budget management. Replaces manual `context_files` specification with automatic discovery that supplements manual context. See `docs/planning/PHASE4.md` for the full specification.
+
+By default, only target file contents and the repo map are assembled upfront (progressive disclosure). Dependency file contents and transitive signatures are included only when `--include-deps` is passed. The LLM can pull dependencies on demand via Phase 7's exploration providers.
+
+Proves out: import graph analysis (grimp), symbol extraction (ast), PageRank ranking, token budget packing, repo map generation.
+
+Deliverable: Describe a task with only `target_files` and a description, and Forge automatically discovers which existing files to include as context — ranked by importance and packed within the target model's token budget.
+
+### Planner Evaluation Framework (complete)
+
+Deterministic structural checks and LLM-as-judge scoring for planner output. Eval cases define expected properties (file coverage, step ordering, constraint adherence) and the framework validates plans against them. The `forge eval-planner` CLI command runs evaluations against an eval corpus.
+
+Proves out: evaluation corpus format, deterministic plan validation, LLM-as-judge integration.
+
+Deliverable: Run `forge eval-planner --corpus-dir eval/corpus --judge` to evaluate planner output with both structural checks and LLM scoring.
+
+### Phase 5: Observability Store (complete)
+
+Persist full LLM interaction data to a local SQLite database so operators can inspect prompts, context, token usage, and results for every step of every workflow. Add lightweight statistics to Temporal result payloads. Provide CLI commands for inspecting workflow history and step details. See `docs/planning/PHASE5.md` for the full specification.
+
+Proves out: SQLite observability store, SQLAlchemy ORM, Alembic migrations, best-effort store writes, CLI inspection commands.
+
+Deliverable: Run a multi-step planned workflow, then use `forge status --workflow-id <id> --verbose` to see the full prompt, assembled context, model name, token usage, and LLM response for each step.
+
+### Phase 6: Knowledge Extraction (complete)
+
+Extract structured lessons from completed workflow results and inject them as playbook entries into future task contexts. Extraction runs as an independent Temporal workflow, producing tagged entries stored in the existing SQLite database. At context assembly time, relevant playbooks are retrieved by tag overlap and injected at priority 5 within the token budget. See `docs/planning/PHASE6.md` for the full specification.
+
+Proves out: playbook storage, extraction workflow, tag-based retrieval, playbook injection into context assembly, `forge extract` and `forge playbooks` CLI commands.
+
+Deliverable: Run `forge extract` to process completed runs, then verify playbook entries appear in future task contexts via `forge playbooks`.
+
+### Phase 7: LLM-Guided Context Exploration
+
+Add an exploration loop before code generation. The LLM requests context from a menu of providers (file reads, code search, symbol lists, import graphs, test execution, linting, git history, repo maps, past runs, playbooks) until it signals readiness. Requests are fulfilled by Temporal activities. A configurable round limit bounds token spend. See `docs/planning/PHASE7.md` for the full specification.
+
+Proves out: LLM-directed context gathering, provider registry pattern, exploration loop integration into both single-step and planned workflows, `--max-exploration-rounds` and `--no-explore` CLI options.
+
+Deliverable: Run `forge run` with exploration enabled and observe the LLM requesting context before generating code.
+
+### Phase 8: Error-Aware Retries
+
+Feed validation errors back to the LLM on retry so it knows what went wrong. When a step fails validation and retries, the retry prompt includes the validation error output with AST-derived code context around error locations. See `docs/planning/PHASE8.md` for the full specification.
+
+Proves out: error feedback in retry prompts, AST-based context enrichment around error locations, backward-compatible retry fields.
+
+Deliverable: Run `forge run` with a task that fails validation and observe the retry prompt including the previous failure's error output.
+
+### Phase 9: Prompt Caching (complete)
+
+Leverage Anthropic's prompt caching to reduce input token costs. Static context (system prompt, repo map, file contents) is placed in cache-efficient order so repeat LLM calls within a workflow reuse cached prefixes. Cache token usage is tracked in the observability store. See `docs/planning/PHASE9.md` for the full specification.
+
+Proves out: cache control headers, cache-efficient prompt ordering, cache hit tracking.
+
+Deliverable: Run a multi-step task and observe cache read/write token counts in `forge status --verbose`.
+
+### Phases 10–12, 14 (complete)
+
+- **Phase 10: Fuzzy Edit Matching** — Four-level fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy) for applying LLM-generated edits. See `docs/planning/PHASE10.md`.
+- **Phase 11: Model Routing** — Capability tiers (Reasoning, Generation, Summarization, Classification) mapped to concrete models at dispatch time. See `docs/planning/PHASE11.md`.
+- **Phase 12: Extended Thinking** — Extended thinking support for the planner, with configurable token budget. See `docs/planning/PHASE12.md`.
+- **Phase 14: Batch Processing** — Batch submission via the Anthropic Batch API with a polling workflow. See `docs/planning/PHASE14.md`.
+
+### Release 2 (Future)
+
+- **Phase 13: Tree-Sitter Multi-Language Support** — Replace Python `ast` with tree-sitter for symbol extraction, repo maps, and error context enrichment. Enables non-Python codebases. Deferred until Release 1 is stable. See `docs/planning/PHASE13.md`.
+- **Dynamic Task Evolution** — Allow tasks to evolve during execution via `new_tasks_discovered`, `blocked_on_human`, and `blocked_on_sibling` transition signals. See [Plan-Then-Execute vs. Dynamic Task Evolution](#plan-then-execute-vs-dynamic-task-evolution).
+- Multi-provider support.
+- Additional task domains (TypeScript code generation, research, analysis).

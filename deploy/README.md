@@ -7,9 +7,9 @@ Postgres** and OCR blobs in **S3**. Remote users run the `forge`, `ocr`, and
 and is gated by **mutual TLS** — only a client holding a certificate signed by
 your internal CA can connect, and all traffic is encrypted.
 
-See [../docs/planning/SECURE-REMOTE-ACCESS.md](../docs/planning/SECURE-REMOTE-ACCESS.md)
+See [../docs/operations/SECURE-REMOTE-ACCESS.md](../docs/operations/SECURE-REMOTE-ACCESS.md)
 for the threat model and design rationale, and
-[../docs/planning/DEPLOYMENT.md](../docs/planning/DEPLOYMENT.md) for the broader
+[../docs/operations/DEPLOYMENT.md](../docs/operations/DEPLOYMENT.md) for the broader
 Supabase/S3 deployment context.
 
 ## Architecture
