@@ -22,6 +22,10 @@ from temporalio.client import (
     ScheduleUpdateInput,
 )
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import (
+    SandboxedWorkflowRunner,
+    SandboxRestrictions,
+)
 
 from forge.activities import (
     assemble_conflict_resolution_context,
@@ -83,6 +87,19 @@ from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWor
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
 logger = logging.getLogger(__name__)
+
+# Pass the pydantic native modules through the workflow sandbox. The shared
+# pydantic data converter serializes workflow args/results, so pydantic_core (the
+# Rust extension) gets imported lazily the first time a model is (de)serialized
+# inside a workflow run — after the sandbox has snapshotted its modules, which
+# triggers a "imported after initial workflow load" UserWarning. Reusing the
+# host's already-loaded modules is safe (they're deterministic) and silences it.
+_SANDBOX_RUNNER = SandboxedWorkflowRunner(
+    restrictions=SandboxRestrictions.default.with_passthrough_modules(
+        "pydantic",
+        "pydantic_core",
+    )
+)
 
 
 def _init_store() -> None:
@@ -286,6 +303,7 @@ async def run_worker(
         task_queue=FORGE_TASK_QUEUE,
         workflows=workflows,
         activities=activities,
+        workflow_runner=_SANDBOX_RUNNER,
         graceful_shutdown_timeout=timedelta(seconds=30),
     )
 
