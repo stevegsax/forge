@@ -13,56 +13,35 @@ from pydantic import BaseModel, Field
 
 
 class BatchJobStatus(StrEnum):
-    """Lifecycle state of a batch_jobs row.
+    """Provider-batch lifecycle state of a ``batch_jobs`` row (platform single-writer).
 
-    Happy path: SUBMITTED -> STORING -> SUCCEEDED.
+    This tracks ONLY the provider batch lifecycle. The downstream consumer's
+    processing/terminal lifecycle (stored/failed) lives in the consumer's own
+    status table, joined to this on ``request_id``; the user-facing status is the
+    join of the two.
 
-    Failure paths:
-    - FAILED: provider API refused the submission before returning a batch_id.
-    - ERRORED: per-entry failure from the provider, or the parse/store step
-      raised after signal delivery.
-    - EXPIRED / CANCELED: terminal provider states propagated from
-      BatchPollStatus.
-    - MISSING: batch unretrievable after 24h; the poller gave up.
+    Happy path: SUBMITTED -> PROCESSING (handed to the consumer).
+    Failure paths: FAILED / EXPIRED (terminal provider states), MISSING (gave up).
     """
 
     SUBMITTED = "submitted"
-    """Row created; batch in flight at the provider, waiting for completion."""
+    """Row created; batch in flight at the provider, waiting for completion.
+    Only rows in this state are polled."""
 
     PROCESSING = "processing"
     """Provider reported the batch complete and the poller delivered the result
     signal to the waiting consumer workflow. From the platform's view this is the
-    terminal provider state (the poller stops re-polling it); the consumer tracks
-    its own processing/terminal lifecycle in its own status table, joined on
-    ``request_id``. Added for the platform/consumer split."""
-
-    STORING = "storing"
-    """Provider reported the batch complete and the poller delivered the
-    result signal to the waiting workflow. Parse + write to ``ocr_results``
-    (or the equivalent consumer for non-OCR batches) is in progress. A row
-    stuck in this state past the store workflow's retry budget is a genuine
-    failure."""
-
-    SUCCEEDED = "succeeded"
-    """End-to-end complete: the downstream consumer (e.g. OcrStoreWorkflow)
-    has committed its output. Only the consumer writes this value, and only
-    after its write succeeds."""
-
-    ERRORED = "errored"
-    """Per-entry failure from the provider, or the parse/store step raised
-    after signal delivery."""
+    terminal provider state — the poller stops re-polling it. The consumer tracks
+    its own processing/terminal lifecycle in its own status table."""
 
     FAILED = "failed"
-    """Provider API refused the submission before returning a batch_id.
-    Written by ``record_batch_failure`` when the submit activity raises."""
+    """Terminal provider failure: the API refused the submission before returning
+    a batch_id (``record_batch_failure``), reported the batch FAILED/CANCELED, or a
+    per-entry error came back. CANCELED maps here (the coarse status needs no
+    cancel/fail distinction)."""
 
     EXPIRED = "expired"
-    """Provider marked the batch as expired. Written from
-    ``poll_result.status.value`` in the poller's terminal-failure branch."""
-
-    CANCELED = "canceled"
-    """Provider marked the batch as canceled. Written from
-    ``poll_result.status.value`` in the poller's terminal-failure branch."""
+    """Provider marked the batch as expired (TIMEOUT_EXCEEDED). Terminal."""
 
     MISSING = "missing"
     """Batch unretrievable after 24h. The poller gave up and marked the row
