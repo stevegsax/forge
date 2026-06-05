@@ -1,13 +1,10 @@
-"""OcrStoreWorkflow — wait for OCR batch result and store it.
+"""OcrStoreWorkflow — wait for the platform batch result, then store it.
 
-Steps:
-1. Wait for batch_result_received signal (up to 25h)
-2. Parse the raw OCR result
-3. Store the extracted text in the database
-4. Return OcrStoreResult
-
-The batch poller automatically signals this workflow when the batch
-completes, using the workflow_id stored in the batch_jobs table.
+The platform poller signals this workflow (``batch_result_received``) when the
+provider batch completes, delivering the result inline or by S3 pointer. This
+workflow owns all OCR-side work: it resolves the result, stores images + text, and
+writes its own terminal status (``ocr_job_status``). It never touches ``batch_jobs``
+(the platform single-writer owns that).
 """
 
 from __future__ import annotations
@@ -22,143 +19,81 @@ from temporalio.exceptions import ApplicationError
 with workflow.unsafe.imports_passed_through():
     from forge_contracts.models import BatchResult
 
-    from ocr.models import (
-        OcrParseResult,
-        OcrStoreInput,
-        OcrStoreResult,
-    )
-    from ocr.persist import (
-        _PERSIST_RETRY,
-        _PERSIST_SCHEDULE_TO_CLOSE,
-    )
+    from ocr.models import OcrStoreInput, OcrStoreResult
+    from ocr.persist import _PERSIST_RETRY, _PERSIST_SCHEDULE_TO_CLOSE
 
-_PARSE_TIMEOUT = timedelta(seconds=30)
-_STORE_TIMEOUT = timedelta(seconds=30)
+_STORE_TIMEOUT = timedelta(seconds=60)
 _BATCH_WAIT_TIMEOUT = timedelta(hours=25)
 _STATUS_TIMEOUT = timedelta(seconds=15)
-_LOCAL_RETRY = RetryPolicy(maximum_attempts=2)
-# Status cleanup on the error branch must not loop — we want to record the
-# failure once and then let the original exception propagate.
 _STATUS_NO_RETRY = RetryPolicy(maximum_attempts=1)
 
 
 @workflow.defn
 class OcrStoreWorkflow:
-    """Wait for OCR batch result, parse, and store.
-
-    Canonical signal pattern: __init__ sets up state, @workflow.signal
-    appends to list, workflow.wait_condition checks the list.
-    This pattern must be copy-pasted per workflow class because
-    Temporal requires @workflow.signal on class methods.
-    """
+    """Wait for the OCR batch result, store text + images, write terminal status."""
 
     def __init__(self) -> None:
         self._batch_results: list[BatchResult] = []
 
     @workflow.signal
     async def batch_result_received(self, result: BatchResult) -> None:
-        """Receive batch result from the poller."""
+        """Receive the batch result from the platform poller."""
         self._batch_results.append(result)
 
     @workflow.run
     async def run(self, input: OcrStoreInput) -> OcrStoreResult:
-        workflow.logger.info(
-            "OcrStore started: document_id=%s",
-            input.document_id,
-        )
+        workflow.logger.info("OcrStore started: document_id=%s", input.document_id)
 
-        # Step 1: Wait for batch result signal. If the poller never delivers
-        # within the window (a genuinely stuck provider batch), wait_condition
-        # raises TimeoutError *inside* the workflow — catch it, record a clean
-        # terminal failure on the batch_jobs row, and surface an
-        # ApplicationError instead of dying with a raw timeout that leaves the
-        # row stuck. (A workflow execution timeout is not catchable, so the
-        # safety net has to live here.) input.request_id is the batch_jobs PK,
-        # available before any signal arrives.
+        # Wait for the result signal. A genuinely stuck provider batch raises
+        # TimeoutError *inside* the workflow (catchable) — record a clean terminal
+        # failure and surface an ApplicationError rather than dying with a raw
+        # timeout that leaves the status row stuck.
         try:
             await workflow.wait_condition(
                 lambda: len(self._batch_results) > 0,
                 timeout=_BATCH_WAIT_TIMEOUT,
             )
         except TimeoutError as exc:
-            await self._mark_errored(
-                input.request_id,
-                f"OCR batch wait timed out after {_BATCH_WAIT_TIMEOUT}",
+            await self._mark_failed(
+                input, f"OCR batch wait timed out after {_BATCH_WAIT_TIMEOUT}"
             )
             raise ApplicationError("OCR batch wait timed out") from exc
-        result = self._batch_results.pop(0)
-        request_id = result.request_id
 
-        # Early error branches — the poller already advanced the batch_jobs
-        # row to STORING; promote it to ERRORED before re-raising so the
-        # row doesn't get stuck in STORING forever.
+        result = self._batch_results.pop(0)
+
         if result.error:
-            await self._mark_errored(request_id, f"OCR batch error: {result.error}")
+            await self._mark_failed(input, f"OCR batch error: {result.error}")
             raise ApplicationError(f"OCR batch error: {result.error}")
-        if not result.raw_response_json:
-            await self._mark_errored(request_id, "OCR batch result has no response JSON")
-            raise ApplicationError("OCR batch result has no response JSON")
+        if result.raw_response_json is None and result.s3_key is None:
+            await self._mark_failed(input, "OCR batch result has no body")
+            raise ApplicationError("OCR batch result has no body")
 
         try:
-            # Step 2: Parse OCR result
-            parse_result = await workflow.execute_activity(
-                "parse_ocr_result",
-                result.raw_response_json,
-                start_to_close_timeout=_PARSE_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
-                result_type=OcrParseResult,
-            )
-
-            # Step 3: Store OCR result
-            store_data = json.dumps(
-                {
-                    "document_id": input.document_id,
-                    "file_path": input.file_path,
-                    "text": parse_result.text,
-                    "model_name": parse_result.model_name,
-                    "input_tokens": parse_result.input_tokens,
-                    "output_tokens": parse_result.output_tokens,
-                    "page_count": parse_result.page_count,
-                    "batch_id": result.batch_id,
-                    "workflow_id": workflow.info().workflow_id,
-                    "image_ids": parse_result.image_ids,
-                }
-            )
             store_result = await workflow.execute_activity(
                 "store_ocr_result",
-                store_data,
+                json.dumps(
+                    {
+                        "request_id": input.request_id,
+                        "document_id": input.document_id,
+                        "file_path": input.file_path,
+                        "batch_id": result.batch_id,
+                        "workflow_id": workflow.info().workflow_id,
+                        "raw_response_json": result.raw_response_json,
+                        "s3_key": result.s3_key,
+                    }
+                ),
                 start_to_close_timeout=_STORE_TIMEOUT,
                 schedule_to_close_timeout=_PERSIST_SCHEDULE_TO_CLOSE,
                 retry_policy=_PERSIST_RETRY,
                 result_type=OcrStoreResult,
             )
         except Exception as exc:
-            # Parse or store raised — record the failure on the batch_jobs
-            # row before propagating so the list view doesn't leave this
-            # chunk in STORING.
-            await self._mark_errored(request_id, f"Parse/store failed: {exc}")
+            await self._mark_failed(input, f"Parse/store failed: {exc}")
             raise
 
-        # Step 4: Mark the batch_jobs row SUCCEEDED now that ocr_results
-        # is committed. This is the only place SUCCEEDED is written — the
-        # poller only advances to STORING on signal delivery.
-        await workflow.execute_activity(
-            "update_batch_job_status",
-            json.dumps(
-                {
-                    "request_id": request_id,
-                    "status": "succeeded",
-                }
-            ),
-            start_to_close_timeout=_STATUS_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
-        )
-
-        # Step 5: Signal gather workflow if this is a chunk
+        # Signal the gather workflow if this is one chunk of a split document.
         if input.gather_workflow_id:
-            gather_handle = workflow.get_external_workflow_handle(
-                input.gather_workflow_id,
-            )
+            gather_handle = workflow.get_external_workflow_handle(input.gather_workflow_id)
             await gather_handle.signal("chunk_completed", input.document_id)
 
         workflow.logger.info(
@@ -166,18 +101,19 @@ class OcrStoreWorkflow:
             store_result.document_id,
             store_result.text_length,
         )
-
         return store_result
 
-    async def _mark_errored(self, request_id: str, error_message: str) -> None:
-        """Update the batch_jobs row to ERRORED. Never raises."""
+    async def _mark_failed(self, input: OcrStoreInput, error_message: str) -> None:
+        """Write a terminal ``failed`` status to ocr_job_status. Never raises."""
         try:
             await workflow.execute_activity(
-                "update_batch_job_status",
+                "upsert_ocr_status",
                 json.dumps(
                     {
-                        "request_id": request_id,
-                        "status": "errored",
+                        "request_id": input.request_id,
+                        "document_id": input.document_id,
+                        "file_path": input.file_path,
+                        "status": "failed",
                         "error_message": error_message,
                     }
                 ),
@@ -186,6 +122,5 @@ class OcrStoreWorkflow:
             )
         except Exception:
             workflow.logger.warning(
-                "Failed to mark batch_jobs row as errored: request_id=%s",
-                request_id,
+                "Failed to write failed status: request_id=%s", input.request_id
             )

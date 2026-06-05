@@ -54,13 +54,23 @@ class OcrSubmitInput(BaseModel):
 
 
 class OcrBatchRef(BaseModel):
-    """Lightweight reference returned by submit_ocr_batch activity.
-
-    Contains only the batch tracking metadata needed by the workflow.
-    """
+    """Lightweight reference to a submitted batch (batch_id + correlation id)."""
 
     batch_id: str
     request_id: str
+
+
+class OcrBatchRequestRef(BaseModel):
+    """Reference to a pre-built /v1/ocr request blob stashed in S3.
+
+    ``request_id`` is the single correlation id (== provider custom_id ==
+    platform ``batch_jobs`` PK), minted once when the blob is built. The submit
+    workflow hands ``s3_key`` + ``model`` to the platform's opaque-blob submit SPI.
+    """
+
+    request_id: str
+    s3_key: str
+    model: str
 
 
 class OcrSubmitResult(BaseModel):

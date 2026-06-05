@@ -70,7 +70,7 @@ class OcrResult(Base):
 
 
 class FileContentBlob(Base):
-    __tablename__ = "file_content_blobs"
+    __tablename__ = "ocr_file_content_blobs"
 
     id: Mapped[str] = mapped_column(sa.String, primary_key=True)
     s3_key: Mapped[str] = mapped_column(sa.String, nullable=False)
@@ -522,3 +522,34 @@ def get_ocr_job_status(engine: Engine, request_id: str) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(t.select().where(t.c.request_id == request_id)).mappings().first()
         return dict(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Migrations (OCR's own Alembic chain, isolated by version_table)
+# ---------------------------------------------------------------------------
+
+
+def run_migrations(url: str) -> None:
+    """Run the OCR Alembic chain against the shared store URL (SQLite or Postgres).
+
+    The OCR chain uses ``version_table=alembic_version_ocr`` and an
+    ``include_object`` filter, so it coexists with the platform's chain in the
+    same database without either dropping the other's tables.
+    """
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from forge_contracts.db import ensure_sqlite_parent
+    from sqlalchemy.engine import make_url
+
+    alembic_dir = Path(__file__).parent / "alembic"
+    cfg = Config(str(alembic_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(alembic_dir))
+
+    if make_url(url).get_backend_name() == "sqlite":
+        ensure_sqlite_parent(url)
+    # Escape '%' for configparser interpolation (URL-encoded password chars);
+    # env.py reverses it on read so the engine receives the original URL.
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    command.upgrade(cfg, "head")

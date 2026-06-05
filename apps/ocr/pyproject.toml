@@ -16,6 +16,9 @@ dependencies = [
     "forge-contracts",
 ]
 
+[project.scripts]
+ocr = "ocr.cli:main"
+
 [tool.uv.sources]
 sax-llm = { path = "../sax-llm", editable = true }
 forge-contracts = { path = "../forge-contracts", editable = true }
