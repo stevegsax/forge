@@ -121,6 +121,25 @@ class TestReadContextFiles:
         assert "a.txt" in result
         assert "missing.txt" not in result
 
+    def test_skips_parent_traversal(self, tmp_path: Path) -> None:
+        base_path = tmp_path / "worktree"
+        base_path.mkdir()
+        (tmp_path / "secret.txt").write_text("TOP SECRET")
+
+        result = _read_context_files(base_path, ["../secret.txt"])
+
+        assert "../secret.txt" not in result
+
+    def test_skips_absolute_paths(self, tmp_path: Path) -> None:
+        base_path = tmp_path / "worktree"
+        base_path.mkdir()
+        secret_path = tmp_path / "secret.txt"
+        secret_path.write_text("TOP SECRET")
+
+        result = _read_context_files(base_path, [str(secret_path)])
+
+        assert str(secret_path) not in result
+
 
 # ---------------------------------------------------------------------------
 # assemble_context (activity)
@@ -307,6 +326,66 @@ class TestAssembleStepContext:
         result = await assemble_step_context(input_data)
         assert "### Context Files" not in result.system_prompt
 
+    @pytest.mark.asyncio
+    async def test_auto_discover_enabled_uses_worktree_context(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import forge.activities.context as context_module
+        import forge.code_intel
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        calls: list[dict[str, object]] = []
+
+        def fake_discover_context(**kwargs: object) -> PackedContext:
+            calls.append(kwargs)
+            return PackedContext(
+                items=[
+                    ContextItem(
+                        file_path="src/forge/helpers.py",
+                        content="def helper() -> None: ...",
+                        representation=Representation.SIGNATURES,
+                        priority=4,
+                        estimated_tokens=8,
+                    ),
+                ],
+                total_estimated_tokens=8,
+                budget_utilization=0.01,
+                items_included=1,
+            )
+
+        monkeypatch.setattr(forge.code_intel, "discover_context", fake_discover_context)
+        monkeypatch.setattr(context_module, "_load_playbooks_for_task", lambda task: [])
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "src").mkdir()
+        (worktree / "src" / "routes.py").write_text("def route() -> None:\n    pass\n")
+
+        step = PlanStep(
+            step_id="s1",
+            description="Create routes.",
+            target_files=["src/routes.py"],
+        )
+        input_data = AssembleStepContextInput(
+            task_id="t1",
+            task_description="Build API.",
+            context_config=ContextConfig(auto_discover=True),
+            step=step,
+            step_index=0,
+            total_steps=1,
+            repo_root=str(tmp_path),
+            worktree_path=str(worktree),
+        )
+
+        result = await assemble_step_context(input_data)
+
+        assert calls, "assemble_step_context should invoke auto-discovery when enabled"
+        assert calls[0]["project_root"] == str(worktree)
+        assert calls[0]["target_files"] == ["src/routes.py"]
+        assert result.context_stats is not None
+
 
 # ---------------------------------------------------------------------------
 # build_sub_task_system_prompt (pure function)
@@ -401,6 +480,61 @@ class TestAssembleSubTaskContext:
         )
         result = await assemble_sub_task_context(input_data)
         assert "### Context Files" not in result.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_auto_discover_uses_parent_worktree_context(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import forge.code_intel
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        calls: list[dict[str, object]] = []
+
+        def fake_discover_context(**kwargs: object) -> PackedContext:
+            calls.append(kwargs)
+            return PackedContext(
+                items=[
+                    ContextItem(
+                        file_path="src/forge/models.py",
+                        content="class Model: ...",
+                        representation=Representation.SIGNATURES,
+                        priority=4,
+                        estimated_tokens=6,
+                    ),
+                ],
+                total_estimated_tokens=6,
+                budget_utilization=0.01,
+                items_included=1,
+            )
+
+        monkeypatch.setattr(forge.code_intel, "discover_context", fake_discover_context)
+
+        parent_wt = tmp_path / "parent-wt"
+        parent_wt.mkdir()
+        (parent_wt / "src").mkdir()
+        (parent_wt / "src" / "schema.py").write_text("class Schema:\n    pass\n")
+
+        st = SubTask(
+            sub_task_id="st1",
+            description="Analyze schema.",
+            target_files=["src/schema.py"],
+        )
+        input_data = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="Build API.",
+            sub_task=st,
+            worktree_path=str(parent_wt),
+            repo_root=str(tmp_path),
+        )
+
+        result = await assemble_sub_task_context(input_data)
+
+        assert calls, "assemble_sub_task_context should auto-discover context by default"
+        assert calls[0]["project_root"] == str(parent_wt)
+        assert calls[0]["target_files"] == ["src/schema.py"]
+        assert result.context_stats is not None
 
 
 # ---------------------------------------------------------------------------

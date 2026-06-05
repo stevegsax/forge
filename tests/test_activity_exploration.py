@@ -277,6 +277,21 @@ class TestFulfillRequests:
         assert len(results) == 1
         assert "Error" in results[0].content
 
+    def test_path_traversal_request_returns_error(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (tmp_path / "outside.py").write_text("TOP SECRET")
+
+        results = fulfill_requests(
+            [{"provider": "read_file", "params": {"path": "../outside.py"}}],
+            str(worktree),
+            str(worktree),
+        )
+
+        assert len(results) == 1
+        assert "Error" in results[0].content
+        assert "TOP SECRET" not in results[0].content
+
 
 # ---------------------------------------------------------------------------
 # Project instructions in exploration

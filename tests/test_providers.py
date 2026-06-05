@@ -59,6 +59,27 @@ class TestHandleReadFile:
         assert "Error" in result
         assert "'path'" in result
 
+    def test_rejects_parent_traversal(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (tmp_path / "outside.txt").write_text("TOP SECRET")
+
+        result = handle_read_file({"path": "../outside.txt"}, str(worktree), str(worktree))
+
+        assert "Error" in result
+        assert "TOP SECRET" not in result
+
+    def test_rejects_absolute_paths(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("TOP SECRET")
+
+        result = handle_read_file({"path": str(outside)}, str(worktree), str(worktree))
+
+        assert "Error" in result
+        assert "TOP SECRET" not in result
+
 
 # ---------------------------------------------------------------------------
 # handle_search_code
@@ -123,6 +144,16 @@ class TestHandleSymbolList:
     def test_missing_param(self, tmp_path: Path) -> None:
         result = handle_symbol_list({}, str(tmp_path), str(tmp_path))
         assert "Error" in result
+
+    def test_rejects_parent_traversal(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (tmp_path / "hidden.py").write_text("def hidden() -> None:\n    pass\n")
+
+        result = handle_symbol_list({"file_path": "../hidden.py"}, str(worktree), str(worktree))
+
+        assert "Error" in result
+        assert "hidden" not in result
 
 
 # ---------------------------------------------------------------------------
