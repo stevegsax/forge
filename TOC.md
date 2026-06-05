@@ -1,76 +1,57 @@
 # Documentation Table of Contents
 
-## User Guides
+Start here: **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — current project status, completed/remaining requirements, and known issues.
 
-- [playbooks.md](docs/user/playbooks.md) — Playbook system: automatic extraction from completed tasks, manual addition with LLM review (`forge playbooks add`), Temporal workflow pipeline, JSON schema, and storage.
+## Status & Planning
 
-## Planning & Design
+- [OVERVIEW.md](docs/OVERVIEW.md) — status-of-record: implemented capabilities, requirements complete/remaining, known issues & technical debt.
+- [PHASES.md](docs/PHASES.md) — the 14-phase roadmap (1–12 + 14 done with module map; 13 deferred).
+- [development-plans/TASKS.md](development-plans/TASKS.md) — live task list (completed vs uncompleted).
+- [development-plans/PROCESS.md](development-plans/PROCESS.md) — how to pick up and work a task.
 
-- [DESIGN.md](docs/planning/DESIGN.md) — Full architecture and design document: batch-first LLM orchestrator with document completion and core architectural principles.
-- [ARCHITECTURE.md](docs/planning/ARCHITECTURE.md) — Architecture overview: universal workflow step, execution modes, context assembly, and data models.
-- [DECISIONS.md](docs/planning/DECISIONS.md) — Key design decisions and rationale (batch mode, universal workflow step, Temporal, orchestrator control, etc.).
-- [USAGE.md](USAGE.md) — Guide for submitting code development and research tasks to Forge with CLI examples.
-- [WORKERS.md](docs/planning/WORKERS.md) — Worker overview, checking whether workers are running, identity, and scaling.
-- [DEPLOYMENT.md](docs/planning/DEPLOYMENT.md) — Deploying self-hosted Forge to AWS EC2 with Supabase-backed Temporal and Forge store plus S3 OCR blobs: architecture, prerequisite code changes, packaging forge/pbook/sax-llm, step-by-step process, configuration, and Supabase gotchas.
-- [DEBUGGING.md](docs/planning/DEBUGGING.md) — Logging, observability store, API message logs, OTel tracing, and environment variables for debugging.
-- [ADDING_A_DOMAIN.md](docs/planning/ADDING_A_DOMAIN.md) — How to parameterize LLM behavior through task domains without changing pipeline logic.
-- [test-strategy.md](docs/planning/test-strategy.md) — Practical guide for writing Python tests with emphasis on testing pyramid and signal quality.
-- [LSP_INTEGRATION_PLAN.md](docs/planning/LSP_INTEGRATION_PLAN.md) — Investigation of Language Server Protocol support for context generation.
+## Architecture & Decisions
 
-## Phase Specifications
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — how Forge works: universal workflow step, execution modes, context assembly, batch-vs-sync, key data models, module map, and subsystems beyond the core loop.
+- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D85, with supersession/stale markers.
 
-- [PHASE1.md](docs/planning/PHASE1.md) — The Minimal Loop: universal workflow step, Temporal activity boundaries, git worktree lifecycle, OpenTelemetry tracing.
-- [PHASE2.md](docs/planning/PHASE2.md) — Planning and Multi-Step Execution: planner decomposes tasks into ordered sub-steps with sequential execution.
-- [PHASE3.md](docs/planning/PHASE3.md) — Fan-Out / Gather: parallel sub-task execution within planned steps via Temporal child workflows.
-- [PHASE4.md](docs/planning/PHASE4.md) — Intelligent Context Assembly: automatic context discovery, importance ranking, and token budget management.
-- [PHASE5.md](docs/planning/PHASE5.md) — Observability Store: persist LLM interaction data to SQLite with CLI inspection commands.
-- [PHASE6.md](docs/planning/PHASE6.md) — Knowledge Extraction: extract lessons from completed work and inject as playbook entries into future contexts.
-- [PHASE7.md](docs/planning/PHASE7.md) — LLM-Guided Context Exploration: exploration loop where the LLM requests context before code generation.
-- [PHASE8.md](docs/planning/PHASE8.md) — Error-Aware Retries: feed validation errors back to the LLM on retry with code context.
-- [PHASE9.md](docs/planning/PHASE9.md) — Prompt Caching: leverage Anthropic's prompt caching to reduce input token costs.
-- [PHASE10.md](docs/planning/PHASE10.md) — Fuzzy Edit Matching: make search/replace edits resilient to minor LLM output discrepancies.
-- [PHASE11.md](docs/planning/PHASE11.md) — Model Routing: route LLM calls to appropriate models based on task capability requirements.
-- [PHASE12.md](docs/planning/PHASE12.md) — Extended Thinking for Planning: enable Claude's extended thinking mode for planner calls.
-- [PHASE13.md](docs/planning/PHASE13.md) — Tree-Sitter Multi-Language Support: replace Python `ast` with tree-sitter for multi-language code analysis (deferred to Release 2).
-- [PHASE14.md](docs/planning/PHASE14.md) — Batch Processing: replace synchronous LLM calls with async batch processing via Anthropic Batch API.
+## Requirements
 
-## Task Management
-
-- [DECOMPOSITION.md](docs/planning/task-management/DECOMPOSITION.md) — Task decomposition strategy: multi-transform pipeline producing a validated, dependency-ordered DAG of atomic tasks with adversarial review.
-- [DECOMPOSITION_SCENARIOS.md](docs/planning/task-management/DECOMPOSITION_SCENARIOS.md) — Gherkin-style behavioral scenarios for every stage of the decomposition pipeline.
-
-## Behavioral Specifications
+- [requirements/](docs/requirements/) — Gherkin behavioral specs (18 feature files; 16 implemented, 2 specified-but-unbuilt) plus the index with capability→source mapping.
 
 - [README.md](docs/requirements/README.md) — BDD requirements framework with Gherkin feature files, tag taxonomy, and capability mappings.
+- [STANDARD.md](docs/requirements/STANDARD.md) — Autonomous-agent requirements standard: paired feature/core artifacts, static-first contracts, functional core / imperative shell split, and handoff gate.
+- [TEMPLATE.md](docs/requirements/TEMPLATE.md) — Template for writing a structured `<requirement-id>.core.md` requirement sidecar.
+- [REVIEW_CHECKLIST.md](docs/requirements/REVIEW_CHECKLIST.md) — Reviewer checklist for approving a requirement package before autonomous implementation.
+- [examples/README.md](docs/requirements/examples/README.md) — Worked examples, including the toy `Inspira` web-app requirement package.
+## Operations
 
-## Inference Providers
+- [operations/USAGE.md](docs/operations/USAGE.md) — submitting code and research tasks to Forge.
+- [operations/WORKERS.md](docs/operations/WORKERS.md) — worker overview, identity, and scaling.
+- [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — self-hosted AWS EC2 + Supabase Postgres + S3 deployment.
+- [operations/SECURE-REMOTE-ACCESS.md](docs/operations/SECURE-REMOTE-ACCESS.md) — mTLS-secured remote Temporal access.
+- [operations/DEBUGGING.md](docs/operations/DEBUGGING.md) — logging, observability store, API message logs, OTel tracing, env vars.
+- [operations/ADDING_A_DOMAIN.md](docs/operations/ADDING_A_DOMAIN.md) — parameterizing LLM behavior through task domains.
+- [operations/test-strategy.md](docs/operations/test-strategy.md) — testing pyramid and signal quality.
 
-- [mistral.md](docs/inference-providers/mistral.md) — Mistral API reference: authentication, batch API, OCR, SDK usage, and curl examples.
+## Reference
+
+- [reference/mistral.md](docs/reference/mistral.md) — Mistral API reference: auth, batch API, OCR, SDK, curl.
+
+## User Guides
+
+- [user/playbooks.md](docs/user/playbooks.md) — playbook system: extraction, manual add, storage.
+
+## Remaining-Work Specs (`docs/planning/`)
+
+- [planning/PHASE13.md](docs/planning/PHASE13.md) — tree-sitter multi-language support (deferred to Release 2).
+- [planning/LSP_INTEGRATION_PLAN.md](docs/planning/LSP_INTEGRATION_PLAN.md) — LSP-based context generation (deferred).
+- [planning/task-management/DECOMPOSITION.md](docs/planning/task-management/DECOMPOSITION.md) — multi-transform DAG planner (**draft; not implemented**).
+- [planning/task-management/DECOMPOSITION_SCENARIOS.md](docs/planning/task-management/DECOMPOSITION_SCENARIOS.md) — behavioral scenarios for the DECOMPOSITION draft.
 
 ## Worked Examples
 
-- [README.md](docs/llm-examples/README.md) — Worked LLM examples tracing Forge's universal workflow step from context assembly through state transition.
+- [llm-examples/README.md](docs/llm-examples/README.md) — worked LLM examples tracing the universal workflow step.
 
-## Research
+## Archive
 
-- [planner-prompt-research.md](docs/research/planner-prompt-research.md) — Survey of planning approaches in Claude Code, Aider, and other AI coding tools.
-- [attractor-analysis.md](docs/research/attractor-analysis.md) — Analysis of strongDM's "software factory" specification and comparison with Forge architecture.
-- [system-prompts-claude.md](docs/research/system-prompts-claude.md) — Catalog of system prompt components from Claude Code v2.1.50.
-
-## Unmerged Reference Material
-
-### Batch Completion Documents
-
-- [merged-batch-completion-guide.md](docs/to-merge/completion-documents/merged-batch-completion-guide.md) — Consolidated guide from five source reports with shared conclusions on batch completion best practices.
-- [claude-01-batch-completion-guide.md](docs/to-merge/completion-documents/claude-01-batch-completion-guide.md) — Best practices for structuring documents in batch-completion LLM APIs.
-- [codex-01-batch-completion-document-best-practices.md](docs/to-merge/completion-documents/codex-01-batch-completion-document-best-practices.md) — Document structure, model tuning, and multi-pass pipelines.
-- [codex-02-completion-documents-batch-best-practices.md](docs/to-merge/completion-documents/codex-02-completion-documents-batch-best-practices.md) — Recommended scaffold with goal/constraints/context/schema/rubric.
-- [codex-03-batch-completion-document-best-practices.md](docs/to-merge/completion-documents/codex-03-batch-completion-document-best-practices.md) — Document structure and model-family differences.
-- [codex-04-batch-completion-document-best-practices.md](docs/to-merge/completion-documents/codex-04-batch-completion-document-best-practices.md) — Fixed scaffold with objective, constraints, context, schema.
-
-### Code Reviews
-
-- [codex-01-code-review.md](docs/to-merge/code-review/codex-01-code-review.md) — Architecture review: reliability, safety, observability, and operational concerns.
-- [codex-02-code-review.md](docs/to-merge/code-review/codex-02-code-review.md) — Assessment vs. OpenHands, SWE-agent, LangGraph, Aider.
-- [codex-03-code-review.md](docs/to-merge/code-review/codex-03-code-review.md) — Production readiness: queue backpressure, resource isolation, SLOs.
-- [codex-04-code-review.md](docs/to-merge/code-review/codex-04-code-review.md) — Core thesis assessment: runtime safety, conflict semantics, governance.
+Superseded and exploratory material, **not authoritative** — see [archive/README.md](archive/README.md). Contains the original `DESIGN.md`, completed phase specs (`PHASE1`–`PHASE12`, `PHASE14`), `research/`, and the unmerged `to-merge/` reports.
