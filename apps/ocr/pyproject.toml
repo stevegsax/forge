@@ -47,9 +47,10 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = "-m 'not postgres'"
+addopts = "-m 'not postgres and not e2e'"
 markers = [
     "postgres: requires a real Postgres (testcontainers); excluded by default",
+    "e2e: end-to-end tests requiring real services (Mistral, S3, Temporal + a running forge platform worker); excluded by default",
 ]
 
 [dependency-groups]
