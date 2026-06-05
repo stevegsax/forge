@@ -42,6 +42,10 @@
 ## Behavioral Specifications
 
 - [README.md](docs/requirements/README.md) — BDD requirements framework with Gherkin feature files, tag taxonomy, and capability mappings.
+- [STANDARD.md](docs/requirements/STANDARD.md) — Autonomous-agent requirements standard: paired feature/core artifacts, static-first contracts, functional core / imperative shell split, and handoff gate.
+- [TEMPLATE.md](docs/requirements/TEMPLATE.md) — Template for writing a structured `<requirement-id>.core.md` requirement sidecar.
+- [REVIEW_CHECKLIST.md](docs/requirements/REVIEW_CHECKLIST.md) — Reviewer checklist for approving a requirement package before autonomous implementation.
+- [examples/README.md](docs/requirements/examples/README.md) — Worked examples, including the toy `Inspira` web-app requirement package.
 
 ## Inference Providers
 
