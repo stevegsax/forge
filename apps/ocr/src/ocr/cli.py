@@ -1,4 +1,5 @@
-"""CLI for the OCR app: ``ocr worker``, ``ocr submit``, ``ocr list``, ``ocr export``.
+"""CLI for the OCR app: ``ocr worker``, ``ocr submit``, ``ocr list``, ``ocr export``,
+``ocr mark``, ``ocr unmark``.
 
 Workflows are started on ``ocr-task-queue`` (the OCR worker's queue) so they hit the
 OCR-side activities; the platform worker on ``forge-task-queue`` services the batch
@@ -145,6 +146,64 @@ def export_cmd(document_id: str, output_dir: str, temporal_address: str) -> None
                 "OcrExportWorkflow",
                 wf_input,
                 workflow_id=_auto_id("ocr-export"),
+                address=temporal_address,
+                timeout_hours=1.0,
+            )
+        )
+        _echo(result)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+
+@main.command("mark")
+@click.argument("document_id")
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+)
+def mark_cmd(document_id: str, temporal_address: str) -> None:
+    """Mark a document for removal (soft-delete; a periodic workflow deletes it)."""
+    from ocr.models import OcrMarkInput
+
+    wf_input = OcrMarkInput(document_id=document_id)
+    try:
+        result = asyncio.run(
+            _start_and_wait(
+                "OcrMarkForRemovalWorkflow",
+                wf_input,
+                workflow_id=_auto_id("ocr-mark"),
+                address=temporal_address,
+                timeout_hours=1.0,
+            )
+        )
+        _echo(result)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
+
+
+@main.command("unmark")
+@click.argument("document_id")
+@click.option(
+    "--temporal-address",
+    envvar="FORGE_TEMPORAL_ADDRESS",
+    default=DEFAULT_TEMPORAL_ADDRESS,
+    show_default=True,
+)
+def unmark_cmd(document_id: str, temporal_address: str) -> None:
+    """Clear the removal mark on a document."""
+    from ocr.models import OcrMarkInput
+
+    wf_input = OcrMarkInput(document_id=document_id)
+    try:
+        result = asyncio.run(
+            _start_and_wait(
+                "OcrClearRemovalMarkWorkflow",
+                wf_input,
+                workflow_id=_auto_id("ocr-unmark"),
                 address=temporal_address,
                 timeout_hours=1.0,
             )
