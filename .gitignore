@@ -27,6 +27,7 @@ wheels/
 venv/
 ENV/
 env/
+.direnv/
 
 # IDE
 .idea/
