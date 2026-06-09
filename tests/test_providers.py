@@ -11,6 +11,7 @@ from forge.providers import (
     handle_git_log,
     handle_lint_check,
     handle_read_file,
+    handle_run_tests,
     handle_search_code,
     handle_symbol_list,
 )
@@ -118,6 +119,19 @@ class TestHandleSearchCode:
         assert "data.txt" in result
         assert "code.py" not in result
 
+    def test_skips_symlink_escaping_worktree(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        outside = tmp_path / "secret.py"
+        outside.write_text("match TOP SECRET\n")
+        # A symlink inside the worktree that points outside it.
+        (worktree / "link.py").symlink_to(outside)
+
+        result = handle_search_code({"pattern": "match"}, str(worktree), str(worktree))
+
+        assert "TOP SECRET" not in result
+        assert "No matches" in result
+
 
 # ---------------------------------------------------------------------------
 # handle_symbol_list
@@ -193,3 +207,38 @@ class TestHandleLintCheck:
         (tmp_path / "clean.py").write_text('"""Clean module."""\n\nx = 1\n')
         result = handle_lint_check({"files": "clean.py"}, str(tmp_path), str(tmp_path))
         assert isinstance(result, str)
+
+    def test_rejects_path_outside_worktree(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        result = handle_lint_check({"files": "../outside.py"}, str(worktree), str(worktree))
+        assert result == "Error: Path is outside the worktree."
+
+    def test_rejects_traversal_in_any_entry(self, tmp_path: Path) -> None:
+        # A leading-dash entry like "--fix" must not let a sibling traversal
+        # entry escape the worktree.
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        result = handle_lint_check({"files": "--fix,../../target.py"}, str(worktree), str(worktree))
+        assert result == "Error: Path is outside the worktree."
+
+
+# ---------------------------------------------------------------------------
+# handle_run_tests
+# ---------------------------------------------------------------------------
+
+
+class TestHandleRunTests:
+    def test_rejects_path_outside_worktree(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        result = handle_run_tests({"path": "../outside_test.py"}, str(worktree), str(worktree))
+        assert result == "Error: Path is outside the worktree."
+
+    def test_rejects_absolute_path(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        outside = tmp_path / "outside_test.py"
+        outside.write_text("def test_x() -> None:\n    pass\n")
+        result = handle_run_tests({"path": str(outside)}, str(worktree), str(worktree))
+        assert result == "Error: Path is outside the worktree."

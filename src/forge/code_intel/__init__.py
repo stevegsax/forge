@@ -36,6 +36,7 @@ from forge.code_intel.repo_map import (
     estimate_tokens,
     generate_repo_map,
 )
+from forge.path_safety import resolve_within
 
 __all__ = [
     "ContextItem",
@@ -71,7 +72,10 @@ def _read_file_contents(project_root: str, file_paths: list[str]) -> dict[str, s
     root = Path(project_root)
     contents: dict[str, str] = {}
     for path in file_paths:
-        full = root / path
+        full = resolve_within(root, path)
+        if full is None:
+            logger.warning("File outside project root, skipping: %s", path)
+            continue
         if full.is_file():
             contents[path] = full.read_text()
         else:
@@ -91,8 +95,8 @@ def _extract_symbols_for_files(
     root = Path(project_root)
     result: dict[str, str] = {}
     for path in file_paths:
-        full = root / path
-        if not full.is_file():
+        full = resolve_within(root, path)
+        if full is None or not full.is_file():
             continue
         source = full.read_text()
         module_name = file_path_to_module(path, src_root)
@@ -187,8 +191,8 @@ def discover_context(
         all_summaries = {}
         root = Path(project_root)
         for rf in ranked_set.ranked_files:
-            full = root / rf.file_path
-            if full.is_file():
+            full = resolve_within(root, rf.file_path)
+            if full is not None and full.is_file():
                 source = full.read_text()
                 summary = extract_symbols(source, rf.file_path, rf.module_name)
                 all_summaries[rf.file_path] = summary

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol
 
 from forge.models import ContextProviderSpec
+from forge.path_safety import resolve_within
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,9 @@ def handle_read_file(params: dict[str, str], repo_root: str, worktree_path: str)
     if not path:
         return "Error: 'path' parameter is required."
 
-    full_path = Path(worktree_path) / path
+    full_path = resolve_within(Path(worktree_path), path)
+    if full_path is None:
+        return "Error: Path is outside the worktree."
     if not full_path.is_file():
         return f"Error: File not found: {path}"
 
@@ -75,6 +78,9 @@ def handle_search_code(params: dict[str, str], repo_root: str, worktree_path: st
         rel = file_path.relative_to(wt)
         if any(part.startswith(".") for part in rel.parts):
             continue
+        # Skip symlinks that resolve outside the worktree
+        if resolve_within(wt, str(rel)) is None:
+            continue
 
         try:
             content = file_path.read_text()
@@ -99,7 +105,9 @@ def handle_symbol_list(params: dict[str, str], repo_root: str, worktree_path: st
     if not file_path:
         return "Error: 'file_path' parameter is required."
 
-    full_path = Path(worktree_path) / file_path
+    full_path = resolve_within(Path(worktree_path), file_path)
+    if full_path is None:
+        return "Error: Path is outside the worktree."
     if not full_path.is_file():
         return f"Error: File not found: {file_path}"
 
@@ -166,10 +174,14 @@ def handle_run_tests(params: dict[str, str], repo_root: str, worktree_path: str)
     marker = params.get("marker", "")
 
     cmd = ["python", "-m", "pytest", "-x", "--tb=short", "-q"]
-    if path:
-        cmd.append(path)
     if marker:
         cmd.extend(["-m", marker])
+    if path:
+        full_path = resolve_within(Path(worktree_path), path)
+        if full_path is None:
+            return "Error: Path is outside the worktree."
+        # `--` ends option parsing so the path can never be read as a flag.
+        cmd.extend(["--", str(full_path)])
 
     try:
         result = subprocess.run(
@@ -199,7 +211,16 @@ def handle_lint_check(params: dict[str, str], repo_root: str, worktree_path: str
     files = params.get("files", "").split(",") if params.get("files") else ["."]
     files = [f.strip() for f in files if f.strip()]
 
-    cmd = ["ruff", "check", "--config", "tool-config/ruff.toml", "--no-fix", *files]
+    wt = Path(worktree_path)
+    safe_files: list[str] = []
+    for f in files:
+        full = resolve_within(wt, f)
+        if full is None:
+            return "Error: Path is outside the worktree."
+        safe_files.append(str(full))
+
+    # `--` ends option parsing so a file entry like "--fix" cannot override --no-fix.
+    cmd = ["ruff", "check", "--config", "tool-config/ruff.toml", "--no-fix", "--", *safe_files]
 
     try:
         result = subprocess.run(
