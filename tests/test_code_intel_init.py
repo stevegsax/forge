@@ -30,6 +30,21 @@ class TestReadFileContents:
         result = _read_file_contents(str(tmp_path), ["missing.py"])
         assert result == {}
 
+    def test_skips_parent_traversal(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        root.mkdir()
+        (tmp_path / "secret.txt").write_text("TOP SECRET")
+        result = _read_file_contents(str(root), ["../secret.txt"])
+        assert result == {}
+
+    def test_skips_absolute_paths(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        root.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        result = _read_file_contents(str(root), [str(secret)])
+        assert result == {}
+
 
 # ---------------------------------------------------------------------------
 # _extract_symbols_for_files
@@ -50,6 +65,13 @@ class TestExtractSymbolsForFiles:
 
     def test_skips_missing(self, tmp_path: Path) -> None:
         result = _extract_symbols_for_files(str(tmp_path), ["missing.py"], "src")
+        assert result == {}
+
+    def test_skips_parent_traversal(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        root.mkdir()
+        (tmp_path / "hidden.py").write_text("def hidden() -> None:\n    pass\n")
+        result = _extract_symbols_for_files(str(root), ["../hidden.py"], "src")
         assert result == {}
 
 

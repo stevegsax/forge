@@ -35,6 +35,7 @@ from forge.models import (
     TaskDomain,
     ValidationResult,
 )
+from forge.path_safety import resolve_within
 
 if TYPE_CHECKING:
     from forge.code_intel.budget import ContextItem, PackedContext
@@ -180,8 +181,8 @@ def build_error_section(
                 if (file_path, line_num) in seen:
                     continue
                 seen.add((file_path, line_num))
-                full_path = wt / file_path
-                if not full_path.is_file():
+                full_path = resolve_within(wt, file_path)
+                if full_path is None or not full_path.is_file():
                     continue
                 try:
                     source = full_path.read_text()
@@ -519,7 +520,10 @@ def _read_context_files(base_path: Path, file_paths: list[str]) -> dict[str, str
     """
     contents: dict[str, str] = {}
     for file_path in file_paths:
-        full_path = base_path / file_path
+        full_path = resolve_within(base_path, file_path)
+        if full_path is None:
+            logger.warning("Context file outside worktree, skipping: %s", file_path)
+            continue
         if not full_path.is_file():
             logger.warning("Context file not found, skipping: %s", full_path)
             continue
