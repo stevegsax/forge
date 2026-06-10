@@ -125,9 +125,7 @@ async def detect_file_conflicts_activity(
     input: DetectFileConflictsInput,
 ) -> DetectFileConflictsOutput:
     """Temporal activity wrapper for detect_file_conflicts."""
-    non_conflicting, conflicts = detect_file_conflicts(
-        input.sub_task_results, input.worktree_path
-    )
+    non_conflicting, conflicts = detect_file_conflicts(input.sub_task_results, input.worktree_path)
     return DetectFileConflictsOutput(
         non_conflicting_files=non_conflicting,
         conflicts=conflicts,
