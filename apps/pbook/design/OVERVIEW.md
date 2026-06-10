@@ -46,3 +46,5 @@ Entries must be minimal (avoid over-constraining future decisions) and accurate 
 - [WORKFLOWS.md](WORKFLOWS.md) — Temporal workflows, activities, and the extraction/review quality bar
 - [CLI.md](CLI.md) — command reference
 - [INTEGRATION.md](INTEGRATION.md) — how clients interact with pbook
+- [REVIEW-2026-06.md](REVIEW-2026-06.md) — June 2026 architecture review and migration plan
+- [TEMPORAL_PATTERNS.md](TEMPORAL_PATTERNS.md) — house rules for SAX Temporal services
