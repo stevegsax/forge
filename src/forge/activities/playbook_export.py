@@ -8,6 +8,7 @@ Follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from temporalio import activity
 
@@ -22,7 +23,7 @@ from forge.models import (  # noqa: TC001 — Temporal needs these at runtime fo
 # ---------------------------------------------------------------------------
 
 
-def db_row_to_playbook_entry(row: dict) -> PlaybookEntry:
+def db_row_to_playbook_entry(row: dict[str, Any]) -> PlaybookEntry:
     """Convert a DB row dict to a PlaybookEntry.
 
     Maps tags_json (JSON string) to tags (list[str]) and drops DB-only

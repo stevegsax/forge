@@ -21,7 +21,7 @@ import logging
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -41,6 +41,7 @@ from forge.models import (
 from forge.temporal_client import connect_temporal
 
 if TYPE_CHECKING:
+    from pbook.transcript import SessionInfo
     from sqlalchemy import Engine
 
     from forge.eval.models import DeterministicResult, PlanEvalResult
@@ -70,10 +71,11 @@ def _require_store_engine() -> Engine:
     from forge.store import StoreConfigError, get_store_engine
 
     try:
-        return get_store_engine()
+        engine: Engine = get_store_engine()
     except StoreConfigError as exc:
         click.echo(str(exc), err=True)
         sys.exit(EXIT_FAILURE)
+    return engine
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +300,7 @@ def load_task_definition(path: str) -> TaskDefinition:
 def load_workflow_input(
     input_json: str | None,
     input_file: str | None,
-) -> dict:
+) -> dict[str, Any]:
     """Parse workflow input from a JSON string or file path.
 
     Returns an empty dict when neither *input_json* nor *input_file* is
@@ -369,7 +371,7 @@ async def _submit_and_wait(
 
     client = await connect_temporal(temporal_address)
 
-    result = await client.execute_workflow(
+    result: TaskResult = await client.execute_workflow(
         ForgeTaskWorkflow.run,
         ForgeTaskInput(
             task=task_def,
@@ -440,7 +442,8 @@ async def _submit_no_wait(
         task_queue=FORGE_TASK_QUEUE,
         execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
     )
-    return handle.id
+    workflow_id: str = handle.id
+    return workflow_id
 
 
 # ---------------------------------------------------------------------------
@@ -736,9 +739,9 @@ def run(
     model_routing = ModelConfig(**model_overrides) if model_overrides else None
 
     # --- Build thinking config ---
+    # ThinkingConfig disables thinking via budget_tokens=0 (no `enabled` field).
     thinking = ThinkingConfig(
-        enabled=not no_thinking,
-        budget_tokens=thinking_budget,
+        budget_tokens=0 if no_thinking else thinking_budget,
     )
 
     # --- Submit ---
@@ -965,7 +968,7 @@ async def _submit_extraction(
 
     client = await connect_temporal(temporal_address)
 
-    result = await client.execute_workflow(
+    result: ExtractionWorkflowResult = await client.execute_workflow(
         ForgeExtractionWorkflow.run,
         ExtractionWorkflowInput(limit=limit, since_hours=since_hours),
         id="forge-extraction",
@@ -1039,7 +1042,7 @@ def extract(
 # ---------------------------------------------------------------------------
 
 
-def format_ingest_dry_run(sessions: list) -> str:
+def format_ingest_dry_run(sessions: list[SessionInfo]) -> str:
     """Format a list of pbook SessionInfo objects for dry-run display.
 
     Groups by project and shows counts + total size. For small groups
@@ -1048,15 +1051,13 @@ def format_ingest_dry_run(sessions: list) -> str:
     total_mb = sum(s.size_bytes for s in sessions) / 1024 / 1024
     lines = [f"Found {len(sessions)} session(s) to ingest ({total_mb:.1f} MB):", ""]
 
-    by_project: dict[str, list] = {}
+    by_project: dict[str, list[SessionInfo]] = {}
     for s in sessions:
         by_project.setdefault(s.project_name, []).append(s)
 
     for proj_name, proj_sessions in sorted(by_project.items()):
         proj_mb = sum(s.size_bytes for s in proj_sessions) / 1024 / 1024
-        lines.append(
-            f"  {proj_name}: {len(proj_sessions)} session(s), {proj_mb:.1f} MB"
-        )
+        lines.append(f"  {proj_name}: {len(proj_sessions)} session(s), {proj_mb:.1f} MB")
         if len(proj_sessions) <= 3:
             for s in proj_sessions:
                 size_kb = s.size_bytes / 1024
@@ -1065,7 +1066,7 @@ def format_ingest_dry_run(sessions: list) -> str:
     return "\n".join(lines)
 
 
-def format_ingest_result(result: dict) -> str:
+def format_ingest_result(result: dict[str, Any]) -> str:
     """Format a BatchIngestionWorkflow result dict for human-readable output."""
     return (
         f"Ingestion complete: "
@@ -1077,8 +1078,8 @@ def format_ingest_result(result: dict) -> str:
 
 async def _submit_ingestion(
     temporal_address: str,
-    session_dicts: list[dict],
-) -> dict:
+    session_dicts: list[dict[str, str]],
+) -> dict[str, Any]:
     """Submit BatchIngestionWorkflow to Temporal and wait for completion."""
     import time
 
@@ -1088,12 +1089,13 @@ async def _submit_ingestion(
 
     import json as json_mod
 
-    return await client.execute_workflow(
+    result: dict[str, Any] = await client.execute_workflow(
         "BatchIngestionWorkflow",
         json_mod.dumps({"sessions": session_dicts}),
         id=f"forge-batch-ingest-{int(time.time())}",
         task_queue=FORGE_TASK_QUEUE,
     )
+    return result
 
 
 @main.command()
@@ -1180,9 +1182,7 @@ def ingest(
         sys.exit(EXIT_FAILURE)
 
     if not transcript_path and not ingest_all:
-        click.echo(
-            "Error: provide a TRANSCRIPT_PATH or use --all.", err=True
-        )
+        click.echo("Error: provide a TRANSCRIPT_PATH or use --all.", err=True)
         sys.exit(EXIT_FAILURE)
 
     # Build the list of sessions to ingest
@@ -1233,9 +1233,7 @@ def ingest(
             )
 
     if not sessions:
-        click.echo(
-            "All sessions have been ingested. Use --force to reprocess."
-        )
+        click.echo("All sessions have been ingested. Use --force to reprocess.")
         return
 
     # Dry-run path: describe what would happen and exit
@@ -1245,8 +1243,7 @@ def ingest(
 
     # Build the payload and submit
     session_dicts = [
-        {"path": s.path, "project": s.project_name, "session_id": s.session_id}
-        for s in sessions
+        {"path": s.path, "project": s.project_name, "session_id": s.session_id} for s in sessions
     ]
 
     try:
@@ -1269,7 +1266,7 @@ def ingest(
 # ---------------------------------------------------------------------------
 
 
-def format_playbook_entry(entry: dict) -> str:
+def format_playbook_entry(entry: dict[str, Any]) -> str:
     """Format a playbook entry for human-readable terminal output."""
     import json as json_mod
 
@@ -1350,12 +1347,13 @@ async def _submit_manual_playbook(
 
     client = await connect_temporal(temporal_address)
 
-    return await client.execute_workflow(
+    result: ManualPlaybookResult = await client.execute_workflow(
         ManualPlaybookWorkflow.run,
         ManualPlaybookInput(raw_json=raw_json),
         id=f"forge-manual-playbook-{uuid4().hex[:8]}",
         task_queue=FORGE_TASK_QUEUE,
     )
+    return result
 
 
 @playbooks.command(name="add")
@@ -1434,12 +1432,13 @@ async def _submit_export_playbooks(
 
     client = await connect_temporal(temporal_address)
 
-    return await client.execute_workflow(
+    result: ExportPlaybookResult = await client.execute_workflow(
         ExportPlaybookWorkflow.run,
         ExportPlaybookInput(tags=tags, source_task_id=source_task_id, limit=limit),
         id=f"forge-export-playbooks-{uuid4().hex[:8]}",
         task_queue=FORGE_TASK_QUEUE,
     )
+    return result
 
 
 @playbooks.command(name="export")
@@ -1563,15 +1562,15 @@ async def _run_eval(
             for json_file in sorted(plans_path.glob("*.json")):
                 try:
                     content = json_file.read_text()
-                    plan = Plan.model_validate_json(content)
-                    plans[plan.task_id] = plan
+                    loaded_plan = Plan.model_validate_json(content)
+                    plans[loaded_plan.task_id] = loaded_plan
                 except Exception:
                     click.echo(f"Warning: failed to parse {json_file.name}, skipping.", err=True)
 
     results: list[PlanEvalResult] = []
     for case in cases:
         # Try to find a plan: by task_id from plans_dir, or reference_plan from case
-        plan = plans.get(case.task.task_id) or case.reference_plan
+        plan: Plan | None = plans.get(case.task.task_id) or case.reference_plan
         if plan is None:
             click.echo(f"Warning: no plan for case {case.case_id}, skipping.", err=True)
             continue
@@ -1696,7 +1695,7 @@ def eval_planner(
 
 async def _start_workflow(
     workflow_name: str,
-    workflow_input: dict,
+    workflow_input: dict[str, Any],
     *,
     workflow_id: str,
     task_queue: str,
@@ -1713,12 +1712,13 @@ async def _start_workflow(
         task_queue=task_queue,
         execution_timeout=timedelta(hours=timeout_hours),
     )
-    return handle.id
+    workflow_id_result: str = handle.id
+    return workflow_id_result
 
 
 async def _start_workflow_and_wait(
     workflow_name: str,
-    workflow_input: dict,
+    workflow_input: dict[str, Any],
     *,
     workflow_id: str,
     task_queue: str,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -30,11 +30,11 @@ class LLMProvider(Protocol):
         cache_instructions: bool = True,
         cache_tool_definitions: bool = True,
         thinking_budget_tokens: int = 0,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build provider-specific request parameters."""
         ...
 
-    async def call(self, params: dict) -> ProviderResponse:
+    async def call(self, params: dict[str, Any]) -> ProviderResponse:
         """Execute a synchronous LLM call and return a normalized response."""
         ...
 
@@ -45,11 +45,13 @@ class LLMProvider(Protocol):
         """Whether this provider supports the batch API."""
         ...
 
-    def build_batch_request(self, request_id: str, params: dict) -> dict:
+    def build_batch_request(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """Wrap request params into a batch request entry."""
         ...
 
-    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
+    async def submit_batch(
+        self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
+    ) -> str:
         """Submit a batch of requests. Returns the batch job ID."""
         ...
 
@@ -63,27 +65,4 @@ class LLMProvider(Protocol):
         output_type_name: str | None,
     ) -> ProviderResponse:
         """Parse a single batch result entry into a normalized response."""
-        ...
-
-    # --- Synchronous OCR ---
-
-    @property
-    def supports_sync_ocr(self) -> bool:
-        """Whether this provider supports synchronous OCR calls."""
-        ...
-
-    async def call_ocr(
-        self,
-        *,
-        document_data_uri: str,
-        model: str,
-        include_image_base64: bool = True,
-    ) -> dict:
-        """Call the OCR endpoint synchronously and return the response body.
-
-        *document_data_uri* is a ``data:<mime>;base64,<data>`` URI.
-        Returns a dict with the same shape as the batch OCR response
-        (``pages``, ``model``, ``usage_info`` keys) so callers can reuse
-        existing parse logic.
-        """
         ...

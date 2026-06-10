@@ -39,6 +39,15 @@ with workflow.unsafe.imports_passed_through():
     )
 
 
+__all__ = [
+    "batch_submit_and_wait",
+    "conflict_resolution_dispatch",
+    "generation_dispatch",
+    "persist_block",
+    "remove_worktree",
+]
+
+
 # ---------------------------------------------------------------------------
 # Timeout and retry presets (shared with workflows.py)
 # ---------------------------------------------------------------------------
@@ -118,7 +127,7 @@ async def batch_submit_and_wait(
         raise ApplicationError("Batch result has neither inline body nor s3_key")
     # The body travels inline or by S3 pointer (size-chosen by the poller); the
     # parse activity fetches the blob when only s3_key is set.
-    return await workflow.execute_activity(
+    parsed: ParsedLLMResponse = await workflow.execute_activity(
         "parse_llm_response",
         ParseResponseInput(
             raw_response_json=result.raw_response_json,
@@ -132,6 +141,7 @@ async def batch_submit_and_wait(
         retry_policy=_LOCAL_RETRY,
         result_type=ParsedLLMResponse,
     )
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +156,7 @@ async def generation_dispatch(
 ) -> LLMCallResult:
     """Route LLM generation call through sync or batch path."""
     if sync_mode:
-        return await workflow.execute_activity(
+        sync_result: LLMCallResult = await workflow.execute_activity(
             "call_llm",
             context,
             start_to_close_timeout=_LLM_TIMEOUT,
@@ -154,6 +164,7 @@ async def generation_dispatch(
             retry_policy=_LLM_RETRY,
             result_type=LLMCallResult,
         )
+        return sync_result
     parsed = await batch_submit_and_wait(batch_results, context, "LLMResponse")
     return LLMCallResult(
         task_id=context.task_id,
@@ -179,7 +190,7 @@ async def conflict_resolution_dispatch(
 ) -> ConflictResolutionCallResult:
     """Dispatch conflict resolution LLM call via sync or batch path."""
     if sync_mode:
-        return await workflow.execute_activity(
+        sync_result: ConflictResolutionCallResult = await workflow.execute_activity(
             "call_conflict_resolution",
             call_input,
             start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
@@ -187,6 +198,7 @@ async def conflict_resolution_dispatch(
             retry_policy=_LLM_RETRY,
             result_type=ConflictResolutionCallResult,
         )
+        return sync_result
     context = AssembledContext(
         task_id=call_input.task_id,
         system_prompt=call_input.system_prompt,

@@ -9,7 +9,7 @@ Follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
 
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def build_review_system_prompt(existing_playbooks: list[dict]) -> str:
+def build_review_system_prompt(existing_playbooks: list[dict[str, Any]]) -> str:
     """Build the system prompt for reviewing a proposed playbook entry.
 
     Instructs the LLM to check clarity, correctness, completeness, and
@@ -107,7 +107,7 @@ def apply_suggestions(entry: PlaybookEntry, review: PlaybookReviewResult) -> Pla
 
 async def review_playbook_entry(
     entry: PlaybookEntry,
-    existing_playbooks: list[dict],
+    existing_playbooks: list[dict[str, Any]],
     model_name: str = "",
 ) -> PlaybookReviewResult:
     """Send a proposed playbook entry to the LLM for review.
@@ -160,7 +160,7 @@ async def validate_playbook_entry(input: ValidatePlaybookInput) -> ValidatePlayb
 
 
 @activity.defn
-async def fetch_existing_playbooks(input: FetchExistingPlaybooksInput) -> list[dict]:
+async def fetch_existing_playbooks(input: FetchExistingPlaybooksInput) -> list[dict[str, Any]]:
     """Query recent playbooks for duplication context."""
     from forge.store import get_store_engine, list_recent_playbooks
 

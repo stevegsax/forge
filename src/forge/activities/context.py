@@ -17,7 +17,7 @@ import ast
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
 
@@ -502,7 +502,7 @@ def infer_task_tags(task: TaskDefinition) -> list[str]:
     return sorted(set(tags))
 
 
-def build_playbook_context_items(playbooks: list[dict]) -> list[ContextItem]:
+def build_playbook_context_items(playbooks: list[dict[str, Any]]) -> list[ContextItem]:
     """Convert playbook dicts from the store to ContextItem objects at priority 5.
 
     Uses Representation.PLAYBOOK to distinguish from repo map items
@@ -532,7 +532,7 @@ def build_playbook_context_items(playbooks: list[dict]) -> list[ContextItem]:
 # ---------------------------------------------------------------------------
 
 
-def _load_playbooks_for_task(task: TaskDefinition) -> list[dict]:
+def _load_playbooks_for_task(task: TaskDefinition) -> list[dict[str, Any]]:
     """Best-effort load of relevant playbooks from the store.
 
     Returns empty list on any error (D42 pattern).

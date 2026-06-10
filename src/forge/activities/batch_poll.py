@@ -166,9 +166,7 @@ async def execute_poll_batch_results(
         job_signals = 0
         for entry in poll_result.entries:
             if entry.succeeded:
-                signal = _build_success_signal(
-                    entry, batch_id, put_result_blob, inline_threshold
-                )
+                signal = _build_success_signal(entry, batch_id, put_result_blob, inline_threshold)
             else:
                 signal = BatchResult(
                     request_id=entry.custom_id,
@@ -297,7 +295,7 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
         from forge_contracts import s3_blobs
 
         def put_result_blob(custom_id: str, data: bytes) -> str:
-            key = s3_blobs.build_key(f"batch-result-{custom_id}")
+            key: str = s3_blobs.build_key(f"batch-result-{custom_id}")
             s3_blobs.put(key, data, "application/json")
             return key
 

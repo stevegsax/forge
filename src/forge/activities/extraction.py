@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sax_llm.models import text_messages
 from temporalio import activity
@@ -41,7 +41,7 @@ DEFAULT_EXTRACTION_MAX_TOKENS = 4096
 # ---------------------------------------------------------------------------
 
 
-def build_extraction_system_prompt(run_data: list[dict]) -> str:
+def build_extraction_system_prompt(run_data: list[dict[str, Any]]) -> str:
     """Build the system prompt for knowledge extraction.
 
     Each item in run_data is a dict from the runs table with keys:
