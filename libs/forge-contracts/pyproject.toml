@@ -1,7 +1,7 @@
 [project]
 name = "forge-contracts"
-version = "0.1.0"
 description = "Shared wire contracts and platform primitives for Forge and its consumer apps (OCR, etc.)"
+dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.10.0",
@@ -13,6 +13,9 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/forge_contracts/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/forge_contracts"]

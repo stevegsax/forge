@@ -6,3 +6,5 @@ queue/namespace/signal-name constants, the S3 blob-access library, the Temporal
 connection helper, and shared survivable-write primitives. It must not import
 ``forge`` or any consumer package — the dependency arrows point inward, here.
 """
+
+__version__ = "0.1.1"
