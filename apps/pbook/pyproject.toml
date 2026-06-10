@@ -9,7 +9,7 @@ dependencies = [
     "alembic>=1.14",
     "click>=8.1.0",
     "temporalio>=1.9.0",
-    "sax-llm",
+    "sax-llm>=0.1.1",
     "openai>=2.31.0",
     "numpy>=2.4.4",
     "psycopg[binary]>=3.2",
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-sax-llm = { git = "https://github.com/stevegsax/sax-llm.git", tag = "v0.1.0" }
+sax-llm = { git = "https://github.com/stevegsax/sax-llm.git", tag = "v0.1.1" }
 
 [project.scripts]
 pbook = "pbook.cli:main"
