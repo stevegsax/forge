@@ -1,6 +1,6 @@
 [project]
 name = "pbook"
-version = "0.2.0"
+version = "0.2.1"
 description = "Knowledge playbook service — pitfalls, curated advice, and API doc records"
 requires-python = ">=3.12"
 dependencies = [
