@@ -1,170 +1,174 @@
 # Client Integration
 
-pbook is designed to be consumed by other projects. Clients interact with pbook through three interfaces: the Temporal workflow API, the CLI, and (planned) a Claude Code SKILL.md.
+*Describes the target architecture adopted in the June 2026 review; implementation is phased —
+see [REVIEW-2026-06.md](REVIEW-2026-06.md).*
 
-## Temporal workflow API
+pbook has three integration surfaces: the Claude Code skill driving the CLI, the CLI itself,
+and direct Python library access. There is no Temporal API surface for consumers — pbook's two
+workflows ([WORKFLOWS.md](WORKFLOWS.md)) are internal durable jobs, not an RPC layer.
 
-Clients call pbook workflows via cross-queue workflow execution on `pbook-task-queue`. The pbook worker must be running, with `PBOOK_DATABASE_URL` and both LLM API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) set in its environment — see the worker section of [CLI.md](CLI.md).
-
-### Retrieving playbook entries
-
-Execute `RetrievalWorkflow` with a `RetrievalInput`:
-
-```python
-from pbook.models import RetrievalInput, RetrievalMode
-
-result = await client.execute_workflow(
-    "RetrievalWorkflow",
-    RetrievalInput(
-        tags=["lang:python", "lib:sqlalchemy"],
-        mode=RetrievalMode.CREATE,
-        token_budget=5000,
-    ),
-    id=f"pbook-retrieve-{uuid4().hex[:8]}",
-    task_queue="pbook-task-queue",
-)
-
-# result.entries: list[dict] — packed within token budget
-# result.token_count: int
-# result.total_candidates: int
+```text
+┌─────────────────────┐
+│  Claude Code skill  │
+│  (skill-pbook)      │
+└──────────┬──────────┘
+           │ shells out (uvx, --json)
+           ▼
+┌─────────────────────┐      ┌────────────────────────────┐      ┌────────────────────┐
+│      pbook CLI      │ ───▶ │  pbook.service             │ ───▶ │  Postgres          │
+└─────────────────────┘      │  synchronous functions     │      │  (pbook schema)    │
+┌─────────────────────┐ ───▶ │  over a frozen AppContext  │      └────────────────────┘
+│  Python consumers   │      └────────────────────────────┘
+└─────────────────────┘
 ```
 
-Use `mode=RetrievalMode.CREATE` when generating new code (boosts general knowledge and API docs). Use `mode=RetrievalMode.FIX` when debugging (boosts project-specific pitfalls).
+## Claude Code skill
 
-Set `approved_only=True` to exclude LLM-extracted entries that haven't been manually reviewed.
+The skill exists in the skill-pbook repo. It drives the CLI via uvx from the `sax` monorepo and
+parses the `--json` envelope:
 
-### Pushing experience for extraction
-
-Execute `ExtractionWorkflow` with experience data:
-
-```python
-import json
-
-result = await client.execute_workflow(
-    "ExtractionWorkflow",
-    json.dumps({
-        "experiences": [
-            {
-                "project": "my-project",
-                "problem": "Base64 data included a data URI prefix",
-                "resolution": "Strip the prefix before decoding",
-                "context": "Mistral OCR API response",
-            }
-        ],
-        "project": "my-project",
-    }),
-    id=f"pbook-extract-{uuid4().hex[:8]}",
-    task_queue="pbook-task-queue",
-)
-
-# result["entries_created"]: int
+```bash
+uvx --from "git+https://github.com/stevegsax/sax.git#subdirectory=apps/pbook" pbook search \
+    --query "connection pooling" --tag lang:python --json
 ```
 
-The extraction LLM will only produce entries for situations that are both unexpected and actionable. It may return zero entries if nothing meets the quality bar.
+The skill bootstraps its server-provided instructions via `pbook skill-prompt`. Contract points
+it (and any other envelope consumer) relies on:
 
-### Submitting a manual entry
-
-Execute `ManualEntryWorkflow` with a raw JSON `PlaybookEntry`:
-
-```python
-result = await client.execute_workflow(
-    "ManualEntryWorkflow",
-    json.dumps({
-        "title": "Use dispose() in test fixtures",
-        "content": "SQLAlchemy caches connections by URL.",
-        "tags": ["lib:sqlalchemy", "domain:testing"],
-    }),
-    id=f"pbook-manual-{uuid4().hex[:8]}",
-    task_queue="pbook-task-queue",
-)
-
-# result["approved"]: bool
-# result["rejection_reason"]: str (if rejected)
-# result["entry"]: dict (the final entry, with suggestions applied)
-```
-
-The review LLM may reject the entry if it's too generic, vague, or duplicates an existing entry. It may also suggest improvements to the title, content, or tags.
+- Every command supports `--json` with a stable envelope. Errors carry one of the codes
+  `not_found`, `validation_error`, `tag_invalid`, `db_disabled`, `config_error` — never a stack
+  trace. A missing `PBOOK_DATABASE_URL` surfaces as the `db_disabled` envelope.
+- Search without `OPENAI_API_KEY` degrades to lexical + tag ranking and the envelope gains
+  `"degraded": "no_embedding_key"`. Search never hard-fails on a missing key.
+- Packed entries that are still in probation carry `"status": "probation"` so the consumer can
+  weight its trust; `--active-only` excludes them entirely (this replaces the removed
+  `approved_only`).
+- Feedback is recorded only after the human confirms it; the skill supplies its Claude Code
+  session UUID with the feedback command (see the feedback contract below).
 
 ## CLI
 
-All operations are available via the `pbook` command. See [CLI.md](CLI.md) for the full reference. Key commands for integration:
+The CLI calls `pbook.service` directly — CRUD, retrieval, review, and export need only a
+database connection, not a worker. Only `worker`, `ingest`, `push`, and `curate` talk to
+Temporal. See [CLI.md](CLI.md) for the full reference. Key commands for integration:
 
 ```bash
-# Add an entry (direct write, no LLM review)
-pbook add --file entry.json
-
-# Push experience for LLM extraction
-pbook push --file experience.json
-
-# Query entries by tag
-pbook list --tag lang:python --tag lib:sqlalchemy --json
-
-# Review and approve extracted entries
-pbook review
-pbook approve 42
+pbook add --file entry.json            # direct write; default status active
+pbook search --query "..." --json     # hybrid retrieval (lexical + semantic + tags)
+pbook list --tag lib:sqlalchemy --json
+pbook review                           # probation triage queue
+pbook approve 42                       # probation -> active (revalidates a stale entry)
+pbook feedback 42 --helpful            # idempotent per session
+pbook ingest                           # worker required: one IngestWorkflow per session
 ```
 
-## Programmatic (library) access
+## Python library access
 
-pbook's store functions can be called directly as a Python library, bypassing Temporal:
-
-```python
-from pbook.store import get_db_path, get_engine, get_entries_by_tags, run_migrations
-
-db_path = get_db_path()
-run_migrations(db_path)
-engine = get_engine(db_path)
-
-entries = get_entries_by_tags(
-    engine,
-    ["lang:python", "lib:sqlalchemy"],
-    limit=10,
-    approved_only=True,
-)
-```
-
-This is useful for lightweight queries that don't need workflow orchestration. The retrieval ranking logic (`rank_and_pack`) is a pure function that can be called directly:
+pbook is library-first: every CLI verb is a synchronous function in `pbook/service.py`
+(`search`, `list_entries`, `get_entry`, `add_entry`, `update_entry`, `approve_entry`,
+`reject_entry`, `invalidate_entry`, `purge_entry`, `record_feedback`, `review_queue`,
+`list_sources`, `list_tags`, `list_sessions`, `session_text`, `check_duplicate`,
+`export_entries`). All take a frozen `AppContext(settings, engine, embedder | None)` built once
+at the consumer's entrypoint — the composition root. There are no module-level singletons to
+register or monkeypatch.
 
 ```python
-from pbook.activities.retrieval import rank_and_pack
+from openai import OpenAI
+
+from pbook import service
+from pbook.config import Settings
+from pbook.context import AppContext
 from pbook.models import RetrievalMode
+from sax_platform.db import create_engine
+from sax_platform.embeddings import OpenAIEmbeddings
 
-packed, token_count = rank_and_pack(
-    candidates=entries,
-    query_tags=["lang:python", "lib:sqlalchemy"],
-    mode=RetrievalMode.CREATE,
+# Composition root: build once at the entrypoint, pass inward.
+settings = Settings()  # the only place env is read; missing PBOOK_DATABASE_URL -> ConfigError
+engine = create_engine(settings)
+embedder = (
+    OpenAIEmbeddings(OpenAI(api_key=settings.openai_api_key), model="text-embedding-3-small")
+    if settings.openai_api_key
+    else None  # search degrades to lexical + tag ranking
+)
+ctx = AppContext(settings=settings, engine=engine, embedder=embedder)
+
+result = service.search(
+    ctx,
+    query="connection pooling with pgbouncer",
+    tags=["lang:python", "lib:sqlalchemy"],
+    mode=RetrievalMode.CREATE,  # or RetrievalMode.FIX ("create"/"fix" on the CLI)
     token_budget=5000,
 )
 ```
 
-## Tag inference
+### Pure helpers
 
-Clients can use pbook's tag inference to determine which tags to query with:
-
-```python
-from pbook.tags import infer_tags_from_context
-
-tags = infer_tags_from_context(
-    file_extensions=[".py"],
-    description="Fix the database migration test",
-)
-# Returns: ["domain:bug-fix", "domain:database", "domain:migration", "domain:testing", "lang:python"]
-```
-
-## LLM provider setup
-
-When using pbook through Temporal (the primary path), the worker handles LLM provider registration automatically. When using pbook as a library with LLM-dependent operations (extraction, review), register a provider first:
+The functional core is importable without an `AppContext` or a database:
 
 ```python
-from sax_llm import get_provider
-from pbook.llm import set_provider
+from pbook import tags
 
-provider = get_provider("anthropic:claude-haiku-4-5-20251001")
-set_provider(provider)
+query_tags = tags.normalize_tags(["lang:PY", " lib:PostgreSQL "])
+# -> ["lang:python", "lib:postgres"]  (lowercase, strip, alias map)
+
+hints = tags.infer_tags_from_context(file_extensions=[".py"], description="fix migration test")
+# -> ["domain:bug-fix", "domain:migration", "domain:testing", "lang:python"]
 ```
 
-See the sax-llm project documentation for provider configuration and available models. Operations that embed text (extraction, manual entry, retrieval by free-text query, consolidation) additionally require `OPENAI_API_KEY` for `text-embedding-3-small`; the Anthropic provider above does not cover embeddings.
+`ranking.score_candidates` (with its frozen `ScoringWeights`) is the only ranking
+implementation — the pure seam used by `service.search`, by tests, and by any consumer that
+wants to re-rank its own candidate set. Lifecycle logic (`lifecycle.transition`,
+`lifecycle.compute_staleness`) is equally pure and importable.
 
-## Planned: SKILL.md interface
+## Consuming retrieval results
 
-A Claude Code SKILL.md is planned that will provide an interactive interface for adding, querying, and reviewing playbook entries. The skill will run as a sub-agent using the ReAct pattern, calling `pbook` CLI commands and receiving server-provided instructions via `pbook skill-prompt`. This is not yet implemented.
+- `mode` reweights ranking, never filters: `CREATE` boosts curated entries and
+  `lang:`/`lib:`/`domain:` tag overlap; `FIX` boosts pitfall entries and
+  `project:`/`pattern:` overlap.
+- Results are packed within a token budget (default 5,000) and include similarity and status.
+- Probation entries are served by default with `"status": "probation"`; pass `--active-only`
+  (CLI) or `active_only=True` (library) to exclude them.
+- Each search records a `pbk_retrieval_events` row and bumps `retrieval_count` (best-effort);
+  this feeds the feedback ratio and dead-weight staleness trigger, so served-but-never-helpful
+  entries decay. See [DATA_MODEL.md](DATA_MODEL.md).
+
+## Feedback contract
+
+`pbook feedback ENTRY_ID --helpful|--harmful [--context]` (or `service.record_feedback`) writes
+a `pbk_feedback_events` row and bumps the entry counters in the same transaction.
+
+- **Session-id idempotency.** Events are unique per `(entry_id, session_id, polarity)`; the
+  `session_id` is the Claude Code session UUID supplied by the skill — a distinct namespace
+  from ingestion session ids. Re-running the command in the same session is a no-op.
+- **Human confirmation.** The skill confirms with the human before recording; feedback is an
+  explicit human-confirmed signal, not an inferred one.
+- **Bounded effect.** The first helpful feedback promotes a probation entry to active; harmful
+  signals contribute to staleness triggers. Feedback can demote or flag, but never auto-rejects
+  and never deletes.
+
+## No cross-queue Temporal integration
+
+There are no cross-queue Temporal calls in either direction: forge does not call pbook, and
+pbook does not submit to forge's queue. Ingestion is pbook-owned end-to-end — `pbook ingest`
+discovers session transcripts and starts one `IngestWorkflow` per session on
+`pbook-task-queue`. Services wanting playbook context use the CLI or the library; they do not
+need a Temporal client at all.
+
+If a cross-service trigger is ever genuinely needed, the documented escape hatch is
+[TEMPORAL_PATTERNS.md](TEMPORAL_PATTERNS.md) rule 9: start a workflow by string name with wire
+models pinned in the platform contracts module — never call another service's activities or
+child workflows cross-queue.
+
+## Environment requirements
+
+Environment variables are read only inside the `Settings` class.
+
+| Consumer | Required environment |
+| --- | --- |
+| Skill / CLI — CRUD, review, lexical search | `PBOOK_DATABASE_URL` |
+| Skill / CLI — semantic search | `PBOOK_DATABASE_URL` + `OPENAI_API_KEY` (absent → degraded lexical mode) |
+| Python library | `PBOOK_DATABASE_URL`; `OPENAI_API_KEY` only if wiring an embedder into `AppContext` |
+| Worker (`pbook worker`, `ingest`, `push`, `curate`) | `PBOOK_DATABASE_URL` + `OPENAI_API_KEY` + `ANTHROPIC_API_KEY` |
+
+Worker-backed commands additionally need a reachable Temporal server (default
+`localhost:7233`).
