@@ -1,0 +1,29 @@
+{% extends "_shared/goal_base.prompt.j2" %}
+
+{% block domain_guidance %}
+For software tasks, the goal statement should specify:
+
+- The artifact to be created (module, script, service, etc.)
+- Its core behavior (what it does when run)
+- Key non-functional requirements (error handling, testability)
+- What "done" looks like at the top level
+{% endblock %}
+
+{% block response_schema %}
+Respond with JSON:
+
+```json
+{
+  "goal_statement": "A precise, unambiguous description of the goal",
+  "assumptions": [
+    "Any assumptions made when synthesizing the goal"
+  ]
+}
+```
+{% endblock %}
+
+{% block context %}
+Workflow type: {{ workflow_type }}
+User request: {{ user_request }}
+Clarification answers: {{ clarification_answers }}
+{% endblock %}

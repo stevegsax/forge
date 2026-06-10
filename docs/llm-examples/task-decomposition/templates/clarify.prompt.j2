@@ -1,0 +1,42 @@
+{% extends "_shared/clarify_base.prompt.j2" %}
+
+{% block domain_guidance %}
+For software tasks, consider whether you need to ask about:
+
+- Target Python version or runtime constraints
+- Whether the module should be a standalone script or part of a package
+- Error handling preferences (fail fast vs. graceful degradation)
+- Output format preferences (raw content, formatted, with metadata)
+- Testing framework preferences
+
+Only ask questions when the answer materially affects the decomposition.
+If the task is clear enough to decompose without further input, return
+an empty questions list.
+{% endblock %}
+
+{% block response_schema %}
+Respond with JSON:
+
+```json
+{
+  "questions": [
+    {
+      "question_id": "uuid",
+      "question_text": "The question to ask the user",
+      "question_type": "choice | text | confirm",
+      "options": ["option1", "option2"],
+      "default": "suggested default answer",
+      "importance": "required | recommended | optional",
+      "rationale": "Why this matters for the plan"
+    }
+  ]
+}
+```
+
+If no questions are needed, return `{"questions": []}`.
+{% endblock %}
+
+{% block context %}
+Workflow type: {{ workflow_type }}
+User request: {{ user_request }}
+{% endblock %}

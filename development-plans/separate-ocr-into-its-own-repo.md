@@ -1,22 +1,15 @@
 # Separate OCR into its own repo (Forge = Temporal platform, OCR = consumer)
 
-**Status:** IN PROGRESS — Phase 0 done; OCR-out cut underway. **Execution reordered**
-(approved): do the OCR extraction (Phase 2) BEFORE platform de-contamination (Phase 1),
-because Phase 1's symbol removals break in-repo OCR at import time — the two are one
-big-bang cut, OCR-out-first. Running increment-by-increment.
-**Last updated:** 2026-06-04
+**Status:** DONE — merged to `main` 2026-06-05 (PR #22 `0900931`; reintegration merge
+`2556bfe`). OCR lives in `../ocr`, shared contracts in `../forge-contracts`; both repos
+are populated, green, and pushed. Execution was reordered as approved: OCR extraction
+(Phase 2) before platform de-contamination (Phase 1), as one big-bang cut.
+**Last updated:** 2026-06-09
 **Owner:** stevegsax
 
-> **Resume pointer — next action:** Nothing implemented yet. This plan is the
-> decision basis turned into an ordered, cross-repo build sequence. Start at
-> **Phase 0** (`forge-contracts` foundation) — specifically extract `s3_blobs`
-> first, because `forge/store.py` imports `forge.ocr.s3_blobs` (a layering
-> inversion) and that cycle must break before anything else moves. The settled
-> design lives in [`grill-me-sessions/separate-ocr-modules.grill.md`](../grill-me-sessions/separate-ocr-modules.grill.md);
-> the current-state inventory that grounds the file/line references here was
-> produced by workflow `w98hu9ev1` (5-slice inventory) and `wkwh24osi` (the
-> adversarial B1–B6 sweep). **Do not re-open the locked decisions** — this plan
-> implements them.
+> **Resume pointer:** None — the cut is complete. The settled design lives in
+> [`grill-me-sessions/separate-ocr-modules.grill.md`](../grill-me-sessions/separate-ocr-modules.grill.md);
+> per-increment history is in the OCR-out commits on `main` (`1d54cf8` … `0900931`).
 
 ## 1. Problem
 

@@ -8,11 +8,7 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-<<<<<<< HEAD
-Phases 1–12 and 14 are implemented (Phase 13, tree-sitter multi-language support, is deferred to Release 2). The system supports single-step execution, planned multi-step execution, fan-out/gather with parallel sub-tasks via Temporal child workflows, intelligent context assembly with automatic import graph discovery, PageRank ranking, and token budget management, an observability store with SQLite persistence, Alembic migrations, and CLI inspection commands, knowledge extraction with playbook generation and injection into future task contexts, LLM-guided context exploration where the LLM requests context from providers before generating code, error-aware retries that feed validation errors back to the LLM on retry, prompt caching via Anthropic cache control headers with cache-efficient prompt ordering and cache token tracking, fuzzy edit matching with a four-level fallback chain, model routing with capability tiers, extended thinking for planning, and batch processing via the Anthropic Batch API. OCR has been **extracted into its own repository** (`../ocr`) — Forge is now an OCR-agnostic batch platform exposing a generic, opaque-blob batch-submit SPI (`submit_batch_blob`) and a domain-agnostic poller that forwards verbatim provider results to consumer workflows (inline, or by S3 pointer when large/image-bearing). The OCR app consumes the platform cross-queue through the shared `forge-contracts` package; neither repo imports the other. A planner evaluation framework with deterministic checks and LLM-as-judge scoring is also implemented. Transcript ingestion (`forge ingest`) reads Claude Code JSONL session files, analyzes them via the batch API, and hands extracted experiences to pbook's ExtractionWorkflow cross-queue for storage as playbook entries.
-=======
 Current status — completed and remaining requirements, plus known issues and technical debt — is in [docs/OVERVIEW.md](docs/OVERVIEW.md) (the status-of-record). Phase roadmap: [docs/PHASES.md](docs/PHASES.md). Live task list: [development-plans/TASKS.md](development-plans/TASKS.md).
->>>>>>> main
 
 ## Cross-Project Dependencies
 

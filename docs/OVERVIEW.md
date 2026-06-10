@@ -7,12 +7,12 @@ Forge is a batch-first LLM task orchestrator: it decomposes a request into indep
 - **How it works** (architecture): [ARCHITECTURE.md](ARCHITECTURE.md) · **Why** (decisions): [DECISIONS.md](DECISIONS.md)
 - **Behavioral spec** (Gherkin): [requirements/](requirements/)
 
-Completion below was established by verifying against the code on 2026-06-04, not by prior documentation.
+Completion below was established by verifying against the code on 2026-06-04, not by prior documentation. The OCR extraction was verified against the code on 2026-06-09 (merge `2556bfe` on `main`; sibling repos populated and pushed).
 
 ## Status at a glance
 
 - **Release 1 (core orchestrator + batch) is shipped.** Phases 1–12 and 14 are implemented and wired into the worker; Phase 13 (tree-sitter) is deferred to Release 2. See [PHASES.md](PHASES.md).
-- **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy).
+- **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch — since extracted to the sibling `ocr` repo), OCR separation (platform/consumer split via the shared `forge-contracts` package; merged 2026-06-05), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy).
 - **The orchestrator is code-first in practice.** Despite the "task-agnostic" framing, context discovery is Python-specific (see tech debt below).
 
 ## Implemented capabilities
@@ -27,7 +27,7 @@ Module paths are under `src/forge/`.
 - **Batch** — async submission + polling via Anthropic/Mistral Batch APIs: `batch_poller_workflow.py`, `activities/batch_*`.
 - **Knowledge** — extraction → playbooks, transcript ingestion to pbook: `extraction_workflow.py`, `activities/extraction.py`, `ingestion_workflow.py`.
 - **Observability** — SQLite/Postgres store, Alembic migrations, CLI inspection: `store.py`, `alembic/`, `cli.py` (`forge status`).
-- **OCR** — Mistral OCR sync + batch, S3 blob storage, PDF chunking, CLI: `ocr/`, `cli.py` (`forge ocr-jobs`).
+- **Batch SPI (OCR-agnostic)** — opaque-blob batch submit (`submit_batch_blob`) plus a domain-agnostic poller that forwards verbatim provider results to consumer workflows cross-queue: `activities/batch_submit.py`, `batch_poller_workflow.py`. OCR itself lives in the sibling `ocr` repo, consuming the platform via the shared `forge-contracts` package; neither repo imports the other.
 - **Providers** — provider protocol + Anthropic/Mistral adapters: `llm_providers/`.
 
 ## Requirements: complete vs. remaining
@@ -38,7 +38,7 @@ The behavioral spec lives in [requirements/](requirements/) (18 Gherkin feature 
 
 | Feature spec | State | Evidence |
 |---|---|---|
-| `requirements/ocr_web_api.feature` | **Not built** — no OpenAPI/paginated OCR web service | No web framework (FastAPI/Flask/Starlette/uvicorn) exists anywhere in the repo |
+| `requirements/ocr_web_api.feature` | **Not built** — no OpenAPI/paginated OCR web service; OCR now lives in the sibling `ocr` repo, so this API belongs there if built | No web framework (FastAPI/Flask/Starlette/uvicorn) exists anywhere in the repo |
 | `requirements/human_in_the_loop.feature` | **Not built** — no structured pause/resume/approval primitive | No `HumanInputRequest`/`emit_user_prompt`; only batch-result and OCR-gather signals; human gating is out-of-band git review + manual playbook approval |
 
 ## Remaining work (beyond requirements)
@@ -46,7 +46,6 @@ The behavioral spec lives in [requirements/](requirements/) (18 Gherkin feature 
 - **Phase 13 — tree-sitter multi-language** (deferred): [PHASES.md](PHASES.md) → [planning/PHASE13.md](planning/PHASE13.md).
 - **LSP-based context generation** (deferred, D38): [planning/LSP_INTEGRATION_PLAN.md](planning/LSP_INTEGRATION_PLAN.md).
 - **Multi-transform DAG planner** — a richer planner (classify → clarify → DAG → adversarial judges) is a **draft design, not implemented**; it would replace the single-pass `activities/planner.py`: [planning/task-management/DECOMPOSITION.md](planning/task-management/DECOMPOSITION.md). The structured human-in-the-loop requirement above is part of this design.
-- **OCR separation** — a converged (not implemented) plan to split OCR into its own repo as a `forge-contracts` consumer. (Design recorded in a prior planning session, not tracked in this worktree.)
 
 ## Known issues & technical debt
 

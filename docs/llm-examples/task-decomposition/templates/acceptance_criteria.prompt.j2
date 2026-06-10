@@ -1,0 +1,37 @@
+{% extends "_shared/criteria_base.prompt.j2" %}
+
+{% block domain_guidance %}
+For software leaf tasks, acceptance criteria should include:
+
+- What tests should pass?
+- What lint/type checks apply?
+- What does correct output look like?
+- Is the module importable without errors?
+- Are edge cases handled (empty directories, binary files, permissions)?
+
+Each criterion must be specific and testable — not vague ("works correctly")
+but precise ("returns empty string when directory contains no files").
+{% endblock %}
+
+{% block response_schema %}
+Respond with JSON:
+
+```json
+{
+  "node_id": "the node being evaluated",
+  "acceptance_criteria": [
+    "Criterion 1: specific, testable condition",
+    "Criterion 2: specific, testable condition"
+  ]
+}
+```
+{% endblock %}
+
+{% block context %}
+Goal: {{ goal }}
+Node to evaluate:
+  ID: {{ node.node_id }}
+  Title: {{ node.title }}
+  Description: {{ node.description }}
+  Execution type: {{ node.execution_type }}
+{% endblock %}

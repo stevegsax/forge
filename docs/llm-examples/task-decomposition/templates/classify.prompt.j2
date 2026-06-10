@@ -1,0 +1,35 @@
+{% extends "_shared/classify_base.prompt.j2" %}
+
+{% block domain_catalog %}
+Available workflow types:
+
+- **software**: Building, modifying, or debugging software programs.
+  Produces code artifacts, tests, and documentation. Tasks involve
+  creating or editing source files, running test suites, and validating
+  against lint/type checks.
+
+- **research**: Investigating a topic, gathering evidence, synthesizing
+  findings. Produces reports, summaries, or structured data. Tasks
+  involve searching sources, extracting information, and drawing
+  conclusions.
+
+- **analysis**: Analyzing existing artifacts (code, data, documents)
+  to produce insights. Produces reports or recommendations. Tasks
+  involve reading, measuring, and summarizing.
+{% endblock %}
+
+{% block response_schema %}
+Respond with JSON:
+
+```json
+{
+  "workflow_type": "software | research | analysis",
+  "confidence": 0.0-1.0,
+  "rationale": "Brief explanation of why this workflow type was selected"
+}
+```
+{% endblock %}
+
+{% block user_request %}
+{{ user_request }}
+{% endblock %}
