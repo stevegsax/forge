@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 # BatchResult and BatchJobStatus are the cross-queue wire contract; they now live
 # in forge-contracts and are re-exported here so existing `from forge.models
@@ -549,7 +549,7 @@ class ReviewManualPlaybookInput(BaseModel):
     """Input for the review activity."""
 
     entry: PlaybookEntry
-    existing_playbooks: list[dict] = Field(default_factory=list)
+    existing_playbooks: list[dict[str, Any]] = Field(default_factory=list)
     model_name: str = ""
 
 

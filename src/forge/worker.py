@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 from temporalio.client import (
     Client,
@@ -83,6 +84,9 @@ from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput, ExtractionWorkflowInput
 from forge.temporal_client import connect_temporal
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
@@ -257,7 +261,7 @@ async def run_worker(
     else:
         logger.warning("pbook not installed — ingestion workflows skipped at worker registration")
 
-    activities: list = [
+    activities: list[Callable[..., Any]] = [
         assemble_conflict_resolution_context,
         assemble_context,
         assemble_exploration_context,

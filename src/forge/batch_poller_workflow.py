@@ -23,10 +23,11 @@ class BatchPollerWorkflow:
 
     @workflow.run
     async def run(self, input: BatchPollerInput) -> BatchPollerResult:
-        return await workflow.execute_activity(
+        result: BatchPollerResult = await workflow.execute_activity(
             "poll_batch_results",
             input,
             start_to_close_timeout=timedelta(minutes=5),
             heartbeat_timeout=_POLL_HEARTBEAT,
             result_type=BatchPollerResult,
         )
+        return result

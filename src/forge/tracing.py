@@ -170,17 +170,25 @@ def _create_tracer_provider(
         provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
 
     elif exporter_type is ExporterType.OTLP_GRPC:
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter as GrpcOTLPSpanExporter,
+        )
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-        exporter_grpc = OTLPSpanExporter(endpoint=endpoint) if endpoint else OTLPSpanExporter()
+        exporter_grpc = (
+            GrpcOTLPSpanExporter(endpoint=endpoint) if endpoint else GrpcOTLPSpanExporter()
+        )
         provider.add_span_processor(BatchSpanProcessor(exporter_grpc))
 
     elif exporter_type is ExporterType.OTLP_HTTP:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter as HttpOTLPSpanExporter,
+        )
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-        exporter_http = OTLPSpanExporter(endpoint=endpoint) if endpoint else OTLPSpanExporter()
+        exporter_http = (
+            HttpOTLPSpanExporter(endpoint=endpoint) if endpoint else HttpOTLPSpanExporter()
+        )
         provider.add_span_processor(BatchSpanProcessor(exporter_http))
 
     # ExporterType.NONE — no processors added (no-op provider).

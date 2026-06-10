@@ -11,6 +11,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def build_file_handler_config(
     log_name: str = "forge",
     max_bytes: int = DEFAULT_MAX_BYTES,
     backup_count: int = DEFAULT_BACKUP_COUNT,
-) -> dict:
+) -> dict[str, Any]:
     """Return kwargs suitable for constructing a ``RotatingFileHandler``.
 
     This is a pure function — it performs no I/O.

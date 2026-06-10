@@ -49,11 +49,15 @@ __all__ = [
     "Representation",
     "SymbolKind",
     "SymbolSummary",
+    "build_import_graph",
     "discover_context",
     "estimate_tokens",
+    "extract_symbols",
     "file_path_to_module",
     "format_signatures",
+    "generate_repo_map",
     "module_to_file_path",
+    "rank_files",
 ]
 
 logger = logging.getLogger(__name__)

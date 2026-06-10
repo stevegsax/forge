@@ -16,7 +16,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 from forge_contracts.db import (
@@ -149,6 +149,15 @@ class Playbook(Base):
     )
 
 
+# Typed Table handles. ``Model.__table__`` is typed ``FromClause`` by SQLAlchemy's
+# declarative stubs, but ``metadata.tables`` is typed ``Table`` — which is what the
+# forge_contracts DB helpers (e.g. ``insert_or_ignore``) require.
+_INTERACTIONS_TABLE: sa.Table = Base.metadata.tables[Interaction.__tablename__]
+_RUNS_TABLE: sa.Table = Base.metadata.tables[Run.__tablename__]
+_BATCH_JOBS_TABLE: sa.Table = Base.metadata.tables[BatchJob.__tablename__]
+_PLAYBOOKS_TABLE: sa.Table = Base.metadata.tables[Playbook.__tablename__]
+
+
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
@@ -162,7 +171,7 @@ def build_interaction_dict(
     role: str,
     context: AssembledContext,
     llm_result: _AnyLLMResult,
-) -> dict:
+) -> dict[str, Any]:
     """Assemble a dict from activity data for insertion.
 
     Works with any LLM result type. Extracts explanation via duck typing:
@@ -208,7 +217,7 @@ def playbook_idempotency_key(extraction_workflow_id: str, title: str) -> str:
 def build_playbook_dict(
     entry: PlaybookEntry,
     extraction_workflow_id: str,
-) -> dict:
+) -> dict[str, Any]:
     """Convert a PlaybookEntry to an insertable dict (with a deterministic key)."""
     return {
         "idempotency_key": playbook_idempotency_key(extraction_workflow_id, entry.title),
@@ -249,16 +258,17 @@ def run_migrations(url: str) -> None:
 
 def save_interaction(engine: Engine, **kwargs: object) -> bool:
     """Insert a row into the interactions table (idempotent on idempotency_key)."""
-    return insert_or_ignore(
-        engine, Interaction.__table__, dict(kwargs), index_elements=["idempotency_key"]
+    inserted: bool = insert_or_ignore(
+        engine, _INTERACTIONS_TABLE, dict(kwargs), index_elements=["idempotency_key"]
     )
+    return inserted
 
 
 def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> bool:
     """Insert a row into the runs table (idempotent on workflow_id)."""
-    return insert_or_ignore(
+    inserted: bool = insert_or_ignore(
         engine,
-        Run.__table__,
+        _RUNS_TABLE,
         {
             "task_id": task_result.task_id,
             "workflow_id": workflow_id,
@@ -267,15 +277,16 @@ def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> bool:
         },
         index_elements=["workflow_id"],
     )
+    return inserted
 
 
 def get_interactions(
     engine: Engine,
     task_id: str,
     step_id: str | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Query interactions for a task, optionally filtered by step."""
-    t = Interaction.__table__
+    t = _INTERACTIONS_TABLE
     stmt = t.select().where(t.c.task_id == task_id).order_by(t.c.created_at)
     if step_id is not None:
         stmt = stmt.where(t.c.step_id == step_id)
@@ -285,9 +296,9 @@ def get_interactions(
         return [dict(row) for row in rows]
 
 
-def get_run(engine: Engine, workflow_id: str) -> dict | None:
+def get_run(engine: Engine, workflow_id: str) -> dict[str, Any] | None:
     """Query a single run by workflow ID."""
-    t = Run.__table__
+    t = _RUNS_TABLE
     stmt = t.select().where(t.c.workflow_id == workflow_id)
 
     with engine.connect() as conn:
@@ -299,9 +310,9 @@ def get_run(engine: Engine, workflow_id: str) -> dict | None:
         return result
 
 
-def list_recent_runs(engine: Engine, limit: int = 20) -> list[dict]:
+def list_recent_runs(engine: Engine, limit: int = 20) -> list[dict[str, Any]]:
     """Query recent runs ordered by creation time descending."""
-    t = Run.__table__
+    t = _RUNS_TABLE
     stmt = t.select().order_by(t.c.created_at.desc()).limit(limit)
 
     with engine.connect() as conn:
@@ -314,7 +325,7 @@ def list_recent_runs(engine: Engine, limit: int = 20) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def save_playbooks(engine: Engine, entries: list[dict]) -> bool:
+def save_playbooks(engine: Engine, entries: list[dict[str, Any]]) -> bool:
     """Insert playbook rows (idempotent per-entry on idempotency_key).
 
     Returns ``True`` if at least one new row was written.
@@ -322,7 +333,7 @@ def save_playbooks(engine: Engine, entries: list[dict]) -> bool:
     applied = False
     for entry in entries:
         if insert_or_ignore(
-            engine, Playbook.__table__, dict(entry), index_elements=["idempotency_key"]
+            engine, _PLAYBOOKS_TABLE, dict(entry), index_elements=["idempotency_key"]
         ):
             applied = True
     return applied
@@ -347,7 +358,7 @@ def get_playbooks_by_tags(
     engine: Engine,
     tags: list[str],
     limit: int = 10,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Query playbooks matching any of the given tags, ordered by recency.
 
     Tag matching is done in Python (``tags_overlap``) rather than in SQL so the
@@ -358,7 +369,7 @@ def get_playbooks_by_tags(
         return []
 
     wanted = set(tags)
-    t = Playbook.__table__
+    t = _PLAYBOOKS_TABLE
     stmt = t.select().order_by(t.c.created_at.desc())
 
     with engine.connect() as conn:
@@ -368,9 +379,9 @@ def get_playbooks_by_tags(
     return matched[:limit] if limit > 0 else matched
 
 
-def list_recent_playbooks(engine: Engine, limit: int = 20) -> list[dict]:
+def list_recent_playbooks(engine: Engine, limit: int = 20) -> list[dict[str, Any]]:
     """Query recent playbooks ordered by creation time descending."""
-    t = Playbook.__table__
+    t = _PLAYBOOKS_TABLE
     stmt = t.select().order_by(t.c.created_at.desc()).limit(limit)
 
     with engine.connect() as conn:
@@ -389,7 +400,7 @@ def get_playbook_ids(
     Filters are AND-combined when both are provided.
     Tags use OR matching (any tag matches).
     """
-    t = Playbook.__table__
+    t = _PLAYBOOKS_TABLE
 
     # ``source_task_id`` filtering and recency ordering stay in SQL; tag matching
     # is done in Python (``tags_overlap``) to keep the query portable across
@@ -411,9 +422,9 @@ def get_playbook_ids(
     return ids[:limit] if limit > 0 else ids
 
 
-def get_playbook_by_id(engine: Engine, playbook_id: int) -> dict | None:
+def get_playbook_by_id(engine: Engine, playbook_id: int) -> dict[str, Any] | None:
     """Fetch a single playbook row by primary key."""
-    t = Playbook.__table__
+    t = _PLAYBOOKS_TABLE
     stmt = t.select().where(t.c.id == playbook_id)
 
     with engine.connect() as conn:
@@ -423,14 +434,14 @@ def get_playbook_by_id(engine: Engine, playbook_id: int) -> dict | None:
         return dict(row)
 
 
-def get_unextracted_runs(engine: Engine, limit: int = 50) -> list[dict]:
+def get_unextracted_runs(engine: Engine, limit: int = 50) -> list[dict[str, Any]]:
     """Query runs that have no corresponding playbook entries.
 
     Returns runs whose workflow_id is not in the playbooks table's
     source_workflow_id column.
     """
-    runs_t = Run.__table__
-    playbooks_t = Playbook.__table__
+    runs_t = _RUNS_TABLE
+    playbooks_t = _PLAYBOOKS_TABLE
 
     extracted_ids = sa.select(playbooks_t.c.source_workflow_id).distinct()
     stmt = (
@@ -464,9 +475,9 @@ def record_batch_submission(
     fields. A consumer keys its own status/metadata table by the same
     ``request_id``. Idempotent on the ``request_id`` primary key.
     """
-    return insert_or_ignore(
+    inserted: bool = insert_or_ignore(
         engine,
-        BatchJob.__table__,
+        _BATCH_JOBS_TABLE,
         {
             "id": request_id,
             "batch_id": batch_id,
@@ -476,6 +487,7 @@ def record_batch_submission(
         },
         index_elements=["id"],
     )
+    return inserted
 
 
 def record_batch_failure(
@@ -491,9 +503,9 @@ def record_batch_failure(
     Used when the provider API call fails before returning a batch_id.
     Idempotent on the ``request_id`` primary key.
     """
-    return insert_or_ignore(
+    inserted: bool = insert_or_ignore(
         engine,
-        BatchJob.__table__,
+        _BATCH_JOBS_TABLE,
         {
             "id": request_id,
             "batch_id": None,
@@ -504,6 +516,7 @@ def record_batch_failure(
         },
         index_elements=["id"],
     )
+    return inserted
 
 
 def update_batch_status(
@@ -520,10 +533,10 @@ def update_batch_status(
     point that prevents garbage statuses from reaching the DB.
     """
     validated = BatchJobStatus(status)
-    t = BatchJob.__table__
+    t = _BATCH_JOBS_TABLE
     with engine.begin() as conn:
         conn.execute(
-            sa.update(t)
+            sa.update(BatchJob)
             .where(t.c.id == request_id)
             .values(
                 status=validated,
@@ -533,9 +546,9 @@ def update_batch_status(
         )
 
 
-def get_pending_batch_jobs(engine: Engine) -> list[dict]:
+def get_pending_batch_jobs(engine: Engine) -> list[dict[str, Any]]:
     """Query batch jobs with status 'submitted', ordered by created_at."""
-    t = BatchJob.__table__
+    t = _BATCH_JOBS_TABLE
     stmt = t.select().where(t.c.status == BatchJobStatus.SUBMITTED).order_by(t.c.created_at)
 
     with engine.connect() as conn:
@@ -543,9 +556,9 @@ def get_pending_batch_jobs(engine: Engine) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-def get_batch_job(engine: Engine, request_id: str) -> dict | None:
+def get_batch_job(engine: Engine, request_id: str) -> dict[str, Any] | None:
     """Look up a single batch job by request ID."""
-    t = BatchJob.__table__
+    t = _BATCH_JOBS_TABLE
     stmt = t.select().where(t.c.id == request_id)
 
     with engine.connect() as conn:
@@ -553,4 +566,3 @@ def get_batch_job(engine: Engine, request_id: str) -> dict | None:
         if row is None:
             return None
         return dict(row)
-

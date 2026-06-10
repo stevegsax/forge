@@ -139,7 +139,9 @@ def fulfill_requests(
 
     for request in requests:
         provider_name = str(request.get("provider", ""))
-        params = {str(k): str(v) for k, v in (request.get("params") or {}).items()}
+        raw_params = request.get("params")
+        params_source = raw_params if isinstance(raw_params, dict) else {}
+        params = {str(k): str(v) for k, v in params_source.items()}
 
         handler = PROVIDER_REGISTRY.get(provider_name)
         if handler is None:
@@ -258,7 +260,9 @@ async def fulfill_context_requests(input: FulfillContextInput) -> list[ContextRe
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.fulfill_context_requests") as span:
         logger.info("Fulfilling %d context requests", len(input.requests))
-        requests_as_dicts = [{"provider": r.provider, "params": r.params} for r in input.requests]
+        requests_as_dicts: list[dict[str, object]] = [
+            {"provider": r.provider, "params": r.params} for r in input.requests
+        ]
 
         results = fulfill_requests(
             requests_as_dicts,

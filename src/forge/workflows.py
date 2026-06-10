@@ -32,12 +32,14 @@ with workflow.unsafe.imports_passed_through():
         ConflictResolutionCallResult,
         ConflictResolutionInput,
         ContextResult,
+        ContextStats,
         CreateWorktreeInput,
         CreateWorktreeOutput,
         DetectFileConflictsInput,
         DetectFileConflictsOutput,
         ExplorationInput,
         ExplorationResponse,
+        ExtractionCallResult,
         FileConflict,
         ForgeTaskInput,
         FulfillContextInput,
@@ -72,6 +74,15 @@ with workflow.unsafe.imports_passed_through():
         resolve_model,
     )
     from forge.providers import PROVIDER_SPECS
+
+# The LLM-family result types accepted by ``build_persist_interaction``.
+_PersistResult = (
+    LLMCallResult
+    | PlanCallResult
+    | SanityCheckCallResult
+    | ConflictResolutionCallResult
+    | ExtractionCallResult
+)
 
 FORGE_TASK_QUEUE = "forge-task-queue"
 
@@ -164,7 +175,7 @@ async def _assemble_conflict_resolution(
         thinking=thinking,
     )
 
-    call_input = await workflow.execute_activity(
+    call_input: ConflictResolutionCallInput = await workflow.execute_activity(
         "assemble_conflict_resolution_context",
         resolution_input,
         start_to_close_timeout=_CONTEXT_TIMEOUT,
@@ -242,10 +253,10 @@ class ForgeTaskWorkflow:
         task_id: str,
         system_prompt: str,
         user_prompt: str,
-        result: object,
+        result: _PersistResult,
         step_id: str | None = None,
         sub_task_id: str | None = None,
-        context_stats: object = None,
+        context_stats: ContextStats | None = None,
     ) -> None:
         """Survivably persist one LLM interaction (idempotent on a per-run key)."""
         self._persist_seq += 1
@@ -369,7 +380,7 @@ class ForgeTaskWorkflow:
     async def _call_exploration(self, exploration_input: ExplorationInput) -> ExplorationResponse:
         """Dispatch exploration LLM call via sync or batch path."""
         if self._sync_mode:
-            return await workflow.execute_activity(
+            response: ExplorationResponse = await workflow.execute_activity(
                 "call_exploration_llm",
                 exploration_input,
                 start_to_close_timeout=_EXPLORATION_LLM_TIMEOUT,
@@ -377,6 +388,7 @@ class ForgeTaskWorkflow:
                 retry_policy=_LLM_RETRY,
                 result_type=ExplorationResponse,
             )
+            return response
         context: AssembledContext = await workflow.execute_activity(
             "assemble_exploration_context",
             exploration_input,
@@ -1427,10 +1439,10 @@ class ForgeSubTaskWorkflow:
         task_id: str,
         system_prompt: str,
         user_prompt: str,
-        result: object,
+        result: _PersistResult,
         step_id: str | None = None,
         sub_task_id: str | None = None,
-        context_stats: object = None,
+        context_stats: ContextStats | None = None,
     ) -> None:
         """Survivably persist one LLM interaction (idempotent on a per-run key)."""
         self._persist_seq += 1

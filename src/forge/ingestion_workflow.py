@@ -36,6 +36,15 @@ _SAVE_TIMEOUT = timedelta(seconds=30)
 _RETRY = RetryPolicy(maximum_attempts=2)
 
 
+def _as_int(value: object) -> int:
+    """Narrow a JSON-derived count to int for summation.
+
+    Child-workflow results are typed ``dict[str, object]``; the count
+    fields are always ints at runtime, but the static type is ``object``.
+    """
+    return value if isinstance(value, int) else 0
+
+
 @workflow.defn
 class TranscriptIngestionWorkflow:
     """Ingest a single Claude Code transcript and extract playbook entries.
@@ -55,7 +64,7 @@ class TranscriptIngestionWorkflow:
         self._batch_results.append(result)
 
     @workflow.run
-    async def run(self, input_json: str) -> dict:
+    async def run(self, input_json: str) -> dict[str, object]:
         data = json.loads(input_json)
         session_id = data.get("session_id", "")
 
@@ -108,11 +117,13 @@ class TranscriptIngestionWorkflow:
             )
             await workflow.execute_activity(
                 "record_ingested_session_error",
-                json.dumps({
-                    "session_id": session_id,
-                    "project_name": prepared.get("project", ""),
-                    "error_message": "malformed_llm_response",
-                }),
+                json.dumps(
+                    {
+                        "session_id": session_id,
+                        "project_name": prepared.get("project", ""),
+                        "error_message": "malformed_llm_response",
+                    }
+                ),
                 task_queue=PBOOK_TASK_QUEUE,
                 start_to_close_timeout=_SAVE_TIMEOUT,
                 result_type=type(None),
@@ -129,12 +140,14 @@ class TranscriptIngestionWorkflow:
             # Record session as ingested with 0 results via pbook cross-queue
             await workflow.execute_activity(
                 "record_ingested_session",
-                json.dumps({
-                    "session_id": session_id,
-                    "project_name": prepared.get("project", ""),
-                    "experiences_found": 0,
-                    "entries_created": 0,
-                }),
+                json.dumps(
+                    {
+                        "session_id": session_id,
+                        "project_name": prepared.get("project", ""),
+                        "experiences_found": 0,
+                        "entries_created": 0,
+                    }
+                ),
                 task_queue=PBOOK_TASK_QUEUE,
                 start_to_close_timeout=_SAVE_TIMEOUT,
                 result_type=type(None),
@@ -159,18 +172,20 @@ class TranscriptIngestionWorkflow:
             digest = hashlib.sha256(
                 f"{problem}\x00{resolution}\x00{context}".encode(),
             ).hexdigest()
-            push_experiences.append({
-                "project": project,
-                "problem": problem,
-                "resolution": resolution,
-                "context": context,
-                "metadata": {
-                    "source": "claude-code-transcript",
-                    "session_id": session_id,
-                    "experience_hash": digest,
-                    "situation": exp.get("situation", ""),
-                },
-            })
+            push_experiences.append(
+                {
+                    "project": project,
+                    "problem": problem,
+                    "resolution": resolution,
+                    "context": context,
+                    "metadata": {
+                        "source": "claude-code-transcript",
+                        "session_id": session_id,
+                        "experience_hash": digest,
+                        "situation": exp.get("situation", ""),
+                    },
+                }
+            )
 
         run_suffix = workflow.uuid4().hex[:8]
         extraction_result = await workflow.execute_child_workflow(
@@ -185,12 +200,14 @@ class TranscriptIngestionWorkflow:
         # Step 5: Record session as ingested
         await workflow.execute_activity(
             "record_ingested_session",
-            json.dumps({
-                "session_id": session_id,
-                "project_name": project,
-                "experiences_found": len(experiences),
-                "entries_created": entries_created,
-            }),
+            json.dumps(
+                {
+                    "session_id": session_id,
+                    "project_name": project,
+                    "experiences_found": len(experiences),
+                    "entries_created": entries_created,
+                }
+            ),
             task_queue=PBOOK_TASK_QUEUE,
             start_to_close_timeout=_SAVE_TIMEOUT,
             result_type=type(None),
@@ -217,7 +234,7 @@ class BatchIngestionWorkflow:
     """
 
     @workflow.run
-    async def run(self, input_json: str) -> dict:
+    async def run(self, input_json: str) -> dict[str, object]:
         data = json.loads(input_json)
         sessions = data.get("sessions", [])
 
@@ -254,30 +271,35 @@ class BatchIngestionWorkflow:
             except Exception as exc:
                 workflow.logger.warning(
                     "Session ingestion failed for %s: %s",
-                    session.get("session_id", ""), exc,
+                    session.get("session_id", ""),
+                    exc,
                 )
                 # Tell pbook the child failed so `pbook sessions` can show
                 # the error instead of leaving the row stuck on `running`.
                 await workflow.execute_activity(
                     "record_ingested_session_error",
-                    json.dumps({
-                        "session_id": session.get("session_id", ""),
-                        "project_name": session.get("project", ""),
-                        "error_message": str(exc),
-                    }),
+                    json.dumps(
+                        {
+                            "session_id": session.get("session_id", ""),
+                            "project_name": session.get("project", ""),
+                            "error_message": str(exc),
+                        }
+                    ),
                     task_queue=PBOOK_TASK_QUEUE,
                     start_to_close_timeout=_SAVE_TIMEOUT,
                     result_type=type(None),
                 )
-                results.append({
-                    "experiences_found": 0,
-                    "entries_created": 0,
-                    "session_id": session.get("session_id", ""),
-                    "error": str(exc),
-                })
+                results.append(
+                    {
+                        "experiences_found": 0,
+                        "entries_created": 0,
+                        "session_id": session.get("session_id", ""),
+                        "error": str(exc),
+                    }
+                )
 
-        total_exp = sum(r.get("experiences_found", 0) for r in results)
-        total_entries = sum(r.get("entries_created", 0) for r in results)
+        total_exp = sum(_as_int(r.get("experiences_found", 0)) for r in results)
+        total_entries = sum(_as_int(r.get("entries_created", 0)) for r in results)
 
         return {
             "sessions_processed": len(results),
