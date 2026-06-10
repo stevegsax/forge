@@ -19,9 +19,10 @@ that working while still isolating pbook. This means:
 The connection string comes from `PBOOK_DATABASE_URL` (a `postgresql://` /
 `postgresql+psycopg://` URL; bare URLs are normalized to the psycopg v3 driver). It is
 required: a missing value raises `ConfigError`, which the CLI maps to the `db_disabled` JSON
-envelope. There is no SQLite fallback. Use the direct 5432 connection for migrations; if
-connecting through Supabase's transaction-mode pooler (6543), psycopg prepared statements are
-disabled automatically.
+envelope. There is no SQLite fallback. Use the direct 5432 connection for migrations. psycopg
+does **not** auto-disable prepared statements on Supabase's transaction-mode pooler (6543);
+the application's engine factory must set `prepare_threshold=None` when connecting through
+port 6543.
 
 ## One `sax` monorepo with a `sax-platform` library
 
@@ -239,8 +240,15 @@ See [REVIEW-2026-06.md](REVIEW-2026-06.md).
 
 ## Considered and rejected
 
-- **Anthropic Message Batches** for extraction: rejected at current volume — batch latency
-  buys nothing at a handful of sessions per day. Revisit above ~500 sessions/month.
+- **Anthropic Message Batches** for extraction: rejected at current volume.
+  **Amended 2026-06-10 (merged platform plan)** with measured cost arithmetic and an explicit
+  boundary. Measured volume: ~102 ingestable sessions over ~27 days ≈ 110/month; batch's
+  discount saves roughly $2–5/month while adding up-to-24h round-trips to a
+  freshness-sensitive loop. The boundary: this volume-based exception does **not** extend to
+  forge — forge's batch-first stance rests on the per-token economics of an unattended
+  orchestrator (50% off every token), not realized volume. Both lanes share the platform
+  request-body builder, so flipping pbook to batch later is a localized change. Revisit above
+  ~500 sessions/month.
 - **Temporal Nexus** for cross-service calls: rejected — with ingestion inverted to pbook and
   the forge coupling deleted, there is nothing left to mediate. Promote only if a second
   consumer or a namespace split appears.

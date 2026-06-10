@@ -159,6 +159,28 @@ If a cross-service trigger is ever genuinely needed, the documented escape hatch
 models pinned in the platform contracts module — never call another service's activities or
 child workflows cross-queue.
 
+## Forge consumption: read-only SQL view
+
+**Added 2026-06-10 (merged platform plan).** Forge consumes pbook knowledge through a
+read-only view contract, not the CLI, the library, or Temporal:
+
+- pbook publishes a `knowledge.approved_entries` SQL view exposing the non-vector entry
+  columns plus the `search_tsv` generated tsvector column.
+- forge consumes it via `sax_platform.contracts.knowledge`: a read-only SQLAlchemy `Table`, a
+  frozen `KnowledgeEntry` model, and a query helper.
+- forge's retrieval is the union of a lexical rank list (`websearch_to_tsquery` +
+  `ts_rank_cd`) and tag-overlap candidates, fused by one small pure scoring function in which
+  tags boost but never gate, then sliced to a token budget. Active-only entries are served.
+- There are **no embeddings and no OpenAI dependency on forge's hot path** — the read is
+  deterministic SQL plus pure scoring.
+- forge has an explicit degraded mode: with `knowledge_db_url` unset it returns empty results
+  and logs, never hard-fails.
+- pbook owns a schema-sync test asserting the view shape after every pbook migration, so a
+  migration cannot silently break the contract.
+
+pbook's full hybrid RRF retrieval (lexical + semantic + tags) remains pbook's own surface for
+skill, CLI, and library consumers; the view contract is forge's only path.
+
 ## Environment requirements
 
 Environment variables are read only inside the `Settings` class.

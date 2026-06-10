@@ -63,6 +63,14 @@ in-workflow timer loop — `workflow.sleep(60–300s)` plus a cheap status activ
 poller workflow signaling waiters is reserved for true fan-in of child workflows (ocr's chunk
 gather). The few redundant status calls are cheaper than a coordination subsystem.
 
+**Amended 2026-06-10 (merged platform plan) — scoping.** This pattern was adopted
+platform-wide: forge and ocr batch waiting also use the timer loop, and the shared
+`BatchPollerWorkflow` + result-signal subsystem is deleted. Scope: poll interval ≥ 300s.
+History budget: a poll cycle costs ~11 history events, so a 25h wait at 600s is ≈ 1,650
+events — about 3% of the 51.2k-event cap — and the worst observed case (~30 waits at 300s)
+is ≈ 24k events, still safe. If wait counts grow beyond that, continue-as-new is the
+documented escape hatch.
+
 ## 9. Cross-service boundaries
 
 Services do not call each other's activities or child workflows cross-queue, and do not import
