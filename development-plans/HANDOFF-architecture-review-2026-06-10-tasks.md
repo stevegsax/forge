@@ -339,7 +339,7 @@ Within Phase 1 all tasks are independent except T1.3 (needs T1.0). Phases 6 and 
 ## Task count: 47
 
 | Phase | Tasks | Theme |
-|---|---|---|
+| --- | --- | --- |
 | 1 | 10 | live bugs + deletions, current repos |
 | 2 | 6 | monorepo + gates |
 | 3 | 6 | platform lib + structured outputs |

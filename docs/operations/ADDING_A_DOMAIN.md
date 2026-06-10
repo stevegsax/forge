@@ -16,7 +16,7 @@ No other files reference domain configuration directly. The output writer, valid
 ## DomainConfig fields
 
 | Field | Purpose | Example (code_generation) |
-|-------|---------|---------------------------|
+| ------- | --------- | --------------------------- |
 | `role_prompt` | Opening sentence of the system prompt | `"You are a code generation assistant."` |
 | `output_requirements` | Tells the LLM how to structure its response within the `LLMResponse` schema | `"You MUST respond with a valid LLMResponse containing..."` |
 | `user_prompt_template` | User message for single-step execution | `"Generate the code described above..."` |

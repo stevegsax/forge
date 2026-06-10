@@ -85,7 +85,7 @@ from the environment and passes a `temporalio.service.TLSConfig` to
 it, so TLS is configured in exactly one place per repo.
 
 | Variable (`FORGE_…` / `PBOOK_…`) | Meaning |
-|---|---|
+| --- | --- |
 | `…_TEMPORAL_TLS` | `1` to enable TLS. Unset ⇒ plaintext (the worker's loopback default). |
 | `…_TEMPORAL_TLS_SERVER_CA` | PEM of the **server CA** — verifies the gateway. |
 | `…_TEMPORAL_TLS_CLIENT_CERT` | PEM of the user's client certificate (mTLS). |

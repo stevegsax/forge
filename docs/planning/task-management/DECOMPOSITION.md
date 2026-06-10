@@ -301,7 +301,7 @@ This can be parallelized — each leaf's criteria generation is independent.
 **Failure routing:** If any check fails, the system routes the failure to the appropriate repair step based on the failure class:
 
 | Failure class | Routes to | Examples |
-|---------------|-----------|----------|
+| --------------- | ----------- | ---------- |
 | Structural / splitting | Step 5 (Recursive Split) | Orphan nodes, container with <2 children, missing criteria |
 | Dependency-only | Step 6 (Dependency Analysis) | Cycle in `DEPENDS_ON` edges, parent-descendant dependency |
 | Edge consistency | Step 5 (Recursive Split) | `children` list mismatch, invalid edge references |
@@ -319,7 +319,7 @@ Deterministic repair loops use a separate `repair_round` counter (max 5). These 
 The system selects 3 of 7 personas based on workflow type:
 
 | Persona | Focus | Best for |
-|---------|-------|----------|
+| --------- | ------- | ---------- |
 | **Expert Skeptic** | Edge cases, failure modes, missing error handling | software, research |
 | **Detail Analyst** | Precise specifications, missing parameters, vague criteria | software, research |
 | **Completeness Auditor** | Coverage gaps, missing steps, overlooked requirements | all |
@@ -466,7 +466,7 @@ A separate SQLite database at `$XDG_STATE_HOME/forge/plans.db` stores all plan d
 #### plans
 
 | Column | Type | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | plan_id | TEXT PK | UUID |
 | goal_statement | TEXT | The agreed-upon goal |
 | workflow_type | TEXT | Primary workflow type |
@@ -478,7 +478,7 @@ A separate SQLite database at `$XDG_STATE_HOME/forge/plans.db` stores all plan d
 #### plan_versions
 
 | Column | Type | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | id | INTEGER PK | Auto-increment |
 | plan_id | TEXT FK | References plans |
 | version | INTEGER | Monotonically increasing per plan |
@@ -491,7 +491,7 @@ A separate SQLite database at `$XDG_STATE_HOME/forge/plans.db` stores all plan d
 #### clarifications
 
 | Column | Type | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | id | INTEGER PK | Auto-increment |
 | plan_id | TEXT FK | References plans |
 | question_id | TEXT | UUID |
@@ -503,7 +503,7 @@ A separate SQLite database at `$XDG_STATE_HOME/forge/plans.db` stores all plan d
 #### judge_reviews
 
 | Column | Type | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | id | INTEGER PK | Auto-increment |
 | plan_id | TEXT FK | References plans |
 | version | INTEGER | Which plan version was reviewed |
@@ -564,7 +564,7 @@ class DecompositionWorkflow:
 Each transform maps to one or more Temporal activities:
 
 | Activity | Timeout | Retry | Heartbeat |
-|----------|---------|-------|-----------|
+| ---------- | --------- | ------- | ----------- |
 | `classify_request` | 30s | 2 attempts | — |
 | `generate_clarifications` | 60s | 2 attempts | — |
 | `generate_goal_statement` | 60s | 2 attempts | — |
@@ -658,7 +658,7 @@ The DOT output is rendered to SVG via the `graphviz` Python package. Both JSON a
 Each transform specifies its capability tier. The system resolves the tier to a concrete model via the existing `ModelConfig` + `resolve_model()` mechanism. Multi-provider support is a future extension — the architecture supports it because each activity receives a model name string, not a provider instance.
 
 | Transform | Tier | Rationale |
-|-----------|------|-----------|
+| ----------- | ------ | ----------- |
 | Classify | CLASSIFICATION | Fast, cheap, low-stakes |
 | Clarify | GENERATION | Needs good question formulation |
 | Goal Statement | GENERATION | Synthesis, not reasoning |
@@ -676,7 +676,7 @@ Each transform specifies its capability tier. The system resolves the tier to a 
 All human interaction points use the same signal/wait pattern but share a consistent timeout policy:
 
 | Wait point | Timeout | On timeout |
-|------------|---------|------------|
+| ------------ | --------- | ------------ |
 | Clarification questions (step 2) | 72 hours | Plan status → `timed_out`, workflow terminates |
 | Goal confirmation (step 3) | 72 hours | Plan status → `timed_out`, workflow terminates |
 | Sub-plan approval (step 5, cross-workflow) | 72 hours | Child plan status → `timed_out`, parent node → `subplan_rejected`, parent escalates |
@@ -691,7 +691,7 @@ In all cases, the Temporal workflow remains durable across worker restarts. If t
 The `PlanDAG` is created as a minimal skeleton (root node only) during classification (step 1). Every subsequent transform reads the current version, mutates, and persists a new version. This ensures all transforms — including early ones — have a valid `PlanDAG` to reference.
 
 | Transform | Version created | Content |
-|-----------|----------------|---------|
+| ----------- | ---------------- | --------- |
 | Classify (step 1) | v1 | Skeleton: root node, workflow_type, no children |
 | Goal Statement (step 3) | v2 | Root node + goal_statement populated |
 | First Pass (step 4) | v3 | Root + 3-7 top-level children |
@@ -710,7 +710,7 @@ Version numbers are monotonically increasing per plan. The `parent_version` fiel
 Two independent counters govern revision loops:
 
 | Counter | Max | Incremented by | Routes to |
-|---------|-----|----------------|-----------|
+| --------- | ----- | ---------------- | ----------- |
 | `repair_round` | 5 | Deterministic check failure (step 8) | Step 5 or 6 per failure routing matrix |
 | `judge_round` | 3 | Adversarial review consensus = REJECT (step 9) | Step 5 with judge feedback |
 
@@ -723,7 +723,7 @@ If either counter is exhausted, the workflow sets plan status to `escalated` and
 This system **replaces** the current planner (`activities/planner.py`). The existing planner's responsibilities map to this design as follows:
 
 | Current | New |
-|---------|-----|
+| --------- | ----- |
 | `build_planner_system_prompt()` | `decompose.prompt.j2` template |
 | `build_planner_user_prompt()` | `split.prompt.j2` template |
 | `assemble_planner_context()` | `classify_request` + `first_pass_decompose` activities |

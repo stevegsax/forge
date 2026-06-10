@@ -58,5 +58,5 @@ make clean    # remove generated images
 ## Flows
 
 | # | Name | Description |
-|---|------|-------------|
+| --- | ------ | ------------- |
 | 01 | [Say Hello](01-say-hello/) | Simplest possible flow: deliver a user request to the LLM and receive a structured response. No exploration, no validation, no commit. |

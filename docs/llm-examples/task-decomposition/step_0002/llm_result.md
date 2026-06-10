@@ -7,6 +7,7 @@
 ```
 
 The task is clear and unambiguous. The request specifies:
+
 - **What:** A Python module
 - **Behavior:** Read files from the current directory, print to stdout
 - **Language:** Python (explicit)

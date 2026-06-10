@@ -21,7 +21,7 @@ certificate against *our* server CA. No valid certificate ⇒ no connection.
 Two CAs keep the two trust directions independent:
 
 | CA | Signs | Lives | Who trusts it |
-|----|-------|-------|----------------|
+| ---- | ------- | ------- | ---------------- |
 | **server CA** | the gateway's `server.crt` | offline (operator) | **clients** (`FORGE_TEMPORAL_TLS_SERVER_CA`) |
 | **client CA** | each user's `*.crt` | offline (operator) | the **gateway** (`ssl_client_certificate`) |
 

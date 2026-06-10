@@ -58,6 +58,7 @@ This aligns with the existing `max_sub_task_depth` in `ForgeTaskInput` and the a
 The doc says deterministic check failure (step 8) "counts as one of the 3 allowed revision attempts" and loops back to step 5. But the adversarial review (step 9) also has its own 3-round limit. The scenario doc contradicts this: "Deterministic check failure does not count toward judge revision limit."
 
 **The scenario doc is correct** — these should be independent counters. A structural validation failure is a different class of problem than a judge rejection. Clarify in the main design doc that:
+
 - Deterministic failures have their own retry limit (suggest 2-3 attempts)
 - Judge rejection rounds are counted separately
 - Both have escalation paths
@@ -130,7 +131,7 @@ Large plans with 50+ leaf nodes may be a sign of scope creep or over-splitting. 
 The scenarios are thorough but missing a few cases:
 
 | Gap | Suggested Scenario |
-|-----|-------------------|
+| ----- | ------------------- |
 | **Classify activity fails/times out** | Temporal retries; after exhaustion, workflow terminates with error status |
 | **Goal statement generation after multiple clarify rounds** | Verify all accumulated answers (not just latest round) are included |
 | **Recursive split with cross-workflow AND further splitting** | A research sub-plan node itself needs splitting — does the child workflow handle this? (Yes, but test it) |
@@ -160,7 +161,7 @@ The design correctly identifies the mapping from existing components to new ones
 ## Summary of Action Items
 
 | # | Type | Item | Priority |
-|---|------|------|----------|
+| --- | ------ | ------ | ---------- |
 | R1 | Required | Resolve `children` vs `PARENT_CHILD` edge redundancy | High |
 | R2 | Required | Define root node identification | High |
 | R3 | Required | Bound recursive split depth | High |

@@ -37,7 +37,7 @@ The behavioral spec lives in [requirements/](requirements/) (18 Gherkin feature 
 **Remaining (specified, not implemented):**
 
 | Feature spec | State | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | `requirements/ocr_web_api.feature` | **Not built** — no OpenAPI/paginated OCR web service; OCR now lives in the sibling `ocr` repo, so this API belongs there if built | No web framework (FastAPI/Flask/Starlette/uvicorn) exists anywhere in the repo |
 | `requirements/human_in_the_loop.feature` | **Not built** — no structured pause/resume/approval primitive | No `HumanInputRequest`/`emit_user_prompt`; only batch-result and OCR-gather signals; human gating is out-of-band git review + manual playbook approval |
 
@@ -62,7 +62,7 @@ Mined from the four code reviews in `archive/to-merge/code-review/` (≈2026-02-
 **Partial** (mechanism exists but stops short):
 
 | Theme | Residual gap | Pointer |
-|---|---|---|
+| --- | --- | --- |
 | Transition vocabulary | Policy-violation / budget-exhausted / partial-success / blocked-on-human collapse into retryable or terminal | `models.py::TransitionSignal` (3 members) |
 | Plan contract | File-level targets only — no symbol-level write-sets, budgets, or confidence; overlap/cycle checks run in eval, not as a preflight gate | `models.py::PlanStep`, `eval/deterministic.py` |
 | Conflict resolution | File-granularity merge accepted on path-completeness alone; no intent/regression verification | `activities/conflict_resolution.py` |

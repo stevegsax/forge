@@ -12,7 +12,7 @@ Completion is established by verifying against the code, not by prior documentat
 ## Completed (Release 1)
 
 | Phase | Capability | Implemented in |
-|------|-----------|----------------|
+| ------ | ----------- | ---------------- |
 | 1 | Minimal loop: universal workflow step, Temporal activity boundaries, git worktree lifecycle, OTel tracing | `workflows.py` (`ForgeTaskWorkflow`), `activities/transition.py`, `git.py`, `tracing.py` |
 | 2 | Planning / multi-step execution: planner decomposes a task into ordered steps | `activities/planner.py`, `models.py` (`Plan`, `PlanStep`) |
 | 3 | Fan-out / gather: parallel sub-tasks via Temporal child workflows; LLM conflict resolution | `workflows.py` (`ForgeSubTaskWorkflow`), `activities/conflict_resolution.py` |

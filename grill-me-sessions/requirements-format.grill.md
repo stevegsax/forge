@@ -45,6 +45,7 @@ Throughput is governed by guess quality (correction rate), not component count.
 ## Decision Log
 
 ### RESOLVED: Branch 1 — firewalled pre-condition stage
+
 - Two firewalled reviewer conversations (arch, test) share only a human-reviewed requirement CORE.
   Firewall persists into the build phase: architect sees {core + arch-enriched}, test-design sees
   {core + test-enriched}; neither sees the other's enriched spec or any transcript.
@@ -53,6 +54,7 @@ Throughput is governed by guess quality (correction rate), not component count.
   the transcript), not by the firewall. Invariants MUST live in the core; the human integrates them.
 
 ### DECIDED: (A) Invariant notation = typed, quantified, pattern-tagged predicates
+
 - `∀ <typed vars>: <precondition> ⟹ <postcondition over named schema fields>`. A declarative SPEC
   over the schema — not prose (avoids lossy induction), not shared executable code (avoids
   zero-independence). Architect realizes it as a runtime contract (icontract / Pydantic validator);
@@ -64,6 +66,7 @@ Throughput is governed by guess quality (correction rate), not component count.
 - EARS controlled syntax for non-invariant sentences (esp. unwanted-behavior = error taxonomy).
 
 ### DECIDED: Bundled invariant record + deterministic accept/reject precondition
+
 - Record = {intent (prose) | predicate (∀) | pattern | witnesses (must satisfy) | counter-examples
   (must be rejected)}. Refinement agent PROPOSES; human RATIFIES against witnesses/counters (NOT by
   reading the ∀ — defeats automation-bias rubber-stamping).
@@ -73,17 +76,20 @@ Throughput is governed by guess quality (correction rate), not component count.
   examples are the robust human ratification surface; empty bundle slots are conspicuous.
 
 ### DECIDED: Hard rule — property test is NEVER generated from the contract
+
 - No `icontract-hypothesis` / contract→test generation in the gate. Per Hillel Wayne, a
   contract-as-oracle makes the test verify code against the contract, both descending from the
   architect — the mutation gate would grade the architect's homework with the architect's own key.
 
 ### DECIDED: Core = structured sidecar, source of truth, ID-reconciled with .feature
+
 - `.feature` keeps ONLY behavioral examples; a structured sidecar (YAML / typed-Markdown) linked by
   stable requirement ID carries everything else. Sidecar is source of truth. A linter FAILS the
   build if a `.feature` or sidecar is orphaned or the IDs don't reconcile. (Honors the Gherkin
   prior: stop overloading, don't drop.)
 
 ### DECIDED: All six core sections mandatory-present, explicit justified-N/A allowed
+
 - (1) typed schema, (2) invariant bundles, (3) error taxonomy (EARS unwanted-behavior),
   (4) non-functional constraints (ordering/idempotency/perf), (5) non-goals, (6) glossary. Each
   must be PRESENT; any may be `N/A — none, because …`. Silence is never absence. Missing or
@@ -91,6 +97,7 @@ Throughput is governed by guess quality (correction rate), not component count.
   common defect) into a visible, reviewable assertion.
 
 ### DECIDED: Branch 5 — replace decomposition step 7 with the ratified core
+
 - The ratified core IS a superior acceptance-criteria artifact, so it REPLACES the old LLM-generated
   step 7. This kills the requirement-duplication that opened the session.
 - Granularity: core is per-COMPONENT (PlanDAG leaf); method-level fan-out children INHERIT the
@@ -111,17 +118,20 @@ Throughput is governed by guess quality (correction rate), not component count.
 ## Deferred / Carried-Forward Risks
 
 ### CARRIED: Correction-rate is unmeasured (the throughput linchpin)
+
 - The whole "human non-binding" claim now rests on agents guessing well enough that the human rarely
   corrects. The correction rate is unmeasured — instrument it. If it's high, the consolidated gate
   becomes the binding constraint at ~10 features/day, ~2 human-hrs/day. (Mirrors interaction-mode's
   "experiment will tell" + "ceiling raised by spec quality.")
 
 ### CARRIED: Mechanical lint layer not fully specified
+
 - Beyond ID reconciliation + mandatory sections + non-vaciousness: EARS template conformance,
   schema type-validation, and referential integrity (every invariant/error clause names a real
   schema entity). Implementation detail; doesn't change the design.
 
 ### CARRIED (residual, accepted): correlated semantic error survives
+
 - (1) Both reviewers likely share a base model → shared priors. (2) A predicate that passes its own
   agent-written witnesses/counters can still be jointly wrong. Both are interaction-mode's accepted
   IRREDUCIBLE semantic omission; spot-audit is the only further mitigation. Not blocking.

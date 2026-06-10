@@ -23,7 +23,7 @@ It contains: the agreement matrix (10 points of independent convergence), the co
 ## Evidence base (all durable copies in `~/.claude/projects/-Users-stevengreenberg-repos-sax-forge/review-artifacts-2026-06-10/`)
 
 | File | What it is |
-|---|---|
+| --- | --- |
 | `wave1-subsystem-maps.json` | 13 read-only mappers across all 5 repos: structural maps + 140 raw findings |
 | `wave2-dimension-reviews-and-7-verifications.json` | 10 adversarial dimension reviews (83 findings with file:line evidence + per-dimension target proposals) + the 7 verifier panels that completed before a session-limit pause |
 | `wave3-remaining-13-verifications.json` | The other 13 verifier panels (fact-check + pragmatist lenses per dimension) |
@@ -65,7 +65,7 @@ Coverage asymmetry: B is silent on forge internals — A's Phases 1/2/4/5/7/8 (b
 ## Critical findings (all verified; how the merged plan addresses each)
 
 | Finding | Disposition |
-|---|---|
+| --- | --- |
 | Batch results consumed without `request_id` correlation (forge + ocr) | Interim dict+setdefault stopgap (T1.2), then unconstructible under timer-loop (Phase 4) |
 | Poller marks deliverable results FAILED / strands MISSING waiters for 25h | Interim minimal patch (T1.3), then subsystem deleted (Phase 4) |
 | Model-influenced subprocesses inherit worker secrets | Env-allowlist scrub (T1.7) |

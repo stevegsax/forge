@@ -92,7 +92,7 @@ embedded in expensive activities (a retry re-runs the LLM/OCR/batch call).
 ## 2. Design decisions (made)
 
 | Decision | Rationale |
-|---|---|
+| --- | --- |
 | Introduce `get_store_engine() -> Engine` that resolves `FORGE_DB_URL` and builds the engine. | ~30 call sites currently repeat `db_path = get_db_path(); if db_path is None: ...; engine = get_engine(db_path)`. A single resolver shrinks churn and centralizes the sqlite-vs-postgres choice. |
 | `FORGE_DB_URL` is the **single, required** store config: a `sqlite:///…` URL for dev/tests, `postgresql+psycopg2://…` for production. **Unset → hard error** (no implicit default path; `FORGE_DB_PATH` retired). | One explicit knob, no silent defaulting. Tests pass a sqlite URL; prod passes the Supabase URL. **No runtime failover — see invariant.** |
 | Gate the WAL pragma on `engine.dialect.name == "sqlite"`. | WAL is meaningless/erroring on Postgres. |
@@ -111,6 +111,7 @@ store must **never** divert writes to a different store, because that fragments 
 dataset. Two severities:
 
 **Database (`FORGE_DB_URL`) — hard error.** The DB is core infrastructure.
+
 - Unset → hard error (refuse to start; no implicit default path).
 - A non-sqlite URL whose server is unreachable → hard error (the worker fails to
   start, since migrations run at boot; activities raise). Never write to SQLite.
@@ -122,6 +123,7 @@ dataset. Two severities:
 
 **OCR blobs (`FORGE_OCR_S3_BUCKET`) — fail the task, not the worker.** S3 is needed
 only by OCR workflows.
+
 - Unset **or** S3 unreachable → the OCR activity raises with a clear log message;
   Temporal records the failed workflow and applies its retry policy; the worker and
   Temporal server keep running. Never store blobs in the DB.
@@ -192,6 +194,7 @@ multi-host workers.
 ### Changes
 
 **`src/forge/store.py`**
+
 - Add `get_store_url() -> str`: returns `FORGE_DB_URL`; **raise a clear error if
   unset**. No implicit `get_db_path()` default. Retire `FORGE_DB_PATH` (a
   `sqlite:///path` URL supersedes it).
@@ -208,18 +211,22 @@ multi-host workers.
   `mkdir` only for the SQLite branch.
 
 **`src/forge/worker.py`**
+
 - `_init_store()` resolves the URL (hard error if unset) and runs migrations against
   it; the worker must not start without a reachable store.
 
 **Call sites (~30)**
+
 - Replace the `get_db_path()`+null-check+`get_engine()` triple with
   `engine = get_store_engine()`.
 - Mechanical; do file-by-file and run that file's tests after each.
 
 **`pyproject.toml`**
+
 - Add `psycopg2-binary>=2.9` to `dependencies`. Run `uv lock`.
 
 ### Sub-tasks
+
 - [x] A1. `get_store_url()` (required; raise if unset) + `get_store_engine()` in `store.py` (WAL gated to sqlite) — added `StoreConfigError`
 - [x] A2. `run_migrations` accepts a URL; Postgres + SQLite both upgrade to head
 - [x] A3. `worker.py:_init_store()` uses the URL resolver (hard error if unset; logs password-redacted URL)
@@ -230,6 +237,7 @@ multi-host workers.
 - [x] A8. Tests written (sqlite→WAL, postgres→no-WAL [skipped pending psycopg2], unset→raises). Full suite green on SQLite **except** 3 pre-existing environmental failures + the 85% gate (see Progress log)
 
 ### Tests
+
 - `get_store_url`/`get_store_engine`: sqlite URL → sqlite engine + WAL; postgres URL
   → postgres engine, no WAL; **unset → raises**.
 - Migrations against a real/throwaway Postgres (testcontainers or a local PG):
@@ -237,6 +245,7 @@ multi-host workers.
 - Rewired SQLite store tests stay green under `FORGE_DB_URL=sqlite:///…`.
 
 ### Verification
+
 ```bash
 uv run pytest tests/ -k store --no-cov
 # against a scratch Postgres:
@@ -254,10 +263,12 @@ stores references. Depends on Phase A (shared store/migration touch points).
 ### Current state
 
 Blob tables (`store.py`):
+
 - `file_content_blobs`: `id, data(LargeBinary), mime_type, file_size_bytes, created_at` (migration `007`).
 - `ocr_images`: `id, document_id, page_index, original_image_id, data(LargeBinary), mime_type, file_size_bytes, top_left_x/y, bottom_right_x/y, created_at` (migration `009`).
 
 Store functions (byte-in / byte-out):
+
 - Write: `save_file_content` (`store.py:843`), `save_ocr_image` (`store.py:887`).
 - Read: `get_file_content` (`store.py:863`, returns `data`), `get_ocr_image`
   (`store.py:974`, returns `data`). `get_ocr_images` (`store.py:951`) is metadata
@@ -266,6 +277,7 @@ Store functions (byte-in / byte-out):
   (`store.py:986`).
 
 Callers (should stay unchanged if S3 is encapsulated):
+
 - Write: `ocr/activities.py:236`, `:452`, `:930`; `activities/batch_poll.py:319`.
 - Read: `ocr/activities.py:414`, `:618`, `:754`, `:900`.
 - Delete: `ocr/activities.py:474`, `:790`.
@@ -275,12 +287,14 @@ Callers (should stay unchanged if S3 is encapsulated):
 ### Changes
 
 **Alembic migration (new, `014_ocr_blobs_to_s3.py`)**
+
 - Add `s3_key: String, NOT NULL` to `file_content_blobs` and `ocr_images`, and
   **drop** the `data` column from both (S3 is the only blob store — no inline mode).
 - Use `op.batch_alter_table(...)` (SQLite can't drop/alter columns natively; batch
   mode handles it — pattern in migration `008`). Fresh deploy: no backfill.
 
 **`src/forge/store.py` models + functions**
+
 - Replace `data: LargeBinary` with `s3_key: str` on both ORM classes.
 - `save_file_content` / `save_ocr_image`: upload `data` to
   `s3://{bucket}/{prefix}{content_id|image_id}` and store `s3_key`. If
@@ -297,14 +311,17 @@ Callers (should stay unchanged if S3 is encapsulated):
 > workflows need S3 — other Forge tasks run without it.
 
 **`src/forge/ocr/s3_blobs.py` (new)**
+
 - Thin boto3 wrapper: `put(key, data, content_type)`, `get(key) -> bytes`,
   `delete(key)`; bucket from `FORGE_OCR_S3_BUCKET`, optional `FORGE_OCR_S3_PREFIX`;
   default credential chain; lazy client.
 
 **`pyproject.toml`**
+
 - Add `boto3>=1.34`. Run `uv lock`.
 
 ### Sub-tasks
+
 - [x] B1. Migration `014`: add `s3_key` (NOT NULL), drop `data` from both blob tables (batch_alter_table; verified on SQLite)
 - [x] B2. `ocr/s3_blobs.py` boto3 wrapper (`get_bucket`/`build_key`/`put`/`get`/`delete`; `S3ConfigError`; per-call client, lazy boto3 import)
 - [x] B3. Update ORM models (`FileContentBlob`, `OcrImage`) — `data` → `s3_key`
@@ -317,6 +334,7 @@ Callers (should stay unchanged if S3 is encapsulated):
 - [x] B10. Updated DEPLOYMENT.md (no inline mode; Phase A+B marked implemented)
 
 ### Tests
+
 - `save_*`/`get_*` with S3 (mocked via `moto`): upload called, row has `s3_key`,
   `get_*` returns original bytes.
 - Bucket unset / S3 error → `save_*` (and the OCR activity) raise with a clear
@@ -325,6 +343,7 @@ Callers (should stay unchanged if S3 is encapsulated):
 - An OCR export round-trip writes the expected image files from S3-backed rows.
 
 ### Verification
+
 ```bash
 uv run pytest tests/ -k "ocr or blob" --no-cov
 # live smoke (on the instance, post-deploy):
@@ -407,6 +426,7 @@ the workflow loudly. DB-unreachable surfaces as psycopg2 `OperationalError`/
 `insert_or_ignore`).
 
 **Re-wire call sites (strip embedded writes → workflow persists):**
+
 - **LLM family** (`call_llm`, `call_planner`, `call_sanity_check`,
   `call_conflict_resolution`, `call_extraction_llm`): remove the trailing
   `persist_interaction(...)`. Add `persist_interaction_block(context, result, role,
@@ -432,6 +452,7 @@ the workflow loudly. DB-unreachable surfaces as psycopg2 `OperationalError`/
   `ForgeTaskWorkflow.run` (also fixes that fire-and-forget submissions never persisted).
 
 ### Sub-tasks
+
 - [x] C0. Phase A `get_store_engine()` landed; migration numbered `015` (after B's `014`)
 - [x] C1. `persist_models.py` discriminated union + `PersistResult` (round-trips via TypeAdapter); `_PERSIST_RETRY`/timeout consts in `workflow_blocks.py`; `provider` added to `BatchSubmitResult`
 - [x] C2. `insert_or_ignore` (dialect ON CONFLICT DO NOTHING, returns `applied`); `save_run`/`save_interaction`/`save_playbooks`/`record_batch_*`/`save_ocr_result`/`save_ocr_image`/`save_file_content` idempotent; migration `015` (nullable-unique `idempotency_key` on interactions+playbooks); `build_playbook_dict` adds `uuid5` key. (ocr_images deterministic `uuid5` id is at the call sites — deferred to C7.)
@@ -444,6 +465,7 @@ the workflow loudly. DB-unreachable surfaces as psycopg2 `OperationalError`/
 - [x] C9. New `tests/test_persist.py`: per-kind idempotency (run/interaction/ocr_result/batch_submission/playbooks double-apply → one row, `applied=False`; batch_status plain UPDATE) + **pause-and-retry** (flaky persist fails 2× then succeeds → `call_ocr_sync` ran once, persist ran 3×, workflow completes) + **prolonged-outage** (persist always fails → workflow fails via ScheduleToClose, time-skipped, no hang). Updated swallow-behavior tests (test_activity_llm/test_extraction/test_activity_planner/test_ocr). Full suite **1475 passed** on SQLite (coverage gate unmet only from the missing `test-inputs/` PDF, as in A/B).
 
 ### Tests
+
 - **Pause-and-retry (time-skipping env):** fake `persist_to_store` raises `K` times
   then succeeds; run the workflow with other activities mocked; assert it completes
   AND the expensive activity (e.g. `call_llm`) ran **exactly once** while
@@ -458,6 +480,7 @@ the workflow loudly. DB-unreachable surfaces as psycopg2 `OperationalError`/
   `test_ocr_sync.py`, `test_cli.py`).
 
 ### Verification
+
 ```bash
 uv run pytest tests/ -k "persist or store or workflow or ocr" --no-cov
 uv run pytest                 # full suite; coverage ≥ 85% on SQLite
@@ -473,7 +496,7 @@ no new runtime dependency (only `moto` as a dev/test dep for S3/idempotency test
 **New / changed config (reflect in DEPLOYMENT.md config table):**
 
 | Var | Phase | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `FORGE_DB_URL` | A | **Required.** `sqlite:///` (dev/tests) or `postgresql+psycopg2://` (prod). Unset → hard error |
 | `FORGE_OCR_S3_BUCKET` | B | Required for OCR. Unset/unavailable → OCR task fails (no inline) |
 | `FORGE_OCR_S3_PREFIX` | B | Optional key prefix |

@@ -1,10 +1,8 @@
 # CLAUDE.md
 
-<!-- markdownlint-disable MD013 MD025 -->
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# Forge
+## Project Overview: Forge
 
 Forge is a general-purpose LLM task orchestrator built around batch mode with document completion. It decomposes tasks into independent work units, executes them as single-step state machine transitions, and reconciles results. The architecture is task-agnostic: code generation, research, analysis, and other domains are all instances of the same universal workflow step with different prompts and context.
 

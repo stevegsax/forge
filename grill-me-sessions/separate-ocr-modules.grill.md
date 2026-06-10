@@ -16,6 +16,7 @@ real duplicated flow-control is client-side LLM retries stacked under Temporal's
 (fix: max_retries=0).
 
 **Converged target architecture (all decided):**
+
 - OCR → separate repo, own worker on `ocr-task-queue`, SAME namespace, SAME Postgres DB, own
   Alembic chain (distinct version_table + include_object filter), `ocr_`-prefixed tables, zero
   `forge.*` imports.
@@ -87,6 +88,7 @@ decision basis — not code.
 ## Decision Log
 
 ### RESOLVED: Owning plugin tables needs no new subsystem
+
 - **Resolution**: `store.py` has ZERO foreign keys (`rg ForeignKey src/forge/store.py` → none).
   Tables are linked by string convention only (`document_id`, `batch_id`, `workflow_id`). A
   plugin can own its tables via its own `DeclarativeBase` + its own Alembic chain with a distinct
@@ -100,6 +102,7 @@ decision basis — not code.
 - **Date**: 2026-06-04
 
 ### DECIDED: Separation depth = pbook parity, EXCEPT shared database
+
 - **Decision**: OCR becomes a separate repo with its own worker and its own task queue, zero
   `forge.*` imports, invoked by Temporal string-name cross-queue calls (full pbook parity) —
   with one exception: it uses the SAME database as Forge (not pbook's own-DB model). OCR owns
@@ -109,27 +112,32 @@ decision basis — not code.
 - **Date**: 2026-06-04
 
 ### DECIDED: Same Temporal namespace as Forge (like pbook)
+
 - **Rationale**: Avoids Nexus (docs say GA, but installed sdk-python 1.27.2 marks it
   experimental/unstable). Keeps cross-queue child workflows + signaling available.
 - **Date**: 2026-06-04
 
 ### DECIDED: Batch is a cornerstone — polling stays, not open for discussion
+
 - **Decision**: The submit→poll→signal batch mechanism is retained. Option to dissolve the poller
   into async-activity-completion / activity-retry-polling is OFF the table.
 - **Rationale**: Batch mode is the reason Forge exists; the principle is always maintained.
 - **Date**: 2026-06-04
 
 ### DECIDED: Platform owns "the batch service"; OCR is a consumer (Collision 1)
+
 - **Decision**: Platform owns batch submit + poll + signal AND the `batch_jobs` coordination table.
   OCR submits batches via a platform SPI cross-queue (pbook-style, like `record_ingested_session`),
   never touches `batch_jobs`, and owns only its `ocr_*` result schema + all OCR-specific parsing.
 - **Date**: 2026-06-04
 
 ### ACTION (plan item, not yet executed): disable client-side LLM retries
+
 - `AsyncAnthropic(max_retries=0)` and Mistral equivalent. Rely solely on Temporal RetryPolicy.
 - Kept out of this session per the "plan, not code" framing; trivial one-liner per client.
 
 ### OPEN: two-writer batch_jobs state machine — leaning "split the state"
+
 - Today one `batch_jobs.status` column is written by TWO processes (poller: STORING/FAILED/
   EXPIRED/MISSING; OcrStoreWorkflow: SUCCEEDED) — conflates two lifecycles, caused a double-submit bug.
 - Reframe under separation: split into (1) provider-batch lifecycle = platform/poller single-writer
@@ -138,6 +146,7 @@ decision basis — not code.
   Attributes + advanced visibility) rejected because they don't serve the SQL join requirement.
 
 ### DECIDED: Status = coarse SQL projection, no @workflow.query in core path
+
 - **Decision**: Coarse states `submitted / processing / stored / failed` are enough. Status is a SQL
   projection: provider-batch states in platform `batch_jobs` (single writer), processing states in
   OCR's own `ocr_*` status table (single writer, keyed by document_id + correlation IDs). "Status of
@@ -149,12 +158,14 @@ decision basis — not code.
 - **Date**: 2026-06-04
 
 ### DECIDED: Collision 2 = (a) explicit S3 pointer
+
 - **Decision**: Platform poller stashes the raw provider result to S3 (generic blob capability) and
   signals OCR a pointer; OCR fetches and does all OCR-specific image extraction/parsing on its own
   worker. Claim Check codec shelved as a documented future option.
 - **Date**: 2026-06-04
 
 ### DECIDED: Shared wire contract lives in a new `forge-contracts` package
+
 - **Decision**: Create a dedicated `forge-contracts` sibling package holding the batch wire models
   (BatchResult, submit-request shape, BatchJobStatus) + service/queue name constants. forge and OCR
   both depend on it; neither imports the other. User will create the repo and provide access.
@@ -166,6 +177,7 @@ decision basis — not code.
 - **Date**: 2026-06-04
 
 ### DECIDED: Submit fork = Option 1 (platform makes the provider call)
+
 - **Decision**: The platform owns the actual `provider.submit_batch` call. OCR builds its request
   body, writes large items (the pre-built request body) to blob storage, and passes the platform a
   POINTER. The platform fetches the opaque request blob and submits — never parsing it. Centralizes
@@ -173,18 +185,21 @@ decision basis — not code.
 - **Date**: 2026-06-04
 
 ### DECIDED: Remove OcrSyncWorkflow; keep generic sync LLM capability
+
 - **Decision**: Drop the OCR synchronous path entirely (it violated batch-first and was the only
   non-batch OCR path). The platform RETAINS generic synchronous LLM calls (`generation_dispatch`
   sync_mode) for non-OCR needs. Latency-sensitive OCR will be handled another way later.
 - **Date**: 2026-06-04
 
 ### DECIDED: Big-bang cutover (no strangler-fig)
+
 - **Decision**: Not in production, no document corpus to preserve, still in development → cut over in
   one shot. **Consequence**: migration untangling largely evaporates — this is a clean schema
   REDEFINITION, not a data migration. Can squash/reset chains to a clean baseline.
 - **Date**: 2026-06-04
 
 ### DEFERRED: Two-worker DB connection pressure
+
 - **Reason**: User not concerned right now (development).
 - **Risk if ignored**: forge + ocr workers each hold a bounded pool against the same managed Postgres;
   the externalize-store work tuned pools to respect connection caps. Two workers ≈ double the
@@ -192,6 +207,7 @@ decision basis — not code.
 - **Date**: 2026-06-04
 
 ### DECIDED: s3_blobs → forge-contracts (shared); blobs by key in contract messages; bucket TTL GC
+
 - **Decision**: The S3 access library moves into `forge-contracts` (NOT platform-internal), because
   blob I/O cannot be mediated cross-queue (payload limits). Blobs are addressed by KEY carried in
   contract messages (BatchResult/submit). Both workers hold S3 credentials + share one bucket + key
@@ -201,6 +217,7 @@ decision basis — not code.
 - **Date**: 2026-06-04
 
 ### DECIDED: OCR CLI commands move to the OCR repo
+
 - `ocr-jobs` (cli.py:1841, status query) and `backfill-hashes` (cli.py:1891, reaches into both
   forge.ocr + forge.store) are OCR-specific → move to OCR's own CLI. `backfill-hashes` is moot under
   big-bang/no-corpus.
@@ -252,6 +269,7 @@ alembic_version_ocr) + `include_object` filters in BOTH env.py so neither repo's
 other's tables. Decide file_content_blobs ownership (backs OCR input files → likely OCR).
 
 ### forge-contracts MUST CONTAIN (the SPI surface)
+
 1. BatchResult (final shape: inline raw_response_json + optional s3_key). 2. BatchJobStatus enum.
 3. New submit-SPI request model {s3_key, model, endpoint, provider, custom_id}. 4. ParseResponseInput/
 ParsedLLMResponse if shared (NO image fields). 5. Signal-name constant + binding convention (Temporal
@@ -263,6 +281,7 @@ helper (connect_temporal + build_tls_config + pydantic_data_converter) — singl
 READ model for the JOIN (no forge.store import). 11. forge-contracts editable pin in both pyprojects.
 
 ### SOUNDNESS INVARIANT (acceptance criteria for the plan)
+
 Correct only if: one stable correlation key (request_id==custom_id==batch_jobs PK, minted once);
 platform poll+submit genuinely OCR-agnostic (poller stashes verbatim result blob + signals typed pointer,
 never stores images / never injects _image_mapping; submit sends opaque pre-built blob preserving
@@ -274,6 +293,7 @@ SIGNALS the waiting OCR workflow rather than letting it time out; two Alembic ch
 version_tables + include_object. If any one fails, the split breaks at RUNTIME, not import time.
 
 ### RESOLVED after sweep (2026-06-04)
+
 - B1 CONFIRMED: batch_jobs = provider-only states; stored/succeeded only in OCR's status table.
 - B2 CONFIRMED: boundary = "parse provider format = sax-llm (stays); store/transform = OCR". Delete
   save_ocr_image + _image_mapping from the platform poller; poller stashes the parsed result blob.
@@ -286,6 +306,7 @@ version_tables + include_object. If any one fails, the split breaks at RUNTIME, 
 - B6 CONFIRMED: distinct version_tables + include_object filters; file_content_blobs → OCR side.
 
 ### DECIDED: Timeout handling — catch the wait_condition timeout, not the workflow execution timeout
+
 - The 25h `wait_condition` timeout raises `asyncio.TimeoutError` INSIDE the workflow (catchable).
   Today it is NOT caught (`workflow_store.py:70-74`) → on timeout the status row sticks. FIX: wrap in
   try/except, write terminal `failed` status, then raise ApplicationError.
@@ -296,6 +317,7 @@ version_tables + include_object. If any one fails, the split breaks at RUNTIME, 
 - **Date**: 2026-06-04
 
 ### FINDING: The SPI is NOT zero-coupling — there is an irreducible shared WIRE CONTRACT
+
 - Forge connects with `pydantic_data_converter` (`temporal_client.py:111-114`). Cross-queue payloads
   are pydantic models rehydrated by the receiver's DECLARED parameter type. So OCR's
   `batch_result_received` signal handler must declare a `BatchResult`-typed param — but OCR has zero
@@ -313,6 +335,7 @@ version_tables + include_object. If any one fails, the split breaks at RUNTIME, 
   memory: re-pinning siblings breaks `uv lock`; all siblings must use local editable `../sax-llm`).
 
 ### FACT: OCR-specific post-batch handling is substantial (justifies the separate repo)
+
 - Beyond page chunking: image extraction (base64 decode, data-URI strip, S3 upload, `ocr_images`
   rows with bounding boxes + page_index), markdown reference rewriting `img-N.jpeg`→`ocr-image://{uuid}`
   (`activities.py:130-143,283-313`), reverse rewrite for export, OCR response-format parsing
@@ -321,6 +344,7 @@ version_tables + include_object. If any one fails, the split breaks at RUNTIME, 
   result is large (Collision 2).
 
 ### FINDING: Retries are duplicated (Temporal flow-control re-implemented)
+
 - LLM clients constructed with default retries ON (`llm_client.py:260` bare `AsyncAnthropic()`;
   `mistral.py:221` bare `Mistral()`). SDK retries stack on top of Temporal `RetryPolicy`. Cookbook
   rule is `max_retries=0` everywhere. This is the clearest duplicated-flow-control instance.

@@ -35,7 +35,7 @@ import; neither imports the other.
 ## 2. The three repos
 
 | Repo | Path | Role |
-|---|---|---|
+| --- | --- | --- |
 | forge | `/Users/stevengreenberg/repos-sax/forge` | the platform (this repo; branch `separate-ocr`) |
 | forge-contracts | `/Users/stevengreenberg/repos-sax/forge-contracts` | NEW shared SPI package (branch `main`) |
 | ocr | `/Users/stevengreenberg/repos-sax/ocr` | NEW OCR app (branch `main`) |
@@ -47,17 +47,20 @@ source — do not re-pin to git (it breaks `uv lock`). See the user memory note.
 ## 3. What's done (committed)
 
 **forge-contracts** (`main`) — the full SPI foundation OCR needs:
+
 - `78bcc8f` scaffold + `s3_blobs` (moved out of forge.ocr — broke the platform→plugin cycle) + `types` (`UTCDateTime`)
 - `290b0df` `temporal` (connect_temporal + build_tls_config + pydantic converter; explicit namespace) + `constants` (TEMPORAL_NAMESPACE, FORGE_TASK_QUEUE, OCR_TASK_QUEUE, BATCH_RESULT_SIGNAL)
 - `236ebe6` `models` (`BatchResult` with the new optional `s3_key`; `BatchJobStatus` — kept FULL, narrowing deferred)
 - `52c08f5` `db` (StoreConfigError, get_store_url, get_store_engine, ensure_sqlite_parent, insert_or_ignore)
 
 **ocr** (`main`):
+
 - `694656d` scaffold (pyproject deps = forge-contracts + sax-llm + mistralai + pymupdf …; never forge)
 - `ab62d00` `ocr/store.py` — own `Base`; tables `ocr_results`, `ocr_images`, `file_content_blobs`, and the NEW `ocr_job_status` projection (PK `request_id`); ~20 functions; round-trip smoke green
 - `b55cea1` leaf modules moved import-clean: `models.py` (sync model classes deleted), `persist.py` (retry/timeout presets), `workflow_export/gather/list_jobs/mark_removal/store.py`
 
 **forge** (`separate-ocr`) — platform side, all green (1499 tests):
+
 - `7cce5dc` disable client-side LLM retries; catch OCR `wait_condition` timeout (pre-req fixes)
 - `a981d2a` fix `forge ingest` to pbook's `get_store_engine` API
 - `77d6fc5` grill doc · `57b468a` plan doc

@@ -1,7 +1,5 @@
 # Forge Task List
 
-<!-- markdownlint-disable MD013 -->
-
 The single source of truth for what is done vs. not. Work the next unchecked task in priority order (see [PROCESS.md](PROCESS.md)). Per-task detail lives in task files in this directory; narrative status and the full evidence for each tech-debt item live in [../docs/OVERVIEW.md](../docs/OVERVIEW.md).
 
 ## Architecture migration (approved 2026-06-10)

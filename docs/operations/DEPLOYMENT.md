@@ -66,7 +66,7 @@ records of that work are kept.
 ### What runs where
 
 | Component | Where | Lifetime | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Temporal server | Docker on EC2 | Always up | Persistence → Supabase (`temporal`, `temporal_visibility`) over TLS |
 | Temporal Web UI | Docker on EC2 | Always up | Bind to localhost; reach via SSM tunnel |
 | `forge worker` (×2) | systemd on EC2 host | Always up | Polls `forge-task-queue`; needs repos + git + ruff on host |
@@ -83,7 +83,7 @@ Docker because it is a self-contained service with no filesystem coupling.
 ## External dependencies
 
 | Dependency | Purpose | Requirement |
-|---|---|---|
+| --- | --- | --- |
 | Supabase PostgreSQL | Temporal state **and** Forge store | Postgres 12+; three databases; TLS; direct (non-transaction-pooled) connection |
 | S3 bucket | OCR image/file blobs | IAM instance-role access (no static keys) |
 | Anthropic API | All Forge LLM calls; pbook extraction/review | `ANTHROPIC_API_KEY`, outbound HTTPS |
@@ -472,7 +472,7 @@ stand up the mutual-TLS gateway in [`deploy/`](../../deploy/) and have them foll
 ## Configuration reference
 
 | Variable | Purpose | Production value |
-|---|---|---|
+| --- | --- | --- |
 | `FORGE_TEMPORAL_ADDRESS` | Temporal frontend address | `127.0.0.1:7233` |
 | `FORGE_DB_URL` | **Required.** Forge store connection: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://…` (prod). Unset → hard error; no disable-store mode | `postgresql+psycopg2://…/forge?sslmode=require` |
 | `FORGE_OCR_S3_BUCKET` | S3 bucket for OCR blobs. Required for OCR work; unset or unreachable → the OCR task fails (no inline-in-DB fallback) | `forge-ocr-blobs-<acct>` |
@@ -499,7 +499,7 @@ TLS through the gateway (see [SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md))
 Both CLIs read these (forge uses `FORGE_…`, pbook uses `PBOOK_…`):
 
 | Variable | Purpose | Value (remote CLI) |
-|---|---|---|
+| --- | --- | --- |
 | `…_TEMPORAL_ADDRESS` | Gateway endpoint | `<public-dns-or-eip>:443` |
 | `…_TEMPORAL_TLS` | Enable TLS | `1` (unset on the on-box worker) |
 | `…_TEMPORAL_TLS_SERVER_CA` | PEM verifying the gateway | path to `server-ca.crt` |

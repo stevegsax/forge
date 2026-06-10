@@ -125,7 +125,7 @@ Every meaningful rule must appear in a contract table. Each row is one rule.
 Required columns:
 
 | Field | Meaning |
-|------|---------|
+| ------ | --------- |
 | `rule_id` | Stable identifier such as `PLAN-RULE-001` |
 | `intent` | Plain-English explanation of the rule |
 | `formal_statement` | Structured predicate, transition, or assume/guarantee statement |

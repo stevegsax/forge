@@ -98,7 +98,9 @@ will go wrong, not what will go right.
 ```
 
 ## Evaluation Criteria
+
 Score each dimension 1-5:
+
 1. COMPLETENESS: Does the plan cover the entire goal?
 2. GRANULARITY: Is each leaf task truly atomic (one LLM call / one human action / one function)?
 3. FEASIBILITY: Can each leaf task actually be completed as described?
@@ -108,18 +110,22 @@ Score each dimension 1-5:
 ## Required Response Structure
 
 ### Arguments AGAINST This Plan
+
 List every weakness, gap, risk, and failure mode you can identify.
 Be thorough and adversarial. Assume the plan WILL fail and explain why.
 
 ### Arguments FOR This Plan
+
 Now argue that the plan is adequate despite the weaknesses above.
 Which weaknesses are acceptable? Which are mitigated by other aspects of the plan?
 
 ### Verdict
+
 APPROVE or REJECT.
 If REJECT, list the specific changes required (not suggestions -- requirements).
 
 ### Scores
+
 (JSON with verdict, scores, required_changes, arguments_against, arguments_for)
 
 ---

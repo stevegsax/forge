@@ -1,7 +1,5 @@
 # Platform Architecture Review — 2026-06
 
-<!-- markdownlint-disable MD013 -->
-
 Consolidated record of the adversarial architecture review of the five-repo
 platform (forge, forge-contracts, ocr, sax-llm, pbook), run 2026-06-09/10,
 cross-reviewed against an independent peer plan, and approved 2026-06-10.

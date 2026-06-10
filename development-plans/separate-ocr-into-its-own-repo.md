@@ -105,6 +105,7 @@ The split is correct only if the **soundness invariant** holds. Concretely:
 **Goal:** create the shared package and break the `store → ocr.s3_blobs` cycle.
 
 ### Current state
+
 - `forge-contracts` empty. `s3_blobs.py` (`src/forge/ocr/s3_blobs.py`) has **zero
   `forge.*` imports** (clean leaf). `connect_temporal`/`build_tls_config`
   (`temporal_client.py:61-119`) never set a namespace (implicit `default`).
@@ -114,6 +115,7 @@ The split is correct only if the **soundness invariant** holds. Concretely:
   (`batch_poll.py:133,188`; `workflows.py:266,1451`; `ocr/workflow_store.py:58`).
 
 ### Changes
+
 - Scaffold `forge-contracts` (hatchling, `src/` layout, `sax-llm` editable pin) using
   `../pbook/pyproject.toml` as the template.
 - Move **`s3_blobs.py`** → `forge_contracts.s3_blobs`. Generalize the
@@ -144,6 +146,7 @@ The split is correct only if the **soundness invariant** holds. Concretely:
   the constant. `uv lock`.
 
 ### Sub-tasks
+
 - [x] Scaffold `forge-contracts` package (pyproject, src layout, README).
 - [x] Move `s3_blobs` to contracts; re-point `forge.store` (6 sites); delete `forge.ocr.s3_blobs`.
 - [x] Wire forge editable pin (`[tool.uv.sources]`); `uv lock`/`uv sync`; forge imports from contracts.
@@ -161,11 +164,13 @@ The split is correct only if the **soundness invariant** holds. Concretely:
   `batch_jobs` read model are likewise introduced when Phase 1 adds the opaque-blob submit.
 
 ### Tests / Verification
+
 - `rg "forge\.ocr\.s3_blobs" src/forge` → only inside `ocr/` (cycle from `store.py` gone).
 - Forge suite green (OCR still present, now importing contracts for the moved bits).
 - `uv run python -c "import forge_contracts"` OK; forge worker boots.
 
 ### Acceptance
+
 Forge depends on `forge-contracts`; the `store → ocr.s3_blobs` inversion is gone;
 all shared primitives have a single home.
 
@@ -175,6 +180,7 @@ all shared primitives have a single home.
 (keeps the suite runnable between phases).
 
 ### Current state
+
 - `batch_jobs` carries `file_path`(`store.py:147`)/`document_id`(`store.py:148`);
   written by `record_batch_submission`(627-658)/`record_batch_failure`(661-691);
   mirrored in `PersistBatchSubmission`/`PersistBatchFailure`
@@ -188,6 +194,7 @@ all shared primitives have a single home.
 - `worker.py` imports/registers OCR + `OcrSyncWorkflow`.
 
 ### Changes
+
 - **Drop `file_path`/`document_id` from `batch_jobs`** (lockstep across 4 files,
   gotcha): `store.py` columns + `record_batch_submission`/`record_batch_failure`
   params; `persist_models.py` fields; `persist.py` dispatch kwargs;
@@ -216,6 +223,7 @@ all shared primitives have a single home.
   Keep `set_temporal_client` + `_register_output_types` (generic).
 
 ### Sub-tasks
+
 - [ ] Remove `file_path`/`document_id` from `batch_jobs` + all writers/models (4-file lockstep).
 - [ ] Narrow `BatchJobStatus`; fix poller mapping + store validation.
 - [ ] De-contaminate `batch_poll.py`; poller stashes raw blob + size-based pointer signal.
@@ -225,11 +233,13 @@ all shared primitives have a single home.
 - [ ] Remove OCR imports/registration from `worker.py`; delete `OcrSyncWorkflow`.
 
 ### Tests / Verification
+
 - Generic (Anthropic) batch path green through size-based delivery (small=inline, large=pointer).
 - `rg "ocr" src/forge/activities/batch_poll.py` → none.
 - Platform suite green with OCR temporarily disabled in the worker.
 
 ### Acceptance
+
 Platform poll + submit are OCR-agnostic; `batch_jobs` generic; `BatchResult` carries
 both delivery arms; no OCR symbols on the platform path.
 
@@ -238,6 +248,7 @@ both delivery arms; no OCR symbols on the platform path.
 **Goal:** stand up `ocr` as an independent app importing only `forge_contracts` + `sax_llm`.
 
 ### Current state
+
 - `src/forge/ocr/` = 11 files (~2428 LOC). OCR store tables/functions live in
   `forge/store.py`; OCR persist variants in `persist_models.py`; OCR CLI in `cli.py`;
   3 test files + conftest fixtures; `tests/fixtures/ocr/` empty (e2e expects
@@ -245,6 +256,7 @@ both delivery arms; no OCR symbols on the platform path.
   via pymupdf). OCR-only deps `mistralai` + `pymupdf` sit in forge `pyproject.toml`.
 
 ### Changes
+
 - Scaffold `ocr` repo (pyproject: deps `forge-contracts` + `sax-llm` + `mistralai` +
   `pymupdf`; **not** forge; hatchling src layout per pbook).
 - **Move** `src/forge/ocr/*` → `ocr/src/ocr/`. Rewrite every `forge.*` import to
@@ -271,6 +283,7 @@ both delivery arms; no OCR symbols on the platform path.
   store module's `create_engine` (not `forge.store`), moto S3, two-worker harness.
 
 ### Sub-tasks
+
 - [ ] Scaffold `ocr` pyproject/worker/CLI; move OCR-only deps off forge.
 - [ ] Move `ocr/` code; rewrite imports to contracts/local; delete sync path + dead imports.
 - [ ] Move OCR store (own `Base`) + add `ocr_` status table; OCR-side `persist_to_store`.
@@ -278,10 +291,12 @@ both delivery arms; no OCR symbols on the platform path.
 - [ ] Move OCR tests/fixtures/conftest; standalone OCR suite green.
 
 ### Tests / Verification
+
 - `rg "forge\." ocr/src` → only `forge_contracts`.
 - OCR suite green **standalone** (its own worker/queue/store/conftest).
 
 ### Acceptance
+
 OCR is an independent package; zero `forge.*` imports; its tests pass on their own.
 
 ## 7. Phase 3 — cross-queue wiring, correlation key, status projection
@@ -289,6 +304,7 @@ OCR is an independent package; zero `forge.*` imports; its tests pass on their o
 **Goal:** connect OCR ↔ platform purely through `forge-contracts` + Temporal string-name calls.
 
 ### Current state
+
 - `request_id == custom_id == batch_jobs PK` minted once in
   `execute_submit_ocr_batch` (`activities.py:263`). `OcrSubmitWorkflow` uses
   `ParentClosePolicy.ABANDON` children (`workflow_submit.py:143,167`). Cross-queue
@@ -297,6 +313,7 @@ OCR is an independent package; zero `forge.*` imports; its tests pass on their o
   `batch_jobs.document_id`/`file_path`.
 
 ### Changes
+
 - **OCR → platform (submit):** `OcrSubmitWorkflow` builds the OCR body, writes the
   pre-built request blob to S3 (contracts), and calls the platform submit-SPI activity
   **cross-queue** (`execute_activity(..., task_queue=FORGE_TASK_QUEUE)`) with
@@ -317,17 +334,20 @@ OCR is an independent package; zero `forge.*` imports; its tests pass on their o
   root-vs-chunk `document_id` asymmetry.
 
 ### Sub-tasks
+
 - [ ] OCR submit → S3 blob + cross-queue submit-SPI call; single mint of `custom_id`.
 - [ ] Poller signals OCR by workflow_id (success + error/expiry/orphan).
 - [ ] Rework OCR result path: fetch blob, extract/store images, markdown rewrite, write status.
 - [ ] Rewrite status join on `request_id` (read model ⋈ ocr_ status table).
 
 ### Tests / Verification
+
 - Two-worker test (forge-task-queue + ocr-task-queue, shared DB, moto S3): submit →
   poller signal → OCR store → status join returns `stored`.
 - Inject expiry → OCR receives error signal → terminal `failed` (no 25h hang).
 
 ### Acceptance
+
 End-to-end OCR batch runs across the queue boundary using only contracts; the status
 join works without OCR reading `forge.store`.
 
@@ -336,6 +356,7 @@ join works without OCR reading `forge.store`.
 **Goal:** one Postgres, two independent Alembic chains, no cross-drops.
 
 ### Current state
+
 - One chain 001→015 (head 015), one `Base.metadata` (`env.py:9`), **no**
   `version_table`, **no** `include_object`. `batch_jobs`=004, `ocr_results`=006,
   `file_content_blobs`=007, `ocr_images`=009; grafts 011/013; s3 swap 014 (013 has a
@@ -343,6 +364,7 @@ join works without OCR reading `forge.store`.
   `worker.py:125`.
 
 ### Changes
+
 - **Forge baseline (squash):** single clean baseline creating platform tables +
   **generic `batch_jobs`** (no `file_path`/`document_id`). `env.py`: set
   `version_table="alembic_version_forge"` + `include_object` **excluding** `ocr_*`/
@@ -357,17 +379,20 @@ join works without OCR reading `forge.store`.
   separate `version_table`s).
 
 ### Sub-tasks
+
 - [ ] Squash forge chain to a slimmed-`batch_jobs` baseline; add `version_table` + `include_object`.
 - [ ] Create OCR chain (own env.py, version_table, include_object, post-014 shapes).
 - [ ] Verify `%` escape + `sa.false()` carried into the relevant baseline.
 
 ### Tests / Verification
+
 - `postgres`-marked testcontainers test: run **both** `alembic upgrade head` against
   one fresh Postgres; assert neither chain drops the other's tables and both
   `*_alembic_version` tables coexist. Run with
   `TESTCONTAINERS_RYUK_DISABLED=true uv run pytest -m postgres` (podman; see memory).
 
 ### Acceptance
+
 Two chains coexist on one Postgres; autogenerate on either side ignores the other's tables.
 
 ## 9. Phase 5 — cutover, cross-repo tests, cleanup
@@ -375,6 +400,7 @@ Two chains coexist on one Postgres; autogenerate on either side ignores the othe
 **Goal:** remove OCR from forge entirely; prove the whole thing end-to-end.
 
 ### Changes
+
 - Delete `src/forge/ocr/`, the OCR store tables/funcs from `forge/store.py`, OCR
   persist variants, OCR scripts (`scripts/*ocr*`, `scripts/nushell/ocr.nu`,
   `scripts/list_ocr_jobs.nu`), `queries/ocr-results.sql`, OCR diataxis docs +
@@ -385,11 +411,13 @@ Two chains coexist on one Postgres; autogenerate on either side ignores the othe
 - Update top-level docs/CLAUDE.md project-status to reflect the split.
 
 ### Sub-tasks
+
 - [ ] Remove all OCR code/tables/scripts/docs/deps from forge; `uv lock`.
 - [ ] Cross-repo e2e integration test green.
 - [ ] Docs updated; `rg "forge\.ocr|ocr_results|ocr_images" src/forge` → none.
 
 ### Acceptance
+
 Forge has zero OCR; full forge suite green; OCR suite green; cross-repo e2e green;
 the §3 + soundness-invariant checklist passes.
 

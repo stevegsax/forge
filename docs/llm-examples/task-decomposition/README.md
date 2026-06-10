@@ -18,7 +18,7 @@ The decomposition pipeline is defined in
 ## Steps
 
 | Step | Name | LLM? | Model Tier | PlanDAG Version |
-|------|------|------|------------|-----------------|
+| ------ | ------ | ------ | ------------ | ----------------- |
 | 1 | [Classify](step_0001/) | Yes | CLASSIFICATION | v1 (skeleton) |
 | 2 | [Clarify](step_0002/) | Yes | GENERATION | -- (no mutation) |
 | 3 | [Goal Statement](step_0003/) | Yes | GENERATION | v2 |
@@ -33,7 +33,7 @@ The decomposition pipeline is defined in
 ## Entities
 
 | Entity | ID |
-|--------|----|
+| -------- | ---- |
 | Plan | `plan-7a3f` |
 | Root node | `node-root` |
 | Create file_printer module | `node-001` |

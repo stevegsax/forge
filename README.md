@@ -70,7 +70,7 @@ forge run --task-file task.json
 **Options:**
 
 | Option | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `--task-id` | Unique task identifier (required for inline) |
 | `--description` | What the task should produce (required for inline) |
 | `--target-file` | File to create or modify, repeatable (required for inline unless `--plan`) |
@@ -82,7 +82,7 @@ forge run --task-file task.json
 **Planning options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--plan` | off | Enable planning mode (decompose into ordered steps) |
 | `--max-attempts` | `2` | Task-level retry limit |
 | `--max-step-attempts` | `2` | Retry limit per step in planning mode |
@@ -94,7 +94,7 @@ forge run --task-file task.json
 **Validation options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--no-lint` | off | Disable ruff lint check |
 | `--no-format` | off | Disable ruff format check |
 | `--run-tests` | off | Enable test validation |
@@ -103,7 +103,7 @@ forge run --task-file task.json
 **Context discovery options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--no-auto-discover` | off | Disable automatic context discovery via import graph |
 | `--token-budget` | `100000` | Token budget for context assembly |
 | `--max-import-depth` | `2` | How deep to trace imports |
@@ -112,14 +112,14 @@ forge run --task-file task.json
 **Exploration options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--max-exploration-rounds` | `10` | Max rounds of LLM-guided context exploration (0 disables) |
 | `--no-explore` | off | Disable LLM-guided context exploration |
 
 **Model options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--reasoning-model` | — | Override model for REASONING tier (planning) |
 | `--generation-model` | — | Override model for GENERATION tier (code gen) |
 | `--summarization-model` | — | Override model for SUMMARIZATION tier (extraction) |
@@ -131,7 +131,7 @@ forge run --task-file task.json
 **API and debug options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--sync/--no-sync` | `--no-sync` | Use synchronous Messages API (`--sync`) or batch mode (`--no-sync`, default) |
 | `--verbose` | off | Show detailed LLM stats and interactions |
 | `--log-messages` | off | Save full API request/response JSON to `messages/` in the worktree |
@@ -139,7 +139,7 @@ forge run --task-file task.json
 **Common options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--base-branch` | `main` | Branch to create worktree from |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 
@@ -155,7 +155,7 @@ forge worker --temporal-address temporal.example.com:7233
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 | `--batch-poll-interval` | `600` | Seconds between batch polling runs |
 | `--extraction-interval` | `14400` | Seconds between knowledge extraction runs (4 hours) |
@@ -174,7 +174,7 @@ forge status --workflow-id <id> --verbose # Full prompts and interaction details
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--workflow-id` | — | Show details for a specific workflow run |
 | `--verbose` | off | Show full interaction details (prompts, tokens, latency) |
 | `--limit` | `20` | Number of recent runs to show |
@@ -192,7 +192,7 @@ forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--corpus-dir` | — | Directory containing eval case JSON files (required) |
 | `--plans-dir` | — | Directory containing plan JSON files |
 | `--judge / --no-judge` | `--no-judge` | Run LLM judge scoring |
@@ -214,7 +214,7 @@ forge extract --limit 50 --since-hours 168  # Last week, up to 50 runs
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--limit` | `10` | Max runs to process |
 | `--since-hours` | `24` | Look-back window in hours |
 | `--dry-run` | off | List unextracted runs without running extraction |
@@ -234,7 +234,7 @@ forge playbooks --task-id my-task      # Filter by source task
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--tag` | — | Filter by tag (repeatable) |
 | `--task-id` | — | Filter by source task ID |
 | `--limit` | `20` | Max entries to show |
@@ -255,7 +255,7 @@ forge ingest --all --force                                  # Reprocess already-
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--all` | off | Discover and ingest all sessions from `~/.claude/projects/` |
 | `--project` | — | Filter by project name (with `--all`) or override (with path) |
 | `--min-size` | `10240` | Minimum session file size in bytes (discovery only) |
@@ -279,7 +279,7 @@ forge ocr-jobs --limit 10              # Limit results
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--limit` | `50` | Maximum number of jobs to return |
 | `--status` | — | Filter by status: `processing`, `succeeded`, `errored`, `unknown` |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
@@ -298,7 +298,7 @@ forge start BatchPollerWorkflow --wait
 **Options:**
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--input-file` | — | Read JSON input from a file instead of the argument |
 | `--id` | auto-generated | Custom workflow ID |
 | `--task-queue` | `forge-task-queue` | Temporal task queue |

@@ -39,7 +39,7 @@ to Temporal over loopback in plaintext — they never traverse the gateway.
 ## Directory map
 
 | Path | What |
-|------|------|
+| ------ | ------ |
 | `certs/` | Internal CA + server/client certificate issuance (`gen-*.sh`) |
 | `temporal/compose.yaml` | Temporal frontend + UI + the nginx mTLS gateway |
 | `temporal/nginx/temporal-grpc.conf` | The mTLS gateway (the security boundary) |

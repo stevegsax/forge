@@ -113,7 +113,7 @@ done
 Extraction reads from the `runs` table in the observability database. Each row represents a completed Forge task workflow execution and contains:
 
 | Column | Description |
-|---|---|
+| --- | --- |
 | `task_id` | The logical task name (e.g., `add-forge-clean`) |
 | `workflow_id` | The Temporal workflow ID |
 | `status` | Final status of the run |
@@ -211,7 +211,7 @@ Manual additions via `forge playbooks add` bypass Temporal entirely. They run sy
 Key Pydantic models used by the extraction workflow:
 
 | Model | Purpose |
-|---|---|
+| --- | --- |
 | `ExtractionWorkflowInput` | Workflow input: `limit`, `since_hours`, `model_routing` |
 | `ExtractionInput` | Activity payload: system/user prompts, source workflow IDs |
 | `ExtractionResult` | LLM structured output: list of `PlaybookEntry` + summary |
@@ -232,7 +232,7 @@ Playbooks are stored in the observability database configured by the required `F
 The `playbooks` table schema:
 
 | Column | Type | Description |
-|---|---|---|
+| --- | --- | --- |
 | `id` | INTEGER | Auto-incrementing primary key |
 | `title` | TEXT | Short descriptive title |
 | `content` | TEXT | Actionable lesson content |

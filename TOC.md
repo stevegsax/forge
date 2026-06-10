@@ -23,6 +23,7 @@ Start here: **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — current project status,
 - [TEMPLATE.md](docs/requirements/TEMPLATE.md) — Template for writing a structured `<requirement-id>.core.md` requirement sidecar.
 - [REVIEW_CHECKLIST.md](docs/requirements/REVIEW_CHECKLIST.md) — Reviewer checklist for approving a requirement package before autonomous implementation.
 - [examples/README.md](docs/requirements/examples/README.md) — Worked examples, including the toy `Inspira` web-app requirement package.
+
 ## Operations
 
 - [operations/USAGE.md](docs/operations/USAGE.md) — submitting code and research tasks to Forge.

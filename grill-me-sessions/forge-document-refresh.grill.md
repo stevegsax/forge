@@ -20,41 +20,50 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
 ## Decision Log
 
 ### DECIDED: Scope = first-principles rewrite, archive don't delete
+
 - **Decision**: Treat all existing docs as potentially obsolete; discard content that doesn't earn its place; move superseded files to an `archive/` folder rather than deleting.
 - **Rationale**: Docs assumed out of date; prior existence is not a reason to keep information.
 - **Date**: 2026-06-04
 
 ### DECIDED: Audience = LLM code-developer; principle "don't make it search"
+
 - **Decision**: Write for an LLM that will develop code. If the location of a fact is known, point to it directly rather than making the reader search for it.
 - **Date**: 2026-06-04
 
 ### DECIDED: Usefulness test for retaining/adding information
+
 - **Decision**: Information earns a place only if it (a) provides business-domain knowledge guiding the engineer to the right thing, (b) helps write the code correctly the first time, (c) is contrary to the LLM's inherent knowledge (non-obvious answers, fixes for recurring problems), (d) assists debugging, or (e) provides context for a test.
 - **Date**: 2026-06-04
 
 ### DECIDED: Target documentation structure
+
 - **Decision**: Produce — master project overview (complete requirements, remaining requirements, known issues/tech debt); detailed task list (completed vs uncompleted); individual product requirements (completed + remaining); development phases (brief summary of completed, detailed summary of remaining).
 - **Date**: 2026-06-04
 
 ### DECIDED: Requirements frozen this pass
+
 - **Decision**: Catalog product requirements as complete/remaining but do NOT rewrite their content now; defer requirement updates to a later pass.
 - **Date**: 2026-06-04
 
 ### DECIDED: repos-temporal clones are authoritative
+
 - **Decision**: The local Temporal repos are authoritative on technical matters (platform author). ai-cookbook examples are synchronous and do NOT model Forge's batch poller.
 - **Date**: 2026-06-04
 
 ### DECIDED: Code reviews — triage-and-mine before archiving
+
 - **Decision**: Triage each code-review critique against current code; promote surviving issues into the master overview's "Known issues / tech debt" section (and/or stub task files); archive the raw reviews only after mining.
 - **Rationale**: The codex code reviews are the only existing tech-debt analysis and are load-bearing for the development-plans task workflow, but date to the 2026-02-16 snapshot, so some critiques are already resolved.
 - **Date**: 2026-06-04
 
 ### DECIDED: Staleness method — verify against code before discarding
+
 - **Decision**: Trust no doc by default; verify each against the code before discarding or rewriting. Concentrate verification on the older cohorts (to-merge=Feb; the 2026-04-08 bulk-commit planning/PHASE/research docs). Code wins every disagreement.
 - **Rationale**: Mechanical "discard if not obviously useful" + confident LLM prose manufactures confidently-wrong docs.
 - **Date**: 2026-06-04
 
 ### DECIDED: Canon shape = Layered canon
+
 - **Decision**: The 4 status/planning docs (OVERVIEW, TASKS, PHASES, requirements) sit on top of a kept-and-verified technical layer (ARCHITECTURE, DECISIONS), operational layer (workers/deploy/debug/secure-remote/adding-a-domain/test-strategy/usage), and reference layer (mistral). Research, original PHASE1–14 specs, DESIGN.md, and to-merge are archived. Target tree:
   ```
   docs/
@@ -72,6 +81,7 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
 - **Date**: 2026-06-04
 
 ### DECIDED: Status architecture & single source of completion truth
+
 - **Decision**:
   - **TASKS.md is the atomic source of "done," located at `development-plans/TASKS.md`** (fixes PROCESS.md's broken link). The existing development-plans/ workflow (PROCESS.md, task files, CHANGELOG.md) is kept, not forked. *(Amends the canon tree: TASKS.md is in development-plans/, not docs/.)*
   - **PHASES.md** (docs/) = coarse historical roadmap rolling up TASKS — brief for done, detailed for remaining.
@@ -83,6 +93,7 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
 - **Date**: 2026-06-04
 
 ### DECIDED: Linking & reference strategy
+
 - **Decision**:
   - **Code references (Forge's own): point, don't copy.** Inline only non-derivable facts (rationale, magic-number reasons, gotchas); for code-derivable facts point to **file + symbol** (e.g., `store.py::record_run`), never bare line numbers.
   - **External Temporal links: SHA-pinned GitHub permalinks, not local clone paths** (the reading LLM is sometimes off this machine — cloud agents/CI/other checkouts). The `/Users/.../repos-temporal` clones are a research tool, not link targets. Pin to the tag/commit matching Forge's resolved `temporalio` version (uv.lock; floor `>=1.9.0`, clone is 1.27.2).
@@ -92,6 +103,7 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
 - **Date**: 2026-06-04
 
 ### DECIDED: Phases & requirements content
+
 - **Decision**:
   - **Extract-before-archive** for PHASE docs. Done phases (1–12, 14) → one-line summaries in PHASES.md, then raw files archived. **Phase 13 + LSP are remaining work and are KEPT** (not archived): PHASES.md carries a tight remaining-summary and links to kept `PHASE13.md` and `LSP_INTEGRATION_PLAN.md`. *(Amends canon tree: archive holds PHASE1–12 and 14; PHASE13.md + LSP_INTEGRATION_PLAN.md stay as linked remaining specs.)*
   - **PHASES.md = the 14-phase implementation roadmap only.** Task-internal phasing (externalize-store "Phase A/B/C") stays in its task file/CHANGELOG.
@@ -99,6 +111,7 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
 - **Date**: 2026-06-04
 
 ### DECIDED: Archive mechanics & inbound-link integrity
+
 - **Decision**:
   - **Archive location: top-level `archive/`** (sibling of docs/, src/, development-plans/). *(Amends canon tree: archive/ is top-level, not docs/archive/.)*
   - **Inbound-link blast radius is small**: CLAUDE.md (4), deploy/README.md (2), development-plans/externalize-store (3); **zero source-code refs; diataxis clean**. Moved docs → repoint links to new path; archived docs → repoint to replacement (DESIGN→ARCHITECTURE/OVERVIEW; stray "Phase N"→PHASES.md). Links inside archived files left as-is.
@@ -109,6 +122,7 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
 - **Date**: 2026-06-04
 
 ### DECIDED: Done-criteria & PR/sequencing
+
 - **Decision**:
   - **Execution order (content first, structure second — forced by extract-before-archive):** (1) verify completion vs code/tests; (2) reconcile DECISIONS + verify ARCHITECTURE; (3) mine DESIGN/research/code-reviews → OVERVIEW/ARCHITECTURE/DECISIONS; (4) write OVERVIEW/PHASES/TASKS + fix requirements index; (5) `git mv` to operations//reference/, create top-level archive/ + banners, repoint ~9 links, regenerate TOC, shrink CLAUDE.md status to pointer; (6) gate.
   - **`git mv`** for all moves/archives (preserve blame/history).

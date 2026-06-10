@@ -13,7 +13,7 @@ This report investigates what it will take to add Language Server Protocol (LSP)
 Phase 4's `code_intel` package delivers four capabilities using Python's `ast` module and `grimp`:
 
 | Capability | Mechanism | Limitation |
-|---|---|---|
+| --- | --- | --- |
 | **Import discovery** | `grimp` traces Python import graph | Static analysis only; misses dynamic imports, `importlib`, plugin systems |
 | **Symbol extraction** | `ast` module parses function/class signatures | Python only; no type inference beyond annotations |
 | **Importance ranking** | PageRank on import graph via NetworkX | File-level granularity; cannot rank individual symbols within a file |
@@ -122,7 +122,7 @@ Deterministic AST-derived dependency graphs scored 15/15 correctness vs. 6/15 fo
 ## 4. When to Use LSP vs. Alternatives
 
 | Scenario | Right Tool | Why |
-|---|---|---|
+| --- | --- | --- |
 | **Discover which files are relevant to a task** | Import graph (`grimp`) + PageRank | LSP operates on individual symbols, not file-level relevance. Import graphs give file-level structure efficiently. |
 | **Extract function/class signatures for context** | `ast` module (Python) or tree-sitter (multi-language) | Parsing is faster than LSP queries, no server lifecycle to manage, works on committed code. |
 | **Build a repo map** | tree-sitter / `ast` + PageRank | Repo maps need structural overview, not semantic precision. Aider, Kiro, Continue all use tree-sitter for this. |
@@ -249,7 +249,7 @@ LSPDefinition:
 ### 5.5 Cost-Benefit Analysis
 
 | LSP Feature | Value to Forge | Implementation Cost | Priority |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `getDiagnostics` | High — fast validation pre-check, tighter retry loops | Medium — requires server lifecycle management | Phase 5a |
 | `findReferences` | High — enables "find all callers" for context assembly | Low (once server infra exists) | Phase 5b |
 | `goToDefinition` | Medium — resolves third-party types beyond import graph | Low (once server infra exists) | Phase 5b |
@@ -272,6 +272,7 @@ LSP was designed for "the host tool tightly controls the lifecycle of the langua
 Pyright's initial analysis of a Python project can take seconds to minutes. For a task that runs in 30 seconds, spending 10 seconds waiting for Pyright to index the worktree is a significant overhead.
 
 **Mitigation:**
+
 - Pre-warm a server on the base branch before creating worktrees. Sub-task worktrees differ from the parent by only a few files; incremental re-analysis is fast.
 - Use Pyright CLI (`--outputjson`) for one-shot batch validation instead of the LSP server for simple diagnostic checks.
 - Make LSP optional — tasks that don't need cross-reference tracking can skip it entirely.
@@ -301,11 +302,13 @@ Neovim users reported LSP `findReferences` taking 35+ seconds on codebases with 
 For Python-only diagnostics, Pyright's CLI (`pyright --outputjson`) provides batch type checking without managing an LSP server. This is simpler to integrate (subprocess call, parse JSON output) and already works in Forge's validation model.
 
 **When to use Pyright CLI instead of LSP:**
+
 - One-shot validation after code generation (batch mode)
 - CI/CD-style type checking
 - When you don't need incremental, per-edit diagnostics
 
 **When LSP is better:**
+
 - Incremental diagnostics during multi-step tasks (check after each step without re-analyzing the entire project)
 - Cross-reference queries (`findReferences`, `goToDefinition`) — not available via CLI
 - Real-time feedback during retry loops
@@ -321,6 +324,7 @@ For Python-only diagnostics, Pyright's CLI (`pyright --outputjson`) provides bat
 **Goal:** Add type-checking diagnostics as a fast pre-check in the validation pipeline.
 
 **Approach:**
+
 1. Add Pyright CLI (`pyright --outputjson`) as a new validation check in `validate_output`.
 2. Parse JSON output into `LSPDiagnostic` models.
 3. Feed diagnostic summaries back to the LLM on retry (concise error messages with file/line, not raw JSON).
@@ -335,6 +339,7 @@ For Python-only diagnostics, Pyright's CLI (`pyright --outputjson`) provides bat
 **Goal:** Enable precise "find all callers" and "go to definition" for context assembly.
 
 **Approach:**
+
 1. Implement `LSPManager` with server pool, lazy startup, and LRU eviction.
 2. Add `find_references(file, symbol)` and `go_to_definition(file, symbol)` to `code_intel` API.
 3. Integrate into context assembly: when a target file modifies a function, include its callers as additional context.
@@ -349,6 +354,7 @@ For Python-only diagnostics, Pyright's CLI (`pyright --outputjson`) provides bat
 **Goal:** Support TypeScript, Go, Rust, and other languages.
 
 **Approach:**
+
 1. Replace `ast` with tree-sitter as the parsing backend in `code_intel/parser.py`.
 2. Add tree-sitter language grammars for target languages.
 3. Add LSP server configurations for target languages.
@@ -365,7 +371,7 @@ For Python-only diagnostics, Pyright's CLI (`pyright --outputjson`) provides bat
 ### Production Tools Reviewed
 
 | Project | What I Learned | Source |
-|---|---|---|
+| --- | --- | --- |
 | **Claude Code** | Three-layer LSP architecture (servers, manager, analyzer). 900x perf improvement over text search for find-references. Supports 11 languages. | [Claude Code LSP Setup Guide](https://www.aifreeapi.com/en/posts/claude-code-lsp), [Claude Code v2.0.74 LSP Update](https://www.how2shout.com/news/claude-code-v2-0-74-lsp-language-server-protocol-update.html), [Hacker News Discussion](https://news.ycombinator.com/item?id=46355165) |
 | **OpenCode** | Diagnostics-only LSP exposure is sufficient for effective agent operation. 150ms debounce for diagnostic stability. Event bus architecture for LSP integration. | [OpenCode LSP Docs](https://opencode.ai/docs/lsp/), [OpenCode Internals Deep Dive](https://cefboud.com/posts/coding-agents-internals-opencode-deepdive/), [OpenCode LSP Integration (DeepWiki)](https://deepwiki.com/tencent-source/opencode/4.1-lsp-integration) |
 | **Kiro** | Two-tier model: tree-sitter built-in + LSP optional. Per-workspace LSP server spawning. 18 languages via tree-sitter, 8 via LSP. | [Kiro Code Intelligence Docs](https://kiro.dev/docs/cli/code-intelligence/), [Kiro Code Intelligence Changelog](https://kiro.dev/changelog/code-intelligence-and-knowledge-index/), [Introducing Kiro](https://kiro.dev/blog/introducing-kiro/) |
@@ -380,7 +386,7 @@ For Python-only diagnostics, Pyright's CLI (`pyright --outputjson`) provides bat
 ### Research Papers Reviewed
 
 | Paper | What I Learned | Source |
-|---|---|---|
+| --- | --- | --- |
 | **LSPRAG** (ICSE 2026) | Hybrid LSP + AST approach for context retrieval. Compile-free self-repair via LSP diagnostics. Up to 213% coverage improvement. | [arXiv](https://arxiv.org/abs/2510.22210), [GitHub](https://github.com/THU-WingTecher/LSPRAG), [ICSE 2026 Listing](https://conf.researchr.org/details/icse-2026/icse-2026-research-track/147/LSPRAG-LSP-Guided-RAG-for-Language-Agnostic-Real-Time-Unit-Test-Generation) |
 | **LSPAI** (FSE Industry 2025) | Four LSP providers (definition, reference, symbol, diagnosis) for dependency analysis. Applied at Tencent. 931% Go coverage improvement. | [ACM DL](https://doi.org/10.1145/3696630.3728540), [GitHub](https://github.com/THU-WingTecher/LSPAI), [PDF](http://www.wingtecher.com/themes/WingTecherResearch/assets/papers/paper_from_25/LSPAI_FSE-Industry25.pdf) |
 | **GrepRAG** (2026) | Lightweight lexical retrieval + BM25 re-ranking outperforms complex graph methods. Identifier-weighted ranking critical. | [arXiv](https://arxiv.org/abs/2601.23254), [arXiv HTML](https://arxiv.org/html/2601.23254) |
@@ -391,7 +397,7 @@ For Python-only diagnostics, Pyright's CLI (`pyright --outputjson`) provides bat
 ### Protocol and Infrastructure References
 
 | Resource | What I Learned | Source |
-|---|---|---|
+| --- | --- | --- |
 | **LSP Specification 3.17** | Workspace concept, capabilities exchange, multi-root support. | [LSP Spec](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) |
 | **LSP4IJ lifecycle management** | Server state machine: discovery → registration → startup → operation → shutdown. | [LSP4IJ (DeepWiki)](https://deepwiki.com/redhat-developer/lsp4ij/3.2-language-server-lifecycle-management) |
 | **Pyright** | CLI with `--outputjson` for batch type checking. No stable programmatic API. basedpyright provides pip-installable variant. | [Pyright GitHub](https://github.com/microsoft/pyright), [Pyright CLI Docs](https://github.com/microsoft/pyright/blob/main/docs/command-line.md), [basedpyright](https://github.com/DetachHead/basedpyright) |

@@ -26,7 +26,7 @@ client = Mistral(api_key=api_key)
 ### Endpoints
 
 | Operation | SDK method | REST endpoint |
-|-----------|-----------|---------------|
+| ----------- | ----------- | --------------- |
 | Create job | `client.batch.jobs.create_async()` | `POST /v1/batch/jobs` |
 | Get job | `client.batch.jobs.get_async(job_id=)` | `GET /v1/batch/jobs/{id}` |
 | List jobs | `client.batch.jobs.list_async()` | `GET /v1/batch/jobs` |

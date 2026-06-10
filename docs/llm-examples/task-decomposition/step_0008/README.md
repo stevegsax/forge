@@ -13,7 +13,7 @@ functions with no LLM involvement.
 ## Checks Performed
 
 | # | Check | Result |
-|---|-------|--------|
+| --- | ------- | -------- |
 | 1 | DAG is acyclic | PASS |
 | 2 | All node IDs are unique | PASS |
 | 3 | All edge references point to existing nodes | PASS |

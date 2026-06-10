@@ -28,7 +28,7 @@ requires 2-of-3 APPROVE for acceptance.
 ### Score Summary
 
 | Dimension | Expert Skeptic | Completeness Auditor | Dependency Critic |
-|-----------|---------------|---------------------|-------------------|
+| ----------- | --------------- | --------------------- | ------------------- |
 | COMPLETENESS | 4 | 4 | 4 |
 | GRANULARITY | 5 | 5 | 5 |
 | FEASIBILITY | 5 | 5 | 5 |

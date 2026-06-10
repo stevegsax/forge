@@ -188,7 +188,7 @@ forge run \
 ## Domain Comparison
 
 | Behavior | `code_generation` | `research` | `code_review` | `documentation` | `generic` |
-|----------|-------------------|------------|---------------|-----------------|-----------|
+| ---------- | ------------------- | ------------ | --------------- | ----------------- | ----------- |
 | LLM role | Code generation assistant | Research assistant | Code review assistant | Documentation assistant | General-purpose assistant |
 | Output format | `files` (new) + `edits` (search/replace) | `files` (markdown) | `files` (markdown) | `files` (markdown) | `files` (markdown) |
 | Ruff lint | On | Off | Off | Off | Off |
@@ -201,7 +201,7 @@ forge run \
 These options apply to all domains:
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--no-auto-discover` | off | Disable automatic import graph analysis |
 | `--include-deps` | off | Include dependency file contents in upfront context |
 | `--token-budget` | `100000` | Token budget for assembled context |
@@ -214,7 +214,7 @@ By default, Forge uses progressive disclosure: only target file contents and a r
 ## Retry Configuration
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--max-attempts` | `2` | Task-level retry limit |
 | `--max-step-attempts` | `2` | Retry limit per step (planning mode) |
 | `--max-sub-task-attempts` | `2` | Retry limit per sub-task (fan-out) |
@@ -235,7 +235,7 @@ forge run \
 ```
 
 | Tier | Default Model | Used For |
-|------|---------------|----------|
+| ------ | --------------- | ---------- |
 | `--reasoning-model` | Claude Opus 4.6 | Planning, conflict resolution |
 | `--generation-model` | Claude Sonnet 4.5 | Code/content generation |
 | `--summarization-model` | Claude Sonnet 4.5 | Knowledge extraction |
@@ -315,7 +315,7 @@ An empty dict is passed as the workflow argument.
 ### Options
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `--input-file PATH` | — | Read JSON input from a file instead of the argument |
 | `--id TEXT` | auto-generated | Custom workflow ID (`{name_lower}-{uuid[:8]}` by default) |
 | `--task-queue TEXT` | `forge-task-queue` | Temporal task queue |

@@ -1,7 +1,5 @@
 # Design Decisions
 
-<!-- markdownlint-disable MD013 -->
-
 This document captures key design decisions and their rationale. Decisions are numbered for reference.
 
 ## D1: Batch Mode Over Conversational Streaming

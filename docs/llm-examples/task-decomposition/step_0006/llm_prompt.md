@@ -7,6 +7,7 @@ identify ordering constraints between them. A dependency edge means
 the source node cannot start until the target node completes.
 
 For software tasks, common dependency patterns:
+
 - Module creation before tests that import it
 - Schema definition before code that uses the schema
 - Core logic before integration/glue code

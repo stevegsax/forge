@@ -78,7 +78,7 @@ The `messages/` directory is automatically git-ignored. Logging is best-effort a
 Distributed tracing across Temporal activities is available via OpenTelemetry. Configure with environment variables:
 
 | Variable | Values | Default |
-|----------|--------|---------|
+| ---------- | -------- | --------- |
 | `FORGE_OTEL_EXPORTER` | `console`, `otlp_grpc`, `otlp_http`, `none` | `console` |
 
 ## Knowledge Base
@@ -131,7 +131,7 @@ temporal workflow describe --workflow-id <workflow-id>
 ## Environment Variables
 
 | Variable | Purpose | Default |
-|----------|---------|---------|
+| ---------- | --------- | --------- |
 | `FORGE_DB_URL` | **Required.** Store URL: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://...` (prod). Unset → hard error | _unset_ |
 | `FORGE_LOG_DIR` | Override log file directory (empty string disables file logging) | `~/.local/state/forge/` |
 | `FORGE_OTEL_EXPORTER` | OTel trace exporter type | `console` |

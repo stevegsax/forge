@@ -113,7 +113,7 @@ Map scenarios to system capabilities:
 ## File-to-Capability Mapping
 
 | File | Capabilities | Key Source Files |
-|------|-------------|-----------------|
+| ------ | ------------- | ----------------- |
 | `task_execution.feature` | Core workflow step, transitions, domains | `workflows.py`, `activities/transition.py`, `domains.py` |
 | `planning.feature` | Planner, step execution, sanity checks | `activities/planner.py`, `activities/sanity_check.py` |
 | `fan_out.feature` | Parallel sub-tasks, conflict resolution | `workflows.py`, `activities/conflict_resolution.py` |

@@ -70,7 +70,7 @@ flowchart TD
 ### What happens at each phase
 
 | # | Phase | Activity | What it does |
-|---|-------|----------|-------------|
+| --- | ------- | ---------- | ------------- |
 | 1 | **Construct** | `assemble_context` | Builds the system prompt and user prompt. Discovers relevant files via import graph analysis and PageRank ranking. Reads target file contents from the worktree. Injects project instructions, playbooks, repo maps, and—on retries—previous error output with AST-derived context. |
 | 2 | **Send** | `call_llm` | Packages the assembled prompt into an Anthropic API `messages.create` call with a forced tool-use response schema. Sends it. Records latency and token usage. |
 | 3 | **Receive + Serialize** | `write_output` | Extracts the Pydantic-validated response from the tool-use block. Writes new files to the worktree. Applies search/replace edits to existing files using a four-level matching fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy). |
@@ -230,7 +230,7 @@ flowchart TD
 ### Available providers
 
 | Provider | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `read_file` | Read full contents of a file from the worktree |
 | `search_code` | Regex pattern search across files (up to 100 matches) |
 | `symbol_list` | Extract public API (functions, classes, constants) from a module |
@@ -322,7 +322,7 @@ Sub-tasks can themselves contain `sub_tasks`, creating recursive fan-out bounded
 Forge routes different LLM calls to different model tiers based on the capability required:
 
 | Capability Tier | Default Model | Used For |
-|----------------|---------------|----------|
+| ---------------- | --------------- | ---------- |
 | **Reasoning** | `anthropic:claude-opus-4-6` | Planning, sanity checks, conflict resolution |
 | **Generation** | `anthropic:claude-sonnet-4-5-20250929` | Code/content generation |
 | **Summarization** | `anthropic:claude-sonnet-4-5-20250929` | Knowledge extraction |
@@ -361,7 +361,7 @@ flowchart TD
 These are the core Pydantic models that flow through the system:
 
 | Model | Purpose |
-|-------|---------|
+| ------- | --------- |
 | `TaskDefinition` | Input: task ID, description, target files, domain, validation config |
 | `ForgeTaskInput` | Workflow input: task + execution settings (plan, retries, model routing) |
 | `AssembledContext` | The fully constructed prompt: system prompt + user prompt + metadata |

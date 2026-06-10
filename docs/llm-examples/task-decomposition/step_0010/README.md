@@ -18,7 +18,7 @@ receives:
 ## Summary Statistics
 
 | Metric | Value |
-|--------|-------|
+| -------- | ------- |
 | Total nodes | 4 (1 root + 3 leaves) |
 | Leaf nodes | 3 |
 | Estimated total steps | 3 |

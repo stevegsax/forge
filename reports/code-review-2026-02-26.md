@@ -69,7 +69,7 @@ Default `graceful_shutdown_timeout=0` means on SIGINT, in-flight LLM activities 
 The file is 1,818 lines and contains **two workflow classes that share ~400 lines of identical code**:
 
 | Duplicated Element | ForgeTaskWorkflow | ForgeSubTaskWorkflow |
-|---|---|---|
+| --- | --- | --- |
 | `_call_llm_batch` | Lines 210-250 | Lines 1347-1386 |
 | `_call_generation` | Lines 256-275 | Lines 1392-1411 |
 | `_call_conflict_resolution` | Lines 364-400 | Lines 1413-1449 |
@@ -225,7 +225,7 @@ ISP violation -- the planner activity receives a model with fields it never read
 ## 10. LOW: Minor Issues
 
 | Issue | Location |
-|---|---|
+| --- | --- |
 | `_SubprocessResult` / `_GitResult` are structurally identical dataclasses | `git.py`, `validate.py` |
 | `import json as json_mod` appears 3 times to avoid parameter shadowing | `cli.py:801,978,1008` |
 | `_validate_task_id` called 2-3 times for the same task_id per git operation | `git.py` |
