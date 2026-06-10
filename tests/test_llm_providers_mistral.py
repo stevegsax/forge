@@ -97,9 +97,7 @@ def _make_mock_file(content: str) -> MagicMock:
 def _make_batch_choice(arguments: str = "{}") -> dict:
     """Build a minimal successful Mistral batch response body with a tool call."""
     return {
-        "choices": [
-            {"message": {"tool_calls": [{"function": {"arguments": arguments}}]}}
-        ],
+        "choices": [{"message": {"tool_calls": [{"function": {"arguments": arguments}}]}}],
     }
 
 
@@ -174,14 +172,16 @@ class TestParseErrorFileEntries:
         assert _parse_error_file_entries("\n\n  \n") == []
 
     def test_standard_error_format(self) -> None:
-        line = json.dumps({
-            "custom_id": "req-1",
-            "response": {
-                "body": {
-                    "error": {"type": "invalid_request", "message": "bad input"},
-                }
-            },
-        })
+        line = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {
+                    "body": {
+                        "error": {"type": "invalid_request", "message": "bad input"},
+                    }
+                },
+            }
+        )
         entries = _parse_error_file_entries(line)
         assert len(entries) == 1
         assert entries[0].custom_id == "req-1"
@@ -189,20 +189,24 @@ class TestParseErrorFileEntries:
         assert "bad input" in entries[0].error
 
     def test_top_level_error_key(self) -> None:
-        line = json.dumps({
-            "custom_id": "req-2",
-            "error": {"message": "server error"},
-        })
+        line = json.dumps(
+            {
+                "custom_id": "req-2",
+                "error": {"message": "server error"},
+            }
+        )
         entries = _parse_error_file_entries(line)
         assert len(entries) == 1
         assert entries[0].custom_id == "req-2"
         assert "server error" in entries[0].error
 
     def test_malformed_json_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
-        content = "not valid json\n" + json.dumps({
-            "custom_id": "req-ok",
-            "error": {"message": "real error"},
-        })
+        content = "not valid json\n" + json.dumps(
+            {
+                "custom_id": "req-ok",
+                "error": {"message": "real error"},
+            }
+        )
         with caplog.at_level(logging.WARNING):
             entries = _parse_error_file_entries(content)
         assert len(entries) == 1
@@ -215,10 +219,12 @@ class TestParseErrorFileEntries:
         assert entries[0].custom_id == "unknown"
 
     def test_multiple_lines(self) -> None:
-        lines = "\n".join([
-            json.dumps({"custom_id": "r1", "error": {"message": "e1"}}),
-            json.dumps({"custom_id": "r2", "error": {"message": "e2"}}),
-        ])
+        lines = "\n".join(
+            [
+                json.dumps({"custom_id": "r1", "error": {"message": "e1"}}),
+                json.dumps({"custom_id": "r2", "error": {"message": "e2"}}),
+            ]
+        )
         entries = _parse_error_file_entries(lines)
         assert len(entries) == 2
         assert entries[0].custom_id == "r1"
@@ -417,10 +423,12 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({
-            "model": "mistral-large-latest",
-            "tools": [{"type": "function"}],
-        })
+        result = await provider.call(
+            {
+                "model": "mistral-large-latest",
+                "tools": [{"type": "function"}],
+            }
+        )
 
         assert result.tool_input == tool_input
 
@@ -434,10 +442,12 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({
-            "model": "test",
-            "tools": [{"type": "function"}],
-        })
+        result = await provider.call(
+            {
+                "model": "test",
+                "tools": [{"type": "function"}],
+            }
+        )
 
         assert result.input_tokens == 120
         assert result.output_tokens == 300
@@ -450,10 +460,12 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({
-            "model": "test",
-            "tools": [{"type": "function"}],
-        })
+        result = await provider.call(
+            {
+                "model": "test",
+                "tools": [{"type": "function"}],
+            }
+        )
 
         assert result.cache_creation_input_tokens == 0
         assert result.cache_read_input_tokens == 0
@@ -466,10 +478,12 @@ class TestCall:
         provider._client = MagicMock()
         provider._client.chat.complete_async = AsyncMock(return_value=mock_response)
 
-        result = await provider.call({
-            "model": "mistral-large-latest",
-            "tools": [{"type": "function"}],
-        })
+        result = await provider.call(
+            {
+                "model": "mistral-large-latest",
+                "tools": [{"type": "function"}],
+            }
+        )
 
         assert result.model_name == "mistral-large-2"
 
@@ -604,9 +618,7 @@ class TestSubmitBatch:
         provider._client.batch.jobs.create_async = AsyncMock(return_value=mock_job)
 
         requests = [{"custom_id": "r1", "body": {"document": {"type": "document_url"}}}]
-        result = await provider.submit_batch(
-            requests, "pixtral-large-latest", endpoint="/v1/ocr"
-        )
+        result = await provider.submit_batch(requests, "pixtral-large-latest", endpoint="/v1/ocr")
 
         assert result == "batch-job-789"
 
@@ -729,13 +741,13 @@ class TestPollBatch:
             "usage": {"prompt_tokens": 15, "completion_tokens": 25},
             "model": "mistral-large-latest",
         }
-        jsonl = "\n".join([
-            json.dumps({"custom_id": "req-1", "response": {"body": body_1}}),
-            json.dumps({"custom_id": "req-2", "response": {"body": body_2}}),
-        ])
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
+        jsonl = "\n".join(
+            [
+                json.dumps({"custom_id": "req-1", "response": {"body": body_1}}),
+                json.dumps({"custom_id": "req-2", "response": {"body": body_2}}),
+            ]
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         result = await provider.poll_batch("batch-1")
 
@@ -755,17 +767,17 @@ class TestPollBatch:
         mock_job = _make_mock_batch_job("SUCCESS", output_file="file-output-456")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        jsonl = json.dumps({
-            "custom_id": "req-bad",
-            "response": {
-                "body": {
-                    "error": {"type": "invalid_request", "message": "bad input"},
-                }
-            },
-        })
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
+        jsonl = json.dumps(
+            {
+                "custom_id": "req-bad",
+                "response": {
+                    "body": {
+                        "error": {"type": "invalid_request", "message": "bad input"},
+                    }
+                },
+            }
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         result = await provider.poll_batch("batch-1")
 
@@ -783,19 +795,17 @@ class TestPollBatch:
         mock_job = _make_mock_batch_job("SUCCESS", output_file="file-abc-789")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": {"choices": [{"message": {"tool_calls": []}}]}},
-        })
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
+        jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {"body": {"choices": [{"message": {"tool_calls": []}}]}},
+            }
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         await provider.poll_batch("batch-1")
 
-        provider._client.files.download_async.assert_called_once_with(
-            file_id="file-abc-789"
-        )
+        provider._client.files.download_async.assert_called_once_with(file_id="file-abc-789")
 
     @pytest.mark.asyncio
     async def test_success_with_string_output_file(self) -> None:
@@ -806,15 +816,19 @@ class TestPollBatch:
         mock_job = _make_mock_batch_job("SUCCESS", output_file="file-str-1")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {
-                "body": {
-                    "choices": [{"message": {"tool_calls": [{"function": {"arguments": "{}"}}]}}],
-                    "model": "mistral-large-latest",
-                }
-            },
-        })
+        jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {
+                    "body": {
+                        "choices": [
+                            {"message": {"tool_calls": [{"function": {"arguments": "{}"}}]}}
+                        ],
+                        "model": "mistral-large-latest",
+                    }
+                },
+            }
+        )
         # Return a plain string (no .read method)
         provider._client.files.download_async = AsyncMock(return_value=jsonl)
 
@@ -852,9 +866,7 @@ class TestPollBatch:
             "response": {"body": _make_batch_choice()},
         }
         jsonl = "\n" + json.dumps(entry) + "\n\n"
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
-        )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         result = await provider.poll_batch("batch-1")
 
@@ -865,9 +877,7 @@ class TestPollBatch:
     # -----------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_failed_status_logs_errors(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_failed_status_logs_errors(self, caplog: pytest.LogCaptureFixture) -> None:
         """FAILED batch with errors logs WARNING with error details."""
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
@@ -892,9 +902,7 @@ class TestPollBatch:
         assert "3 failed request" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_success_with_errors_logs_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_success_with_errors_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """SUCCESS with errors and failed_requests still returns ENDED but logs."""
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
@@ -911,13 +919,13 @@ class TestPollBatch:
         )
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": _make_batch_choice()},
-        })
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
+        jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {"body": _make_batch_choice()},
+            }
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         with caplog.at_level(logging.WARNING):
             result = await provider.poll_batch("batch-1")
@@ -939,16 +947,20 @@ class TestPollBatch:
         )
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        output_jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": _make_batch_choice()},
-        })
-        error_jsonl = json.dumps({
-            "custom_id": "req-2",
-            "response": {
-                "body": {"error": {"message": "context too long"}},
-            },
-        })
+        output_jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {"body": _make_batch_choice()},
+            }
+        )
+        error_jsonl = json.dumps(
+            {
+                "custom_id": "req-2",
+                "response": {
+                    "body": {"error": {"message": "context too long"}},
+                },
+            }
+        )
 
         output_mock = _make_mock_file(output_jsonl)
         error_mock = _make_mock_file(error_jsonl)
@@ -985,16 +997,20 @@ class TestPollBatch:
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
         # Both files contain req-1
-        output_jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": _make_batch_choice()},
-        })
-        error_jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {
-                "body": {"error": {"message": "should be ignored"}},
-            },
-        })
+        output_jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {"body": _make_batch_choice()},
+            }
+        )
+        error_jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {
+                    "body": {"error": {"message": "should be ignored"}},
+                },
+            }
+        )
 
         output_mock = _make_mock_file(output_jsonl)
         error_mock = _make_mock_file(error_jsonl)
@@ -1096,15 +1112,15 @@ class TestPollBatch:
         )
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        error_jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {
-                "body": {"error": {"message": "invalid request body"}},
-            },
-        })
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(error_jsonl)
+        error_jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {
+                    "body": {"error": {"message": "invalid request body"}},
+                },
+            }
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(error_jsonl))
 
         result = await provider.poll_batch("batch-1")
 
@@ -1113,9 +1129,7 @@ class TestPollBatch:
         assert result.entries[0].custom_id == "req-1"
         assert result.entries[0].succeeded is False
         assert "invalid request body" in result.entries[0].error
-        provider._client.files.download_async.assert_called_once_with(
-            file_id="file-errors"
-        )
+        provider._client.files.download_async.assert_called_once_with(file_id="file-errors")
 
     @pytest.mark.asyncio
     async def test_error_file_unset_not_downloaded(self) -> None:
@@ -1127,26 +1141,22 @@ class TestPollBatch:
             def __bool__(self) -> bool:
                 return False
 
-        mock_job = _make_mock_batch_job(
-            "SUCCESS", output_file="file-ok", error_file=_Unset()
-        )
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-ok", error_file=_Unset())
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": _make_batch_choice()},
-        })
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
+        jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {"body": _make_batch_choice()},
+            }
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         result = await provider.poll_batch("batch-1")
 
         assert result.status == BatchPollStatus.ENDED
         # Only one download call — for output_file, not error_file
-        provider._client.files.download_async.assert_called_once_with(
-            file_id="file-ok"
-        )
+        provider._client.files.download_async.assert_called_once_with(file_id="file-ok")
 
     @pytest.mark.asyncio
     async def test_error_file_none_not_downloaded(self) -> None:
@@ -1154,25 +1164,21 @@ class TestPollBatch:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        mock_job = _make_mock_batch_job(
-            "SUCCESS", output_file="file-ok", error_file=None
-        )
+        mock_job = _make_mock_batch_job("SUCCESS", output_file="file-ok", error_file=None)
         provider._client.batch.jobs.get_async = AsyncMock(return_value=mock_job)
 
-        jsonl = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": _make_batch_choice()},
-        })
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
+        jsonl = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {"body": _make_batch_choice()},
+            }
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         result = await provider.poll_batch("batch-1")
 
         assert result.status == BatchPollStatus.ENDED
-        provider._client.files.download_async.assert_called_once_with(
-            file_id="file-ok"
-        )
+        provider._client.files.download_async.assert_called_once_with(file_id="file-ok")
 
     @pytest.mark.asyncio
     async def test_ocr_response_with_pages_succeeds(self) -> None:
@@ -1191,13 +1197,13 @@ class TestPollBatch:
             "model": "mistral-ocr-latest",
             "usage_info": {"pages_processed": 2, "doc_size_bytes": 5000},
         }
-        jsonl = json.dumps({
-            "custom_id": "req-ocr-1",
-            "response": {"body": ocr_body},
-        })
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(jsonl)
+        jsonl = json.dumps(
+            {
+                "custom_id": "req-ocr-1",
+                "response": {"body": ocr_body},
+            }
         )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
 
         result = await provider.poll_batch("batch-ocr")
 
@@ -1222,27 +1228,35 @@ class TestParseBatchResult:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        raw = json.dumps({
-            "model": "mistral-large-latest",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "llm_response",
-                            "arguments": json.dumps({
-                                "files": [],
-                                "edits": [],
-                                "explanation": "Done.",
-                            }),
+        raw = json.dumps(
+            {
+                "model": "mistral-large-latest",
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "llm_response",
+                                        "arguments": json.dumps(
+                                            {
+                                                "files": [],
+                                                "edits": [],
+                                                "explanation": "Done.",
+                                            }
+                                        ),
+                                    }
+                                }
+                            ]
                         }
-                    }]
-                }
-            }],
-            "usage": {
-                "prompt_tokens": 100,
-                "completion_tokens": 200,
-            },
-        })
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 200,
+                },
+            }
+        )
 
         result = provider.parse_batch_result(raw, "LLMResponse")
 
@@ -1263,20 +1277,26 @@ class TestParseBatchResult:
             "steps": [{"step_id": "s1", "description": "Do it.", "target_files": ["a.py"]}],
             "explanation": "Single step.",
         }
-        raw = json.dumps({
-            "model": "mistral-large-latest",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "plan",
-                            "arguments": json.dumps(plan_data),
+        raw = json.dumps(
+            {
+                "model": "mistral-large-latest",
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "plan",
+                                        "arguments": json.dumps(plan_data),
+                                    }
+                                }
+                            ]
                         }
-                    }]
-                }
-            }],
-            "usage": {"prompt_tokens": 50, "completion_tokens": 100},
-        })
+                    }
+                ],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 100},
+            }
+        )
 
         result = provider.parse_batch_result(raw, "Plan")
 
@@ -1294,11 +1314,13 @@ class TestParseBatchResult:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        raw = json.dumps({
-            "model": "mistral-large-latest",
-            "choices": [{"message": {"content": "text only"}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-        })
+        raw = json.dumps(
+            {
+                "model": "mistral-large-latest",
+                "choices": [{"message": {"content": "text only"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+        )
 
         result = provider.parse_batch_result(raw, "LLMResponse")
 
@@ -1308,16 +1330,12 @@ class TestParseBatchResult:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        raw = json.dumps({
-            "model": "mistral-large-latest",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {"arguments": "{}"}
-                    }]
-                }
-            }],
-        })
+        raw = json.dumps(
+            {
+                "model": "mistral-large-latest",
+                "choices": [{"message": {"tool_calls": [{"function": {"arguments": "{}"}}]}}],
+            }
+        )
 
         result = provider.parse_batch_result(raw, "LLMResponse")
 
@@ -1329,17 +1347,15 @@ class TestParseBatchResult:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        raw = json.dumps({
-            "model": "mistral-large-latest",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {"arguments": {"key": "value"}}
-                    }]
-                }
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 3},
-        })
+        raw = json.dumps(
+            {
+                "model": "mistral-large-latest",
+                "choices": [
+                    {"message": {"tool_calls": [{"function": {"arguments": {"key": "value"}}}]}}
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+            }
+        )
 
         result = provider.parse_batch_result(raw, "LLMResponse")
 
@@ -1349,11 +1365,13 @@ class TestParseBatchResult:
         provider = MistralProvider.__new__(MistralProvider)
         provider._client = MagicMock()
 
-        raw = json.dumps({
-            "model": "pixtral-large-latest",
-            "choices": [{"message": {"content": "Extracted OCR text"}}],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 200},
-        })
+        raw = json.dumps(
+            {
+                "model": "pixtral-large-latest",
+                "choices": [{"message": {"content": "Extracted OCR text"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 200},
+            }
+        )
 
         result = provider.parse_batch_result(raw, None)
 
@@ -1566,16 +1584,16 @@ class TestPollBatchWithImages:
             "model": "mistral-ocr-latest",
             "usage_info": {"pages_processed": 1},
         }
-        output_line = json.dumps({
-            "custom_id": "req-1",
-            "response": {"body": ocr_response},
-        })
+        output_line = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {"body": ocr_response},
+            }
+        )
 
         job = _make_mock_batch_job("SUCCESS", output_file="file-out-1")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=job)
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(output_line)
-        )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(output_line))
 
         result = await provider.poll_batch("batch-img-1")
 
@@ -1601,16 +1619,16 @@ class TestPollBatchWithImages:
             "pages": [{"markdown": "Just text"}],
             "model": "mistral-ocr-latest",
         }
-        output_line = json.dumps({
-            "custom_id": "req-2",
-            "response": {"body": ocr_response},
-        })
+        output_line = json.dumps(
+            {
+                "custom_id": "req-2",
+                "response": {"body": ocr_response},
+            }
+        )
 
         job = _make_mock_batch_job("SUCCESS", output_file="file-out-2")
         provider._client.batch.jobs.get_async = AsyncMock(return_value=job)
-        provider._client.files.download_async = AsyncMock(
-            return_value=_make_mock_file(output_line)
-        )
+        provider._client.files.download_async = AsyncMock(return_value=_make_mock_file(output_line))
 
         result = await provider.poll_batch("batch-no-img")
 

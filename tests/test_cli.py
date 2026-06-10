@@ -667,8 +667,11 @@ class TestConfigureLogging:
         try:
             assert root.level == logging.DEBUG
             # At verbosity 0 with file logging active, no stream handler is added.
-            stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
-                               and not hasattr(h, "maxBytes")]
+            stream_handlers = [
+                h
+                for h in root.handlers
+                if isinstance(h, logging.StreamHandler) and not hasattr(h, "maxBytes")
+            ]
             assert not stream_handlers
         finally:
             # Clean up file handlers to avoid leaking FDs.
@@ -688,8 +691,11 @@ class TestConfigureLogging:
         root = logging.getLogger()
         try:
             assert root.level == logging.DEBUG
-            stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
-                               and not hasattr(h, "maxBytes")]
+            stream_handlers = [
+                h
+                for h in root.handlers
+                if isinstance(h, logging.StreamHandler) and not hasattr(h, "maxBytes")
+            ]
             assert stream_handlers
             assert stream_handlers[0].level == logging.INFO
         finally:
@@ -1672,12 +1678,16 @@ class TestPlaybooksCommand:
         from forge.models import ManualPlaybookResult, PlaybookEntry
 
         entry_file = tmp_path / "entry.json"
-        entry_file.write_text(json.dumps({
-            "title": "Test entry",
-            "content": "Do the thing.",
-            "tags": ["test"],
-            "source_task_id": "manual-1",
-        }))
+        entry_file.write_text(
+            json.dumps(
+                {
+                    "title": "Test entry",
+                    "content": "Do the thing.",
+                    "tags": ["test"],
+                    "source_task_id": "manual-1",
+                }
+            )
+        )
 
         mock_result = ManualPlaybookResult(
             approved=True,
@@ -1692,9 +1702,7 @@ class TestPlaybooksCommand:
             "forge.cli._submit_manual_playbook",
             side_effect=_async_result(mock_result),
         ):
-            result = cli_runner.invoke(
-                main, ["playbooks", "add", "--file", str(entry_file)]
-            )
+            result = cli_runner.invoke(main, ["playbooks", "add", "--file", str(entry_file)])
 
         assert result.exit_code == 0, result.output + (result.stderr or "")
         assert "saved" in result.output.lower()
@@ -1708,12 +1716,16 @@ class TestPlaybooksCommand:
         from forge.models import ManualPlaybookResult
 
         entry_file = tmp_path / "entry.json"
-        entry_file.write_text(json.dumps({
-            "title": "Bad entry",
-            "content": "Vague advice.",
-            "tags": [],
-            "source_task_id": "manual-2",
-        }))
+        entry_file.write_text(
+            json.dumps(
+                {
+                    "title": "Bad entry",
+                    "content": "Vague advice.",
+                    "tags": [],
+                    "source_task_id": "manual-2",
+                }
+            )
+        )
 
         mock_result = ManualPlaybookResult(
             approved=False,
@@ -1723,9 +1735,7 @@ class TestPlaybooksCommand:
             "forge.cli._submit_manual_playbook",
             side_effect=_async_result(mock_result),
         ):
-            result = cli_runner.invoke(
-                main, ["playbooks", "add", "--file", str(entry_file)]
-            )
+            result = cli_runner.invoke(main, ["playbooks", "add", "--file", str(entry_file)])
 
         assert result.exit_code == EXIT_FAILURE
         assert "Too vague" in result.stderr
@@ -1748,9 +1758,7 @@ class TestPlaybooksCommand:
             "forge.cli._submit_manual_playbook",
             side_effect=_async_result(mock_result),
         ):
-            result = cli_runner.invoke(
-                main, ["playbooks", "add", "--file", str(entry_file)]
-            )
+            result = cli_runner.invoke(main, ["playbooks", "add", "--file", str(entry_file)])
 
         assert result.exit_code == EXIT_FAILURE
         assert "Invalid input" in result.stderr
@@ -1763,12 +1771,16 @@ class TestPlaybooksCommand:
         from forge.models import ManualPlaybookResult, PlaybookEntry
 
         entry_file = tmp_path / "entry.json"
-        entry_file.write_text(json.dumps({
-            "title": "Original title",
-            "content": "Original content.",
-            "tags": ["test"],
-            "source_task_id": "manual-3",
-        }))
+        entry_file.write_text(
+            json.dumps(
+                {
+                    "title": "Original title",
+                    "content": "Original content.",
+                    "tags": ["test"],
+                    "source_task_id": "manual-3",
+                }
+            )
+        )
 
         mock_result = ManualPlaybookResult(
             approved=True,
@@ -1783,9 +1795,7 @@ class TestPlaybooksCommand:
             "forge.cli._submit_manual_playbook",
             side_effect=_async_result(mock_result),
         ):
-            result = cli_runner.invoke(
-                main, ["playbooks", "add", "--file", str(entry_file)]
-            )
+            result = cli_runner.invoke(main, ["playbooks", "add", "--file", str(entry_file)])
 
         assert result.exit_code == 0, result.output + (result.stderr or "")
         assert "saved" in result.output.lower()
@@ -2164,9 +2174,7 @@ class TestIngestCommand:
         assert "forge: 1 session(s)" in result.output
         assert "pbook: 1 session(s)" in result.output
 
-    def test_dry_run_single_path(
-        self, cli_runner: CliRunner, tmp_path: pathlib.Path
-    ) -> None:
+    def test_dry_run_single_path(self, cli_runner: CliRunner, tmp_path: pathlib.Path) -> None:
         fake = tmp_path / "sess-xyz.jsonl"
         fake.write_text('{"type": "user", "sessionId": "sess-xyz"}\n')
         with patch("pbook.store.get_store_engine", return_value=None):
@@ -2177,9 +2185,7 @@ class TestIngestCommand:
         assert "Found 1 session(s)" in result.output
         assert "demo:" in result.output
 
-    def test_project_filter_applied_with_all(
-        self, cli_runner: CliRunner
-    ) -> None:
+    def test_project_filter_applied_with_all(self, cli_runner: CliRunner) -> None:
         sessions = [
             _make_session_info("s1", project_name="forge"),
             _make_session_info("s2", project_name="pbook"),
@@ -2188,16 +2194,12 @@ class TestIngestCommand:
             patch("pbook.transcript.discover_sessions", return_value=sessions),
             patch("pbook.store.get_store_engine", return_value=None),
         ):
-            result = cli_runner.invoke(
-                main, ["ingest", "--all", "--project", "forge", "--dry-run"]
-            )
+            result = cli_runner.invoke(main, ["ingest", "--all", "--project", "forge", "--dry-run"])
         assert result.exit_code == 0
         assert "Found 1 session(s)" in result.output
         assert "pbook:" not in result.output
 
-    def test_already_ingested_filter_skips_sessions(
-        self, cli_runner: CliRunner
-    ) -> None:
+    def test_already_ingested_filter_skips_sessions(self, cli_runner: CliRunner) -> None:
         """When pbook's store reports a session is ingested, it should be skipped."""
         sessions = [
             _make_session_info("already-done"),
@@ -2218,9 +2220,7 @@ class TestIngestCommand:
         assert "Skipping 1 already-ingested session(s)" in result.output
         assert "Found 1 session(s)" in result.output
 
-    def test_force_skips_already_ingested_filter(
-        self, cli_runner: CliRunner
-    ) -> None:
+    def test_force_skips_already_ingested_filter(self, cli_runner: CliRunner) -> None:
         """--force bypasses the already-ingested query entirely."""
         sessions = [_make_session_info("already-done")]
 
@@ -2229,9 +2229,7 @@ class TestIngestCommand:
             patch("pbook.transcript.discover_sessions", return_value=sessions),
             patch("pbook.store.get_ingested_session_ids", mock_get_ids),
         ):
-            result = cli_runner.invoke(
-                main, ["ingest", "--all", "--force", "--dry-run"]
-            )
+            result = cli_runner.invoke(main, ["ingest", "--all", "--force", "--dry-run"])
 
         assert result.exit_code == 0
         mock_get_ids.assert_not_called()

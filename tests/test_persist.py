@@ -110,9 +110,7 @@ class TestPersistIdempotency:
             PersistBatchSubmission(request_id="req-s", batch_id="b", workflow_id="wf")
         )
         # A status transition is a plain UPDATE (no dedupe) — always "applied".
-        result = await persist_to_store(
-            PersistBatchStatus(request_id="req-s", status="processing")
-        )
+        result = await persist_to_store(PersistBatchStatus(request_id="req-s", status="processing"))
         assert result.applied is True
 
 

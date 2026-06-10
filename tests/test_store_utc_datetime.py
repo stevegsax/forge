@@ -37,9 +37,7 @@ def _read_created_at(engine: Engine, request_id: str) -> datetime:
     """Read back the created_at column via the ORM mapping."""
     t = BatchJob.__table__
     with engine.connect() as conn:
-        row = conn.execute(
-            t.select().where(t.c.id == request_id)
-        ).mappings().first()
+        row = conn.execute(t.select().where(t.c.id == request_id)).mappings().first()
     assert row is not None
     return row["created_at"]
 
@@ -227,17 +225,13 @@ class TestUTCDateTime:
         ]
         with engine.connect() as conn:
             for name, table in checks:
-                row = conn.execute(
-                    table.select().limit(1)
-                ).mappings().first()
+                row = conn.execute(table.select().limit(1)).mappings().first()
                 assert row is not None, f"no row inserted for {name}"
                 assert row["created_at"].tzinfo == UTC, (
                     f"{name}.created_at is not UTC-aware: {row['created_at']!r}"
                 )
                 if name == "batch_jobs":
-                    assert row["updated_at"].tzinfo == UTC, (
-                        f"{name}.updated_at is not UTC-aware"
-                    )
+                    assert row["updated_at"].tzinfo == UTC, f"{name}.updated_at is not UTC-aware"
 
     def test_get_batch_job_returns_utc_aware(self, tmp_path: Path) -> None:
         """The get_batch_job helper should return rows with UTC-aware datetimes."""

@@ -66,9 +66,7 @@ class TestEnsureSchedule:
         handle = MagicMock()
         handle.update = AsyncMock()
         client = MagicMock()
-        client.create_schedule = AsyncMock(
-            side_effect=worker_mod.ScheduleAlreadyRunningError()
-        )
+        client.create_schedule = AsyncMock(side_effect=worker_mod.ScheduleAlreadyRunningError())
         client.get_schedule_handle.return_value = handle
 
         await worker_mod._ensure_schedule(
@@ -95,9 +93,7 @@ class TestEnsureSchedule:
             ),
             state=worker_mod.ScheduleState(note="old"),
         )
-        update_input = SimpleNamespace(
-            description=SimpleNamespace(schedule=existing_schedule)
-        )
+        update_input = SimpleNamespace(description=SimpleNamespace(schedule=existing_schedule))
 
         update = await updater(update_input)
         assert update.schedule.spec.intervals[0].every == timedelta(hours=4)

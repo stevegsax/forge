@@ -75,9 +75,7 @@ class TestGetStoreUrl:
 
 
 class TestGetStoreEngine:
-    def test_sqlite_url_enables_wal(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_sqlite_url_enables_wal(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         import sqlalchemy as sa
 
         db_path = tmp_path / "wal.db"

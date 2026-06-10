@@ -12,4 +12,3 @@ for (name,) in rows:
     print(name)
 
 con.close()
-

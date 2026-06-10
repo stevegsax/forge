@@ -593,9 +593,7 @@ def _e2e_planned_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
         plan = Plan(
             task_id=input.task_id,
             steps=[
-                PlanStep(
-                    step_id="step-1", description="Create model.", target_files=["models.py"]
-                ),
+                PlanStep(step_id="step-1", description="Create model.", target_files=["models.py"]),
                 PlanStep(
                     step_id="step-2",
                     description="Create API.",

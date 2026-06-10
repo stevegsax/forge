@@ -55,9 +55,7 @@ class TestPrepareTranscriptMissingFile:
     @pytest.mark.asyncio
     async def test_missing_file_returns_empty_result(self, tmp_path: Path) -> None:
         missing = tmp_path / "does-not-exist.jsonl"
-        input_json = json.dumps(
-            {"path": str(missing), "project": "myproj", "session_id": "s1"}
-        )
+        input_json = json.dumps({"path": str(missing), "project": "myproj", "session_id": "s1"})
 
         result_json = await prepare_transcript(input_json)
         result = json.loads(result_json)
@@ -93,9 +91,7 @@ class TestPrepareTranscriptMissingFile:
 
 class TestPrepareTranscriptValidFile:
     @pytest.mark.asyncio
-    async def test_valid_file_produces_full_output_schema(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_valid_file_produces_full_output_schema(self, tmp_path: Path) -> None:
         path = tmp_path / "sess.jsonl"
         _write_jsonl(
             path,
@@ -106,9 +102,7 @@ class TestPrepareTranscriptValidFile:
             ],
         )
 
-        input_json = json.dumps(
-            {"path": str(path), "project": "myproj", "session_id": "sess-1"}
-        )
+        input_json = json.dumps({"path": str(path), "project": "myproj", "session_id": "sess-1"})
         result_json = await prepare_transcript(input_json)
         result = json.loads(result_json)
 
@@ -122,9 +116,7 @@ class TestPrepareTranscriptValidFile:
         assert "char_count" in result
 
     @pytest.mark.asyncio
-    async def test_valid_file_produces_nonempty_transcript(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_valid_file_produces_nonempty_transcript(self, tmp_path: Path) -> None:
         path = tmp_path / "sess.jsonl"
         _write_jsonl(
             path,
@@ -144,9 +136,7 @@ class TestPrepareTranscriptValidFile:
         assert result["message_count"] >= 2
 
     @pytest.mark.asyncio
-    async def test_valid_file_produces_nonempty_prompts(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_valid_file_produces_nonempty_prompts(self, tmp_path: Path) -> None:
         path = tmp_path / "sess.jsonl"
         _write_jsonl(
             path,
@@ -197,9 +187,7 @@ class TestPrepareTranscriptProjectFallback:
         assert result["project"] == "explicit-project"
 
     @pytest.mark.asyncio
-    async def test_empty_project_falls_back_to_transcript_metadata(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_empty_project_falls_back_to_transcript_metadata(self, tmp_path: Path) -> None:
         """When caller passes empty project, fall back to transcript meta."""
         path = tmp_path / "sess.jsonl"
         # pbook derives project_name from the cwd basename
@@ -211,9 +199,7 @@ class TestPrepareTranscriptProjectFallback:
             ],
         )
 
-        result_json = await prepare_transcript(
-            json.dumps({"path": str(path), "project": ""})
-        )
+        result_json = await prepare_transcript(json.dumps({"path": str(path), "project": ""}))
         result = json.loads(result_json)
 
         # Should have fallen back to something derived from the transcript

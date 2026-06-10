@@ -64,9 +64,7 @@ class TestBuildReviewSystemPrompt:
         assert "Clarity" in prompt
         assert "Duplication" in prompt
 
-    def test_includes_existing_playbook_titles(
-        self, existing_playbooks: list[dict]
-    ) -> None:
+    def test_includes_existing_playbook_titles(self, existing_playbooks: list[dict]) -> None:
         prompt = build_review_system_prompt(existing_playbooks)
         assert "Retry on timeout" in prompt
         assert "Use WAL mode for SQLite" in prompt
@@ -159,9 +157,7 @@ class TestApplySuggestions:
 
 class TestReviewPlaybookEntry:
     @pytest.mark.asyncio
-    async def test_calls_provider_and_parses_result(
-        self, sample_entry: PlaybookEntry
-    ) -> None:
+    async def test_calls_provider_and_parses_result(self, sample_entry: PlaybookEntry) -> None:
         mock_response = MagicMock()
         mock_response.tool_input = {
             "approved": True,
@@ -196,12 +192,14 @@ class TestReviewPlaybookEntry:
 class TestValidatePlaybookEntryActivity:
     @pytest.mark.asyncio
     async def test_valid_json(self) -> None:
-        raw = json.dumps({
-            "title": "Test",
-            "content": "Content.",
-            "tags": ["test"],
-            "source_task_id": "t1",
-        })
+        raw = json.dumps(
+            {
+                "title": "Test",
+                "content": "Content.",
+                "tags": ["test"],
+                "source_task_id": "t1",
+            }
+        )
         result = await validate_playbook_entry(ValidatePlaybookInput(raw_json=raw))
         assert result.valid is True
         assert result.entry is not None
@@ -210,9 +208,7 @@ class TestValidatePlaybookEntryActivity:
 
     @pytest.mark.asyncio
     async def test_invalid_json(self) -> None:
-        result = await validate_playbook_entry(
-            ValidatePlaybookInput(raw_json="{not valid json}")
-        )
+        result = await validate_playbook_entry(ValidatePlaybookInput(raw_json="{not valid json}"))
         assert result.valid is False
         assert result.error != ""
         assert result.entry is None
@@ -245,14 +241,19 @@ class TestFetchExistingPlaybooksActivity:
 
         run_migrations(forge_db_url)
         engine = get_store_engine()
-        save_playbooks(engine, [{
-            "title": "Existing lesson",
-            "content": "Do X.",
-            "tags_json": '["python"]',
-            "source_task_id": "t1",
-            "source_workflow_id": "wf-1",
-            "extraction_workflow_id": "extract-1",
-        }])
+        save_playbooks(
+            engine,
+            [
+                {
+                    "title": "Existing lesson",
+                    "content": "Do X.",
+                    "tags_json": '["python"]',
+                    "source_task_id": "t1",
+                    "source_workflow_id": "wf-1",
+                    "extraction_workflow_id": "extract-1",
+                }
+            ],
+        )
 
         result = await fetch_existing_playbooks(FetchExistingPlaybooksInput(limit=10))
         assert len(result) == 1
