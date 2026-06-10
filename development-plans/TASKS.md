@@ -2,6 +2,83 @@
 
 The single source of truth for what is done vs. not. Work the next unchecked task in priority order (see [PROCESS.md](PROCESS.md)). Per-task detail lives in task files in this directory; narrative status and the full evidence for each tech-debt item live in [../docs/OVERVIEW.md](../docs/OVERVIEW.md).
 
+## Architecture migration (approved 2026-06-10)
+
+The merged platform redesign plan was approved 2026-06-10, including reversals R1 (timer-loop batch transport) and R2 (sync pbook ingestion). This is the active work queue; it takes priority over the tech-debt backlog below, much of which it subsumes (reconciled at [T8.2](tasks/T8.2-test-tier-honesty-overview-rewrite.md)). Context: [HANDOFF-architecture-review-2026-06-10.md](HANDOFF-architecture-review-2026-06-10.md), decisions D86–D97 in [../docs/DECISIONS.md](../docs/DECISIONS.md), findings in [../docs/reviews/2026-06-architecture-review.md](../docs/reviews/2026-06-architecture-review.md).
+
+Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized after Phase 5 (both touch forge worker registration and OUTPUT_TYPES); Phases 6 and 7 may run in parallel (disjoint files); Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0).
+
+### Phase 1 — Stop the bleeding (current repos)
+
+- [ ] [T1.0 — Uniform editable sibling sources](tasks/T1.0-uniform-editable-sibling-sources.md)
+- [ ] [T1.1 — Delete the dead provider stack; repatriate sax-llm's tests](tasks/T1.1-delete-dead-provider-stack.md)
+- [ ] [T1.2 — INTERIM batch-result correlation stopgap](tasks/T1.2-interim-batch-result-correlation.md) *(deleted by Phase 4 — do not extend)*
+- [ ] [T1.3 — INTERIM minimal poller patch](tasks/T1.3-interim-poller-patch.md) *(needs T1.0; deleted by Phase 4)*
+- [ ] [T1.4 — Unblock the worker event loop](tasks/T1.4-unblock-worker-event-loop.md)
+- [ ] [T1.5 — Nested fan-out propagation fix](tasks/T1.5-nested-fan-out-propagation.md)
+- [ ] [T1.6a — Idempotency rekey](tasks/T1.6a-idempotency-rekey.md)
+- [ ] [T1.6b — Batch-wait failure symmetry](tasks/T1.6b-batch-wait-failure-symmetry.md)
+- [ ] [T1.7 — Env scrub at model-influenced subprocess seams](tasks/T1.7-env-scrub-subprocess-seams.md)
+- [ ] [T1.8 — Small dedup batch + kill runs-extraction](tasks/T1.8-small-dedup-batch.md)
+
+### Phase 2 — Monorepo `sax`
+
+- [ ] [T2.1 — Workspace creation](tasks/T2.1-workspace-creation.md)
+- [ ] [T2.2 — Root gates](tasks/T2.2-root-gates.md)
+- [ ] [T2.3a — mypy strict: sax-platform contracts](tasks/T2.3a-mypy-strict-platform-contracts.md)
+- [ ] [T2.3b — mypy strict: sax-platform llm + rest](tasks/T2.3b-mypy-strict-platform-llm.md)
+- [ ] [T2.3c — mypy strict: ocr](tasks/T2.3c-mypy-strict-ocr.md)
+- [ ] [T2.3d — mypy strict: pbook](tasks/T2.3d-mypy-strict-pbook.md)
+
+### Phase 3 — `sax_platform` consolidation + structured outputs
+
+- [ ] [T3.1 — Platform LLM client (both lanes)](tasks/T3.1-platform-llm-client.md)
+- [ ] [T3.2 — One tier registry + thinking migration](tasks/T3.2-tier-registry-thinking-migration.md)
+- [ ] [T3.3 — MistralOcr; Mistral chat deleted](tasks/T3.3-mistral-ocr-chat-deleted.md)
+- [ ] [T3.4 — Platform plumbing modules](tasks/T3.4-platform-plumbing-modules.md)
+- [ ] [T3.5 — Forced-tool-use retirement](tasks/T3.5-forced-tool-use-retirement.md)
+- [ ] [T3.6 — Composition roots everywhere](tasks/T3.6-composition-roots.md)
+
+### Phase 4 — Batch transport simplification (timer-loop)
+
+- [ ] [T4.1 — forge: submit → poll-loop → fetch](tasks/T4.1-forge-timer-loop-transport.md)
+- [ ] [T4.2 — ocr: own polling + gather restructure](tasks/T4.2-ocr-own-polling-gather-restructure.md)
+- [ ] [T4.3 — Transport decisions sweep](tasks/T4.3-transport-decisions-sweep.md)
+
+### Phase 5 — Workflow consolidation (forge)
+
+- [ ] [T5.1 — Pure step logic](tasks/T5.1-pure-step-logic.md)
+- [ ] [T5.2 — Single step block](tasks/T5.2-single-step-block.md)
+- [ ] [T5.3 — Single gather + dispatch](tasks/T5.3-single-gather-dispatch.md)
+- [ ] [T5.4 — Split the monolith](tasks/T5.4-split-the-monolith.md)
+- [ ] [T5.5 — Harness rebuild + replay tests](tasks/T5.5-harness-rebuild-replay-tests.md)
+
+### Phase 6 — Knowledge: pbook product + forge consumption (after Phase 5)
+
+- [ ] [T6.1 — pbook library-first](tasks/T6.1-pbook-library-first.md)
+- [ ] [T6.2 — Judge calibration (BEFORE the migration sweep)](tasks/T6.2-judge-calibration.md)
+- [ ] [T6.3 — Destructive schema migration](tasks/T6.3-destructive-schema-migration.md) *(gated by T6.2)*
+- [ ] [T6.4 — IngestWorkflow + CurationWorkflow](tasks/T6.4-ingest-curation-workflows.md)
+- [ ] [T6.5 — Hybrid retrieval + feedback](tasks/T6.5-hybrid-retrieval-feedback.md)
+- [ ] [T6.6 — Eval suites A & C](tasks/T6.6-eval-suites-a-c.md)
+- [ ] [T6.7 — Forge consumption + playbooks deletion](tasks/T6.7-forge-consumption-playbooks-deletion.md)
+
+### Phase 7 — Context engine (forge; parallel with Phase 6)
+
+- [ ] [T7.1 — ProjectDescriptor](tasks/T7.1-project-descriptor.md)
+- [ ] [T7.2 — Worktree-accurate graph](tasks/T7.2-worktree-accurate-graph.md)
+- [ ] [T7.3 — Honest token accounting](tasks/T7.3-honest-token-accounting.md)
+- [ ] [T7.4 — Exploration budget](tasks/T7.4-exploration-budget.md)
+- [ ] [T7.5 — One prompt builder](tasks/T7.5-one-prompt-builder.md)
+- [ ] [T7.6 — Fuzzy-edit governance residue](tasks/T7.6-fuzzy-edit-governance.md)
+
+### Phase 8 — Docs, decisions, honesty
+
+- [ ] [T8.1 — Review doc + DECISIONS completion](tasks/T8.1-review-doc-decisions-completion.md)
+- [ ] [T8.2 — Test-tier honesty + status-of-record rewrite](tasks/T8.2-test-tier-honesty-overview-rewrite.md)
+- [ ] [T8.3 — pbook design-docs truth pass](tasks/T8.3-pbook-design-docs-truth-pass.md)
+- [ ] [T8.4 — Final sweep](tasks/T8.4-final-sweep.md)
+
 ## Completed
 
 ### Phase roadmap (Release 1)

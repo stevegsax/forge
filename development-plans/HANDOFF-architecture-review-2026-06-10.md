@@ -1,7 +1,9 @@
 # Handoff — Platform Architecture Review & Merged Redesign Plan
 
 **Date:** 2026-06-10 (session ran 2026-06-09 evening → 06-10 ~02:20)
-**Status:** Review complete. Merged plan written, **not yet approved** — plan approval was deferred in favor of this handoff. **No code was changed, nothing was committed** in any repo. The only files this session created are this handoff, the plan file, the artifact copies listed below, and one memory entry.
+**Status:** Review complete. Merged plan written. **APPROVED 2026-06-10, including reversals R1 and R2.** The docs-only execution step is done (same day): 47 task files under `development-plans/tasks/` + the [TASKS.md](TASKS.md) index, DECISIONS D86–D97, [docs/reviews/2026-06-architecture-review.md](../docs/reviews/2026-06-architecture-review.md), and the four pbook design-doc amendments. No code has been changed; implementation proceeds task-by-task per [TASKS.md](TASKS.md), human-gated merges.
+
+*(Original status at handoff time: merged plan written, not yet approved — plan approval was deferred in favor of this handoff. No code was changed, nothing was committed in any repo.)*
 
 ## What was asked
 

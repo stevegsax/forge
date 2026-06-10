@@ -3,7 +3,7 @@
 Companion to [HANDOFF-architecture-review-2026-06-10.md](HANDOFF-architecture-review-2026-06-10.md).
 Source of truth for design rationale: the merged plan (`~/.claude/plans/perform-a-thorough-adversarial-vectorized-barto.md`; durable copy in `~/.claude/projects/-Users-stevengreenberg-repos-sax-forge/review-artifacts-2026-06-10/merged-plan.md`).
 
-**Status: PENDING APPROVAL.** On approval, each task below becomes one file under `development-plans/tasks/` per PROCESS.md (Problem / Plan / Acceptance Criteria / status fields), and `TASKS.md` indexes them in this order. Every task is sized for one agent worktree and must land green (tests + ruff + mypy where gated) and independently mergeable.
+**Status: APPROVED 2026-06-10 (including reversals R1/R2) and converted.** Each task below now has a file under [`tasks/`](tasks/) per PROCESS.md, indexed by [TASKS.md](TASKS.md) in this order. The task files are the working documents; this list remains as the conversion source. Every task is sized for one agent worktree and must land green (tests + ruff + mypy where gated) and independently mergeable.
 
 ## Phase dependency graph
 

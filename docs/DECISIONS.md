@@ -1,5 +1,7 @@
 # Design Decisions
 
+<!-- markdownlint-disable MD013 -->
+
 This document captures key design decisions and their rationale. Decisions are numbered for reference.
 
 ## D1: Batch Mode Over Conversational Streaming
@@ -15,6 +17,8 @@ This document captures key design decisions and their rationale. Decisions are n
 **Rationale:** A single primitive means the orchestration engine has no special-case logic for different task types. The differentiation lives entirely in prompts, context assembly, and validation criteria. This keeps the workflow machinery simple and makes adding new task types a matter of writing new prompts.
 
 ## D3: Temporal for Orchestration
+
+> **Amended by D95** — transition evaluation is no longer a separate activity; it is a pure function inlined into the workflow's step logic. The core (Temporal for orchestration; the LLM call as an activity) stands.
 
 **Decision:** Use Temporal for workflow orchestration rather than a custom scheduler.
 
@@ -58,6 +62,8 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D10: Model Routing via Capability Tiers
 
+> **Amended by D94** — the tier concept stands; the tier-to-model mapping is now single-sourced in `sax_platform.llm.tiers`, with the stale Sonnet pin updated to `claude-sonnet-4-6`.
+
 **Decision:** The planner specifies a capability tier per task (reasoning, generation, summarization, classification). The orchestrator resolves tiers to concrete models at dispatch time.
 
 **Rationale:** Decouples task definitions from specific models. As cheaper models improve, update the tier-to-model mapping without changing prompts or workflows. Enables tracking success rates per tier to discover where capability boundaries actually are.
@@ -75,6 +81,8 @@ This document captures key design decisions and their rationale. Decisions are n
 **Rationale:** Deterministic checks are cheap, fast, and reliable. LLM-based evaluation is reserved for subjective or complex judgments that cannot be computed. When two LLM reviewers disagree, escalate to a more expensive model to break the tie.
 
 ## D13: Knowledge Extraction as Independent Workflow
+
+> **Superseded by D92** — forge's playbooks subsystem (including its extraction workflow) is deleted; knowledge extraction is pbook's job, and forge consumes it via the `knowledge.approved_entries` view.
 
 **Decision:** Playbook generation runs on its own schedule, independent of the task execution critical path.
 
@@ -188,6 +196,8 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D31: grimp Over Custom Import Resolution
 
+> **Amended by D96** — grimp stands, but it now runs in a subprocess with the task worktree on `PYTHONPATH` (it was analyzing the worker's installed package), with explicit degradation flags and a file-walk fallback.
+
 **Decision:** Use `grimp` for import graph analysis rather than building import resolution from scratch.
 
 **Rationale:** Import resolution in Python is surprisingly complex: relative imports, namespace packages, `src/` layouts, `__init__.py` re-exports, editable installs. `grimp` handles all of these correctly with Rust-backed performance and provides a rich query API (`find_upstream_modules`, `find_downstream_modules`, `find_shortest_chain`, `get_import_details` with line numbers). Building this from scratch would be a significant effort with many edge cases. `grimp` is actively maintained (used as the engine for `import-linter`).
@@ -199,6 +209,8 @@ This document captures key design decisions and their rationale. Decisions are n
 **Rationale:** Not all files in the import graph are equally important for context. A utility module imported by 30 files is more important than a leaf module imported by one. PageRank naturally surfaces "hub" files (heavily imported utilities, base classes, shared types) that provide the most context value per token. Personalized PageRank with seed weights on target files biases the ranking toward files relevant to the current task. This approach is validated by Aider's production usage and by a 2025 benchmark showing AST-derived deterministic graphs achieving 15/15 correctness vs. 6/15 for vector-only RAG — at 70x lower cost than LLM-extracted graphs.
 
 ## D33: Character-Based Token Estimation
+
+> **Amended by D96** — the fixed 4:1 constant is replaced by a calibrated chars-per-token estimator with explicit `effective_budget` arithmetic; estimation-not-tokenization stands.
 
 **Decision:** Estimate tokens at 4 characters per token rather than using a tokenizer library.
 
@@ -266,6 +278,8 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D43: Playbooks as Flat Tagged Entries
 
+> **Superseded by D92** — the `playbooks` table is deleted with the rest of forge's playbooks subsystem; pbook's entry model is the keeper.
+>
 > **Note** — tag filtering no longer uses SQLite `json_each()` (unavailable on Postgres); it uses a dialect-free `tags_overlap`. The flat-tagged-entry decision is unchanged.
 
 **Decision:** Playbook entries are flat rows in a `playbooks` table, indexed by JSON tag arrays. No hierarchy or categorization beyond tags.
@@ -274,11 +288,15 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D44: Extraction as a Temporal Workflow
 
+> **Superseded by D92** — forge's extraction workflow is deleted; extraction lives in pbook's `IngestWorkflow`.
+
 **Decision:** Knowledge extraction is a Temporal workflow with three activities: fetch input, call LLM, save results. It follows D2 (universal workflow step).
 
 **Rationale:** Extraction is another instance of the universal workflow step: construct context, call LLM, serialize result. Using a Temporal workflow provides the same durability, retry, and observability guarantees as task execution. The three-activity decomposition separates I/O (store reads/writes) from the LLM call, enabling independent retry and timeout configuration.
 
 ## D45: Relevance by Tag Overlap
+
+> **Superseded by D92** — retrieval becomes lexical rank fused with tag overlap (tags boost, never gate), fixing the recall hole where zero-tag entries could never surface; the determinism principle is preserved (still no embeddings on forge's hot path).
 
 **Decision:** Playbook retrieval uses deterministic tag matching rather than semantic similarity (vector embeddings).
 
@@ -286,11 +304,15 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D46: Playbooks Share the Observability Store
 
+> **Superseded by D92** — the `playbooks` table is deleted; knowledge lives in pbook's store, read through the `knowledge.approved_entries` view.
+
 **Decision:** Playbooks are stored in the same SQLite database as interactions and runs, managed by the same Alembic migration system.
 
 **Rationale:** A single database simplifies deployment, backup, and migration. The observability store already handles connection management, WAL mode, and migration on worker startup. Adding a table is a single Alembic migration. The `playbooks` table references `source_workflow_id` from the `runs` table, making cross-table queries straightforward.
 
 ## D47: PLAYBOOK Representation Type
+
+> **Superseded by D92** — the representation type goes with the playbooks subsystem; knowledge context items come from the pbook view instead.
 
 **Decision:** Add a `PLAYBOOK` value to the `Representation` enum to distinguish playbook context items from repo map items, both of which sit at priority 5.
 
@@ -298,11 +320,15 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D48: LLM-Guided Context Exploration
 
+> **Amended by D96** — exploration stands but gains a budget: mode-aware round caps, per-round request caps, deduplication, and a total-token cap (the loop was effectively unbounded).
+
 **Decision:** The LLM chooses what context to request from a menu of available providers. Context requests are fulfilled by Temporal activities, not inline tool calls. The LLM iterates until it signals readiness to generate.
 
 **Rationale:** The LLM knows what information it needs better than a deterministic heuristic. Fulfillment via Temporal activities provides durability, retries, and observability for each analysis step. A configurable round limit bounds token spend. The exploration results feed into the generation prompt, keeping the exploration and generation phases cleanly separated.
 
 ## D49: Progressive Disclosure for Context Assembly
+
+> **Amended by D96** — progressive disclosure stands; the on-demand exploration it relies on is now budget-capped and deduplicated.
 
 **Decision:** By default, only target file contents and the repo map are assembled upfront. Dependency file contents (direct imports at priority 3) and transitive symbol signatures (priority 4) are omitted unless `--include-deps` is passed. The `discover_context()` function accepts an `include_dependencies` parameter (default `False`), and the `ContextConfig` model exposes this as `include_dependencies`.
 
@@ -360,6 +386,8 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D58: Capability Tiers Over Direct Model Names
 
+> **Amended by D94** — tiers stand; the forge and pbook copies of the mapping had drifted, so the registry is now single-sourced in `sax_platform.llm.tiers` with `claude-sonnet-4-6` (the `claude-sonnet-4-5-20250929` pin was stale).
+
 **Decision:** Route LLM calls via abstract capability tiers (REASONING, GENERATION, SUMMARIZATION, CLASSIFICATION) rather than passing concrete model names through the system.
 
 **Rationale:** This follows D10 from the design document. Abstract tiers decouple the "what capability is needed" question from the "which model provides it" question. When a cheaper model improves enough to handle GENERATION tasks, a single config change upgrades the entire system. When a new provider is added, it slots into the tier mapping without changing any workflow code. The planner specifies capability requirements, not provider-specific model IDs.
@@ -384,7 +412,7 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D62: Adaptive Thinking for Opus, Budget for Sonnet
 
-> **Partially stale** — Opus no longer uses `{'type': 'adaptive'}`; `build_thinking_param` (`llm_client.py`) returns `{'type': 'enabled', 'budget_tokens': ...}` for both Opus and Sonnet. The selective-thinking intent holds.
+> **Superseded by D94** — `budget_tokens` is deprecated on the 4.6 model generation; thinking migrates to adaptive with an explicit `effort` parameter for all tiers. (Interim state: `build_thinking_param` in `llm_client.py` returns `{'type': 'enabled', 'budget_tokens': ...}` for both Opus and Sonnet.) The selective-thinking intent (D61) holds.
 
 **Decision:** Use adaptive thinking (`{'type': 'adaptive'}`) for Opus 4.6+ and budget-based thinking (`{'type': 'enabled', 'budget_tokens': N}`) for Sonnet.
 
@@ -468,6 +496,8 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D75: Remove pydantic-ai, Use Anthropic SDK + Plain Pydantic
 
+> **Mechanism superseded by D90** — forced tool use as the structured-output vehicle is retired in favor of provider structured outputs (`messages.parse` / `output_config.format`); the goal (plain Pydantic in, validated models out, direct SDK access) stands.
+
 **Decision:** Remove the pydantic-ai dependency. Replace `pydantic_ai.Agent` with direct Anthropic SDK calls (`client.messages.create`) for synchronous LLM calls and `client.messages.batches.create` for batch calls. Use plain Pydantic models for structured output via tool definitions (`Model.model_json_schema()`) and response validation (`Model.model_validate_json()`).
 
 **Rationale:** pydantic-ai bundles request construction, API call, and response parsing into a single `agent.run()` call. Batch mode requires splitting this into submit (construct + send) and resume (receive + parse), which pydantic-ai does not support. Beyond the batch requirement, Forge does not use pydantic-ai's main features (dependency injection, conversation management, tool orchestration) — Temporal provides the workflow orchestration and retry logic. pydantic-ai adds a layer of abstraction over the Anthropic SDK that provides no value and prevents direct access to SDK features like batch submission. Plain Pydantic provides the same structured output capability (schema generation, validation) without the wrapper.
@@ -480,13 +510,15 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D77: Signal-Based Wait Over Terminate-and-Restart
 
+> **Superseded by D88** — the waiting workflow now polls for its own batch result via a timer loop (reversal R1); the signal apparatus is deleted. The rejection of terminate-and-restart stands.
+
 **Decision:** Workflows wait for batch results via Temporal signals (`workflow.wait_condition`), keeping the workflow alive and all state in Temporal's durable execution. The alternative — terminating the workflow after submission and starting a new one when results arrive — was rejected.
 
 **Rationale:** Temporal's durable execution model is designed for exactly this pattern: a workflow that does work, waits for an external event, then continues. Signal-based waiting preserves all workflow state (plan steps, retry counts, worktree paths, exploration context) without serializing it to an external database. If the worker crashes, Temporal replays the workflow history and resumes waiting. The terminate-and-restart alternative would require serializing the full continuation context to a batch job database, reconstructing it in a new workflow, and managing the handoff — duplicating what Temporal already provides.
 
 ## D78: Temporal Search Attributes for Batch Result Routing
 
-> **Superseded by implementation** — batch results are routed via the `workflow_id` stored in the `batch_jobs` table (`poll_batch_results` → `get_workflow_handle`), not a `forge_batch_id` search attribute.
+> **Superseded by D88** — with per-workflow timer-loop polling there is no result routing at all: the requester is the recipient. (It had already been superseded by implementation: results were routed via the `workflow_id` stored in the `batch_jobs` table, not a `forge_batch_id` search attribute.)
 
 **Decision:** Workflows set a custom search attribute (`forge_batch_id`) when waiting for a batch result. The batch poller queries Temporal's visibility API to find workflows waiting for a specific batch, then sends signals directly.
 
@@ -500,7 +532,7 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D80: Batch Jobs Table as Audit Log
 
-> **Partially stale** — with D78's search-attribute routing unimplemented, the `batch_jobs` table supplies the `workflow_id` used to route batch-result signals, so it participates in coordination, not purely audit.
+> **Restored to truth by D88** — under timer-loop polling the table carries no coordination role; it is the forge-internal audit/spend ledger this entry intended. (It had been partially stale: with D78's search-attribute routing unimplemented, the table supplied the `workflow_id` used to route batch-result signals.)
 
 **Decision:** The `batch_jobs` SQLite table records all batch submissions and outcomes for observability and anomaly detection. It is not used for coordination — all coordination uses Temporal signals and search attributes.
 
@@ -508,11 +540,15 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D81: Temporal Schedules for Batch Polling and Knowledge Extraction
 
+> **Superseded** — the batch poller Schedule is deleted by D88 (whose timer loop replaces it; note the documented 60s default had in any case drifted from the implemented 600s), and the knowledge-extraction Schedule dies with the playbooks subsystem (D92).
+
 **Decision:** Use Temporal Schedules for the batch poller (configurable interval, default 60s) and for knowledge extraction (configurable interval, default 4 hours). These replace the need for custom cron jobs or polling loops.
 
 **Rationale:** Temporal Schedules provide durable, managed scheduling with visibility, pause/resume, and automatic retry. The batch poller must run reliably regardless of worker restarts — a Schedule guarantees this. Knowledge extraction (currently manual CLI invocation) is a natural fit for periodic scheduling: check for unextracted runs and process them. Using Temporal's built-in scheduling avoids duplicating functionality.
 
 ## D82: All LLM Call Sites Through Batch
+
+> **Note** — reaffirmed by D86/D88; the rationale's 60s poll interval is stale — the timer loop polls at 300–600s, never below 300s (D88).
 
 **Decision:** All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) go through the batch path by default. No call site is exempted for Release 1.
 
@@ -541,3 +577,75 @@ Each sub-phase is independently committable with all tests passing. 14a is pure 
 **Decision:** Application logs are written to files under `$XDG_STATE_HOME/forge/` (defaulting to `~/.local/state/forge/`). Console output controlled by `-v` flags remains for interactive use, but the canonical log destination is the filesystem.
 
 **Rationale:** Console-only logging is ephemeral — once the terminal scrolls or the session ends, the output is gone. File-based logging enables post-hoc debugging, support triage, and correlation across Temporal activities and workflows. The XDG Base Directory Specification designates `$XDG_STATE_HOME` for persistent state data such as logs, which keeps them separate from configuration (`$XDG_CONFIG_HOME`) and cached data (`$XDG_CACHE_HOME`).
+
+## D86: Merged Architecture Redesign Plan Approved
+
+**Decision:** The merged platform architecture redesign plan — produced by an adversarial cross-review of two independently written plans (Plan A, the 10-dimension forge platform review; Plan B, the pbook design docs of 2026-06-09/10) — is approved as of 2026-06-10, including its ten conflict adjudications (batch transport, library topology, structured outputs, pbook ingestion transport, forge knowledge consumption, ocr batch waiting, monorepo mechanics, Python version, pbook migration sequencing, Supabase posture) and the two owner-decision reversals: R1, the signal-based batch SPI is replaced by per-workflow timer-loop polling (D88), and R2, pbook ingestion runs sync rather than batch (D91). The consolidated review — findings with file:line evidence, the adjudication table, and rejected-idea dispositions — lives at [docs/reviews/2026-06-architecture-review.md](reviews/2026-06-architecture-review.md); the 47-task migration list is [development-plans/HANDOFF-architecture-review-2026-06-10-tasks.md](../development-plans/HANDOFF-architecture-review-2026-06-10-tasks.md).
+
+**Rationale:** The two plans converged independently on ten points (monorepo, singleton and registry elimination, dead provider-copy deletion, ingestion inversion to pbook, playbook supersession, deterministic idempotency, status-machine lifecycle, one tier registry, namespaced tags, rejection of speculative hardening) and genuinely collided only on batch transport and library topology. A final adversarial cross-review — four fact-check panels plus each plan attacked from the other's perspective — adjudicated every conflict on verified evidence (API capabilities, Temporal history arithmetic, measured volumes, wheel availability) rather than preference. D87–D97 record the individual decisions; this entry records the umbrella approval and scope: repo `sax`, one platform library, apps forge/ocr/pbook, eight migration phases.
+
+## D87: Monorepo `sax` via uv Workspace
+
+**Decision:** Collapse the five repos (forge, forge-contracts, ocr, sax-llm, pbook) into a single uv-workspace monorepo named `sax`: `libs/sax-platform` plus `apps/{forge,ocr,pbook}`, one `uv.lock`, and one `.python-version` pinned to Python 3.14 with the standard GIL (not 3.14t). History is imported with git-filter-repo, preserving full history; old repos are archived with pointer READMEs. Root CI gates every package on ruff, strict mypy, pytest at 85% coverage, and import-linter. The import DAG is enforced: apps import libs only and never other apps; libs never import apps; `sax_platform.contracts` may not import SDKs or shell siblings.
+
+**Rationale:** Cross-repo editable-source skew (tag-vs-editable `uv.sources` drift) was a recurring failure mode, and the SPI boundary the multi-repo layout protected is gone (D89). git-filter-repo wins over a shallow subtree because uvx caches the bare repo and tool environments, and all five repos total ~8.7MB of history — subtree's clone savings are immaterial while filter-repo preserves blame and `git log --follow`. Python 3.14 standard GIL is verified viable: temporalio (abi3), psycopg-binary (cp314 including macOS arm64), pgvector, pymupdf, grimp, anthropic, and openai all install on CPython 3.14 today; free-threaded wheels are incomplete, so 3.14t is out. The pbook skill's uvx ref is pinned to a tag (`@vX.Y#subdirectory=apps/pbook`) because an unpinned branch ref re-resolves and can break mid-flight.
+
+## D88: Per-Workflow Timer-Loop Batch Polling (Reversal R1)
+
+**Decision:** Workflows waiting on batch results poll for themselves: a `submit` activity (request body from the platform builder, workflow-minted `workflow.uuid4()` custom_id for submit-retry idempotency) → a loop of `await workflow.sleep(poll_interval)` plus a thin `batch_status` activity (default 300–600s, configurable, never below 300s) → a `fetch_results` activity that downloads, validates against the call site's output class, and returns a claim-check shape (inline ≤256KB, S3 pointer beyond). The shared `BatchPollerWorkflow` and its Temporal Schedule, `BATCH_RESULT_SIGNAL`, all signal handlers and correlation dicts, and the cross-workflow `BatchResult` envelope are deleted; ocr likewise polls its own Mistral batches via `MistralOcr`, removing the last cross-workflow signal platform-wide (Mistral chat support is deleted — verified to have zero production users). The `batch_jobs` table survives as a forge-internal audit/spend ledger only. This is owner reversal R1; it supersedes D77 and D78.
+
+**Rationale:** Under D79 (one request = one batch = one waiter), a shared poller amortizes zero provider calls — it is pure coordination complexity. The verified arithmetic: a poll iteration costs ~11 Temporal history events, so a 25-hour wait at 600s is ≈1,650 events, about 3% of the 51.2k history limit; the worst plausible case (~30 concurrent waits at 300s over 6h) is ≈24k — safe, with continue-as-new as the documented escape if wait counts grow. Polling cadence equals the old poller's actual 600s interval, so latency is unchanged, and the shared Batches-API request budget is trivial at this scale (100 waiters at 600s = 10 RPM against Tier 1's 50). Both verified critical bugs in the signal path — batch results consumed without `request_id` correlation, where a duplicate or stale signal becomes the wrong LLM call's result, and the poller abandoning paid results (transient delivery failure marked terminal FAILED; >24h marked MISSING with no signal, stranding the waiter for 25h) — become unconstructible, because the requester is the recipient. This restores D80 to its audit-only truth and corrects D81: the poller Schedule is deleted, and D81's documented 60s default had in any case drifted from the implemented 600s. Accepted, documented tradeoff: a dead waiter orphans its paid batch; a reconciliation sweep is deferred, and the symptom is a slightly higher invoice, not data loss.
+
+## D89: One Platform Library, `sax_platform`
+
+**Decision:** forge-contracts and sax-llm merge into a single `libs/sax-platform` package; both repo identities are retired. Boundary enforcement moves from repo separation to internal layering: `sax_platform.contracts` (wire models plus the knowledge read model) is a sandbox-light layer that import-linter forbids from importing SDKs or shell siblings; the shell modules (`llm/`, `embeddings/`, `temporal/`, `db/`, `config.py`, `logging.py`) sit above it. File-scoped `imports_passed_through` and empty `__init__`s keep the contracts layer importable inside the Temporal workflow sandbox.
+
+**Rationale:** With the signal SPI dead (D88), forge-contracts had no second party left: pbook imports none of it, and ocr needs only generic plumbing (~390 of its 641 lines). The two-library split existed to serve a boundary that no longer exists, and its remaining artifacts were duplicate-plus-drift costs (the ImageBlob/ExtractedImage copy with its drift test). import-linter verifiably enforces layering within one package — containers plus a forbidden-externals contract in CI — which is stronger than what the repo split actually provided: forge-contracts' isolation was already only module-level discipline (boto3 was a hard dependency, lazily imported).
+
+## D90: Structured Outputs Everywhere; Forced Tool Use Retired
+
+**Decision:** All structured LLM output uses Anthropic structured outputs on both lanes: `client.messages.parse` on the sync lane (`complete[T]`/`complete_schema`/`complete_text` in `sax_platform.llm`) and `output_config.format` on the batch lane (a pure request-body builder plus submit/status/results helpers, with caller-side `model_validate` at the fetch activity). Forced tool use as a structured-output mechanism is retired platform-wide, and both string-keyed output-type registries (forge's and sax-llm's) are deleted in favor of frozen `OUTPUT_TYPES` mappings owned by composition roots (D93). This supersedes D75's mechanism while keeping its goal: plain Pydantic schemas in, validated Pydantic models out, direct SDK access.
+
+**Rationale:** Verified: structured outputs are GA, work in the Message Batches API via `output_config.format`, compose with prompt caching (best-effort 30–98% hit rates in batches; use the 1h TTL), and are supported on the current model set. Forced tool use was a workaround from before structured outputs existed; it cost a tool-definition detour on every call and required string registries to recover the output class at parse time. With the provider enforcing the schema on both lanes, the registries' only job disappears — an explicit frozen mapping at each composition root is simpler, type-checkable, and survives the workflow sandbox. `messages.parse` is sync-only, which is why the platform library must own the batch lane explicitly rather than leaving each app to rebuild it.
+
+## D91: pbook Ingestion Is Sync, Not Batch (Reversal R2)
+
+**Decision:** pbook's `IngestWorkflow` makes its LLM calls (extraction at GENERATION tier, judging at CLASSIFICATION tier) as synchronous structured-output activities, not through the batch path. This is owner reversal R2, reversing the earlier mid-review position that pbook would drive LLM calls through the batch SPI. Explicit boundary: this volume exception does not extend to forge. D76's batch-first default stands on the per-token economics of an unattended orchestrator — 50% off every token regardless of volume — not on realized volume.
+
+**Rationale:** Measured volume is ~102 ingestable sessions over ~27 days, roughly 110 sessions/month; batching would save approximately $2–5/month while adding two batch round-trips of up to 24h each to a freshness-sensitive loop. With D88 there is no signal SPI to consume anyway. Both lanes share the platform request-body builder, so flipping pbook to batch later is a localized change if volume ever justifies it. The boundary clause exists so the volume argument cannot erode forge's batch-first rationale: forge's case never rested on call volume, and a future "pbook is sync, why not forge" argument should find its answer here.
+
+## D92: Forge Consumes pbook Knowledge via the `knowledge.approved_entries` View
+
+**Decision:** pbook publishes a read-only SQL view, `knowledge.approved_entries`, exposing the non-vector columns plus the `search_tsv` generated tsvector; `sax_platform.contracts.knowledge` holds the read-only Table definition, a frozen `KnowledgeEntry` model, and the query helper. Forge's `assemble_context` retrieves knowledge with one deterministic SQL read — lexical rank (`websearch_to_tsquery` + `ts_rank_cd`) UNION tag-overlap candidates — fused by one small pure scoring function with a capped tag boost (tags boost, never gate), sliced to the token budget, active entries only. No embeddings and no OpenAI dependency on forge's hot path. Forge's own playbooks subsystem — the `playbooks` table, extraction/manual/export workflows, CLI commands, and tag inferrers — is deleted; existing rows get a one-time JSON dump and manual triage via `pbook add`, with no blanket-approve migration. This supersedes D13 and D43–D47.
+
+**Rationale:** The review confirmed the knowledge-loop disconnect: pbook knowledge never reached task execution, while forge's parallel playbook store was polluted by the re-extraction loop's duplicates — two stores, neither feeding the orchestrator well. The view is the only consumption path that is deterministic, dependency-light, and DAG-clean; a library or CLI path would recreate app-to-app coupling or put a uvx invocation on the context-assembly hot path. Exposing `search_tsv` fixes the recall hole in pure tag-gated retrieval — tag-gated candidates can never surface zero-tag entries — while the capped boost preserves D45's determinism principle. pbook's full hybrid retrieval (lexical + semantic + tags under RRF) remains its own surface for skill, CLI, and library consumers; forge takes the cheap deterministic slice. A pbook-side schema-sync test after every migration keeps the contract honest, and no blanket-approve migration runs because the playbook table's contents do not meet pbook's judged-entry bar.
+
+## D93: Composition Roots Everywhere
+
+**Decision:** Every process (forge worker and CLI, ocr worker, pbook worker and CLI) gets a composition root. A frozen pydantic-settings `Settings` class per process is the only place environment variables are read, failing fast at startup. Activities become class-based with bound methods — `StoreActivities(engine)`, `LlmActivities(llm, output_types)`, `BatchActivities(...)`, `ContextActivities(engine)` — which is Temporal's sanctioned dependency injection. Each process owns exactly one database engine. Module-level singletons (the global Temporal client and `set_temporal_client`, per-call engines, sax-llm's global caches and forked registry) and test-support reset functions (`dispose_store_engines`, the `_TRACER_PROVIDER_SET_ONCE` reset, the workflow-test harness's 30 globals and 11 resets) are deleted.
+
+**Rationale:** The review found no composition root anywhere: 14+ point-of-use environment reads, a module-global Temporal client mutated by a setter, engines created per call, and the output-type registry forked three ways — with tests forced to monkeypatch globals and call reset functions to stay isolated. Class-based activities make dependencies explicit and injectable without service locators; frozen settings make configuration errors a startup failure instead of a mid-workflow surprise. This is the Functional Core / Imperative Shell discipline applied at process boundaries, and both plans arrived at it independently.
+
+## D94: One Model-Tier Registry; Adaptive Thinking
+
+**Decision:** A single tier registry, `sax_platform.llm.tiers` (CapabilityTier, ModelConfig, `resolve_model`), replaces the forge and pbook copies. The Sonnet pin becomes `claude-sonnet-4-6`, amending the stale mappings behind D10/D58: forge's `claude-sonnet-4-5-20250929` and pbook's worker default `claude-3-5-sonnet-20241022` (a retired model). Extended thinking migrates from budget-based configuration to adaptive thinking with an explicit `effort` parameter — `budget_tokens` is deprecated on the 4.6 model generation — superseding D62's mechanism while keeping D61's selective-thinking intent (planner-focused thinking).
+
+**Rationale:** The tier abstraction (D10, D58) is reaffirmed — it exists precisely so a model upgrade is a registry edit, not a code sweep — but the review found the two copies of the mapping had already drifted (4-5 vs 4-6), proving the registry must be single-sourced in the platform library. The pins were verified against the live API: the current Sonnet is `claude-sonnet-4-6`, pbook's default is retired, and `budget_tokens` is deprecated on 4.6, where adaptive thinking with explicit effort is the supported configuration. Model pins move only on green paired-delta eval runs thereafter.
+
+## D95: Pure Step-Logic Core; Transition Evaluation Inlined
+
+**Decision:** Forge's `workflows.py` (1,861 LOC, with the step pipeline implemented three times and gather twice) becomes a package: thin `task.py`/`subtask.py` drivers; a single `run_step_attempts` (a `StepSpec` whose `mode` Literal maps to its policy triple via one pure table, with exploration as a per-attempt hook); a single `run_fan_out_gather(commit: bool)`; and a pure `step_logic.py` with zero temporalio imports holding `determine_transition` — inlined, with the `evaluate_transition` activity deleted, amending D3's "LLM call and transition evaluation are separate activities" clause — plus `failure_summary` and the result builders (a `failure_kind` Literal and LLMStats totals). Persist keys become `{workflow_id}:{run_id}:{role}:{occurrence}` with per-role counters. `SubTaskInput` gains `resolve_conflicts`/`thinking`/`model_routing` so nested fan-out stops silently dropping them; workflow classes end up with zero signal state (D88).
+
+**Rationale:** Triplication had already produced real divergence — the nested fan-out path dropped three flags the top-level path honored. Transition evaluation is a pure decision over data already present in the workflow; running it as a Temporal activity bought independent retry and timeout control for logic that cannot fail for retryable reasons, while costing history events and a serialization round-trip per step. As a pure function it gets exhaustive decision-matrix unit tests instead. D3's core — Temporal for orchestration, the LLM call as an activity — is untouched.
+
+## D96: Context Engine Corrections
+
+**Decision:** Four amendments to the Phase 4/7 context decisions. (1) grimp runs in a subprocess with `PYTHONPATH={worktree}/{src_root}` so it analyzes the task worktree rather than the worker's installed package, with explicit degradation flags and a file-walk fallback replacing silent fallbacks (amends D31). (2) The fixed 4-characters-per-token constant is replaced by a calibrated chars-per-token estimator with explicit `effective_budget` arithmetic (amends D33). (3) The exploration loop gains a budget: mode-aware round caps (2–3 in batch mode, 10 in sync), per-round request caps, request deduplication, and a total-token cap (amends D48/D49). (4) Hardcoded `forge`/`src`/Python literals are replaced by a `ProjectDescriptor` threaded through context assembly, with `PROVIDER_SPECS` derived from each provider's params model. The fuzzy-edit fallback chain (D55–D57) is reaffirmed unchanged, with surfacing added: an `allow_fuzzy` knob and fuzzy applications made visible in `ValidationResult`.
+
+**Rationale:** The grimp finding was a verified critical: import-graph context was computed against the worker's own installed forge package, so discovered context could be wrong for every task worktree. The remaining amendments fix verified majors — an unbounded exploration loop (no dedup, no cap, ten sequential round-trips with quadratic resend of accumulated results) and an uncalibrated token estimator silently mis-sizing budgets. None of the underlying decisions is reversed: import-graph discovery (D31), PageRank ranking (D32), progressive disclosure (D49), and fallback-chain editing (D55–D57) all stand; they are corrected or bounded, not replaced.
+
+## D97: Speculative Hardening Rejected, with Dispositions
+
+**Decision:** Five recurring hardening proposals are rejected with recorded dispositions rather than left open: no NewType/frozen-base model retrofit program; no BudgetLedger (run-level LLMStats aggregation on `TaskResult` provides spend visibility instead); no network-denial sandbox for model-influenced subprocesses (the verified safety kernel is the scrubbed environment allowlist at those seams, plus fuzzy-edit surfacing and the plan preflight gate); no retention/redaction layer over the observability store; no `ast.parse` pre-validation gate. No new escalation tables either — D9's halt-and-escalate policy stands as-is.
+
+**Rationale:** Both plans' maintenance-cost bars independently rejected these: each adds a permanent surface (types to thread everywhere, a ledger to reconcile, a sandbox to maintain, a policy layer to administer) against a speculative failure mode with no observed instance, on a single-operator system whose merges are already human-gated (D7). Deterministic validation (D12) already runs ruff and tests, making an `ast.parse` gate redundant. Recording the rejections prevents re-litigating them from scratch at the next review; any can be revisited if its triggering condition materializes (multi-tenant operation, observed budget runaways, untrusted task sources).

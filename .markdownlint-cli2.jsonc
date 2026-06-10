@@ -1,0 +1,11 @@
+{
+  // Allow emphasis-only lines that end in a closing parenthesis, e.g. the
+  // development-plans task-file template's "*(Append dated entries here
+  // during implementation.)*" placeholder (MD036 default punctuation list
+  // does not include ")").
+  "config": {
+    "MD036": {
+      "punctuation": ".,;:!?。，；：！？)"
+    }
+  }
+}
