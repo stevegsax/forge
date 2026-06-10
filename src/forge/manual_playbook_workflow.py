@@ -61,9 +61,7 @@ class ManualPlaybookWorkflow:
         )
 
         # Step 3: LLM review
-        classification_model = resolve_model(
-            CapabilityTier.CLASSIFICATION, input.model_routing
-        )
+        classification_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
         review_result = await workflow.execute_activity(
             "review_manual_playbook",
             ReviewManualPlaybookInput(

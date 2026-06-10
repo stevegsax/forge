@@ -215,9 +215,7 @@ class TestExportPlaybookWorkflow:
         assert result.entries[0].title == "Entry two"
 
     @pytest.mark.asyncio
-    async def test_entries_are_playbook_entry_compatible(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_entries_are_playbook_entry_compatible(self, env: WorkflowEnvironment) -> None:
         """Exported entries can round-trip through PlaybookEntry."""
         async with Worker(
             env.client,

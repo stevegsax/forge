@@ -106,7 +106,11 @@ class TestBuildSanityCheckSystemPrompt:
             _make_step_result("step-1", output_files={"models.py": "class M: pass"}),
         ]
         prompt = build_sanity_check_system_prompt(
-            _TASK.task_id, _TASK.description, _PLAN, completed, _PLAN.steps[1:],
+            _TASK.task_id,
+            _TASK.description,
+            _PLAN,
+            completed,
+            _PLAN.steps[1:],
             project_instructions="",
         )
         assert "step-1" in prompt
@@ -123,7 +127,11 @@ class TestBuildSanityCheckSystemPrompt:
 
     def test_contains_project_instructions(self) -> None:
         prompt = build_sanity_check_system_prompt(
-            _TASK.task_id, _TASK.description, _PLAN, [], _PLAN.steps,
+            _TASK.task_id,
+            _TASK.description,
+            _PLAN,
+            [],
+            _PLAN.steps,
             project_instructions="## Project\nUse ruff.",
         )
         assert "Use ruff" in prompt

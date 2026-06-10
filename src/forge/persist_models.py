@@ -134,9 +134,7 @@ def build_persist_interaction(
         if plan is not None:
             explanation = plan.explanation
 
-    context_stats_json = (
-        context_stats.model_dump_json() if context_stats is not None else None
-    )
+    context_stats_json = context_stats.model_dump_json() if context_stats is not None else None
     return PersistInteraction(
         idempotency_key=idempotency_key,
         task_id=task_id,

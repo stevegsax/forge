@@ -44,13 +44,15 @@ async def prepare_transcript(input_json: str) -> str:
 
     if not path.exists():
         logger.warning("Transcript file not found: %s", path)
-        return json.dumps({
-            "transcript_text": "",
-            "project": project,
-            "session_id": session_id,
-            "message_count": 0,
-            "char_count": 0,
-        })
+        return json.dumps(
+            {
+                "transcript_text": "",
+                "project": project,
+                "session_id": session_id,
+                "message_count": 0,
+                "char_count": 0,
+            }
+        )
 
     transcript = parse_jsonl_file(path)
 
@@ -66,15 +68,19 @@ async def prepare_transcript(input_json: str) -> str:
 
     logger.info(
         "Prepared transcript %s: %d messages, %d chars rendered",
-        session_id, len(transcript.messages), len(rendered),
+        session_id,
+        len(transcript.messages),
+        len(rendered),
     )
 
-    return json.dumps({
-        "transcript_text": rendered,
-        "system_prompt": system_prompt,
-        "user_prompt": user_prompt,
-        "project": project,
-        "session_id": session_id,
-        "message_count": len(transcript.messages),
-        "char_count": len(rendered),
-    })
+    return json.dumps(
+        {
+            "transcript_text": rendered,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "project": project,
+            "session_id": session_id,
+            "message_count": len(transcript.messages),
+            "char_count": len(rendered),
+        }
+    )

@@ -154,8 +154,6 @@ class TestExecuteSubmitBatchBlob:
         # propagate (no swallow) so the caller's record step is never reached.
         provider = MagicMock()
         provider.submit_batch = AsyncMock(side_effect=RuntimeError("provider down"))
-        spi = BatchSubmitSpiInput(
-            s3_key="k", model="m", provider="mistral", custom_id="c"
-        )
+        spi = BatchSubmitSpiInput(s3_key="k", model="m", provider="mistral", custom_id="c")
         with pytest.raises(RuntimeError, match="provider down"):
             await execute_submit_batch_blob(spi, provider, lambda _k: b"[]")

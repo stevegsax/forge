@@ -85,15 +85,17 @@ async def mock_prepare_transcript(input_json: str) -> str:
     # Default: empty-transcript early-exit, but echo the caller's session_id
     # so per-session aggregation in fan-out tests can be verified.
     payload = json.loads(input_json)
-    return json.dumps({
-        "transcript_text": "",
-        "system_prompt": "",
-        "user_prompt": "",
-        "project": payload.get("project", ""),
-        "session_id": payload.get("session_id", ""),
-        "message_count": 0,
-        "char_count": 0,
-    })
+    return json.dumps(
+        {
+            "transcript_text": "",
+            "system_prompt": "",
+            "user_prompt": "",
+            "project": payload.get("project", ""),
+            "session_id": payload.get("session_id", ""),
+            "message_count": 0,
+            "char_count": 0,
+        }
+    )
 
 
 @activity.defn(name="submit_batch_request")
@@ -238,9 +240,7 @@ async def _drive_transcript_workflow(
 
 class TestTranscriptIngestionEarlyExit:
     @pytest.mark.asyncio
-    async def test_empty_transcript_returns_zero_counts(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_empty_transcript_returns_zero_counts(self, env: WorkflowEnvironment) -> None:
         _reset_state(
             prepared={
                 "transcript_text": "",
@@ -270,9 +270,7 @@ class TestTranscriptIngestionEarlyExit:
         assert not any(c.startswith("submit_batch") for c in _CALL_LOG)
 
     @pytest.mark.asyncio
-    async def test_too_few_messages_returns_early(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_too_few_messages_returns_early(self, env: WorkflowEnvironment) -> None:
         _reset_state(
             prepared={
                 "transcript_text": "USER: hi",
@@ -393,9 +391,7 @@ class TestTranscriptIngestionHappyPath:
 
 class TestTranscriptIngestionMalformedResponse:
     @pytest.mark.asyncio
-    async def test_malformed_json_returns_error_result(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_malformed_json_returns_error_result(self, env: WorkflowEnvironment) -> None:
         """If the LLM returns unparseable JSON, the workflow must not crash.
 
         It returns an error marker and a 0-count result without calling
@@ -446,9 +442,7 @@ class TestTranscriptIngestionMalformedResponse:
 
 class TestBatchIngestionWorkflow:
     @pytest.mark.asyncio
-    async def test_empty_sessions_returns_zero_counts(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_empty_sessions_returns_zero_counts(self, env: WorkflowEnvironment) -> None:
         _reset_state()
 
         async with Worker(
@@ -472,9 +466,7 @@ class TestBatchIngestionWorkflow:
         }
 
     @pytest.mark.asyncio
-    async def test_fan_out_aggregates_child_results(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_fan_out_aggregates_child_results(self, env: WorkflowEnvironment) -> None:
         """BatchIngestionWorkflow fans out to TranscriptIngestionWorkflow children.
 
         We use the early-exit path (empty transcript) in the child so no
@@ -528,9 +520,7 @@ class TestBatchIngestionWorkflow:
         assert _CALL_LOG.count("prepare_transcript") == 3
 
     @pytest.mark.asyncio
-    async def test_parent_awaits_children_before_returning(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_parent_awaits_children_before_returning(self, env: WorkflowEnvironment) -> None:
         """Regression: BatchIngestionWorkflow must await child completion.
 
         ChildWorkflowHandle subclasses asyncio.Task, so calling `.result()`

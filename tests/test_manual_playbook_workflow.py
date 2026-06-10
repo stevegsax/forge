@@ -125,9 +125,7 @@ class TestManualPlaybookWorkflow:
         assert _save_calls[0].entries[0].title == "Test entry"
 
     @pytest.mark.asyncio
-    async def test_invalid_json_returns_validation_error(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_invalid_json_returns_validation_error(self, env: WorkflowEnvironment) -> None:
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -176,9 +174,7 @@ class TestManualPlaybookWorkflow:
         assert len(_save_calls) == 0
 
     @pytest.mark.asyncio
-    async def test_suggestions_applied_to_saved_entry(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_suggestions_applied_to_saved_entry(self, env: WorkflowEnvironment) -> None:
         _save_calls.clear()
         async with Worker(
             env.client,
