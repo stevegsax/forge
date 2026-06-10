@@ -1,0 +1,39 @@
+{% extends "_shared/decompose_base.prompt.j2" %}
+
+{% block domain_guidance %}
+Identify ordering constraints between leaf nodes. A dependency edge
+means the source node cannot start until the target node completes.
+
+For software tasks, common dependency patterns:
+- Module creation before tests that import it
+- Schema definition before code that uses the schema
+- Core logic before integration/glue code
+- Library code before CLI entry points that call it
+
+Only add edges where there is a genuine data or artifact dependency.
+Do not add edges for stylistic ordering preferences.
+{% endblock %}
+
+{% block response_schema %}
+Respond with JSON:
+
+```json
+{
+  "edges": [
+    {
+      "edge_id": "unique-id",
+      "source_id": "node that depends (waits)",
+      "target_id": "node that is depended on (runs first)",
+      "edge_type": "depends_on",
+      "rationale": "Why this ordering constraint exists"
+    }
+  ]
+}
+```
+{% endblock %}
+
+{% block context %}
+Goal: {{ goal }}
+Current plan leaf nodes:
+{{ current_plan }}
+{% endblock %}

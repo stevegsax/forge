@@ -1,0 +1,55 @@
+{% extends "_shared/judge_base.prompt.j2" %}
+
+{% block persona %}
+You are {{ persona_name }}. Your role is to {{ persona_description }}.
+{% endblock %}
+
+{% block plan %}
+## Plan Under Review
+{{ serialized_plan_dag }}
+{% endblock %}
+
+{% block evaluation_criteria %}
+## Evaluation Criteria
+Score each dimension 1-5:
+1. COMPLETENESS: Does the plan cover the entire goal?
+2. GRANULARITY: Is each leaf task truly atomic (one LLM call / one human action / one function)?
+3. FEASIBILITY: Can each leaf task actually be completed as described?
+4. DEPENDENCY_CORRECTNESS: Are ordering constraints correct and complete?
+5. ACCEPTANCE_CRITERIA_QUALITY: Are the "done" conditions specific and testable?
+{% endblock %}
+
+{% block response_structure %}
+## Required Response Structure
+
+### Arguments AGAINST This Plan
+List every weakness, gap, risk, and failure mode you can identify.
+Be thorough and adversarial. Assume the plan WILL fail and explain why.
+
+### Arguments FOR This Plan
+Now argue that the plan is adequate despite the weaknesses above.
+Which weaknesses are acceptable? Which are mitigated by other aspects of the plan?
+
+### Verdict
+APPROVE or REJECT.
+If REJECT, list the specific changes required (not suggestions -- requirements).
+
+### Scores
+Respond with JSON:
+
+```json
+{
+  "verdict": "APPROVE | REJECT",
+  "scores": {
+    "COMPLETENESS": { "score": 1-5, "rationale": "..." },
+    "GRANULARITY": { "score": 1-5, "rationale": "..." },
+    "FEASIBILITY": { "score": 1-5, "rationale": "..." },
+    "DEPENDENCY_CORRECTNESS": { "score": 1-5, "rationale": "..." },
+    "ACCEPTANCE_CRITERIA_QUALITY": { "score": 1-5, "rationale": "..." }
+  },
+  "required_changes": [],
+  "arguments_against": "...",
+  "arguments_for": "..."
+}
+```
+{% endblock %}

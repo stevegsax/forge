@@ -1,0 +1,42 @@
+{% extends "_shared/split_base.prompt.j2" %}
+
+{% block domain_guidance %}
+A software leaf task is atomic if:
+
+- It can be completed in a single LLM call (document completion)
+- It modifies at most 2-3 files
+- It has a clear, testable outcome
+- It does not require multiple sequential decisions
+
+If the task requires creating a module AND writing tests for it, it is
+NOT atomic — split it.
+{% endblock %}
+
+{% block response_schema %}
+Respond with JSON:
+
+```json
+{
+  "node_id": "the node being checked",
+  "is_atomic": true,
+  "rationale": "Why this task is or is not atomic",
+  "suggested_split": [
+    {
+      "title": "Sub-task title",
+      "description": "What this sub-task accomplishes"
+    }
+  ]
+}
+```
+
+If `is_atomic` is true, `suggested_split` should be an empty list.
+{% endblock %}
+
+{% block context %}
+Node to check:
+  ID: {{ node.node_id }}
+  Title: {{ node.title }}
+  Description: {{ node.description }}
+  Execution type: {{ node.execution_type }}
+  Estimated complexity: {{ node.estimated_complexity }}
+{% endblock %}
