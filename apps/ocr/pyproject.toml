@@ -1,6 +1,6 @@
 [project]
 name = "ocr"
-version = "0.1.0"
+version = "0.1.1"
 description = "OCR application: document OCR via Mistral batch, consuming the Forge platform"
 requires-python = ">=3.12"
 dependencies = [

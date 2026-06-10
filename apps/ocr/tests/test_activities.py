@@ -4,21 +4,31 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import sqlalchemy as sa
 from forge_contracts.models import dump_batch_result_payload
 
 from ocr.activities import (
+    CHUNK_SIZE_PAGES,
+    MAX_FILE_SIZE_BYTES,
+    MAX_PAGES,
     _derive_status,
+    _mime_to_extension,
     _strip_image_prefix,
     build_ocr_batch_body,
+    detect_mime_type,
     execute_build_request_blob,
     execute_list_ocr_jobs,
+    execute_split_file_into_chunks,
     execute_store_ocr_result,
     parse_ocr_pages,
     rewrite_image_references,
+    rewrite_ocr_uris_to_local,
+    validate_file_size,
 )
 from ocr.models import OcrJobDerivedStatus
 from ocr.store import (
+    get_file_content,
     get_ocr_images,
     get_ocr_job_status,
     get_ocr_result,
@@ -73,6 +83,289 @@ class TestPure:
         assert _derive_status("failed", None) == OcrJobDerivedStatus.ERRORED.value
         assert _derive_status("submitted", "failed") == OcrJobDerivedStatus.ERRORED.value
         assert _derive_status("submitted", "submitted") == OcrJobDerivedStatus.PROCESSING.value
+
+
+class TestDetectMimeType:
+    def test_pdf(self) -> None:
+        assert detect_mime_type("/tmp/test.pdf") == "application/pdf"
+
+    def test_png(self) -> None:
+        assert detect_mime_type("/tmp/test.png") == "image/png"
+
+    def test_jpeg(self) -> None:
+        assert detect_mime_type("/tmp/test.jpg") == "image/jpeg"
+
+    def test_unknown(self) -> None:
+        assert detect_mime_type("/tmp/test.xyz123") == "application/octet-stream"
+
+
+class TestMimeToExtension:
+    def test_jpeg(self) -> None:
+        assert _mime_to_extension("image/jpeg") == ".jpeg"
+
+    def test_png(self) -> None:
+        assert _mime_to_extension("image/png") == ".png"
+
+    def test_unknown(self) -> None:
+        assert _mime_to_extension("application/x-unknown-thing") == ".bin"
+
+
+class TestValidateFileSize:
+    def test_pdf_not_rejected_for_size(self) -> None:
+        """PDFs are never rejected by validate_file_size (they get split instead)."""
+        validate_file_size(100 * 1024 * 1024, "application/pdf")
+
+    def test_non_pdf_under_limit_passes(self) -> None:
+        validate_file_size(MAX_FILE_SIZE_BYTES, "image/png")
+
+    def test_non_pdf_over_limit_raises(self) -> None:
+        with pytest.raises(ValueError, match="Non-PDF file"):
+            validate_file_size(MAX_FILE_SIZE_BYTES + 1, "image/png")
+
+
+class TestRewriteOcrUrisToLocal:
+    def test_rewrites_matching_uris(self) -> None:
+        md = "![chart](ocr-image://abc-123) and ![logo](ocr-image://def-456)"
+        mapping = {"abc-123": "abc-123.jpeg", "def-456": "def-456.png"}
+        result = rewrite_ocr_uris_to_local(md, mapping)
+        assert result == "![chart](abc-123.jpeg) and ![logo](def-456.png)"
+
+    def test_leaves_unknown_uris_unchanged(self) -> None:
+        md = "![x](ocr-image://unknown-id)"
+        result = rewrite_ocr_uris_to_local(md, {"other": "other.jpeg"})
+        assert result == md
+
+    def test_empty_mapping(self) -> None:
+        md = "![x](ocr-image://abc)"
+        assert rewrite_ocr_uris_to_local(md, {}) == md
+
+    def test_no_ocr_uris(self) -> None:
+        md = "![x](https://example.com/img.png)"
+        assert rewrite_ocr_uris_to_local(md, {"abc": "abc.jpeg"}) == md
+
+
+# ---------------------------------------------------------------------------
+# execute_split_file_into_chunks
+# ---------------------------------------------------------------------------
+
+
+def _create_test_pdf(page_count: int) -> bytes:
+    """Create a minimal PDF with the given number of pages using PyMuPDF."""
+    import fitz
+
+    doc = fitz.open()
+    for i in range(page_count):
+        page = doc.new_page(width=200, height=200)
+        page.insert_text((10, 50), f"Page {i + 1}")
+    pdf_bytes = doc.tobytes()
+    doc.close()
+    return pdf_bytes
+
+
+class TestExecuteSplitFileIntoChunks:
+    def test_non_pdf_single_chunk(self, migrated: str) -> None:
+        """Non-PDF files produce a single chunk reusing the original blob."""
+        engine = get_store_engine()
+        content_id = "img-content"
+        data = b"fake image bytes"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=data,
+            mime_type="image/png",
+            file_size_bytes=len(data),
+        )
+
+        result = execute_split_file_into_chunks(content_id, "image/png", len(data), engine)
+
+        assert len(result.chunks) == 1
+        assert result.chunks[0].content_id == content_id  # reuses original
+        assert result.chunks[0].chunk_index == 0
+        assert result.chunks[0].page_start == 1
+        assert result.chunks[0].page_end == 1
+        assert result.total_pages == 1
+        assert result.original_content_id == content_id
+
+    def test_non_pdf_over_size_raises(self, migrated: str) -> None:
+        """Non-PDF files exceeding the size limit are rejected."""
+        engine = get_store_engine()
+        content_id = "big-img"
+        data = b"x" * (MAX_FILE_SIZE_BYTES + 1)
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=data,
+            mime_type="image/png",
+            file_size_bytes=len(data),
+        )
+
+        with pytest.raises(ValueError, match="Non-PDF file"):
+            execute_split_file_into_chunks(content_id, "image/png", len(data), engine)
+
+    def test_small_pdf_single_chunk(self, migrated: str) -> None:
+        """PDFs under cutoffs produce a single chunk reusing the original blob."""
+        engine = get_store_engine()
+        pdf_data = _create_test_pdf(10)
+        content_id = "small-pdf"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 1
+        assert result.chunks[0].content_id == content_id  # reuses original
+        assert result.chunks[0].page_start == 1
+        assert result.chunks[0].page_end == 10
+        assert result.total_pages == 10
+        assert get_file_content(engine, content_id) is not None
+
+    def test_boundary_30_pages_single_chunk(self, migrated: str) -> None:
+        """Exactly MAX_PAGES pages stays a single chunk."""
+        engine = get_store_engine()
+        pdf_data = _create_test_pdf(MAX_PAGES)
+        content_id = "boundary-30"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 1
+        assert result.total_pages == MAX_PAGES
+
+    def test_boundary_31_pages_splits(self, migrated: str) -> None:
+        """MAX_PAGES + 1 pages triggers a split: 25 + 6."""
+        engine = get_store_engine()
+        pdf_data = _create_test_pdf(MAX_PAGES + 1)
+        content_id = "boundary-31"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 2
+        assert result.total_pages == MAX_PAGES + 1
+
+        assert result.chunks[0].page_start == 1
+        assert result.chunks[0].page_end == CHUNK_SIZE_PAGES
+        assert result.chunks[0].chunk_index == 0
+
+        assert result.chunks[1].page_start == CHUNK_SIZE_PAGES + 1
+        assert result.chunks[1].page_end == MAX_PAGES + 1
+        assert result.chunks[1].chunk_index == 1
+
+    def test_large_pdf_60_pages_3_chunks(self, migrated: str) -> None:
+        """60-page PDF splits into 3 chunks: 25 + 25 + 10."""
+        engine = get_store_engine()
+        pdf_data = _create_test_pdf(60)
+        content_id = "large-60"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert len(result.chunks) == 3
+        assert result.total_pages == 60
+        assert (result.chunks[0].page_start, result.chunks[0].page_end) == (1, 25)
+        assert (result.chunks[1].page_start, result.chunks[1].page_end) == (26, 50)
+        assert (result.chunks[2].page_start, result.chunks[2].page_end) == (51, 60)
+
+    def test_original_blob_deleted_after_split(self, migrated: str) -> None:
+        """After a multi-chunk split, the original blob is deleted; chunk blobs exist."""
+        engine = get_store_engine()
+        pdf_data = _create_test_pdf(MAX_PAGES + 1)
+        content_id = "delete-test"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        assert get_file_content(engine, content_id) is None
+        for chunk in result.chunks:
+            assert get_file_content(engine, chunk.content_id) is not None
+
+    def test_original_blob_kept_for_single_chunk(self, migrated: str) -> None:
+        """The single-chunk case preserves the original blob."""
+        engine = get_store_engine()
+        pdf_data = _create_test_pdf(5)
+        content_id = "keep-test"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        execute_split_file_into_chunks(content_id, "application/pdf", len(pdf_data), engine)
+
+        assert get_file_content(engine, content_id) is not None
+
+    def test_chunk_pdfs_are_valid(self, migrated: str) -> None:
+        """Each chunk blob is a valid PDF with the expected page count."""
+        import fitz
+
+        engine = get_store_engine()
+        pdf_data = _create_test_pdf(60)
+        content_id = "valid-chunks"
+        save_file_content(
+            engine,
+            content_id=content_id,
+            data=pdf_data,
+            mime_type="application/pdf",
+            file_size_bytes=len(pdf_data),
+        )
+
+        result = execute_split_file_into_chunks(
+            content_id, "application/pdf", len(pdf_data), engine
+        )
+
+        for chunk, expected in zip(result.chunks, [25, 25, 10], strict=True):
+            blob = get_file_content(engine, chunk.content_id)
+            assert blob is not None
+            doc = fitz.open(stream=blob["data"], filetype="pdf")
+            assert len(doc) == expected
+            doc.close()
+
+    def test_missing_content_raises(self, migrated: str) -> None:
+        """Raises RuntimeError if the content_id is not found in the store."""
+        engine = get_store_engine()
+        with pytest.raises(RuntimeError, match="File content not found"):
+            execute_split_file_into_chunks("nonexistent", "application/pdf", 1000, engine)
 
 
 # ---------------------------------------------------------------------------

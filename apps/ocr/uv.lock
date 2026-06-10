@@ -792,7 +792,7 @@ wheels = [
 
 [[package]]
 name = "ocr"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -1271,7 +1271,7 @@ wheels = [
 
 [[package]]
 name = "sax-llm"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "../sax-llm" }
 dependencies = [
     { name = "anthropic" },
