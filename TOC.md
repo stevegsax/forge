@@ -47,6 +47,7 @@ Start here: **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — current project status,
 - [planning/LSP_INTEGRATION_PLAN.md](docs/planning/LSP_INTEGRATION_PLAN.md) — LSP-based context generation (deferred).
 - [planning/task-management/DECOMPOSITION.md](docs/planning/task-management/DECOMPOSITION.md) — multi-transform DAG planner (**draft; not implemented**).
 - [planning/task-management/DECOMPOSITION_SCENARIOS.md](docs/planning/task-management/DECOMPOSITION_SCENARIOS.md) — behavioral scenarios for the DECOMPOSITION draft.
+- [planning/task-management/DECOMPOSITION_REVIEW.md](docs/planning/task-management/DECOMPOSITION_REVIEW.md) — design review of the DECOMPOSITION draft (required + recommended changes, scenario gaps).
 
 ## Worked Examples
 
