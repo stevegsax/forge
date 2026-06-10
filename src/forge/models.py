@@ -892,6 +892,10 @@ class AssembleSubTaskContextInput(BaseModel):
     sub_task: SubTask
     worktree_path: str = Field(description="Parent worktree (for reading context files).")
     repo_root: str = Field(default="", description="Repo root for reading project instructions.")
+    context_config: ContextConfig = Field(
+        default_factory=ContextConfig,
+        description="Controls auto-discovery for the sub-task (auto-discovers by default).",
+    )
     prior_errors: list[ValidationResult] = Field(default_factory=list)
     attempt: int = Field(default=1)
     max_attempts: int = Field(default=2)
