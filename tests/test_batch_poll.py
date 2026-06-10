@@ -239,9 +239,11 @@ class TestExecutePollBatchResults:
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
-            with pytest.raises(RuntimeError, match="1 error"):
-                await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
+        with (
+            patch("sax_llm.get_provider_by_name", return_value=provider),
+            pytest.raises(RuntimeError, match="1 error"),
+        ):
+            await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
 
     @pytest.mark.asyncio
     async def test_missing_batch_old_job_marks_missing(self) -> None:
@@ -254,9 +256,11 @@ class TestExecutePollBatchResults:
 
         old_time = datetime.now(UTC) - timedelta(hours=25)
         job = _make_pending_job(created_at=old_time)
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
-            with pytest.raises(RuntimeError, match="1 error"):
-                await execute_poll_batch_results([job], temporal, track_update, _put_blob)
+        with (
+            patch("sax_llm.get_provider_by_name", return_value=provider),
+            pytest.raises(RuntimeError, match="1 error"),
+        ):
+            await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
         assert len(updates) == 1
         assert updates[0]["status"] == BatchJobStatus.MISSING
@@ -271,9 +275,11 @@ class TestExecutePollBatchResults:
         temporal = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
-            with pytest.raises(RuntimeError, match="1 error"):
-                await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
+        with (
+            patch("sax_llm.get_provider_by_name", return_value=provider),
+            pytest.raises(RuntimeError, match="1 error"),
+        ):
+            await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
 
     # -----------------------------------------------------------------------
     # Terminal failure statuses (FAILED / EXPIRED / CANCELED)
@@ -336,9 +342,11 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
-            with pytest.raises(RuntimeError, match="1 error"):
-                await execute_poll_batch_results([job], temporal, track_update, _put_blob)
+        with (
+            patch("sax_llm.get_provider_by_name", return_value=provider),
+            pytest.raises(RuntimeError, match="1 error"),
+        ):
+            await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
         assert len(updates) == 1
         assert updates[0]["status"] == BatchJobStatus.FAILED
