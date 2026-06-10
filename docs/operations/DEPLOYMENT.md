@@ -16,7 +16,7 @@ the Temporal + Supabase + S3 combination.
 > multi-region are out of scope. Multi-host workers become *possible* once the
 > store is on Postgres (see [Scaling](#scaling)), but the steps below describe a
 > single instance.
-
+>
 > **Remote CLI access over the internet.** This document's base design keeps
 > Temporal loopback-only and reaches it via an SSM tunnel. If users must run the
 > `forge`/`ocr`/`pbook` CLIs directly over the internet, deploy the **mutual-TLS
@@ -27,7 +27,7 @@ the Temporal + Supabase + S3 combination.
 
 ## Architecture
 
-```
+```text
 ┌──────────────────────── EC2 (Amazon Linux 2023, t3.large) ─────────────────────────┐
 │                                                                                     │
 │  Docker Compose                          systemd                                    │
@@ -170,7 +170,7 @@ pbook  = { path = "../pbook",  editable = true }
 Neither `sax-llm` nor `pbook` is published to a package index, so a plain
 `pip install forge` cannot resolve them. The dependency graph is:
 
-```
+```text
 sax-llm  (anthropic, mistralai, pydantic)
    └── pbook  (+ temporalio, sqlalchemy, alembic, openai, numpy)
          └── forge  (+ opentelemetry, grimp, networkx, scipy, pymupdf, click,
@@ -185,7 +185,7 @@ in increasing isolation:
 Reproduce the dev layout on the instance and let `uv` build the editable install.
 Simplest, matches development exactly, no extra build step.
 
-```
+```text
 /srv/forge-app/
 ├── forge/      # this repo
 ├── sax-llm/    # sibling — referenced as ../sax-llm

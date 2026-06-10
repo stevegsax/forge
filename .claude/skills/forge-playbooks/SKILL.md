@@ -4,6 +4,8 @@ description: Manage Forge playbook entries — list, add, and export. Use when t
 allowed-tools: Bash(forge playbooks *)
 ---
 
+# Forge Playbooks
+
 Use the `forge playbooks` CLI to manage playbook entries in the Forge knowledge base. Playbooks are reusable lessons extracted from completed tasks or added manually.
 
 ## Commands

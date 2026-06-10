@@ -222,7 +222,7 @@ decision basis — not code.
   forge.ocr + forge.store) are OCR-specific → move to OCR's own CLI. `backfill-hashes` is moot under
   big-bang/no-corpus.
 
-### STATE: forge-contracts repo exists but is EMPTY (0 files) — clean slate. Contents = plan design item.
+### STATE: forge-contracts repo exists but is EMPTY (0 files) — clean slate. Contents = plan design item
 
 ### ADVERSARIAL SWEEP COMPLETE (workflow wkwh24osi, 6 agents) — 6 BLOCKERS
 
@@ -284,7 +284,7 @@ READ model for the JOIN (no forge.store import). 11. forge-contracts editable pi
 
 Correct only if: one stable correlation key (request_id==custom_id==batch_jobs PK, minted once);
 platform poll+submit genuinely OCR-agnostic (poller stashes verbatim result blob + signals typed pointer,
-never stores images / never injects _image_mapping; submit sends opaque pre-built blob preserving
+never stores images / never injects_image_mapping; submit sends opaque pre-built blob preserving
 /v1/ocr file-upload); ALL image storage/bbox/markdown in OCR; every cross-queue interaction mediated by
 forge-contracts constants/models with single-sourced TLS; result blobs outlive the full ~25-26h wait,
 request blobs survive submit retries, reapable vs durable blobs separated for GC; double-submit safe

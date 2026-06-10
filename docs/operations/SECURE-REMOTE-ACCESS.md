@@ -33,7 +33,7 @@ DDoS protection, and securing the AWS account itself.
 Remote CLIs connect to an **nginx gRPC reverse proxy** that terminates **mutual
 TLS** on port 443 and forwards to the Temporal frontend on the private network.
 
-```
+```text
 client (cert) ──TLS/mTLS:443──► nginx gateway ──plaintext:7233──► temporal (private)
                                   │ ssl_verify_client on
                                   │ ssl_client_certificate = client-ca.crt
@@ -182,6 +182,6 @@ the single-file gateway.
 
 ## References
 
-- Temporal security (mTLS, authorizer): https://docs.temporal.io/self-hosted-guide/security
-- Temporal service TLS config: https://docs.temporal.io/temporal-service/configuration
+- Temporal security (mTLS, authorizer): <https://docs.temporal.io/self-hosted-guide/security>
+- Temporal service TLS config: <https://docs.temporal.io/temporal-service/configuration>
 - Python SDK `TLSConfig`: `temporalio.service.TLSConfig`

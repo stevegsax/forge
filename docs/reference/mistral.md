@@ -2,10 +2,10 @@
 
 ## API Documentation
 
-- API docs: https://docs.mistral.ai/api/
-- Batch API: https://docs.mistral.ai/capabilities/batch
-- OCR batch cookbook: https://docs.mistral.ai/cookbooks/mistral-ocr-batch_ocr
-- API keys: https://console.mistral.ai/api-keys/
+- API docs: <https://docs.mistral.ai/api/>
+- Batch API: <https://docs.mistral.ai/capabilities/batch>
+- OCR batch cookbook: <https://docs.mistral.ai/cookbooks/mistral-ocr-batch_ocr>
+- API keys: <https://console.mistral.ai/api-keys/>
 
 ## Authentication
 
@@ -112,6 +112,6 @@ See also `scripts/mistral-batch-jobs.sh`.
 - Provider: `src/forge/llm_providers/mistral.py`
 - Unsupported features (silently skipped per D63 degradation policy):
 
-    - Prompt caching
-    - Extended thinking
-    - Cache control headers
+  - Prompt caching
+  - Extended thinking
+  - Cache control headers

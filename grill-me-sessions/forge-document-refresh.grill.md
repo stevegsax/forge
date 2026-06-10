@@ -65,7 +65,8 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
 ### DECIDED: Canon shape = Layered canon
 
 - **Decision**: The 4 status/planning docs (OVERVIEW, TASKS, PHASES, requirements) sit on top of a kept-and-verified technical layer (ARCHITECTURE, DECISIONS), operational layer (workers/deploy/debug/secure-remote/adding-a-domain/test-strategy/usage), and reference layer (mistral). Research, original PHASE1–14 specs, DESIGN.md, and to-merge are archived. Target tree:
-  ```
+
+  ```text
   docs/
   ├── OVERVIEW.md     status: done/remaining reqs, known issues, tech debt
   ├── TASKS.md        completed vs uncompleted
@@ -77,6 +78,7 @@ A first-principles rewrite of Forge's documentation for an **LLM-developer audie
   ├── reference/      mistral
   └── archive/        DESIGN, research, to-merge, PHASE1–14
   ```
+
 - **Rationale**: ARCHITECTURE (Module Map, Data Models) and DECISIONS (85 non-obvious calls) are the highest-value "don't make it search" docs for an LLM-dev audience.
 - **Date**: 2026-06-04
 

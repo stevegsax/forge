@@ -526,7 +526,7 @@ satisfied; forge + OCR suites green; cross-repo e2e green; `forge-contracts`,
   `ocr/src/ocr/store.py`: own `Base`; tables `ocr_results`, `ocr_images`, `file_content_blobs`
   (rename → `ocr_*` deferred to the squash), and the NEW `ocr_job_status` table (PK `request_id`
   == custom_id == platform `batch_jobs` PK; holds `document_id`/`file_path` that leave `batch_jobs`,
-  + coarse `OcrProcessingStatus` submitted/processing/stored/failed). All ~20 OCR functions moved,
+  - coarse `OcrProcessingStatus` submitted/processing/stored/failed). All ~20 OCR functions moved,
   using `forge_contracts.db` (insert_or_ignore/get_store_engine) + `forge_contracts.s3_blobs` +
   `forge_contracts.types.UTCDateTime` — zero `forge.*` imports. Re-exports get_store_engine/
   get_store_url so the package import-rewrite is a simple `forge.store` → `ocr.store`. Alembic chain

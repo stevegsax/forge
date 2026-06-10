@@ -4,11 +4,13 @@ description: Check the status of submitted batch jobs and OCR results. Use when 
 allowed-tools: Bash(*/batch-status.sh *)
 ---
 
+# Batch Status
+
 Query the Forge observability database using the companion script.
 
 ## Script location
 
-```
+```text
 .claude/skills/batch-status/batch-status.sh
 ```
 

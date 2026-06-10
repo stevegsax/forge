@@ -15,7 +15,7 @@ Forge is a generic orchestrator — the same pipeline handles code generation, r
 
 Each flow lives in a numbered subdirectory:
 
-```
+```text
 sample-flows/
 ├── README.md
 ├── Makefile

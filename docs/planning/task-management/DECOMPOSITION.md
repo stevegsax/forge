@@ -56,7 +56,7 @@ The root node is created automatically during the first-pass decomposition (step
 
 The pipeline is a sequence of Temporal activities connected by a workflow. Each transform is a separate LLM call (or deterministic function) that produces a versioned artifact.
 
-```
+```text
 User Input
   |
   v
@@ -182,7 +182,7 @@ class PlanVersion(BaseModel):
 **Output:** A `workflow_type` string and confidence score.
 **Method:** The LLM receives the user's request plus a catalog of available workflow types (loaded from the workflow templates directory). Each entry has a `description.md` explaining when to use it. If confidence is below a threshold, the system presents the options to the user as a structured form.
 
-```
+```text
 Workflow templates catalog:
 - software: "Building, modifying, or debugging software programs..."
 - research: "Investigating a topic, gathering evidence, synthesizing findings..."
@@ -227,7 +227,7 @@ class ClarificationQuestion(BaseModel):
 **Output:** A precise, unambiguous goal statement.
 **Method:** The LLM synthesizes everything into a single goal statement. The user must confirm it. If the user rejects, the system returns to step 2 (Clarify) with the user's feedback.
 
-**Temporal pattern:** Same signal/wait pattern. The user receives the goal statement and responds with "approve" or "revise: <feedback>".
+**Temporal pattern:** Same signal/wait pattern. The user receives the goal statement and responds with "approve" or "revise: `<feedback>`".
 
 **Model tier:** GENERATION.
 
@@ -338,7 +338,7 @@ Default selection by workflow type:
 
 Each judge receives the same plan but a different persona prompt:
 
-```
+```text
 You are {persona_name}. Your role is to {persona_description}.
 
 ## Plan Under Review
@@ -398,7 +398,7 @@ The workflow pauses via signal until the user responds. If the user rejects, the
 
 Templates are organized in a directory-per-workflow layout using Jinja2:
 
-```
+```text
 src/forge/workflow_templates/
 ├── _shared/
 │   ├── classify_base.prompt.j2

@@ -7,7 +7,7 @@ certificate against *our* server CA. No valid certificate ⇒ no connection.
 
 ## Trust model (two CAs)
 
-```
+```text
             server-ca.key  ──signs──►  server.crt   (gateway presents this)
    (operator, offline)                     ▲
                                            │ verified by clients via server-ca.crt

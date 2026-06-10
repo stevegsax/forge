@@ -4,11 +4,13 @@ description: Check Mistral batch job status directly via the Mistral API. Use wh
 allowed-tools: Bash(*/mistral-batch.sh *)
 ---
 
+# Mistral Batch
+
 Query the Mistral Batch API using the companion script.
 
 ## Script location
 
-```
+```text
 .claude/skills/mistral-batch/mistral-batch.sh
 ```
 

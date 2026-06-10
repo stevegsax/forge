@@ -86,7 +86,7 @@ digraph plan_7a3f {
 
 ## Execution Order
 
-```
+```text
 node-001 (Create file_printer module)
     |
     +---> node-002 (Add CLI entry point)      [parallel]

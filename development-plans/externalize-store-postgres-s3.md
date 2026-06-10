@@ -174,7 +174,7 @@ multi-host workers.
   `FORGE_DB_PATH` → `$XDG_STATE_HOME/forge/forge.db` → `~/.local/state/...`; `None`
   if `FORGE_DB_PATH==""`.
 - `get_engine(db_path: Path) -> Engine` (`store.py:322`): `create_engine(sqlite:///…)`
-  + WAL pragma listener.
+  - WAL pragma listener.
 - `run_migrations(db_path: Path)` (`store.py:336`): builds Alembic `Config`, sets
   `sqlalchemy.url = sqlite:///{db_path}`, `command.upgrade(cfg, "head")`.
 - **~30 call sites** follow `get_db_path()` → null-check → `get_engine(db_path)`:
@@ -409,7 +409,8 @@ the workflow: `f"{workflow_id}:{role}:{step_id}:{sub_task_id}:{attempt}:{seq}"`)
 `op.batch_alter_table`; update the `Interaction`/`Playbook` ORM models.
 
 **Retry policy (`workflow_blocks.py`, reused at every persist call site):**
-```
+
+```python
 _PERSIST_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=1), backoff_coefficient=2.0,
     maximum_interval=timedelta(seconds=60), maximum_attempts=20,
@@ -419,6 +420,7 @@ _PERSIST_RETRY = RetryPolicy(
 start_to_close_timeout=timedelta(seconds=30)        # one write attempt
 schedule_to_close_timeout=timedelta(minutes=20)     # the real cap across retries
 ```
+
 `schedule_to_close=20min` is the governor: backoff 1,2,4,8,16,32,60,60… fits ~18–20
 attempts in 20 min, then the activity fails `ScheduleToClose` and (uncaught) fails
 the workflow loudly. DB-unreachable surfaces as psycopg2 `OperationalError`/

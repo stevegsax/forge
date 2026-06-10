@@ -15,7 +15,7 @@ Git and worktrees serve as the general-purpose data store and isolation mechanis
 
 Forge uses Temporal for workflow orchestration. The client (`forge run`) and worker (`forge worker`) are separate processes, with the Temporal server acting as a durable queue and state machine between them.
 
-```
+```text
 forge run  ──►  Temporal Server  ◄──  forge worker
 (submits)        (queues work)        (executes)
 ```
@@ -305,4 +305,3 @@ forge start BatchPollerWorkflow --wait
 | `--wait` | off | Wait for completion and print result as JSON |
 | `--timeout` | `48` | Execution timeout in hours |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
-

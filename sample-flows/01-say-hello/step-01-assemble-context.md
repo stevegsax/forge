@@ -20,7 +20,7 @@ TaskDefinition(
 
 The system prompt is assembled by `build_system_prompt()` in `src/forge/activities/context.py`. With no context files, no target files, and no prior errors, the prompt reduces to the domain role prompt, output requirements, and task description:
 
-```
+```text
 You are a helpful assistant.
 
 ## Output Requirements
@@ -47,7 +47,7 @@ The role prompt comes from the domain configuration registry (`src/forge/domains
 
 The user prompt is a fixed template from the domain config:
 
-```
+```text
 Respond to the task described above. Write your response as markdown files using the `files` list.
 ```
 

@@ -14,7 +14,7 @@ Supabase/S3 deployment context.
 
 ## Architecture
 
-```
+```text
   Remote laptops                          EC2 (Amazon Linux 2023)
   forge / ocr / pbook                ┌───────────────────────────────────────────┐
   + client cert (mTLS)               │ docker compose (deploy/temporal)            │
