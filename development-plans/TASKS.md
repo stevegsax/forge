@@ -1,5 +1,7 @@
 # Forge Task List
 
+<!-- markdownlint-disable MD013 -->
+
 The single source of truth for what is done vs. not. Work the next unchecked task in priority order (see [PROCESS.md](PROCESS.md)). Per-task detail lives in task files in this directory; narrative status and the full evidence for each tech-debt item live in [../docs/OVERVIEW.md](../docs/OVERVIEW.md).
 
 ## Architecture migration (approved 2026-06-10)
@@ -122,7 +124,7 @@ Priority order. OPEN tech-debt (no mechanism today) before PARTIAL (hardening) b
 
 ### Remaining features / specs
 
-- [ ] OCR Web API — [../docs/requirements/ocr_web_api.feature](../docs/requirements/ocr_web_api.feature) (specified, not built).
+- [ ] OCR Web API — specified, not built; the spec (`ocr_web_api.feature`) was removed from this repo in the OCR split (`d661f41`; recoverable from git history at `7395e65`). If built, both the spec and the API belong in the sibling `ocr` repo.
 - [ ] Structured human-in-the-loop — [../docs/requirements/human_in_the_loop.feature](../docs/requirements/human_in_the_loop.feature) (specified, not built).
 - [ ] Phase 13 — tree-sitter multi-language — [../docs/planning/PHASE13.md](../docs/planning/PHASE13.md).
 - [ ] LSP-based context generation — [../docs/planning/LSP_INTEGRATION_PLAN.md](../docs/planning/LSP_INTEGRATION_PLAN.md).
@@ -131,6 +133,6 @@ Priority order. OPEN tech-debt (no mechanism today) before PARTIAL (hardening) b
 ## Dependencies
 
 - **Structured human-in-the-loop** is a prerequisite for the **multi-transform DAG planner** (its clarification/approval gates depend on it).
-- **OCR Web API** — OCR now lives in the sibling `ocr` repo; if built, the web API belongs there (the spec stays here for the record).
+- **OCR Web API** — OCR now lives in the sibling `ocr` repo; if built, the web API belongs there (the spec was removed in the OCR split and is recoverable from git history).
 - **Phase 13 (tree-sitter)** and **LSP context generation** both rewrite context assembly (`code_intel/`) — coordinate to avoid rework.
 - Sandboxing (Open #1) gates safe execution of any non-`code_generation` domain work and any multi-tenant use.

@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+<!-- markdownlint-disable MD013 MD025 -->
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 # Forge
@@ -8,15 +10,23 @@ Forge is a general-purpose LLM task orchestrator built around batch mode with do
 
 ## Project Status
 
-Current status — completed and remaining requirements, plus known issues and technical debt — is in [docs/OVERVIEW.md](docs/OVERVIEW.md) (the status-of-record). Phase roadmap: [docs/PHASES.md](docs/PHASES.md). Live task list: [development-plans/TASKS.md](development-plans/TASKS.md).
+Current status — completed and remaining requirements, plus known issues and technical debt — is in [docs/OVERVIEW.md](docs/OVERVIEW.md) (the status-of-record). Phase roadmap for the shipped Release 1: [docs/PHASES.md](docs/PHASES.md). The active work queue is the 2026-06-10 architecture migration in [development-plans/TASKS.md](development-plans/TASKS.md) — see the next section.
+
+## Current Project: 2026-06-10 Architecture Migration
+
+A merged platform redesign plan was approved 2026-06-10. It is the active project; [development-plans/TASKS.md](development-plans/TASKS.md) is the work queue (47 tasks, T1.0–T8.4, eight phases). No migration code has landed yet — the working tree is the pre-migration system, and this file describes that system. Sections below carry one-line notes where the migration deletes or replaces current machinery; do not extend anything so annotated.
+
+- **Reversals:** R1 — the signal-based batch SPI is replaced by per-workflow timer-loop polling (D88, Phase 4). R2 — pbook ingestion becomes sync inside pbook and forge's ingestion side is deleted (D91, T6.4).
+- **Phase ordering is load-bearing:** 1 → 2 → 3 → 4 → 5; Phase 6 runs after Phase 5; Phases 6 and 7 may run in parallel; Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0).
+- **Context:** handoff in [development-plans/HANDOFF-architecture-review-2026-06-10.md](development-plans/HANDOFF-architecture-review-2026-06-10.md); decisions D86–D97 in [docs/DECISIONS.md](docs/DECISIONS.md); review findings in [docs/reviews/2026-06-architecture-review.md](docs/reviews/2026-06-architecture-review.md).
 
 ## Cross-Project Dependencies
 
-Forge depends on sibling editable packages (via `[tool.uv.sources]` in pyproject.toml):
+Forge depends on sibling packages pinned by git tag in `[tool.uv.sources]` (sax-llm v0.1.1, pbook v0.2.1, forge-contracts v0.1.1). T1.0 switches these to editable path sources; T2.1 collapses all five repos into the `sax` monorepo.
 
 - **forge-contracts** (`../forge-contracts`) — the shared SPI surface between the platform and its consumer apps: batch wire models (`BatchResult`, `BatchSubmitSpiInput`, `BatchJobStatus`, the result-payload envelope), the survivable `persist_block` primitive, `s3_blobs`, the Temporal connect helper, generic DB helpers, queue/namespace/signal constants, and the read-only `batch_jobs` schema. Both Forge and the OCR app import it; neither imports the other.
 - **sax-llm** (`../sax-llm`) — shared LLM provider abstraction, output type registry, and batch response parsing.
-- **pbook** (`../pbook`, optional) — cross-project knowledge store. Forge's transcript ingestion workflows call pbook's `ExtractionWorkflow` and `record_ingested_session` activity cross-queue on `pbook-task-queue`. The dependency is guarded: if pbook is not installed, the worker starts without ingestion workflows and `forge ingest` exits with a clear error. Forge's own playbook store (`forge.db` `playbooks` table) is separate from pbook's `entries` table — the two stores are parallel and do not share data. See `diataxis/explanation/learning-loops.md` for the design discussion.
+- **pbook** (`../pbook`) — cross-project knowledge store, a required dependency. Forge's transcript ingestion workflows call pbook's `ExtractionWorkflow` and `record_ingested_session` activity cross-queue on `pbook-task-queue`. An import guard (`_INGESTION_AVAILABLE` in worker.py) gates workflow registration only — pbook itself is installed unconditionally. (Forge's ingestion side is deleted in T6.4.) Forge's own playbook store (`forge.db` `playbooks` table) is separate from pbook's `entries` table — the two stores are parallel and do not share data. (The playbooks store is superseded by pbook in T6.7.) See `diataxis/explanation/learning-loops.md` for the design discussion.
 
 ## Documentation
 
@@ -26,11 +36,11 @@ See [TOC.md](TOC.md) for a full table of contents covering design docs, phase sp
 
 ```bash
 uv sync                          # Install dependencies
-uv run pytest                    # Run all tests (excludes e2e by default)
+uv run pytest                    # Run all tests (excludes e2e and postgres markers by default)
 uv run pytest tests/test_foo.py  # Run a single test file
 uv run pytest tests/test_foo.py::TestClass::test_name  # Run a single test
 uv run pytest --no-cov           # Skip coverage (faster iteration)
-uv run pytest -m e2e             # Run e2e tests (requires Temporal + APIs)
+uv run pytest -m postgres --no-cov  # Migration tests against real Postgres (testcontainers)
 uv run ruff check .              # Lint
 uv run ruff format .             # Format
 uv run ruff check --fix .        # Auto-fix lint issues
@@ -38,7 +48,7 @@ uv run ruff check --fix .        # Auto-fix lint issues
 
 Coverage is enforced at 85% by default (`--cov-fail-under=85` in pyproject.toml). When running a single test file, use `--no-cov` to avoid failing on aggregate coverage.
 
-The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-skipping environment (`WorkflowEnvironment.start_time_skipping` in `conftest.py`). Tests that require external services (Mistral API, Temporal server) are marked `e2e` and excluded from default runs.
+The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-skipping environment (`WorkflowEnvironment.start_time_skipping` in `conftest.py`). Two markers are excluded from default runs: `postgres` (Alembic migrations against a real Postgres via testcontainers) and `e2e`. The `e2e` marker is defined but currently empty in forge — `tests/test_e2e.py` is a default-run integration suite with mocked LLM calls (T8.2 renames it to `test_pipeline.py` and restores marker honesty).
 
 ## Development Conventions
 
@@ -71,17 +81,17 @@ The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-s
 
 ## Test Patterns
 
-Workflow tests use the Temporal time-skipping test server with a session-scoped `env` fixture (`conftest.py`). Activities are mocked by name using `@activity.defn(name="activity_name")` and registered on a per-test `Worker`. Batch signal delivery is tested by starting the workflow with `env.client.start_workflow`, then calling `handle.signal(WorkflowClass.batch_result_received, BatchResult(...))` to deliver the batch result.
+Workflow tests use the Temporal time-skipping test server with a session-scoped `env` fixture (`conftest.py`). Activities are mocked by name using `@activity.defn(name="activity_name")` and registered on a per-test `Worker`. Batch signal delivery is tested by starting the workflow with `env.client.start_workflow`, then calling `handle.signal(WorkflowClass.batch_result_received, BatchResult(...))` to deliver the batch result. (The signal path is deleted in Phase 4 (T4.1) in favor of timer-loop polling — do not write new tests against it.) The module-global scenario state in `tests/test_workflows.py` is replaced by `ScenarioState` closures in T5.5 — do not add new `global` statements there.
 
 CLI tests use Click's `CliRunner` and mock async submission helpers with `_async_result(value)` (a helper that returns an async function wrapping `value`, avoiding orphaned coroutine warnings from `asyncio.run`).
 
 Activity tests call the activity function directly as a plain async function (not through a Temporal worker), mocking external dependencies with `unittest.mock.patch`.
 
-Cross-queue workflow tests (e.g., ingestion) run two `Worker` instances in parallel — one on `forge-task-queue` and one on `pbook-task-queue` — with mock activities/workflows registered on each. The workflow sandbox restricts module-level mutable state access inside workflows, so canned results must be returned from activities rather than read from module globals.
+Cross-queue workflow tests (e.g., ingestion) run two `Worker` instances in parallel — one on `forge-task-queue` and one on `pbook-task-queue` — with mock activities/workflows registered on each. (These are deleted with forge's ingestion side in T6.4.) The workflow sandbox restricts module-level mutable state access inside workflows, so canned results must be returned from activities rather than read from module globals.
 
 ## The Universal Workflow Step
 
-Every operation follows: construct message, send to LLM, receive response, serialize result, evaluate transition. Temporal provides the workflow engine; the LLM call and transition evaluation are separate activities. Every LLM call is structured as a document completion for batch API compatibility. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+Every operation follows: construct message, send to LLM, receive response, serialize result, evaluate transition. Temporal provides the workflow engine; the LLM call and transition evaluation are separate activities. (T5.1, per D95, inlines transition evaluation into pure step logic — do not add logic to the `evaluate_transition` activity.) Every LLM call is structured as a document completion for batch API compatibility. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ## Git Strategy
 
@@ -100,7 +110,8 @@ All modes include automatic context discovery (Phase 4), LLM-guided exploration 
 
 ## Release Roadmap
 
-- **Release 1** (current): Phases 1–14 — the core orchestrator with batch processing. Focus on hardening and confidence before expanding scope.
+- **Release 1** (shipped): Phases 1–12 and 14 — the core orchestrator with batch processing (Phase 13 deferred). See [docs/PHASES.md](docs/PHASES.md).
+- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 47 tasks across 8 phases, ending with the `sax` monorepo tagged v1.0.
 - **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md) and [docs/PHASES.md](docs/PHASES.md).
 
 ## Development Plans
