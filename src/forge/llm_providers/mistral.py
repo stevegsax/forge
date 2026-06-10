@@ -465,42 +465,6 @@ class MistralProvider:
 
         return BatchPollResult(status=BatchPollStatus.ENDED, entries=entries)
 
-    @property
-    def supports_sync_ocr(self) -> bool:
-        """Mistral supports synchronous OCR via client.ocr.process_async."""
-        return True
-
-    async def call_ocr(
-        self,
-        *,
-        document_data_uri: str,
-        model: str,
-        include_image_base64: bool = True,
-    ) -> dict[str, Any]:
-        """Call the Mistral OCR endpoint synchronously.
-
-        Returns a dict matching the batch OCR response shape (``pages``,
-        ``model``, ``usage_info``) so callers can reuse parse logic.
-        """
-        from mistralai.models import DocumentURLChunk, ImageURLChunk
-
-        # Pick the right document type based on the MIME type in the data URI
-        mime_type = document_data_uri.split(":")[1].split(";")[0]
-        document: ImageURLChunk | DocumentURLChunk
-        if mime_type.startswith("image/"):
-            document = ImageURLChunk(image_url=document_data_uri)
-        else:
-            document = DocumentURLChunk(document_url=document_data_uri)
-
-        response = await self._client.ocr.process_async(
-            model=model,
-            document=document,
-            include_image_base64=include_image_base64,
-        )
-
-        # Convert SDK response to a plain dict matching batch output shape
-        return response.model_dump(mode="json")
-
     def parse_batch_result(
         self,
         raw_json: str,
