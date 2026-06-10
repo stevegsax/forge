@@ -27,6 +27,7 @@ from forge.models import (
     AssembledContext,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
+    ContextConfig,
     ContextStats,
     PlanStep,
     StepResult,
@@ -384,6 +385,60 @@ def _append_context_section(
         parts.append("```")
 
 
+def build_discovered_context_section(packed: PackedContext) -> str:
+    """Render auto-discovered context as a markdown block for planned/sub-task prompts.
+
+    Surfaces the repo map, relevant playbooks, direct-dependency contents, and
+    interface signatures discovered by the import graph. Target-file contents
+    (priority 2) and manually specified context files (priority 6) are
+    intentionally omitted — the step and sub-task builders already render those,
+    so including them here would duplicate content. Returns "" when there is
+    nothing discovered to add.
+    """
+    from forge.code_intel.budget import Representation
+
+    repo_map_items = [i for i in packed.items if i.representation == Representation.REPO_MAP]
+    playbook_items = [i for i in packed.items if i.representation == Representation.PLAYBOOK]
+    direct_items = [i for i in packed.items if i.priority == 3]
+    signature_items = [i for i in packed.items if i.priority == 4]
+
+    if not (repo_map_items or playbook_items or direct_items or signature_items):
+        return ""
+
+    parts: list[str] = ["## Auto-Discovered Context"]
+
+    if repo_map_items:
+        parts.append("")
+        parts.append("### Repository Structure")
+        parts.append("```")
+        parts.append(repo_map_items[0].content)
+        parts.append("```")
+
+    if playbook_items:
+        parts.append("")
+        parts.append("### Relevant Playbooks")
+        for item in playbook_items:
+            parts.append("")
+            parts.append(item.content)
+
+    for title, items in (
+        ("Direct Dependencies (full content)", direct_items),
+        ("Interface Context (signatures)", signature_items),
+    ):
+        if not items:
+            continue
+        parts.append("")
+        parts.append(f"### {title}")
+        for item in items:
+            parts.append("")
+            parts.append(f"#### {item.file_path}")
+            parts.append("```")
+            parts.append(item.content)
+            parts.append("```")
+
+    return "\n".join(parts)
+
+
 def _build_context_stats(packed: PackedContext) -> ContextStats:
     """Build ContextStats from a PackedContext."""
     from forge.code_intel.budget import Representation
@@ -531,6 +586,44 @@ def _read_context_files(base_path: Path, file_paths: list[str]) -> dict[str, str
     return contents
 
 
+def _discover_packed_context(
+    *,
+    task_mock: TaskDefinition,
+    target_files: list[str],
+    project_root: str,
+    context_config: ContextConfig,
+    manual_contents: dict[str, str],
+) -> PackedContext:
+    """Run auto-discovery and inject playbooks, returning the packed context.
+
+    Shared by single-step, planned-step, and sub-task assembly. ``project_root``
+    differs per mode: the repo root for single-step, the (parent) worktree for
+    planned and fan-out modes so later steps and sub-tasks see in-progress files.
+    """
+    from forge.code_intel import discover_context
+    from forge.code_intel.budget import pack_context
+
+    packed = discover_context(
+        target_files=target_files,
+        project_root=project_root,
+        package_name=context_config.package_name or _detect_package_name(project_root),
+        src_root="src",
+        manual_context=manual_contents,
+        token_budget=context_config.token_budget,
+        max_import_depth=context_config.max_import_depth,
+        include_repo_map=context_config.include_repo_map,
+        repo_map_tokens=context_config.repo_map_tokens,
+        include_dependencies=context_config.include_dependencies,
+    )
+
+    playbooks = _load_playbooks_for_task(task_mock)
+    if playbooks:
+        playbook_items = build_playbook_context_items(playbooks)
+        packed = pack_context(packed.items + playbook_items, context_config.token_budget)
+
+    return packed
+
+
 @activity.defn
 async def assemble_context(input: AssembleContextInput) -> AssembledContext:
     """Read context files and assemble the prompts for the LLM call.
@@ -558,26 +651,8 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
     project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
 
     if input.context_config.auto_discover and input.target_files:
-        from forge.code_intel import discover_context
-        from forge.code_intel.budget import pack_context
-
         manual_contents = _read_context_files(repo_root, input.context_files)
 
-        packed = discover_context(
-            target_files=input.target_files,
-            project_root=input.repo_root,
-            package_name=input.context_config.package_name or _detect_package_name(input.repo_root),
-            src_root="src",
-            manual_context=manual_contents,
-            token_budget=input.context_config.token_budget,
-            max_import_depth=input.context_config.max_import_depth,
-            include_repo_map=input.context_config.include_repo_map,
-            repo_map_tokens=input.context_config.repo_map_tokens,
-            include_dependencies=input.context_config.include_dependencies,
-        )
-
-        # Inject playbooks (best-effort, D42)
-        # We'd need to reconstruct a task-like object or modify infer_task_tags
         task_mock = TaskDefinition(
             task_id=input.task_id,
             description=input.description,
@@ -585,11 +660,13 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
             context_files=input.context_files,
             context=input.context_config,
         )
-        playbooks = _load_playbooks_for_task(task_mock)
-        if playbooks:
-            playbook_items = build_playbook_context_items(playbooks)
-            all_items = packed.items + playbook_items
-            packed = pack_context(all_items, input.context_config.token_budget)
+        packed = _discover_packed_context(
+            task_mock=task_mock,
+            target_files=input.target_files,
+            project_root=input.repo_root,
+            context_config=input.context_config,
+            manual_contents=manual_contents,
+        )
 
         system_prompt = build_system_prompt_with_context(
             task_mock, packed, error_section, project_instructions=project_instructions
@@ -648,6 +725,7 @@ def build_step_system_prompt(
     target_file_contents: dict[str, str] | None = None,
     error_section: str = "",
     project_instructions: str = "",
+    discovered_section: str = "",
 ) -> str:
     """Build the system prompt for a single step execution.
 
@@ -711,6 +789,10 @@ def build_step_system_prompt(
             parts.append(content)
             parts.append("```")
 
+    if discovered_section:
+        parts.append("")
+        parts.append(discovered_section)
+
     if error_section:
         parts.append("")
         parts.append(error_section)
@@ -755,8 +837,23 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
     task_mock = TaskDefinition(
         task_id=input.task_id,
         description=input.task_description,
+        target_files=input.step.target_files,
+        context_files=input.step.context_files,
         context=input.context_config,
     )
+
+    discovered_section = ""
+    context_stats: ContextStats | None = None
+    if input.context_config.auto_discover and input.step.target_files:
+        packed = _discover_packed_context(
+            task_mock=task_mock,
+            target_files=input.step.target_files,
+            project_root=input.worktree_path,
+            context_config=input.context_config,
+            manual_contents=context_contents,
+        )
+        context_stats = _build_context_stats(packed)
+        discovered_section = build_discovered_context_section(packed)
 
     system_prompt = build_step_system_prompt(
         task=task_mock,
@@ -768,6 +865,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         target_file_contents=target_contents,
         error_section=error_section,
         project_instructions=project_instructions,
+        discovered_section=discovered_section,
     )
     user_prompt = build_step_user_prompt(input.step, domain=task_mock.domain)
 
@@ -775,6 +873,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
         task_id=input.task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
+        context_stats=context_stats,
         step_id=input.step.step_id,
     )
 
@@ -793,6 +892,7 @@ def build_sub_task_system_prompt(
     error_section: str = "",
     project_instructions: str = "",
     domain: TaskDomain = TaskDomain.CODE_GENERATION,
+    discovered_section: str = "",
 ) -> str:
     """Build the system prompt for a sub-task execution.
 
@@ -846,6 +946,10 @@ def build_sub_task_system_prompt(
             parts.append(content)
             parts.append("```")
 
+    if discovered_section:
+        parts.append("")
+        parts.append(discovered_section)
+
     if error_section:
         parts.append("")
         parts.append(error_section)
@@ -892,6 +996,28 @@ async def assemble_sub_task_context(
     repo_root = Path(input.repo_root) if input.repo_root else parent_worktree
     project_instructions = build_project_instructions_section(_read_project_instructions(repo_root))
 
+    task_mock = TaskDefinition(
+        task_id=input.parent_task_id,
+        description=input.parent_description,
+        target_files=input.sub_task.target_files,
+        context_files=input.sub_task.context_files,
+        context=input.context_config,
+        domain=input.domain,
+    )
+
+    discovered_section = ""
+    context_stats: ContextStats | None = None
+    if input.context_config.auto_discover and input.sub_task.target_files:
+        packed = _discover_packed_context(
+            task_mock=task_mock,
+            target_files=input.sub_task.target_files,
+            project_root=input.worktree_path,
+            context_config=input.context_config,
+            manual_contents=context_contents,
+        )
+        context_stats = _build_context_stats(packed)
+        discovered_section = build_discovered_context_section(packed)
+
     system_prompt = build_sub_task_system_prompt(
         parent_task_id=input.parent_task_id,
         parent_description=input.parent_description,
@@ -901,6 +1027,7 @@ async def assemble_sub_task_context(
         error_section=error_section,
         project_instructions=project_instructions,
         domain=input.domain,
+        discovered_section=discovered_section,
     )
     user_prompt = build_sub_task_user_prompt(input.sub_task, domain=input.domain)
 
@@ -908,5 +1035,6 @@ async def assemble_sub_task_context(
         task_id=input.parent_task_id,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
+        context_stats=context_stats,
         sub_task_id=input.sub_task.sub_task_id,
     )

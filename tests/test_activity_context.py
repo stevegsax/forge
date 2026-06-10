@@ -14,6 +14,7 @@ from forge.activities.context import (
     assemble_context,
     assemble_step_context,
     assemble_sub_task_context,
+    build_discovered_context_section,
     build_error_section,
     build_project_instructions_section,
     build_step_system_prompt,
@@ -42,6 +43,8 @@ from forge.models import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from forge.code_intel.budget import ContextItem, Representation
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +389,94 @@ class TestAssembleStepContext:
         assert calls[0]["target_files"] == ["src/routes.py"]
         assert result.context_stats is not None
 
+    @pytest.mark.asyncio
+    async def test_auto_discover_disabled_skips_discovery(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import forge.code_intel
+
+        calls: list[dict[str, object]] = []
+
+        def fake_discover_context(**kwargs: object) -> object:
+            calls.append(kwargs)
+            raise AssertionError("discovery should not run when auto_discover is False")
+
+        monkeypatch.setattr(forge.code_intel, "discover_context", fake_discover_context)
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        step = PlanStep(step_id="s1", description="Create.", target_files=["out.py"])
+        input_data = AssembleStepContextInput(
+            task_id="t1",
+            task_description="Build.",
+            context_config=ContextConfig(auto_discover=False),
+            step=step,
+            step_index=0,
+            total_steps=1,
+            repo_root=str(tmp_path),
+            worktree_path=str(worktree),
+        )
+
+        result = await assemble_step_context(input_data)
+
+        assert not calls, "discovery must not run when auto_discover is disabled"
+        assert result.context_stats is None
+
+    @pytest.mark.asyncio
+    async def test_discovered_context_appears_in_prompt(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import forge.activities.context as context_module
+        import forge.code_intel
+        from forge.code_intel.budget import ContextItem, PackedContext, Representation
+
+        def fake_discover_context(**kwargs: object) -> PackedContext:
+            return PackedContext(
+                items=[
+                    ContextItem(
+                        file_path="src/forge/deps.py",
+                        content="def discovered_dep() -> None: ...",
+                        representation=Representation.SIGNATURES,
+                        priority=4,
+                        estimated_tokens=8,
+                    ),
+                ],
+                total_estimated_tokens=8,
+                budget_utilization=0.01,
+                items_included=1,
+            )
+
+        monkeypatch.setattr(forge.code_intel, "discover_context", fake_discover_context)
+        monkeypatch.setattr(context_module, "_load_playbooks_for_task", lambda task: [])
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        step = PlanStep(step_id="s1", description="Create.", target_files=["out.py"])
+        input_data = AssembleStepContextInput(
+            task_id="t1",
+            task_description="Build.",
+            context_config=ContextConfig(auto_discover=True),
+            step=step,
+            step_index=0,
+            total_steps=1,
+            repo_root=str(tmp_path),
+            worktree_path=str(worktree),
+        )
+
+        result = await assemble_step_context(input_data)
+
+        # The discovered signatures surface in the prompt, alongside the
+        # step framing (plan progress / current step) which is preserved.
+        assert "## Auto-Discovered Context" in result.system_prompt
+        assert "discovered_dep" in result.system_prompt
+        assert "## Current Step" in result.system_prompt
+
 
 # ---------------------------------------------------------------------------
 # build_sub_task_system_prompt (pure function)
@@ -535,6 +626,39 @@ class TestAssembleSubTaskContext:
         assert calls[0]["project_root"] == str(parent_wt)
         assert calls[0]["target_files"] == ["src/schema.py"]
         assert result.context_stats is not None
+
+    @pytest.mark.asyncio
+    async def test_context_config_can_disable_auto_discovery(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import forge.code_intel
+
+        calls: list[dict[str, object]] = []
+
+        def fake_discover_context(**kwargs: object) -> object:
+            calls.append(kwargs)
+            raise AssertionError("discovery should not run when auto_discover is False")
+
+        monkeypatch.setattr(forge.code_intel, "discover_context", fake_discover_context)
+
+        parent_wt = tmp_path / "parent-wt"
+        parent_wt.mkdir()
+
+        st = SubTask(sub_task_id="st1", description="Analyze.", target_files=["src/schema.py"])
+        input_data = AssembleSubTaskContextInput(
+            parent_task_id="t1",
+            parent_description="Build API.",
+            sub_task=st,
+            worktree_path=str(parent_wt),
+            context_config=ContextConfig(auto_discover=False),
+        )
+
+        result = await assemble_sub_task_context(input_data)
+
+        assert not calls, "discovery must not run when auto_discover is disabled"
+        assert result.context_stats is None
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +850,86 @@ class TestDetectPackageName:
 
     def test_fallback_to_dir_name(self, tmp_path: Path) -> None:
         assert _detect_package_name(str(tmp_path)) == tmp_path.name
+
+
+# ---------------------------------------------------------------------------
+# build_discovered_context_section (pure function)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDiscoveredContextSection:
+    @staticmethod
+    def _item(
+        *, file_path: str, priority: int, representation: Representation, content: str
+    ) -> ContextItem:
+        from forge.code_intel.budget import ContextItem
+
+        return ContextItem(
+            file_path=file_path,
+            content=content,
+            representation=representation,
+            priority=priority,
+            estimated_tokens=4,
+        )
+
+    def test_empty_packed_returns_empty_string(self) -> None:
+        from forge.code_intel.budget import PackedContext
+
+        packed = PackedContext(items=[], total_estimated_tokens=0, items_included=0)
+        assert build_discovered_context_section(packed) == ""
+
+    def test_renders_signatures_and_dependencies(self) -> None:
+        from forge.code_intel.budget import PackedContext, Representation
+
+        packed = PackedContext(
+            items=[
+                self._item(
+                    file_path="dep.py",
+                    priority=3,
+                    representation=Representation.FULL,
+                    content="def dep() -> None: ...",
+                ),
+                self._item(
+                    file_path="iface.py",
+                    priority=4,
+                    representation=Representation.SIGNATURES,
+                    content="def iface() -> int: ...",
+                ),
+            ],
+            total_estimated_tokens=8,
+            items_included=2,
+        )
+        section = build_discovered_context_section(packed)
+        assert "## Auto-Discovered Context" in section
+        assert "Direct Dependencies (full content)" in section
+        assert "def dep()" in section
+        assert "Interface Context (signatures)" in section
+        assert "def iface()" in section
+
+    def test_omits_target_and_manual_context_tiers(self) -> None:
+        # Priority 2 (target files) and 6 (manual context files) are rendered by
+        # the step/sub-task builders, so they must not be duplicated here.
+        from forge.code_intel.budget import PackedContext, Representation
+
+        packed = PackedContext(
+            items=[
+                self._item(
+                    file_path="target.py",
+                    priority=2,
+                    representation=Representation.FULL,
+                    content="TARGET_CONTENT",
+                ),
+                self._item(
+                    file_path="manual.py",
+                    priority=6,
+                    representation=Representation.FULL,
+                    content="MANUAL_CONTENT",
+                ),
+            ],
+            total_estimated_tokens=8,
+            items_included=2,
+        )
+        assert build_discovered_context_section(packed) == ""
 
 
 # ---------------------------------------------------------------------------
