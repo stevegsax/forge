@@ -11,7 +11,8 @@ The single source of truth for what is done vs. not. Work the next unchecked tas
 ### Beyond the roadmap
 
 - [x] **Store externalization** — Postgres backend + S3 OCR blobs + survivable writes ([externalize-store-postgres-s3.md](externalize-store-postgres-s3.md)).
-- [x] **OCR pipeline** — Mistral OCR sync + batch, S3 blobs, PDF chunking, `forge ocr-jobs` CLI.
+- [x] **OCR pipeline** — Mistral OCR sync + batch, S3 blobs, PDF chunking (since extracted to the sibling `ocr` repo).
+- [x] **OCR separation** — OCR extracted into the sibling `ocr` repo as a `forge-contracts` consumer; Forge is an OCR-agnostic batch platform ([separate-ocr-into-its-own-repo.md](separate-ocr-into-its-own-repo.md)).
 - [x] **Transcript ingestion** — `forge ingest` → pbook `ExtractionWorkflow` cross-queue.
 - [x] **Planner evaluation framework** — `eval/` (corpus, deterministic checks, LLM-as-judge, baseline/candidate comparison).
 - [x] **Secure remote access** — mTLS Temporal access + EC2 deploy package.
@@ -49,11 +50,10 @@ Priority order. OPEN tech-debt (no mechanism today) before PARTIAL (hardening) b
 - [ ] Phase 13 — tree-sitter multi-language — [../docs/planning/PHASE13.md](../docs/planning/PHASE13.md).
 - [ ] LSP-based context generation — [../docs/planning/LSP_INTEGRATION_PLAN.md](../docs/planning/LSP_INTEGRATION_PLAN.md).
 - [ ] Multi-transform DAG planner — [../docs/planning/task-management/DECOMPOSITION.md](../docs/planning/task-management/DECOMPOSITION.md) (draft; would replace `activities/planner.py`).
-- [ ] OCR separation into its own repo — converged design, not implemented (recorded in a prior planning session).
 
 ## Dependencies
 
 - **Structured human-in-the-loop** is a prerequisite for the **multi-transform DAG planner** (its clarification/approval gates depend on it).
-- **OCR Web API** and **OCR separation** overlap — decide the separation before committing the API surface.
+- **OCR Web API** — OCR now lives in the sibling `ocr` repo; if built, the web API belongs there (the spec stays here for the record).
 - **Phase 13 (tree-sitter)** and **LSP context generation** both rewrite context assembly (`code_intel/`) — coordinate to avoid rework.
 - Sandboxing (Open #1) gates safe execution of any non-`code_generation` domain work and any multi-tenant use.
