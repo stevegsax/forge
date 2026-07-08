@@ -6,6 +6,8 @@ The single source of truth for what is done vs. not. Work the next unchecked tas
 
 The merged platform redesign plan was approved 2026-06-10, including reversals R1 (timer-loop batch transport) and R2 (sync pbook ingestion). This is the active work queue; it takes priority over the tech-debt backlog below, much of which it subsumes (reconciled at [T8.2](tasks/T8.2-test-tier-honesty-overview-rewrite.md)). Context: [HANDOFF-architecture-review-2026-06-10.md](HANDOFF-architecture-review-2026-06-10.md), decisions D86–D97 in [../docs/DECISIONS.md](../docs/DECISIONS.md), findings in [../docs/reviews/2026-06-architecture-review.md](../docs/reviews/2026-06-architecture-review.md).
 
+**Amended 2026-07-08** per [../forge-review-2026-07-08.md](../forge-review-2026-07-08.md): task files T1.1, T1.7, T2.1, T3.1, T3.2, T3.5, T4.1, T5.2, T5.3, T6.3, and T8.1 carry dated amendment sections; T5.6 added (48 tasks). The external merged-plan/wave-JSON evidence copies are lost — the review doc + D86–D97 are the surviving record.
+
 Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized after Phase 5 (both touch forge worker registration and OUTPUT_TYPES); Phases 6 and 7 may run in parallel (disjoint files); Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0).
 
 ### Phase 1 — Stop the bleeding (current repos)
@@ -52,6 +54,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [ ] [T5.3 — Single gather + dispatch](tasks/T5.3-single-gather-dispatch.md)
 - [ ] [T5.4 — Split the monolith](tasks/T5.4-split-the-monolith.md)
 - [ ] [T5.5 — Harness rebuild + replay tests](tasks/T5.5-harness-rebuild-replay-tests.md)
+- [ ] [T5.6 — Plan preflight gate](tasks/T5.6-plan-preflight-gate.md) *(added 2026-07-08)*
 
 ### Phase 6 — Knowledge: pbook product + forge consumption (after Phase 5)
 

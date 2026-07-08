@@ -22,6 +22,13 @@ It contains: the agreement matrix (10 points of independent convergence), the co
 
 ## Evidence base (all durable copies in `~/.claude/projects/-Users-stevengreenberg-repos-sax-forge/review-artifacts-2026-06-10/`)
 
+> **Correction (2026-07-08):** the "durable" copies below, and the merged
+> plan at `~/.claude/plans/`, no longer exist — verified missing. The
+> surviving record is
+> [docs/reviews/2026-06-architecture-review.md](../docs/reviews/2026-06-architecture-review.md),
+> DECISIONS D86–D97, and the task files. See
+> [../forge-review-2026-07-08.md](../forge-review-2026-07-08.md) §3.2.
+
 | File | What it is |
 | --- | --- |
 | `wave1-subsystem-maps.json` | 13 read-only mappers across all 5 repos: structural maps + 140 raw findings |
