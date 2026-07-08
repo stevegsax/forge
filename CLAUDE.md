@@ -12,7 +12,7 @@ Current status — completed and remaining requirements, plus known issues and t
 
 ## Current Project: 2026-06-10 Architecture Migration
 
-A merged platform redesign plan was approved 2026-06-10. It is the active project; [development-plans/TASKS.md](development-plans/TASKS.md) is the work queue (52 tasks: standalone Phase 0, T0.1–T0.4, plus the eight migration phases, T1.0–T8.4; amended 2026-07-08 per [forge-review-2026-07-08.md](forge-review-2026-07-08.md)). No migration code has landed yet — the working tree is the pre-migration system, and this file describes that system. Sections below carry one-line notes where the migration deletes or replaces current machinery; do not extend anything so annotated.
+A merged platform redesign plan was approved 2026-06-10. It is the active project; [development-plans/TASKS.md](development-plans/TASKS.md) is the work queue (56 tasks: standalone Phase 0, T0.1–T0.8, plus the eight migration phases, T1.0–T8.4; amended 2026-07-08 per [forge-review-2026-07-08.md](forge-review-2026-07-08.md) and its capture sweep). No migration code has landed yet — the working tree is the pre-migration system, and this file describes that system. Sections below carry one-line notes where the migration deletes or replaces current machinery; do not extend anything so annotated.
 
 - **Reversals:** R1 — the signal-based batch SPI is replaced by per-workflow timer-loop polling (D88, Phase 4). R2 — pbook ingestion becomes sync inside pbook and forge's ingestion side is deleted (D91, T6.4).
 - **Phase ordering is load-bearing:** 1 → 2 → 3 → 4 → 5; Phase 6 runs after Phase 5; Phases 6 and 7 may run in parallel; Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0).
@@ -109,7 +109,7 @@ All modes include automatic context discovery (Phase 4), LLM-guided exploration 
 ## Release Roadmap
 
 - **Release 1** (shipped): Phases 1–12 and 14 — the core orchestrator with batch processing (Phase 13 deferred). See [docs/PHASES.md](docs/PHASES.md).
-- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 52 tasks (a standalone Phase 0 plus 8 migration phases), ending with the `sax` monorepo tagged v1.0.
+- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 56 tasks (a standalone Phase 0 plus 8 migration phases), ending with the `sax` monorepo tagged v1.0.
 - **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md) and [docs/PHASES.md](docs/PHASES.md).
 
 ## Development Plans

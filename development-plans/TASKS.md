@@ -6,7 +6,9 @@ The single source of truth for what is done vs. not. Work the next unchecked tas
 
 The merged platform redesign plan was approved 2026-06-10, including reversals R1 (timer-loop batch transport) and R2 (sync pbook ingestion). This is the active work queue; it takes priority over the tech-debt backlog below, much of which it subsumes (reconciled at [T8.2](tasks/T8.2-test-tier-honesty-overview-rewrite.md)). Context: [HANDOFF-architecture-review-2026-06-10.md](HANDOFF-architecture-review-2026-06-10.md), decisions D86–D97 in [../docs/DECISIONS.md](../docs/DECISIONS.md), findings in [../docs/reviews/2026-06-architecture-review.md](../docs/reviews/2026-06-architecture-review.md).
 
-**Amended 2026-07-08** per [../forge-review-2026-07-08.md](../forge-review-2026-07-08.md): task files T1.1, T1.7, T2.1, T3.1, T3.2, T3.5, T4.1, T5.2, T5.3, T6.3, T8.1, and T8.4 carry dated amendment sections; T5.6 added; the phase-independent items from T8.4's sweep inventory are extracted into standalone Phase 0 tasks T0.1–T0.4 (52 tasks total). The external merged-plan/wave-JSON evidence copies are lost — the review doc + D86–D97 are the surviving record.
+**Amended 2026-07-08** per [../forge-review-2026-07-08.md](../forge-review-2026-07-08.md): dated amendment sections in T1.1, T1.7, T2.1, T3.1, T3.2, T3.5, T4.1, T5.2, T5.3, T6.3, T8.1, T8.4; T5.6 added; Phase 0 (T0.1–T0.4) extracted from T8.4's inventory. The external merged-plan/wave-JSON evidence copies are lost — the review doc + D86–D97 are the surviving record.
+
+**Capture sweep 2026-07-08 (same day):** a 31-agent verification pass confirmed 44 of 45 outstanding findings live and mapped each to a home — adding T0.5–T0.8, capture-sweep amendments to T1.3, T1.4, T3.1, T3.2, T3.4, T3.6, T4.1, T5.1, T5.3, T5.5, T5.6, T6.4, T7.2, T7.4, T7.5, T7.6, explicit waivers in T8.4, and one restored June disposition the task files had dropped (T6.4's write-time tag enforcement). **56 tasks total.**
 
 Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized after Phase 5 (both touch forge worker registration and OUTPUT_TYPES); Phases 6 and 7 may run in parallel (disjoint files); Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0). Phase 0 sits outside the graph — its four tasks are independent of every phase and of each other, and can land before, during, or after any of them.
 
@@ -16,6 +18,10 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [ ] [T0.2 — CLI helper fixes](tasks/T0.2-cli-helper-fixes.md)
 - [ ] [T0.3 — Dead code and stale artifact deletion](tasks/T0.3-dead-code-stale-artifacts.md)
 - [ ] [T0.4 — Docs truth sweep (pre-migration)](tasks/T0.4-docs-truth-sweep.md)
+- [ ] [T0.5 — Idempotent, path-safe edit application](tasks/T0.5-idempotent-edit-application.md) *(added 2026-07-08 sweep)*
+- [ ] [T0.6 — Eval judge integrity](tasks/T0.6-eval-judge-integrity.md) *(added 2026-07-08 sweep)*
+- [ ] [T0.7 — Deploy hardening](tasks/T0.7-deploy-hardening.md) *(added 2026-07-08 sweep)*
+- [ ] [T0.8 — Record the pre-migration operating decision](tasks/T0.8-operating-decision.md) *(added 2026-07-08 sweep)*
 
 ### Phase 1 — Stop the bleeding (current repos)
 
