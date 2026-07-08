@@ -12,5 +12,7 @@ Current documentation starts at [`docs/OVERVIEW.md`](../docs/OVERVIEW.md).
 | `to-merge/code-review/` | mined into `docs/OVERVIEW.md` (Known issues & technical debt) |
 | `to-merge/completion-documents/` | never integrated; batch-completion guidance only |
 | `inference-providers-README.md` | `docs/reference/` |
+| `reports/code-review-2026-02-26.md` | triaged 2026-07-08 (stamp in file): most items fixed by HEAD; remainder covered by the migration plan or noted as sweep residue in `forge-review-2026-07-08.md` |
+| `reports/code-review-2026-06-05-test-findings.md` | both findings fixed 2026-06-09 (`8418c56`, `4c06f5c`); stamp in file |
 
 Phase 13 (deferred) and the LSP plan are **not** here — they are live remaining-work specs under `docs/planning/`.

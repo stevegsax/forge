@@ -4,6 +4,14 @@
 **Reviewer:** Codex
 **Base commit:** `6df920b`
 
+> **Triaged 2026-07-08** against HEAD (`927ac75`): both findings were
+> fixed on 2026-06-09 — Finding 1 by `8418c56` (Confine untrusted
+> read/exec paths to the worktree, #24), Finding 2 by `4c06f5c`
+> (Auto-discover context in planned-step and sub-task assembly, #25). The
+> eight failing tests pass at HEAD (155/155 across the three files), and
+> the read-path confinement was independently re-verified as escape-free
+> in [`forge-review-2026-07-08.md`](../../forge-review-2026-07-08.md) §8.
+
 ## Scope
 
 This follow-up review focused only on the previously identified high-priority test gaps, excluding the separate `sax_llm` test-targeting problem and the repo-wide coverage gate.

@@ -6,9 +6,16 @@ The single source of truth for what is done vs. not. Work the next unchecked tas
 
 The merged platform redesign plan was approved 2026-06-10, including reversals R1 (timer-loop batch transport) and R2 (sync pbook ingestion). This is the active work queue; it takes priority over the tech-debt backlog below, much of which it subsumes (reconciled at [T8.2](tasks/T8.2-test-tier-honesty-overview-rewrite.md)). Context: [HANDOFF-architecture-review-2026-06-10.md](HANDOFF-architecture-review-2026-06-10.md), decisions D86–D97 in [../docs/DECISIONS.md](../docs/DECISIONS.md), findings in [../docs/reviews/2026-06-architecture-review.md](../docs/reviews/2026-06-architecture-review.md).
 
-**Amended 2026-07-08** per [../forge-review-2026-07-08.md](../forge-review-2026-07-08.md): task files T1.1, T1.7, T2.1, T3.1, T3.2, T3.5, T4.1, T5.2, T5.3, T6.3, and T8.1 carry dated amendment sections; T5.6 added (48 tasks). The external merged-plan/wave-JSON evidence copies are lost — the review doc + D86–D97 are the surviving record.
+**Amended 2026-07-08** per [../forge-review-2026-07-08.md](../forge-review-2026-07-08.md): task files T1.1, T1.7, T2.1, T3.1, T3.2, T3.5, T4.1, T5.2, T5.3, T6.3, T8.1, and T8.4 carry dated amendment sections; T5.6 added; the phase-independent items from T8.4's sweep inventory are extracted into standalone Phase 0 tasks T0.1–T0.4 (52 tasks total). The external merged-plan/wave-JSON evidence copies are lost — the review doc + D86–D97 are the surviving record.
 
-Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized after Phase 5 (both touch forge worker registration and OUTPUT_TYPES); Phases 6 and 7 may run in parallel (disjoint files); Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0).
+Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized after Phase 5 (both touch forge worker registration and OUTPUT_TYPES); Phases 6 and 7 may run in parallel (disjoint files); Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0). Phase 0 sits outside the graph — its four tasks are independent of every phase and of each other, and can land before, during, or after any of them.
+
+### Phase 0 — Standalone fixes (no phase dependency; added 2026-07-08)
+
+- [ ] [T0.1 — Observability defaults](tasks/T0.1-observability-defaults.md)
+- [ ] [T0.2 — CLI helper fixes](tasks/T0.2-cli-helper-fixes.md)
+- [ ] [T0.3 — Dead code and stale artifact deletion](tasks/T0.3-dead-code-stale-artifacts.md)
+- [ ] [T0.4 — Docs truth sweep (pre-migration)](tasks/T0.4-docs-truth-sweep.md)
 
 ### Phase 1 — Stop the bleeding (current repos)
 

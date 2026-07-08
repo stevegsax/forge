@@ -4,6 +4,30 @@
 **Reviewer:** Claude Opus 4.6
 **Commit:** 38bb337 (main)
 
+> **Triaged 2026-07-08** against HEAD (`927ac75`) — full triage in
+> [`forge-review-2026-07-08.md`](../../forge-review-2026-07-08.md).
+>
+> - **Fixed** (verified at HEAD): the determinism critical (§1 —
+>   `detect_file_conflicts` is now an activity), heartbeating (§2a), retry
+>   policies (§2b), `wait_condition` timeout (§2c), top-level execution
+>   timeout (§2d), graceful shutdown (§2e), the 5-file
+>   `_persist_interaction` duplication (§4), dead `_OUTPUT_REQUIREMENTS`
+>   (§6a), `_detect_package_name` duplication (§6b), `ThinkingConfig`
+>   embedding (§5d), `write_files` output population (§9c), judge
+>   `model_name` drop (§9d), dead `compute_budget`/`ContextBudget` (§9e).
+> - **Covered by the migration plan**: workflow duplication →
+>   T5.2–T5.4; CLI duplication → T8.4; engine-per-call → T3.6; hardcoded
+>   package names → T7.1; stale judge pin + dead `effort` (§9b) → T3.2
+>   amendments; tag inference (§6d) moot at T6.7.
+> - **Residue** (minor sweep candidates, T8.4/T3.4):
+>   `DEFAULT_TEMPORAL_ADDRESS` duplicated (`cli.py:453`, `worker.py:91`);
+>   planner imports three private context names (§9g); providers.py
+>   subprocess pattern ×4 without a helper (§8b).
+> - **Lineage lessons**: §9a's fix became the June review's C2, and §2b's
+>   fix became forge-review M5 — point fixes inside the same design
+>   flipped the failure mode twice, supporting Phase 4's deletion-first
+>   approach over further poller patching.
+
 ## Executive Summary
 
 Forge is a well-structured ~6,500 LOC LLM task orchestrator with ~18,000 LOC of tests (nearly 3:1 test-to-source ratio). The architecture is sound: batch-first design, Temporal orchestration, context intelligence via import graph analysis, and a clear phase-based development roadmap. However, the review uncovered **one critical Temporal determinism violation**, several high-severity Temporal operational risks, significant code duplication, and scattered SOLID violations.
