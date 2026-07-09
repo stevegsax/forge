@@ -47,7 +47,7 @@ to Temporal over loopback in plaintext — they never traverse the gateway.
 | `scripts/` | `bootstrap-instance.sh`, `fetch-secrets.sh`, `smoke-test.sh` |
 | `terraform/` | EC2 + EIP + SG (443 only) + scoped IAM + private S3 |
 | `client/` | End-user onboarding + env template |
-| `postgres/` | **Local dev only** (not part of the EC2 deploy): podman-managed Postgres for running Forge against a real engine locally — see `postgres/README.md` and the repo-root `Makefile` `db-*` targets |
+| `local-database/` | **Local dev only** (not part of the EC2 deploy): podman-managed Postgres + MinIO (S3) for running Forge against real store/blob surfaces locally — see `local-database/README.md` and the repo-root `Makefile` `db-*` targets |
 
 ## Order of operations
 

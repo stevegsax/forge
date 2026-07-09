@@ -5,9 +5,9 @@ certs/clients/
 **/*.key
 **/*.pem
 temporal/.env
-# Local dev Postgres: real env override + the compose-side fallback data dir.
-postgres/.env
-postgres/data/
+# Local dev stack: real env override + the compose-side fallback data dirs.
+local-database/.env
+local-database/data/
 *.tfvars
 !*.tfvars.example
 .terraform/
