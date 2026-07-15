@@ -51,6 +51,7 @@ class TestEnsureSchedule:
             workflow_name="BatchPollerWorkflow",
             workflow_arg=worker_mod.BatchPollerInput(),
             interval=timedelta(seconds=300),
+            execution_timeout=timedelta(minutes=10),
         )
 
         client.create_schedule.assert_awaited_once()
@@ -60,6 +61,10 @@ class TestEnsureSchedule:
         assert schedule.action.task_queue == worker_mod.FORGE_TASK_QUEUE
         assert schedule.spec.intervals[0].every == timedelta(seconds=300)
         assert schedule.state.note == "Forge schedule: forge-batch-poller"
+        # T1.3: execution-timeout + overlap=SKIP backstop so a wedged run is
+        # terminated and the next scheduled run can fire.
+        assert schedule.action.execution_timeout == timedelta(minutes=10)
+        assert schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
 
     @pytest.mark.asyncio
     async def test_updates_existing_schedule_when_already_running(self) -> None:
@@ -75,6 +80,7 @@ class TestEnsureSchedule:
             workflow_name="ForgeExtractionWorkflow",
             workflow_arg=worker_mod.ExtractionWorkflowInput(),
             interval=timedelta(hours=4),
+            execution_timeout=timedelta(hours=1),
         )
 
         client.get_schedule_handle.assert_called_once_with("forge-extraction-schedule")
@@ -96,8 +102,13 @@ class TestEnsureSchedule:
         update_input = SimpleNamespace(description=SimpleNamespace(schedule=existing_schedule))
 
         update = await updater(update_input)
+        # The update path reconciles spec, action, and policy so an already-running
+        # schedule (created before T1.3) picks up the execution-timeout + overlap
+        # backstop — not just the interval.
         assert update.schedule.spec.intervals[0].every == timedelta(hours=4)
-        assert update.schedule.action.id == "old-run"
+        assert update.schedule.action.id == "forge-extraction-schedule-run"
+        assert update.schedule.action.execution_timeout == timedelta(hours=1)
+        assert update.schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
 
 
 class TestRunWorker:

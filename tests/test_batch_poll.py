@@ -234,52 +234,19 @@ class TestExecutePollBatchResults:
         assert result.errors_found == 0
 
     @pytest.mark.asyncio
-    async def test_retrieve_failure_raises_after_loop(self) -> None:
+    async def test_retrieve_failure_reports_error_without_raising(self) -> None:
+        """A poll failure on a fresh job is counted in errors_found; the poller
+        no longer raises (that wedged the schedule — see T1.3)."""
         provider = _make_mock_provider(poll_error=RuntimeError("network error"))
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with (
-            patch("sax_llm.get_provider_by_name", return_value=provider),
-            pytest.raises(RuntimeError, match="1 error"),
-        ):
-            await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
 
-    @pytest.mark.asyncio
-    async def test_missing_batch_old_job_marks_missing(self) -> None:
-        provider = _make_mock_provider(poll_error=RuntimeError("not found"))
-        temporal = _make_temporal_client()
-        updates: list[dict] = []
-
-        def track_update(**kwargs):
-            updates.append(kwargs)
-
-        old_time = datetime.now(UTC) - timedelta(hours=25)
-        job = _make_pending_job(created_at=old_time)
-        with (
-            patch("sax_llm.get_provider_by_name", return_value=provider),
-            pytest.raises(RuntimeError, match="1 error"),
-        ):
-            await execute_poll_batch_results([job], temporal, track_update, _put_blob)
-
-        assert len(updates) == 1
-        assert updates[0]["status"] == BatchJobStatus.MISSING
-
-    @pytest.mark.asyncio
-    async def test_signal_delivery_failure_increments_errors(self) -> None:
-        poll_result = ProviderBatchPollResult(
-            status=BatchPollStatus.ENDED,
-            entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
-        )
-        provider = _make_mock_provider(poll_result=poll_result)
-        temporal = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
-
-        job = _make_pending_job()
-        with (
-            patch("sax_llm.get_provider_by_name", return_value=provider),
-            pytest.raises(RuntimeError, match="1 error"),
-        ):
-            await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
+        assert result.batches_checked == 1
+        assert result.errors_found == 1
+        assert result.signals_sent == 0
 
     # -----------------------------------------------------------------------
     # Terminal failure statuses (FAILED / EXPIRED / CANCELED)
@@ -331,8 +298,9 @@ class TestExecutePollBatchResults:
 
     @pytest.mark.asyncio
     async def test_terminal_failure_with_signal_error_increments_errors(self) -> None:
-        """When the workflow signal fails for a terminal batch, errors_found should
-        increment and the DB status should still be updated."""
+        """When the workflow signal fails for a terminal batch, errors_found
+        increments and the DB status is still updated (the batch failed at the
+        provider, so it is terminal regardless of signal delivery). No raise."""
         poll_result = ProviderBatchPollResult(status=BatchPollStatus.FAILED)
         provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client(signal_error=RuntimeError("workflow gone"))
@@ -342,12 +310,10 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with (
-            patch("sax_llm.get_provider_by_name", return_value=provider),
-            pytest.raises(RuntimeError, match="1 error"),
-        ):
-            await execute_poll_batch_results([job], temporal, track_update, _put_blob)
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
+        assert result.errors_found == 1
         assert len(updates) == 1
         assert updates[0]["status"] == BatchJobStatus.FAILED
 
@@ -370,3 +336,142 @@ class TestExecutePollBatchResults:
 
         assert result.batches_checked == 2
         assert result.signals_sent == 2
+
+    # -----------------------------------------------------------------------
+    # T1.3 acceptance criteria — INTERIM poller patch
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_signal_delivery_failure_leaves_row_submitted(self) -> None:
+        """Criterion 1: a transient signal-delivery failure on a completed batch
+        must NOT advance the row (which would lose the paid result). The row is
+        left SUBMITTED — update_status_fn is never called — so the next cycle
+        re-polls and re-delivers."""
+        poll_result = ProviderBatchPollResult(
+            status=BatchPollStatus.ENDED,
+            entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
+        )
+        provider = _make_mock_provider(poll_result=poll_result)
+        temporal = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
+        updates: list[dict] = []
+
+        def track_update(**kwargs):
+            updates.append(kwargs)
+
+        job = _make_pending_job()
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
+
+        assert result.errors_found == 1
+        assert result.signals_sent == 0
+        # Row untouched => stays SUBMITTED => re-polled next cycle.
+        assert updates == []
+
+    @pytest.mark.asyncio
+    async def test_next_cycle_retries_delivery_after_failure(self) -> None:
+        """Criterion 1: the cycle after a delivery failure re-delivers and, on
+        success, advances the (still-SUBMITTED) row to PROCESSING."""
+        poll_result = ProviderBatchPollResult(
+            status=BatchPollStatus.ENDED,
+            entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
+        )
+        provider = _make_mock_provider(poll_result=poll_result)
+        updates: list[dict] = []
+
+        def track_update(**kwargs):
+            updates.append(kwargs)
+
+        job = _make_pending_job()
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
+            # Cycle 1: delivery fails, row left SUBMITTED.
+            failing = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
+            first = await execute_poll_batch_results([job], failing, track_update, _put_blob)
+            assert first.signals_sent == 0
+            assert updates == []
+
+            # Cycle 2: same still-SUBMITTED job re-polled; delivery succeeds.
+            working = _make_temporal_client()
+            second = await execute_poll_batch_results([job], working, track_update, _put_blob)
+
+        assert second.signals_sent == 1
+        assert second.errors_found == 0
+        assert len(updates) == 1
+        assert updates[0]["status"] == BatchJobStatus.PROCESSING
+
+    @pytest.mark.asyncio
+    async def test_missing_signals_waiter_with_error(self) -> None:
+        """Criterion 2: a >24h unretrievable batch marks the row MISSING AND now
+        sends the waiter an error-payload signal so it fails fast instead of
+        burning the 25h wait timeout. (The waiter's fail-fast on an error-bearing
+        BatchResult is covered by test_batch_error_in_signal_raises.)"""
+        provider = _make_mock_provider(poll_error=RuntimeError("not found"))
+        temporal = _make_temporal_client()
+        updates: list[dict] = []
+
+        def track_update(**kwargs):
+            updates.append(kwargs)
+
+        old_time = datetime.now(UTC) - timedelta(hours=25)
+        job = _make_pending_job(created_at=old_time)
+        with patch("sax_llm.get_provider_by_name", return_value=provider):
+            result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
+
+        # Row marked MISSING with an error message.
+        assert len(updates) == 1
+        assert updates[0]["status"] == BatchJobStatus.MISSING
+        assert updates[0]["error_message"] is not None
+
+        # Waiter signaled with an error payload (the fail-fast trigger).
+        assert result.signals_sent == 1
+        temporal.get_workflow_handle.assert_called_once_with("forge-task-test")
+        signal = temporal.get_workflow_handle.return_value.signal.call_args[0][1]
+        assert signal.request_id == "req-1"
+        assert signal.error is not None
+        assert signal.result_type == "errored"
+        assert signal.raw_response_json is None
+
+    @pytest.mark.asyncio
+    async def test_one_errored_job_does_not_wedge_cycle(self) -> None:
+        """Criterion 3: one errored job does not wedge the poller — the cycle
+        completes (no raise), the other jobs in the same cycle are processed, and
+        errors_found reports the failure so the next scheduled run is the retry."""
+
+        def by_name(_name: str) -> MagicMock:
+            provider = MagicMock()
+
+            async def poll(batch_id: str):
+                if batch_id == "batch-bad":
+                    raise RuntimeError("network error")
+                return ProviderBatchPollResult(
+                    status=BatchPollStatus.ENDED,
+                    entries=[
+                        BatchResultEntry(custom_id="req", succeeded=True, raw_response_json="{}")
+                    ],
+                )
+
+            provider.poll_batch = poll
+            return provider
+
+        temporal = _make_temporal_client()
+        updates: list[dict] = []
+
+        def track_update(**kwargs):
+            updates.append(kwargs)
+
+        jobs = [
+            _make_pending_job(request_id="req-good-1", batch_id="batch-1", workflow_id="wf-1"),
+            _make_pending_job(request_id="req-bad", batch_id="batch-bad", workflow_id="wf-bad"),
+            _make_pending_job(request_id="req-good-2", batch_id="batch-2", workflow_id="wf-2"),
+        ]
+        with patch("sax_llm.get_provider_by_name", side_effect=by_name):
+            result = await execute_poll_batch_results(jobs, temporal, track_update, _put_blob)
+
+        # Cycle completed without raising; the bad job is reported, the two good
+        # jobs are still delivered and advanced.
+        assert result.batches_checked == 3
+        assert result.signals_sent == 2
+        assert result.errors_found == 1
+        assert [u["status"] for u in updates] == [
+            BatchJobStatus.PROCESSING,
+            BatchJobStatus.PROCESSING,
+        ]

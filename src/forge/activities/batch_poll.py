@@ -121,11 +121,22 @@ async def execute_poll_batch_results(
             errors_found += 1
             age = datetime.now(UTC) - _ensure_utc(created_at)
             if age > _MISSING_THRESHOLD:
+                error_msg = f"Batch {batch_id} unretrievable after 24h"
                 logger.warning("Batch %s is >24h old and unretrievable, marking MISSING", batch_id)
+                # Wake the waiter with an error so it fails fast; previously this
+                # path sent no signal and the waiter burned the full 25h timeout.
+                signal = BatchResult(
+                    request_id=request_id,
+                    batch_id=batch_id,
+                    error=error_msg,
+                    result_type="errored",
+                )
+                if await _deliver_signal(temporal_client, workflow_id, batch_id, signal):
+                    signals_sent += 1
                 update_status_fn(
                     request_id=request_id,
                     status=BatchJobStatus.MISSING,
-                    error_message="Batch unretrievable after 24h",
+                    error_message=error_msg,
                 )
             continue
 
@@ -140,19 +151,12 @@ async def execute_poll_batch_results(
                 error=error_msg,
                 result_type="errored",
             )
-            try:
-                handle = temporal_client.get_workflow_handle(workflow_id)
-                await handle.signal(BATCH_RESULT_SIGNAL, signal)
+            if await _deliver_signal(temporal_client, workflow_id, batch_id, signal):
                 signals_sent += 1
-            except Exception:
-                logger.warning(
-                    "Failed to signal workflow %s for failed batch %s",
-                    workflow_id,
-                    batch_id,
-                    exc_info=True,
-                )
+            else:
                 errors_found += 1
-
+            # The batch failed at the provider, so this state is terminal even if
+            # the signal did not reach the waiter — update regardless.
             update_status_fn(
                 request_id=request_id,
                 status=_POLL_TO_JOB_STATUS[poll_result.status],
@@ -164,6 +168,7 @@ async def execute_poll_batch_results(
             continue  # PENDING or IN_PROGRESS — check again next cycle
 
         job_signals = 0
+        delivery_failed = False
         for entry in poll_result.entries:
             if entry.succeeded:
                 signal = _build_success_signal(entry, batch_id, put_result_blob, inline_threshold)
@@ -175,38 +180,66 @@ async def execute_poll_batch_results(
                     result_type="errored",
                 )
 
-            try:
-                handle = temporal_client.get_workflow_handle(workflow_id)
-                await handle.signal(BATCH_RESULT_SIGNAL, signal)
+            if await _deliver_signal(temporal_client, workflow_id, batch_id, signal):
                 job_signals += 1
                 signals_sent += 1
-            except Exception:
-                logger.warning(
-                    "Failed to signal workflow %s for batch %s",
-                    workflow_id,
-                    batch_id,
-                    exc_info=True,
-                )
+            else:
                 errors_found += 1
+                delivery_failed = True
 
-        # On signal delivery the provider lifecycle is done from the platform's
-        # view: advance to PROCESSING (handed to the consumer) so the poller stops
+        # A transient signal-delivery failure must not lose the paid result: leave
+        # the row SUBMITTED so the next cycle re-polls and re-delivers. Duplicate
+        # deliveries are no-ops under T1.2 (waiters key by request_id + setdefault).
+        if delivery_failed:
+            continue
+        # Every entry delivered: the provider lifecycle is done from the platform's
+        # view, so advance to PROCESSING (handed to the consumer) and stop
         # re-polling. The consumer tracks its own stored/failed lifecycle in its
-        # own status table. No succeeded entry to deliver => terminal FAILED.
+        # own status table. No entry to deliver => terminal FAILED.
         final_status = BatchJobStatus.PROCESSING if job_signals > 0 else BatchJobStatus.FAILED
         update_status_fn(request_id=request_id, status=final_status)
 
-    result = BatchPollerResult(
+    if errors_found > 0:
+        # INTERIM: no longer raise on partial per-job errors (that wedged the
+        # poller into an unbounded retry loop while overlap=SKIP starved every
+        # later run). Report the count; the next scheduled run is the retry.
+        logger.warning(
+            "Batch poller completed with %d error(s) across %d job(s); next scheduled run retries",
+            errors_found,
+            batches_checked,
+        )
+
+    return BatchPollerResult(
         batches_checked=batches_checked,
         signals_sent=signals_sent,
         errors_found=errors_found,
     )
 
-    if errors_found > 0:
-        msg = f"Batch poller completed with {errors_found} error(s) across {batches_checked} job(s)"
-        raise RuntimeError(msg)
 
-    return result
+async def _deliver_signal(
+    temporal_client: Client,
+    workflow_id: str,
+    batch_id: str,
+    signal: BatchResult,
+) -> bool:
+    """Deliver a batch-result signal to a waiting workflow.
+
+    Returns True on delivery, False on failure (logged). Signal delivery is
+    at-least-once; duplicate deliveries are no-ops under T1.2 (waiters key by
+    request_id and setdefault), so a caller may safely retry on a later cycle.
+    """
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        await handle.signal(BATCH_RESULT_SIGNAL, signal)
+    except Exception:
+        logger.warning(
+            "Failed to signal workflow %s for batch %s",
+            workflow_id,
+            batch_id,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def _build_success_signal(

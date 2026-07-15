@@ -17,6 +17,8 @@ from temporalio.client import (
     ScheduleActionStartWorkflow,
     ScheduleAlreadyRunningError,
     ScheduleIntervalSpec,
+    ScheduleOverlapPolicy,
+    SchedulePolicy,
     ScheduleSpec,
     ScheduleState,
     ScheduleUpdate,
@@ -89,6 +91,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
+
+# INTERIM (Phase 4 deletes the schedules): execution-timeout backstops for
+# scheduled runs. A run that exceeds its timeout is terminated by Temporal so the
+# overlap=SKIP schedule can fire the next run — guarding against a single wedged
+# run starving every later cycle. The poller activity's start_to_close is 5 min;
+# extraction runs several LLM calls, so it gets a wider budget.
+_POLLER_EXECUTION_TIMEOUT = timedelta(minutes=10)
+_EXTRACTION_EXECUTION_TIMEOUT = timedelta(hours=1)
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +178,17 @@ async def _ensure_schedule(
     workflow_name: str,
     workflow_arg: object,
     interval: timedelta,
+    execution_timeout: timedelta = _POLLER_EXECUTION_TIMEOUT,
 ) -> None:
     """Create or update a Temporal schedule (idempotent).
 
-    On first run, creates the schedule. On subsequent runs, updates the interval
-    if it has changed. Handles the "already exists" case gracefully.
+    On first run, creates the schedule. On subsequent runs, updates the spec,
+    action, and policy so an existing schedule picks up config changes. Handles
+    the "already exists" case gracefully.
+
+    ``execution_timeout`` caps each run and ``overlap=SKIP`` skips a new run while
+    one is in flight — together the interim guard against a wedged run starving
+    every later cycle (see T1.3; Phase 4 deletes these schedules).
     """
     schedule = Schedule(
         action=ScheduleActionStartWorkflow(
@@ -180,10 +196,12 @@ async def _ensure_schedule(
             workflow_arg,
             id=f"{schedule_id}-run",
             task_queue=FORGE_TASK_QUEUE,
+            execution_timeout=execution_timeout,
         ),
         spec=ScheduleSpec(
             intervals=[ScheduleIntervalSpec(every=interval)],
         ),
+        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
         state=ScheduleState(
             note=f"Forge schedule: {schedule_id}",
         ),
@@ -193,11 +211,15 @@ async def _ensure_schedule(
         await client.create_schedule(schedule_id, schedule)
         logger.info("Created schedule %s (interval=%s)", schedule_id, interval)
     except ScheduleAlreadyRunningError:
-        # Update the existing schedule with the new interval
+        # Reconcile the existing schedule: apply the current spec, action (with
+        # the execution-timeout backstop), and policy (overlap=SKIP) so a running
+        # schedule created before T1.3 picks up the wedge guard.
         handle = client.get_schedule_handle(schedule_id)
 
         async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
             input.description.schedule.spec = schedule.spec
+            input.description.schedule.action = schedule.action
+            input.description.schedule.policy = schedule.policy
             return ScheduleUpdate(schedule=input.description.schedule)
 
         await handle.update(_updater)
@@ -236,6 +258,7 @@ async def run_worker(
         workflow_name="BatchPollerWorkflow",
         workflow_arg=BatchPollerInput(),
         interval=timedelta(seconds=batch_poll_interval),
+        execution_timeout=_POLLER_EXECUTION_TIMEOUT,
     )
 
     await _ensure_schedule(
@@ -244,6 +267,7 @@ async def run_worker(
         workflow_name="ForgeExtractionWorkflow",
         workflow_arg=ExtractionWorkflowInput(),
         interval=timedelta(seconds=extraction_interval),
+        execution_timeout=_EXTRACTION_EXECUTION_TIMEOUT,
     )
 
     workflows: list[type] = [
