@@ -79,7 +79,7 @@ _LOCAL_RETRY = RetryPolicy(maximum_attempts=2)
 
 
 async def batch_submit_and_wait(
-    batch_results: list[BatchResult],
+    batch_results: dict[str, BatchResult],
     context: AssembledContext,
     output_type_name: str | None,
     *,
@@ -116,11 +116,16 @@ async def batch_submit_and_wait(
             provider=submit_result.provider,
         )
     )
+    # Correlate by request_id: an at-least-once signal delivery means a duplicate
+    # or a stale result from a different call can arrive, so wait for *this* call's
+    # id and read it by key — never take by arrival order (INTERIM; the whole
+    # signal path is deleted in Phase 4).
+    request_id = submit_result.request_id
     await workflow.wait_condition(
-        lambda: len(batch_results) > 0,
+        lambda: request_id in batch_results,
         timeout=wait_timeout,
     )
-    result = batch_results.pop(0)
+    result = batch_results[request_id]
     if result.error:
         raise ApplicationError(f"Batch error: {result.error}")
     if result.raw_response_json is None and result.s3_key is None:
@@ -150,7 +155,7 @@ async def batch_submit_and_wait(
 
 
 async def generation_dispatch(
-    batch_results: list[BatchResult],
+    batch_results: dict[str, BatchResult],
     sync_mode: bool,
     context: AssembledContext,
 ) -> LLMCallResult:
@@ -184,7 +189,7 @@ async def generation_dispatch(
 
 
 async def conflict_resolution_dispatch(
-    batch_results: list[BatchResult],
+    batch_results: dict[str, BatchResult],
     sync_mode: bool,
     call_input: ConflictResolutionCallInput,
 ) -> ConflictResolutionCallResult:

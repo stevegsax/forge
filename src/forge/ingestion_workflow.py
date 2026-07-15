@@ -57,11 +57,14 @@ class TranscriptIngestionWorkflow:
     """
 
     def __init__(self) -> None:
-        self._batch_results: list[BatchResult] = []
+        self._batch_results: dict[str, BatchResult] = {}
 
     @workflow.signal
     async def batch_result_received(self, result: BatchResult) -> None:
-        self._batch_results.append(result)
+        # Correlate by request_id, first delivery wins: at-least-once signalling
+        # can redeliver a result, and a stale/duplicate must not be mistaken for
+        # another call's (INTERIM; this whole path moves to pbook in Phase 6).
+        self._batch_results.setdefault(result.request_id, result)
 
     @workflow.run
     async def run(self, input_json: str) -> dict[str, object]:

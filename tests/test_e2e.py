@@ -7,6 +7,7 @@ validation — only mocking the LLM call — to prove Phase 1 Definition of Done
 from __future__ import annotations
 
 import subprocess
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -100,20 +101,26 @@ _parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
 
 @activity.defn(name="submit_batch_request")
 async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResult:
-    """Self-signaling submit: immediately signal the workflow with a batch result."""
+    """Self-signaling submit: immediately signal the workflow with a batch result.
+
+    Mints a fresh request_id per call (as the real submit_batch_request does),
+    so multi-call workflows (planner + generation, retries) correlate each
+    result to its own call now that the buffer is keyed by request_id.
+    """
     assert _test_client is not None
+    request_id = uuid.uuid4().hex
     handle = _test_client.get_workflow_handle(input.workflow_id)
     await handle.signal(
         "batch_result_received",
         BatchResult(
-            request_id="req-mock-123",
+            request_id=request_id,
             batch_id="msgbatch_mock123",
             raw_response_json='{"mock": true}',
             result_type=input.output_type_name,
         ),
     )
     return BatchSubmitResult(
-        request_id="req-mock-123",
+        request_id=request_id,
         batch_id="msgbatch_mock123",
     )
 

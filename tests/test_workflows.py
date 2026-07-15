@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -105,20 +106,27 @@ _parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
 
 @activity.defn(name="submit_batch_request")
 async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResult:
-    """Self-signaling submit: immediately signal the workflow with a batch result."""
+    """Self-signaling submit: immediately signal the workflow with a batch result.
+
+    Mints a fresh request_id per call (as the real submit_batch_request does),
+    so a workflow that makes several batch calls correlates each result to its
+    own call — a single constant id would let the second call read the first
+    call's result now that the buffer is keyed by request_id.
+    """
     assert _test_client is not None
+    request_id = uuid.uuid4().hex
     handle = _test_client.get_workflow_handle(input.workflow_id)
     await handle.signal(
         "batch_result_received",
         BatchResult(
-            request_id="req-mock-123",
+            request_id=request_id,
             batch_id="msgbatch_mock123",
             raw_response_json='{"mock": true}',
             result_type=input.output_type_name,
         ),
     )
     return BatchSubmitResult(
-        request_id="req-mock-123",
+        request_id=request_id,
         batch_id="msgbatch_mock123",
     )
 
@@ -3903,6 +3911,82 @@ class TestBatchSingleStep:
             with pytest.raises(WorkflowFailureError):
                 await handle.result()
 
+    @pytest.mark.asyncio
+    async def test_batch_result_correlated_by_request_id(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """A stale/duplicate signal must not be taken as this call's result.
+
+        The submit mock waits on request_id ``req-test-123``. A different call's
+        error result and a re-delivered duplicate arrive around the correct one;
+        with the buffer keyed by request_id the waiter still reads its own valid
+        result and succeeds. Under the old count-based buffer the wrong result
+        would be popped and the workflow would fail.
+        """
+        _reset_batch_mock_state(transitions=[TransitionSignal.SUCCESS.value])
+
+        task = TaskDefinition(
+            task_id="batch-corr",
+            description="Write a hello module.",
+            target_files=["hello.py"],
+        )
+        input = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            max_attempts=2,
+            max_exploration_rounds=0,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_BATCH_MOCK_ACTIVITIES,
+        ):
+            handle = await env.client.start_workflow(
+                ForgeTaskWorkflow.run,
+                input,
+                id="test-batch-correlation",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+            # A different call's failing result arrives first — and again as an
+            # at-least-once duplicate. Neither matches this call's request_id, so
+            # both must be ignored (not popped as this call's result).
+            wrong = BatchResult(
+                request_id="req-other-999",
+                batch_id="msgbatch_other",
+                error="wrong call — must not be misattributed",
+                result_type="LLMResponse",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, wrong)
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, wrong)
+
+            # This call's real result.
+            correct = BatchResult(
+                request_id="req-test-123",
+                batch_id="msgbatch_test123",
+                raw_response_json='{"dummy": "json"}',
+                result_type="LLMResponse",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, correct)
+
+            # A re-delivered duplicate of this call's id, carrying an error: first
+            # delivery wins (setdefault), so this stale copy is a no-op.
+            stale_dup = BatchResult(
+                request_id="req-test-123",
+                batch_id="msgbatch_test123",
+                error="stale duplicate — must be ignored",
+                result_type="LLMResponse",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, stale_dup)
+
+            result = await handle.result()
+
+        assert result.status == TransitionSignal.SUCCESS
+        assert result.output_files == {"hello.py": "print('hello')\n"}
+
 
 # ---------------------------------------------------------------------------
 # Tests — batch planned workflow
@@ -3950,7 +4034,12 @@ async def mock_bp_assemble_planner(input: AssembleContextInput) -> PlannerInput:
 @activity.defn(name="submit_batch_request")
 async def mock_bp_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
     _BATCH_PLAN_CALL_LOG.append(f"submit_batch:{input.output_type_name}")
-    return BatchSubmitResult(request_id="req-bp-123", batch_id="msgbatch_bp123")
+    # A fresh request_id per submission (keyed off the output type so the two
+    # calls — planner then generation — get distinct correlation ids that the
+    # test's signals match).
+    return BatchSubmitResult(
+        request_id=f"req-bp-{input.output_type_name}", batch_id="msgbatch_bp123"
+    )
 
 
 @activity.defn(name="parse_llm_response")
@@ -4081,18 +4170,18 @@ class TestBatchPlanned:
                 task_queue=FORGE_TASK_QUEUE,
             )
 
-            # Signal for planner batch
+            # Signal for planner batch (request_id matches the planner submit)
             planner_signal = BatchResult(
-                request_id="req-bp-123",
+                request_id="req-bp-Plan",
                 batch_id="msgbatch_bp123",
                 raw_response_json='{"dummy": "plan"}',
                 result_type="Plan",
             )
             await handle.signal(ForgeTaskWorkflow.batch_result_received, planner_signal)
 
-            # Signal for generation batch
+            # Signal for generation batch (request_id matches the generation submit)
             gen_signal = BatchResult(
-                request_id="req-bp-123",
+                request_id="req-bp-LLMResponse",
                 batch_id="msgbatch_bp123",
                 raw_response_json='{"dummy": "gen"}',
                 result_type="LLMResponse",
