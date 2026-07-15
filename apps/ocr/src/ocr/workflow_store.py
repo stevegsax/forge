@@ -33,12 +33,18 @@ class OcrStoreWorkflow:
     """Wait for the OCR batch result, store text + images, write terminal status."""
 
     def __init__(self) -> None:
-        self._batch_results: list[BatchResult] = []
+        self._batch_results: dict[str, BatchResult] = {}
 
     @workflow.signal
     async def batch_result_received(self, result: BatchResult) -> None:
-        """Receive the batch result from the platform poller."""
-        self._batch_results.append(result)
+        """Receive the batch result from the platform poller.
+
+        Keyed by request_id, first delivery wins: at-least-once signalling can
+        redeliver a result, and a stale/duplicate for another request must not
+        be mistaken for this one's (INTERIM; the signal path is deleted in
+        Phase 4).
+        """
+        self._batch_results.setdefault(result.request_id, result)
 
     @workflow.run
     async def run(self, input: OcrStoreInput) -> OcrStoreResult:
@@ -50,7 +56,7 @@ class OcrStoreWorkflow:
         # timeout that leaves the status row stuck.
         try:
             await workflow.wait_condition(
-                lambda: len(self._batch_results) > 0,
+                lambda: input.request_id in self._batch_results,
                 timeout=_BATCH_WAIT_TIMEOUT,
             )
         except TimeoutError as exc:
@@ -59,7 +65,7 @@ class OcrStoreWorkflow:
             )
             raise ApplicationError("OCR batch wait timed out") from exc
 
-        result = self._batch_results.pop(0)
+        result = self._batch_results[input.request_id]
 
         if result.error:
             await self._mark_failed(input, f"OCR batch error: {result.error}")
