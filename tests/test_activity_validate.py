@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 
 import pytest
+from temporalio.testing import ActivityEnvironment
 
+from forge.activities import validate as validate_module
+from forge.activities._heartbeat import heartbeat_during
 from forge.activities.validate import (
     _run_ruff_format_check,
     _run_ruff_format_fix,
@@ -220,3 +224,71 @@ class TestRunRuffFormatFix:
         _run_ruff_format_fix(tmp_path, ["ugly.py"])
         content = p.read_text()
         assert "x = 1" in content
+
+
+# ---------------------------------------------------------------------------
+# T1.4 — event loop is not blocked by validation subprocesses
+# ---------------------------------------------------------------------------
+
+
+class TestValidateOutputEventLoop:
+    @pytest.mark.asyncio
+    async def test_heartbeats_fire_during_slow_validation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A sleeping test command runs in a thread, so heartbeats keep firing.
+
+        If the subprocess blocked the event loop (the pre-T1.4 behavior), the
+        heartbeat loop could not run and ``beats`` would be empty.
+        """
+        # Shorten the interval so the assertion resolves in well under a second.
+        # validate_output calls heartbeat_during() with no args, so patch the
+        # name it looks up.
+        fast_heartbeat = functools.partial(heartbeat_during, interval_seconds=0.02)
+        monkeypatch.setattr(validate_module, "heartbeat_during", fast_heartbeat)
+
+        input_data = ValidateOutputInput(
+            task_id="hb1",
+            worktree_path=str(tmp_path),
+            files=[],
+            validation=ValidationConfig(
+                auto_fix=False,
+                run_ruff_lint=False,
+                run_ruff_format=False,
+                run_tests=True,
+                test_command="sleep 0.3",
+            ),
+        )
+
+        env = ActivityEnvironment()
+        beats: list[tuple[object, ...]] = []
+        env.on_heartbeat = lambda *args: beats.append(args)
+
+        results = await env.run(validate_output, input_data)
+
+        assert len(beats) >= 1
+        assert results[0].passed is True
+
+    @pytest.mark.asyncio
+    async def test_test_command_timeout_yields_failed_result(self, tmp_path: Path) -> None:
+        """A test command exceeding the cap fails the check, not the activity."""
+        input_data = ValidateOutputInput(
+            task_id="to1",
+            worktree_path=str(tmp_path),
+            files=[],
+            validation=ValidationConfig(
+                auto_fix=False,
+                run_ruff_lint=False,
+                run_ruff_format=False,
+                run_tests=True,
+                test_command="sleep 5",
+                test_timeout_seconds=1,
+            ),
+        )
+
+        results = await validate_output(input_data)
+
+        assert len(results) == 1
+        assert results[0].check_name == "tests"
+        assert results[0].passed is False
+        assert "timed out" in results[0].summary

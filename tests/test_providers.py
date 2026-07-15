@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from forge.providers import (
@@ -130,6 +131,24 @@ class TestHandleSearchCode:
         result = handle_search_code({"pattern": "match"}, str(worktree), str(worktree))
 
         assert "TOP SECRET" not in result
+        assert "No matches" in result
+
+    def test_catastrophic_backtracking_pattern_does_not_wedge(self, tmp_path: Path) -> None:
+        """A classic ReDoS pattern returns promptly instead of hanging the worker.
+
+        ``(a+)+$`` against a long run of 'a' followed by a non-'a' forces
+        exponential backtracking in Python's ``re``; the rg-backed handler
+        (Rust regex, linear time) must return quickly.
+        """
+        (tmp_path / "big.py").write_text('x = "' + "a" * 5000 + '!"\n')
+
+        start = time.monotonic()
+        result = handle_search_code({"pattern": r"(a+)+$"}, str(tmp_path), str(tmp_path))
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0
+        assert isinstance(result, str)
+        # The trailing '!' prevents an end-of-line match, so there are no hits.
         assert "No matches" in result
 
 

@@ -11,6 +11,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from pathlib import Path
@@ -23,7 +24,15 @@ from forge.subprocess_result import SubprocessResult
 
 logger = logging.getLogger(__name__)
 
+# Cap for the fast, bounded ruff checks.
 SUBPROCESS_TIMEOUT_SECONDS = 60
+# Test commands can run far longer than a lint check. The default cap is aligned
+# to the validate activity's start_to_close timeout (_VALIDATE_TIMEOUT = 2 min
+# in workflows.py) with headroom, so the subprocess times out — yielding a
+# failed ValidationResult that feeds the error-aware retry loop — before the
+# activity itself times out. Override per task via
+# ValidationConfig.test_timeout_seconds.
+TEST_TIMEOUT_SECONDS = 110
 RUFF_CONFIG = "tool-config/ruff.toml"
 
 
@@ -37,7 +46,11 @@ def _run_command(
     cwd: Path,
     timeout: int = SUBPROCESS_TIMEOUT_SECONDS,
 ) -> SubprocessResult:
-    """Execute a command and return the result. Does not raise on non-zero exit."""
+    """Execute a command and return the result. Does not raise on non-zero exit.
+
+    Raises ``subprocess.TimeoutExpired`` when the command exceeds *timeout*;
+    callers that surface a ``ValidationResult`` convert it via ``_run_check``.
+    """
     result = subprocess.run(
         args,
         cwd=cwd,
@@ -50,6 +63,29 @@ def _run_command(
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),
     )
+
+
+def _run_check(
+    check_name: str,
+    args: list[str],
+    cwd: Path,
+    timeout: int,
+) -> ValidationResult:
+    """Run a check command, converting a timeout into a failed ``ValidationResult``.
+
+    A subprocess that outruns the cap must not crash the activity after the LLM
+    spend; it becomes a failed check the error-aware retry loop can act on.
+    """
+    try:
+        result = _run_command(args, cwd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning("Check %s timed out after %ss", check_name, timeout)
+        return ValidationResult(
+            check_name=check_name,
+            passed=False,
+            summary=f"{check_name} timed out after {timeout}s",
+        )
+    return parse_check_result(check_name, result)
 
 
 # ---------------------------------------------------------------------------
@@ -102,29 +138,36 @@ def _run_ruff_format_fix(worktree_path: Path, file_paths: list[str]) -> None:
 
 def _run_ruff_lint(worktree_path: Path, file_paths: list[str]) -> ValidationResult:
     """Run ruff lint check on the given files."""
-    result = _run_command(
+    return _run_check(
+        "ruff_lint",
         ["ruff", "check", "--config", RUFF_CONFIG, "--no-fix", *file_paths],
-        cwd=worktree_path,
+        worktree_path,
+        SUBPROCESS_TIMEOUT_SECONDS,
     )
-    return parse_check_result("ruff_lint", result)
 
 
 def _run_ruff_format_check(worktree_path: Path, file_paths: list[str]) -> ValidationResult:
     """Run ruff format check on the given files."""
-    result = _run_command(
+    return _run_check(
+        "ruff_format",
         ["ruff", "format", "--config", RUFF_CONFIG, "--check", *file_paths],
-        cwd=worktree_path,
+        worktree_path,
+        SUBPROCESS_TIMEOUT_SECONDS,
     )
-    return parse_check_result("ruff_format", result)
 
 
-def _run_tests(worktree_path: Path, test_command: str) -> ValidationResult:
-    """Run the test command via shell."""
-    result = _run_command(
+def _run_tests(
+    worktree_path: Path,
+    test_command: str,
+    timeout: int = TEST_TIMEOUT_SECONDS,
+) -> ValidationResult:
+    """Run the test command via shell, failing the check if it outruns *timeout*."""
+    return _run_check(
+        "tests",
         ["sh", "-c", test_command],
-        cwd=worktree_path,
+        worktree_path,
+        timeout,
     )
-    return parse_check_result("tests", result)
 
 
 @activity.defn
@@ -139,23 +182,30 @@ async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
 
         # Fix phase: auto-correct cosmetic issues before checking.
         # Lint fix first (may change imports), then format fix.
+        # Offload to a thread so the blocking subprocess never freezes the
+        # worker's event loop (and defeats heartbeats) for other workflow tasks.
         if input.validation.auto_fix and input.files:
-            _run_ruff_lint_fix(wt, input.files)
-            _run_ruff_format_fix(wt, input.files)
+            await asyncio.to_thread(_run_ruff_lint_fix, wt, input.files)
+            await asyncio.to_thread(_run_ruff_format_fix, wt, input.files)
 
         # Check phase: validate the (possibly fixed) files.
-        # Heartbeat between checks so Temporal can detect worker crashes.
+        # Each check runs in a thread so the heartbeat loop below keeps firing.
         results: list[ValidationResult] = []
+        test_timeout = input.validation.test_timeout_seconds or TEST_TIMEOUT_SECONDS
 
         async with heartbeat_during():
             if input.validation.run_ruff_lint:
-                results.append(_run_ruff_lint(wt, input.files))
+                results.append(await asyncio.to_thread(_run_ruff_lint, wt, input.files))
 
             if input.validation.run_ruff_format:
-                results.append(_run_ruff_format_check(wt, input.files))
+                results.append(await asyncio.to_thread(_run_ruff_format_check, wt, input.files))
 
             if input.validation.run_tests and input.validation.test_command:
-                results.append(_run_tests(wt, input.validation.test_command))
+                results.append(
+                    await asyncio.to_thread(
+                        _run_tests, wt, input.validation.test_command, test_timeout
+                    )
+                )
 
         passed = all(r.passed for r in results)
         logger.info(

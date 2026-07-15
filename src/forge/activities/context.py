@@ -14,6 +14,7 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import ast
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -660,7 +661,10 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
             context_files=input.context_files,
             context=input.context_config,
         )
-        packed = _discover_packed_context(
+        # Discovery does grimp import-graph analysis and reads many files
+        # (repo-proportional); offload it so the event loop stays responsive.
+        packed = await asyncio.to_thread(
+            _discover_packed_context,
             task_mock=task_mock,
             target_files=input.target_files,
             project_root=input.repo_root,
@@ -845,7 +849,8 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
     discovered_section = ""
     context_stats: ContextStats | None = None
     if input.context_config.auto_discover and input.step.target_files:
-        packed = _discover_packed_context(
+        packed = await asyncio.to_thread(
+            _discover_packed_context,
             task_mock=task_mock,
             target_files=input.step.target_files,
             project_root=input.worktree_path,
@@ -1008,7 +1013,8 @@ async def assemble_sub_task_context(
     discovered_section = ""
     context_stats: ContextStats | None = None
     if input.context_config.auto_discover and input.sub_task.target_files:
-        packed = _discover_packed_context(
+        packed = await asyncio.to_thread(
+            _discover_packed_context,
             task_mock=task_mock,
             target_files=input.sub_task.target_files,
             project_root=input.worktree_path,

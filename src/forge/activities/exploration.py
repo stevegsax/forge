@@ -12,6 +12,7 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -264,7 +265,10 @@ async def fulfill_context_requests(input: FulfillContextInput) -> list[ContextRe
             {"provider": r.provider, "params": r.params} for r in input.requests
         ]
 
-        results = fulfill_requests(
+        # Provider handlers run subprocesses (git, ruff, rg) and repo-proportional
+        # grimp/file scans; offload the whole dispatch off the event loop.
+        results = await asyncio.to_thread(
+            fulfill_requests,
             requests_as_dicts,
             input.repo_root,
             input.worktree_path,

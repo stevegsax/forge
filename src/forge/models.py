@@ -126,6 +126,15 @@ class ValidationConfig(BaseModel):
     run_ruff_format: bool = True
     run_tests: bool = False
     test_command: str | None = None
+    test_timeout_seconds: int | None = Field(
+        default=None,
+        description=(
+            "Cap in seconds for the test command. Falls back to "
+            "TEST_TIMEOUT_SECONDS (aligned to the validate activity timeout) when "
+            "unset. On timeout the check fails with a ValidationResult rather than "
+            "crashing the activity."
+        ),
+    )
 
 
 class ContextConfig(BaseModel):

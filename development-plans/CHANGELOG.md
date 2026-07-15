@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-15 | [T1.4 — Unblock the worker event loop](tasks/T1.4-unblock-worker-event-loop.md) | — |
 | 2026-07-15 | [T1.3 — INTERIM minimal poller patch](tasks/T1.3-interim-poller-patch.md) | — |
 | 2026-07-15 | [T1.2 — INTERIM batch-result correlation stopgap](tasks/T1.2-interim-batch-result-correlation.md) | — |
 | 2026-07-15 | [T1.1 — Delete the dead provider stack; repatriate sax-llm's tests](tasks/T1.1-delete-dead-provider-stack.md) | — |

@@ -7,7 +7,6 @@ Handlers are thin I/O wrappers following Function Core / Imperative Shell.
 from __future__ import annotations
 
 import logging
-import re
 import subprocess
 from pathlib import Path
 from typing import Protocol
@@ -55,48 +54,64 @@ def handle_read_file(params: dict[str, str], repo_root: str, worktree_path: str)
 
 
 def handle_search_code(params: dict[str, str], repo_root: str, worktree_path: str) -> str:
-    """Search for a pattern across files in the worktree."""
+    """Search for a pattern across files in the worktree via ripgrep.
+
+    Delegates to ``rg`` under a subprocess timeout instead of running an
+    LLM-supplied Python regex per line. Rust's regex engine is linear-time, so a
+    catastrophic-backtracking pattern cannot wedge the worker (offloading a
+    Python ``re`` scan to a thread would not help — it holds the GIL). ``rg``
+    does not follow symlinks by default, so matches stay inside the worktree,
+    and an unsupported pattern fails cleanly.
+    """
     pattern = params.get("pattern", "")
     if not pattern:
         return "Error: 'pattern' parameter is required."
 
     glob_filter = params.get("glob", "*.py")
     wt = Path(worktree_path)
-
-    try:
-        compiled = re.compile(pattern)
-    except re.error as e:
-        return f"Error: Invalid regex pattern: {e}"
-
-    matches: list[str] = []
     max_matches = 100
 
-    for file_path in sorted(wt.rglob(glob_filter)):
-        if not file_path.is_file():
-            continue
-        # Skip hidden dirs and common non-source directories
-        rel = file_path.relative_to(wt)
-        if any(part.startswith(".") for part in rel.parts):
-            continue
-        # Skip symlinks that resolve outside the worktree
-        if resolve_within(wt, str(rel)) is None:
-            continue
+    cmd = [
+        "rg",
+        "--line-number",
+        "--no-heading",
+        "--color",
+        "never",
+        "--glob",
+        glob_filter,
+        "-e",
+        pattern,
+    ]
 
-        try:
-            content = file_path.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=wt,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        return "Error: ripgrep (rg) is not installed."
+    except subprocess.TimeoutExpired:
+        return f"Error: Search timed out after {SUBPROCESS_TIMEOUT_SECONDS}s."
 
-        for i, line in enumerate(content.splitlines(), start=1):
-            if compiled.search(line):
-                matches.append(f"{rel}:{i}: {line.rstrip()}")
-                if len(matches) >= max_matches:
-                    matches.append(f"... (truncated at {max_matches} matches)")
-                    return "\n".join(matches)
+    # rg exit codes: 0 = matches, 1 = no matches, 2 = error. Matches (if any)
+    # still land on stdout even when some files errored, so render those first.
+    lines = result.stdout.splitlines()
+    if lines:
+        if len(lines) > max_matches:
+            truncated = lines[:max_matches]
+            truncated.append(f"... (truncated at {max_matches} matches)")
+            return "\n".join(truncated)
+        return "\n".join(lines)
 
-    if not matches:
+    stderr = result.stderr.strip()
+    # An empty candidate set (all files ignored/symlinked) exits 2 but is not an
+    # error the caller can fix — report it as "no matches".
+    if result.returncode <= 1 or "No files were searched" in stderr:
         return f"No matches found for pattern '{pattern}' in {glob_filter} files."
-    return "\n".join(matches)
+    return f"Error: Invalid regex pattern: {stderr or 'unknown error'}"
 
 
 def handle_symbol_list(params: dict[str, str], repo_root: str, worktree_path: str) -> str:

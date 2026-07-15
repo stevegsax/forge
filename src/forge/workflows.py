@@ -105,7 +105,10 @@ _SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
 # ---------------------------------------------------------------------------
 
 _LLM_HEARTBEAT = timedelta(seconds=60)
-_VALIDATE_HEARTBEAT = timedelta(seconds=120)  # subprocess.run blocks event loop
+# Validation subprocesses run via asyncio.to_thread (T1.4), so the heartbeat
+# loop keeps firing (every 30s) during a check. 60s makes this a real crash
+# detector rather than the 120s workaround for a blocked event loop.
+_VALIDATE_HEARTBEAT = timedelta(seconds=60)
 
 # ---------------------------------------------------------------------------
 # Activity retry policies
