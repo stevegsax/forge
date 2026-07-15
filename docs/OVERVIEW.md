@@ -23,12 +23,12 @@ Module paths are under `src/forge/`.
 - **Planning & fan-out** — single-pass planner producing ordered `PlanStep`s with optional parallel `sub_tasks`; LLM conflict resolution: `activities/planner.py`, `workflows.py` (`ForgeSubTaskWorkflow`), `activities/conflict_resolution.py`.
 - **Context** — import-graph + PageRank + token-budget assembly, plus LLM-guided exploration: `code_intel/`, `activities/context.py`, `activities/exploration.py`.
 - **Output & validation** — diff-based edits with 4-level fuzzy fallback; ruff + optional tests with error-aware retries: `activities/output.py`, `activities/validate.py`.
-- **Model routing & thinking** — capability tiers, extended thinking for planning, prompt caching: `models.py` (`CapabilityTier`), `activities/planner.py`, `llm_providers/anthropic.py`.
+- **Model routing & thinking** — capability tiers, extended thinking for planning, prompt caching: `models.py` (`CapabilityTier`), `activities/planner.py`, `sax_llm.anthropic` (sibling `sax-llm` package).
 - **Batch** — async submission + polling via Anthropic/Mistral Batch APIs: `batch_poller_workflow.py`, `activities/batch_*`.
 - **Knowledge** — extraction → playbooks, transcript ingestion to pbook: `extraction_workflow.py`, `activities/extraction.py`, `ingestion_workflow.py`.
 - **Observability** — SQLite/Postgres store, Alembic migrations, CLI inspection: `store.py`, `alembic/`, `cli.py` (`forge status`).
 - **Batch SPI (OCR-agnostic)** — opaque-blob batch submit (`submit_batch_blob`) plus a domain-agnostic poller that forwards verbatim provider results to consumer workflows cross-queue: `activities/batch_submit.py`, `batch_poller_workflow.py`. OCR itself lives in the sibling `ocr` repo, consuming the platform via the shared `forge-contracts` package; neither repo imports the other.
-- **Providers** — provider protocol + Anthropic/Mistral adapters: `llm_providers/`.
+- **Providers** — provider protocol + Anthropic/Mistral adapters live in the sibling `sax-llm` package (`sax_llm/`), consumed via `get_provider`; Forge no longer carries its own provider layer.
 
 ## Requirements: complete vs. remaining
 
@@ -73,4 +73,4 @@ Mined from the four code reviews in `archive/to-merge/code-review/` (≈2026-02-
 | Eval as release gate | Compares plan quality (baseline vs candidate) but isn't a CI gate; no end-to-end/adversarial coverage | `eval/runner.py` |
 | Domain-agnosticism | Prompts/validation parameterized per domain, but context discovery is Python/import-graph-specific; non-code domains have no positive validators | `domains.py::DomainConfig`, `code_intel/` |
 | Human-in-the-loop | Only batch/OCR signals + out-of-band merge gating + manual playbook approval; no structured intervention | `manual_playbook_workflow.py` |
-| Multi-provider parity | Protocol + Anthropic/Mistral adapters exist, but defaults are Anthropic and there's no cross-provider conformance suite | `llm_providers/protocol.py`, `registry.py` |
+| Multi-provider parity | Protocol + Anthropic/Mistral adapters exist (in the sibling `sax-llm` package), but defaults are Anthropic and there's no cross-provider conformance suite | `sax_llm/protocol.py`, `sax_llm/registry.py` |
