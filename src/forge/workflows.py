@@ -1219,6 +1219,9 @@ class ForgeTaskWorkflow:
                 domain=task.domain,
                 depth=0,
                 max_depth=input.max_fan_out_depth,
+                resolve_conflicts=input.resolve_conflicts,
+                model_routing=input.model_routing,
+                thinking=input.thinking,
                 sync_mode=input.sync_mode,
                 log_messages=self._log_messages,
             )
@@ -1713,6 +1716,9 @@ class ForgeSubTaskWorkflow:
                 domain=input.domain,
                 depth=input.depth + 1,
                 max_depth=input.max_depth,
+                resolve_conflicts=input.resolve_conflicts,
+                model_routing=input.model_routing,
+                thinking=input.thinking,
                 sync_mode=input.sync_mode,
                 log_messages=self._log_messages,
             )
@@ -1759,14 +1765,7 @@ class ForgeSubTaskWorkflow:
         conflicts = detect_result.conflicts
         conflict_resolution_result: ConflictResolutionCallResult | None = None
 
-        if conflicts:
-            # Build a ModelConfig that uses the inherited model_name for reasoning
-            resolution_model_routing = ModelConfig()
-            if input.model_name:
-                resolution_model_routing = resolution_model_routing.model_copy(
-                    update={"reasoning": input.model_name}
-                )
-
+        if conflicts and input.resolve_conflicts:
             cr_call_input = await _assemble_conflict_resolution(
                 task_id=compound_id,
                 step_id=input.sub_task.sub_task_id,
@@ -1777,8 +1776,8 @@ class ForgeSubTaskWorkflow:
                 repo_root=input.repo_root,
                 worktree_path=wt_output.worktree_path,
                 domain=input.domain,
-                model_routing=resolution_model_routing,
-                thinking=ThinkingConfig(),
+                model_routing=input.model_routing,
+                thinking=input.thinking,
                 log_messages=self._log_messages,
             )
             conflict_resolution_result = await self._call_conflict_resolution(cr_call_input)
@@ -1800,6 +1799,17 @@ class ForgeSubTaskWorkflow:
                 )
 
             merged_files = {**non_conflicting, **conflict_resolution_result.resolved_files}
+        elif conflicts:
+            # resolve_conflicts=False: fall back to D27 terminal error. A nested
+            # node owns its worktree, so remove it before returning (D16).
+            await _remove_worktree(input.repo_root, compound_id)
+            conflict_paths_str = ", ".join(c.file_path for c in conflicts)
+            return SubTaskResult(
+                sub_task_id=input.sub_task.sub_task_id,
+                status=TransitionSignal.FAILURE_TERMINAL,
+                sub_task_results=sub_task_results,
+                error=f"File conflict: {conflict_paths_str} produced by multiple sub-tasks",
+            )
         else:
             merged_files = non_conflicting
 

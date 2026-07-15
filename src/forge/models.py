@@ -877,12 +877,27 @@ class SubTaskInput(BaseModel):
     domain: TaskDomain = Field(default=TaskDomain.CODE_GENERATION)
     depth: int = Field(default=0, description="Current fan-out depth.")
     max_depth: int = Field(default=1, description="Maximum allowed fan-out depth.")
+    resolve_conflicts: bool = Field(
+        default=True,
+        description=(
+            "Attempt LLM-based conflict resolution for nested fan-out file "
+            "conflicts (D71). Inherited from parent workflow; False falls back "
+            "to the D27 terminal error."
+        ),
+    )
+    model_routing: ModelConfig = Field(
+        default_factory=ModelConfig,
+        description="Capability-tier model routing. Inherited from parent workflow.",
+    )
+    thinking: ThinkingConfig = Field(
+        default_factory=ThinkingConfig,
+        description="Extended thinking config. Inherited from parent workflow.",
+    )
     sync_mode: bool = Field(
         default=False,
         description="Use synchronous Messages API. Inherited from parent workflow.",
     )
     log_messages: bool = False
-    worktree_path: str = ""
 
 
 class WriteFilesInput(BaseModel):

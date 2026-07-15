@@ -33,6 +33,7 @@ from forge.models import (
     ForgeTaskInput,
     LLMCallResult,
     LLMResponse,
+    ModelConfig,
     ParsedLLMResponse,
     ParseResponseInput,
     Plan,
@@ -50,6 +51,7 @@ from forge.models import (
     SubTaskResult,
     TaskDefinition,
     TaskResult,
+    ThinkingConfig,
     TransitionInput,
     TransitionSignal,
     ValidateOutputInput,
@@ -2786,15 +2788,20 @@ _RECURSIVE_MOCK_ACTIVITIES = [
 async def _run_recursive_subtask_workflow(
     env: WorkflowEnvironment,
     input: SubTaskInput,
+    activities: list[Callable[..., object]] | None = None,
 ) -> SubTaskResult:
-    """Helper to run the sub-task workflow with recursive mock activities."""
+    """Helper to run the sub-task workflow with recursive mock activities.
+
+    Pass ``activities`` to override the default mock set (e.g. to swap in a
+    capturing closure for one activity) while reusing the client wiring.
+    """
     global _test_client
     _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
         workflows=[ForgeSubTaskWorkflow],
-        activities=_RECURSIVE_MOCK_ACTIVITIES,
+        activities=activities if activities is not None else _RECURSIVE_MOCK_ACTIVITIES,
     ):
         return await env.client.execute_workflow(
             ForgeSubTaskWorkflow.run,
@@ -3103,6 +3110,217 @@ class TestRecursiveFanOutNestedFileConflict:
         assert result.status == TransitionSignal.SUCCESS
         assert result.output_files["conflict.py"] == "# merged gc1+gc2\n"
         assert result.conflict_resolution is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests — nested fan-out honors resolve_conflicts=False (D71/D27, T1.5)
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveFanOutNoResolveConflicts:
+    """Regression (T1.5): a nested fan-out with resolve_conflicts=False and a
+    real conflict must terminate via the D27 terminal fallback, never resolve.
+
+    Before T1.5 the nested gather ignored resolve_conflicts and always ran LLM
+    resolution — this asserts the flag is now honored at depth >= 1.
+    """
+
+    @pytest.fixture
+    def no_resolve_conflict_input(self) -> SubTaskInput:
+        return SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Create components.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(
+                        sub_task_id="gc1",
+                        description="Create module.",
+                        target_files=["conflict.py"],
+                    ),
+                    SubTask(
+                        sub_task_id="gc2",
+                        description="Create module.",
+                        target_files=["conflict.py"],
+                    ),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=1,
+            depth=0,
+            max_depth=2,
+            resolve_conflicts=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_d27_terminal(
+        self, env: WorkflowEnvironment, no_resolve_conflict_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state(
+            llm_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc1\n")],
+                    explanation="gc1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc2\n")],
+                    explanation="gc2 output",
+                ),
+            ],
+        )
+        result = await _run_recursive_subtask_workflow(env, no_resolve_conflict_input)
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.error is not None
+        assert "File conflict" in result.error
+        assert "conflict.py" in result.error
+        # D27 fallback: LLM resolution must NOT be invoked.
+        assert "assemble_conflict_resolution_context" not in _RECURSIVE_CALL_LOG
+        assert "call_conflict_resolution" not in _RECURSIVE_CALL_LOG
+
+    @pytest.mark.asyncio
+    async def test_worktrees_cleaned_up_on_terminal(
+        self, env: WorkflowEnvironment, no_resolve_conflict_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state(
+            llm_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc1\n")],
+                    explanation="gc1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc2\n")],
+                    explanation="gc2 output",
+                ),
+            ],
+        )
+        await _run_recursive_subtask_workflow(env, no_resolve_conflict_input)
+        # Nested node + 2 grandchildren all created and removed (D16).
+        create_count = sum(1 for e in _RECURSIVE_CALL_LOG if e.startswith("create_worktree:"))
+        remove_count = sum(1 for e in _RECURSIVE_CALL_LOG if e.startswith("remove_worktree:"))
+        assert create_count == 3
+        assert remove_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests — nested fan-out propagates thinking + model_routing (T1.5)
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveFanOutPropagatesThinkingAndRouting:
+    """thinking + model_routing propagate to a depth-1 nested node and reach its
+    conflict-resolution LLM-call inputs (not the pre-T1.5 hardcoded defaults).
+
+    Uses a 3-level tree (depth 0 -> 1 -> 2) so the resolving node sits at
+    depth 1: st1 (depth 0) nests mid (depth 1), which nests gc1/gc2 (depth 2)
+    that both target the same file.
+    """
+
+    @pytest.fixture
+    def deep_conflict_input(self) -> SubTaskInput:
+        return SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Top nested node.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(
+                        sub_task_id="mid",
+                        description="Mid nested node.",
+                        target_files=[],
+                        sub_tasks=[
+                            SubTask(
+                                sub_task_id="gc1",
+                                description="Create module.",
+                                target_files=["conflict.py"],
+                            ),
+                            SubTask(
+                                sub_task_id="gc2",
+                                description="Create module.",
+                                target_files=["conflict.py"],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=1,
+            depth=0,
+            max_depth=2,
+            # model_name is the leaf-generation model; conflict resolution must
+            # route via model_routing.reasoning instead (distinct value).
+            model_name="anthropic:sub-generation-model",
+            model_routing=ModelConfig(reasoning="anthropic:custom-reasoning-model"),
+            thinking=ThinkingConfig(budget_tokens=7777, effort="max"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_thinking_and_routing_reach_depth_one_resolution(
+        self, env: WorkflowEnvironment, deep_conflict_input: SubTaskInput
+    ) -> None:
+        _reset_recursive_mock_state(
+            llm_responses=[
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc1\n")],
+                    explanation="gc1 output",
+                ),
+                LLMResponse(
+                    files=[FileOutput(file_path="conflict.py", content="# from gc2\n")],
+                    explanation="gc2 output",
+                ),
+            ],
+            conflict_responses=[
+                ConflictResolutionCallResult(
+                    task_id="parent-task.sub.st1.sub.mid",
+                    resolved_files={"conflict.py": "# merged\n"},
+                    explanation="Combined both.",
+                    model_name="mock-reasoning",
+                    input_tokens=200,
+                    output_tokens=100,
+                    latency_ms=300.0,
+                ),
+            ],
+        )
+
+        # Capture the ConflictResolutionInput reaching the assemble activity via
+        # a test-local closure (no new module global; T5.5 will retire the rest).
+        captured: list[ConflictResolutionInput] = []
+
+        @activity.defn(name="assemble_conflict_resolution_context")
+        async def capturing_assemble_cr(
+            input: ConflictResolutionInput,
+        ) -> ConflictResolutionCallInput:
+            captured.append(input)
+            _RECURSIVE_CALL_LOG.append("assemble_conflict_resolution_context")
+            return ConflictResolutionCallInput(
+                task_id=input.task_id,
+                step_id=input.step_id,
+                system_prompt="conflict resolution system prompt",
+                user_prompt="conflict resolution user prompt",
+            )
+
+        activities = [
+            a for a in _RECURSIVE_MOCK_ACTIVITIES if a is not mock_recursive_assemble_cr_context
+        ]
+        activities.append(capturing_assemble_cr)
+
+        result = await _run_recursive_subtask_workflow(env, deep_conflict_input, activities)
+
+        assert result.status == TransitionSignal.SUCCESS
+        # Exactly one resolution, at the depth-1 node ("...st1.sub.mid").
+        assert len(captured) == 1
+        cr_input = captured[0]
+        assert cr_input.task_id == "parent-task.sub.st1.sub.mid"
+        # thinking propagated (parent's, not the pre-T1.5 hardcoded ThinkingConfig()).
+        assert cr_input.thinking == ThinkingConfig(budget_tokens=7777, effort="max")
+        # model_routing propagated: REASONING tier resolved from the parent's
+        # ModelConfig, not the pre-T1.5 ModelConfig()/model_name override.
+        assert cr_input.model_name == "anthropic:custom-reasoning-model"
 
 
 # ---------------------------------------------------------------------------
