@@ -5,3 +5,4 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-15 | [T1.0 — Uniform editable sibling sources](tasks/T1.0-uniform-editable-sibling-sources.md) | — |

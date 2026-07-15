@@ -20,7 +20,7 @@ A merged platform redesign plan was approved 2026-06-10. It is the active projec
 
 ## Cross-Project Dependencies
 
-Forge depends on sibling packages pinned by git tag in `[tool.uv.sources]` (sax-llm v0.1.1, pbook v0.2.1, forge-contracts v0.1.1). T1.0 switches these to editable path sources; T2.1 collapses all five repos into the `sax` monorepo.
+Forge depends on sibling packages via `[tool.uv.sources]`. As of T1.0, `pbook` and `forge-contracts` use editable path sources (`../pbook`, `../forge-contracts`), so forge tracks the working-tree siblings directly. `sax-llm` stays pinned to git tag `v0.1.1`: pbook's own `[tool.uv.sources]` pins `sax-llm` to that tag, and uv requires every path/editable dependency to agree on a package's source, so an editable `sax-llm` here would fail to lock. That tag is the same commit both pbook and `../sax-llm` HEAD point at, so there is no drift today (see T1.0 Development Notes). T2.1 collapses all five repos into the `sax` monorepo, where sources become workspace-relative.
 
 - **forge-contracts** (`../forge-contracts`) — the shared SPI surface between the platform and its consumer apps: batch wire models (`BatchResult`, `BatchSubmitSpiInput`, `BatchJobStatus`, the result-payload envelope), the survivable `persist_block` primitive, `s3_blobs`, the Temporal connect helper, generic DB helpers, queue/namespace/signal constants, and the read-only `batch_jobs` schema. Both Forge and the OCR app import it; neither imports the other.
 - **sax-llm** (`../sax-llm`) — shared LLM provider abstraction, output type registry, and batch response parsing.
