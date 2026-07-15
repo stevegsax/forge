@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
 from forge.models import ValidateOutputInput, ValidationResult
+from forge.subprocess_env import allowlist_env
 from forge.subprocess_result import SubprocessResult
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,10 @@ def _run_command(
 
     Raises ``subprocess.TimeoutExpired`` when the command exceeds *timeout*;
     callers that surface a ``ValidationResult`` convert it via ``_run_check``.
+
+    The command line is model-influenced (the test command, the changed file
+    paths), so the child runs under an allowlisted environment — never the
+    worker's full env, which holds API keys, the DB URL, and TLS paths.
     """
     result = subprocess.run(
         args,
@@ -57,6 +63,7 @@ def _run_command(
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=allowlist_env(os.environ),
     )
     return SubprocessResult(
         returncode=result.returncode,

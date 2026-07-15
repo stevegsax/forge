@@ -25,7 +25,8 @@ WITH_PBOOK="${WITH_PBOOK:-false}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==> Installing runtime dependencies"
-dnf install -y git docker
+# ripgrep: the search_code exploration provider shells out to `rg` (T1.4).
+dnf install -y git docker ripgrep
 systemctl enable --now docker
 # docker compose plugin
 mkdir -p /usr/libexec/docker/cli-plugins
@@ -38,6 +39,14 @@ fi
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 fi
+
+# Unprivileged service account for the worker units (T1.7). HOME is the app dir
+# so uv's managed Python + cache land on a forge-owned path (chown below) that
+# survives the units' ProtectHome=true. The dir already exists (repo cloned
+# here), so do not --create-home.
+getent group forge >/dev/null 2>&1 || groupadd --system forge
+getent passwd forge >/dev/null 2>&1 || \
+  useradd --system --gid forge --home-dir "$APP_DIR" --shell /sbin/nologin forge
 
 # Optional: mount the data EBS volume for worktrees/repos/logs.
 if [[ -n "${DATA_DEVICE:-}" && -b "${DATA_DEVICE}" ]]; then
@@ -74,15 +83,24 @@ if [[ "$WITH_PBOOK" == "true" ]]; then
 fi
 
 echo "==> Building the Forge venv"
-( cd "$APP_DIR/forge" && uv sync --frozen )
+# HOME=$APP_DIR so uv's managed Python + cache install under the (soon
+# forge-owned) app dir, where the hardened units can reach them at runtime.
+( cd "$APP_DIR/forge" && HOME="$APP_DIR" uv sync --frozen )
 
 if [[ "$WITH_PBOOK" == "true" ]]; then
   echo "==> Running pbook migrations (one-time)"
-  ( cd "$APP_DIR/pbook" && PBOOK_DB_PATH=/data/pbook/pbook.db uv run pbook migrate )
+  ( cd "$APP_DIR/pbook" && HOME="$APP_DIR" PBOOK_DB_PATH=/data/pbook/pbook.db uv run pbook migrate )
 fi
 
 echo "==> Starting the Temporal stack (frontend + UI + mTLS gateway)"
 ( cd "$APP_DIR/forge/deploy/temporal" && docker compose up -d )
+
+echo "==> Handing worker-owned paths to the forge account"
+# The hardened units run as forge with ProtectSystem=strict + ReadWritePaths on
+# these two trees. Everything root built above (venv, managed Python, cache,
+# repos, logs, pbook.db) must be forge-owned so the unprivileged worker can
+# read and write it.
+chown -R forge:forge "$APP_DIR" /data
 
 echo "==> Installing systemd worker units"
 sed "s/forge-ocr-blobs-CHANGEME/${FORGE_OCR_S3_BUCKET}/" \

@@ -11,6 +11,7 @@ from temporalio.testing import ActivityEnvironment
 from forge.activities import validate as validate_module
 from forge.activities._heartbeat import heartbeat_during
 from forge.activities.validate import (
+    _run_command,
     _run_ruff_format_check,
     _run_ruff_format_fix,
     _run_ruff_lint,
@@ -292,3 +293,60 @@ class TestValidateOutputEventLoop:
         assert results[0].check_name == "tests"
         assert results[0].passed is False
         assert "timed out" in results[0].summary
+
+
+# ---------------------------------------------------------------------------
+# T1.7 — model-influenced commands run under an allowlisted environment
+# ---------------------------------------------------------------------------
+
+
+class TestValidateEnvScrub:
+    def test_secret_env_absent_from_child(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The validate seam does not leak worker secrets into a test command.
+
+        Sentinels are set in the parent env; the child (``env``, dumped to
+        stdout) must not see them, while an allowlisted var (PATH) survives so
+        the test runner can still resolve its executables.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SENTINEL")
+        monkeypatch.setenv("FORGE_DB_URL", "postgres://SENTINEL")
+
+        result = _run_command(["sh", "-c", "env"], tmp_path)
+
+        assert "ANTHROPIC_API_KEY" not in result.stdout
+        assert "FORGE_DB_URL" not in result.stdout
+        assert "SENTINEL" not in result.stdout
+        assert "PATH=" in result.stdout  # allowlisted var still reaches the child
+
+    @pytest.mark.asyncio
+    async def test_real_pytest_passes_under_scrubbed_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A genuine pytest command still passes with the scrubbed env.
+
+        Confirms the allowlist (PATH + VIRTUAL_ENV) is sufficient for the
+        project's pytest to run — the scrub must not brick real test commands.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SENTINEL")
+        (tmp_path / "test_smoke.py").write_text("def test_ok() -> None:\n    assert True\n")
+
+        input_data = ValidateOutputInput(
+            task_id="scrub1",
+            worktree_path=str(tmp_path),
+            files=[],
+            validation=ValidationConfig(
+                auto_fix=False,
+                run_ruff_lint=False,
+                run_ruff_format=False,
+                run_tests=True,
+                test_command="python -m pytest -q -p no:cacheprovider test_smoke.py",
+            ),
+        )
+
+        results = await validate_output(input_data)
+
+        assert len(results) == 1
+        assert results[0].check_name == "tests"
+        assert results[0].passed is True

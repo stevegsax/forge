@@ -11,6 +11,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Run unprivileged. The worker executes model-influenced commands (test/lint
+# runs, exploration providers); dropping root bounds the blast radius on the box
+# that holds every platform secret. Bootstrap creates the forge user and chowns
+# the paths below (see deploy/scripts/bootstrap-instance.sh).
+User=forge
+Group=forge
 WorkingDirectory=/srv/forge-app/forge
 EnvironmentFile=/etc/forge/forge.env
 Environment=FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233
@@ -18,10 +24,26 @@ Environment=FORGE_OCR_S3_BUCKET=forge-ocr-blobs-CHANGEME
 Environment=FORGE_LOG_DIR=/data/forge/logs
 Environment=FORGE_OTEL_EXPORTER=none
 Environment=FORGE_WORKER_IDENTITY=ec2-forge-%i
+# HOME under the app dir (not /home) so uv's managed Python + cache resolve to a
+# forge-owned, writable path that survives ProtectHome=true.
+Environment=HOME=/srv/forge-app
 # FORGE_DB_URL and API keys come from /etc/forge/forge.env (from SSM).
 ExecStart=/usr/bin/env uv run forge worker
 Restart=always
 RestartSec=5
+
+# --- Hardening (T1.7). ---
+# NoNewPrivileges blocks setuid escalation from any child command.
+NoNewPrivileges=true
+# ProtectSystem=strict makes the whole filesystem read-only except the paths
+# below; ProtectHome hides /home + /root; PrivateTmp gives a per-service /tmp.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Every path the worker writes: the app dir (uv venv, managed Python, cache
+# under $HOME=/srv/forge-app) and /data (logs at FORGE_LOG_DIR, git worktrees
+# under the cloned repos, pbook.db).
+ReadWritePaths=/srv/forge-app /data
 
 [Install]
 WantedBy=multi-user.target

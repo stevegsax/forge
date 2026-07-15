@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from forge.providers import (
     PROVIDER_REGISTRY,
     PROVIDER_SPECS,
+    _run_scrubbed,
     handle_git_diff,
     handle_git_log,
     handle_lint_check,
@@ -19,6 +20,8 @@ from forge.providers import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from pytest import MonkeyPatch
 
 # ---------------------------------------------------------------------------
 # Provider registry
@@ -261,3 +264,27 @@ class TestHandleRunTests:
         outside.write_text("def test_x() -> None:\n    pass\n")
         result = handle_run_tests({"path": str(outside)}, str(worktree), str(worktree))
         assert result == "Error: Path is outside the worktree."
+
+
+# ---------------------------------------------------------------------------
+# T1.7 — provider subprocesses run under an allowlisted environment
+# ---------------------------------------------------------------------------
+
+
+class TestProviderEnvScrub:
+    def test_secret_env_absent_from_child(self, monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+        """The shared provider runner does not leak worker secrets.
+
+        Every shell-out provider (rg, pytest, ruff, git) routes through
+        ``_run_scrubbed``; a sentinel set in the parent env must not reach the
+        child, while an allowlisted var (PATH) still does.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SENTINEL")
+        monkeypatch.setenv("FORGE_DB_URL", "postgres://SENTINEL")
+
+        result = _run_scrubbed(["sh", "-c", "env"], cwd=tmp_path)
+
+        assert "ANTHROPIC_API_KEY" not in result.stdout
+        assert "FORGE_DB_URL" not in result.stdout
+        assert "SENTINEL" not in result.stdout
+        assert "PATH=" in result.stdout

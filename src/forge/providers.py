@@ -7,16 +7,46 @@ Handlers are thin I/O wrappers following Function Core / Imperative Shell.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Protocol
 
 from forge.models import ContextProviderSpec
 from forge.path_safety import resolve_within
+from forge.subprocess_env import allowlist_env
 
 logger = logging.getLogger(__name__)
 
 SUBPROCESS_TIMEOUT_SECONDS = 30
+
+
+# ---------------------------------------------------------------------------
+# Subprocess runner
+# ---------------------------------------------------------------------------
+
+
+def _run_scrubbed(
+    cmd: list[str],
+    cwd: str | Path,
+    timeout: int = SUBPROCESS_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    """Run a model-influenced command with an allowlisted environment.
+
+    Every exploration provider that shells out (rg, pytest, ruff, git) routes
+    through here so the child never inherits the worker's full env — the LLM
+    shapes the argv, and the worker's env holds API keys, the DB URL, and TLS
+    paths. ``subprocess.TimeoutExpired`` / ``FileNotFoundError`` propagate to the
+    calling handler, which maps them to an error string.
+    """
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=allowlist_env(os.environ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -84,13 +114,7 @@ def handle_search_code(params: dict[str, str], repo_root: str, worktree_path: st
     ]
 
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=wt,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        )
+        result = _run_scrubbed(cmd, cwd=wt)
     except FileNotFoundError:
         return "Error: ripgrep (rg) is not installed."
     except subprocess.TimeoutExpired:
@@ -199,13 +223,7 @@ def handle_run_tests(params: dict[str, str], repo_root: str, worktree_path: str)
         cmd.extend(["--", str(full_path)])
 
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        )
+        result = _run_scrubbed(cmd, cwd=worktree_path)
     except subprocess.TimeoutExpired:
         return "Error: Test execution timed out."
 
@@ -238,13 +256,7 @@ def handle_lint_check(params: dict[str, str], repo_root: str, worktree_path: str
     cmd = ["ruff", "check", "--config", "tool-config/ruff.toml", "--no-fix", "--", *safe_files]
 
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        )
+        result = _run_scrubbed(cmd, cwd=worktree_path)
     except subprocess.TimeoutExpired:
         return "Error: Lint check timed out."
 
@@ -268,13 +280,7 @@ def handle_git_log(params: dict[str, str], repo_root: str, worktree_path: str) -
         cmd.extend(["--", path])
 
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        )
+        result = _run_scrubbed(cmd, cwd=worktree_path)
     except subprocess.TimeoutExpired:
         return "Error: Git log timed out."
 
@@ -290,13 +296,7 @@ def handle_git_diff(params: dict[str, str], repo_root: str, worktree_path: str) 
     cmd = ["git", "diff", f"{base}...HEAD", "--stat"]
 
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        )
+        result = _run_scrubbed(cmd, cwd=worktree_path)
     except subprocess.TimeoutExpired:
         return "Error: Git diff timed out."
 

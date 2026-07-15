@@ -5,7 +5,7 @@ set -euxo pipefail
 APP_DIR=/srv/forge-app
 mkdir -p "$APP_DIR"
 
-dnf install -y git
+dnf install -y git ripgrep
 command -v aws >/dev/null 2>&1 || dnf install -y awscli-2 || dnf install -y awscli || true
 
 # IMDSv2 + region, then read the GitHub token to clone private repos.
