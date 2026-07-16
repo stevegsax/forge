@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
@@ -141,6 +141,16 @@ class OcrJobStatus(Base):
     )
 
 
+# Typed Table handles. ``Model.__table__`` is typed ``FromClause`` by SQLAlchemy's
+# declarative stubs, but ``metadata.tables`` is typed ``Table`` — which is what the
+# forge_contracts DB helpers (e.g. ``insert_or_ignore``) and ``sa.insert``/``update``/
+# ``delete`` require.
+_OCR_RESULTS_TABLE: sa.Table = Base.metadata.tables[OcrResult.__tablename__]
+_FILE_CONTENT_BLOBS_TABLE: sa.Table = Base.metadata.tables[FileContentBlob.__tablename__]
+_OCR_IMAGES_TABLE: sa.Table = Base.metadata.tables[OcrImage.__tablename__]
+_OCR_JOB_STATUS_TABLE: sa.Table = Base.metadata.tables[OcrJobStatus.__tablename__]
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
@@ -181,7 +191,7 @@ def save_ocr_result(
     """Insert a row into the ocr_results table (idempotent on document_id)."""
     return insert_or_ignore(
         engine,
-        OcrResult.__table__,
+        _OCR_RESULTS_TABLE,
         {
             "document_id": document_id,
             "file_path": file_path,
@@ -200,14 +210,14 @@ def save_ocr_result(
 
 def delete_ocr_results(engine: Engine, document_ids: list[str]) -> None:
     """Delete OCR results by document IDs (chunk cleanup after reassembly)."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     with engine.begin() as conn:
         conn.execute(sa.delete(t).where(t.c.document_id.in_(document_ids)))
 
 
-def get_ocr_result(engine: Engine, document_id: str) -> dict | None:
+def get_ocr_result(engine: Engine, document_id: str) -> dict[str, Any] | None:
     """Look up an OCR result by document ID."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     stmt = t.select().where(t.c.document_id == document_id)
     with engine.connect() as conn:
         row = conn.execute(stmt).mappings().first()
@@ -216,9 +226,9 @@ def get_ocr_result(engine: Engine, document_id: str) -> dict | None:
         return dict(row)
 
 
-def find_ocr_result_by_file_path(engine: Engine, file_path: str) -> dict | None:
+def find_ocr_result_by_file_path(engine: Engine, file_path: str) -> dict[str, Any] | None:
     """Find an OCR result by file_path that is not marked for removal."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     stmt = (
         t.select()
         .where(t.c.file_path == file_path)
@@ -232,9 +242,9 @@ def find_ocr_result_by_file_path(engine: Engine, file_path: str) -> dict | None:
         return dict(row)
 
 
-def find_ocr_result_by_hash(engine: Engine, file_hash: str) -> dict | None:
+def find_ocr_result_by_hash(engine: Engine, file_hash: str) -> dict[str, Any] | None:
     """Find an OCR result by SHA-256 file hash that is not marked for removal."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     stmt = (
         t.select()
         .where(t.c.file_hash == file_hash)
@@ -250,7 +260,7 @@ def find_ocr_result_by_hash(engine: Engine, file_hash: str) -> dict | None:
 
 def mark_ocr_for_removal(engine: Engine, document_id: str) -> bool:
     """Set marked_for_removal=True on an OCR result. Returns True if found."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     with engine.begin() as conn:
         result = conn.execute(
             sa.update(t).where(t.c.document_id == document_id).values(marked_for_removal=True)
@@ -260,7 +270,7 @@ def mark_ocr_for_removal(engine: Engine, document_id: str) -> bool:
 
 def clear_ocr_removal_mark(engine: Engine, document_id: str) -> bool:
     """Set marked_for_removal=False on an OCR result. Returns True if found."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     with engine.begin() as conn:
         result = conn.execute(
             sa.update(t).where(t.c.document_id == document_id).values(marked_for_removal=False)
@@ -268,9 +278,9 @@ def clear_ocr_removal_mark(engine: Engine, document_id: str) -> bool:
         return result.rowcount > 0
 
 
-def get_ocr_results_missing_hash(engine: Engine) -> list[dict]:
+def get_ocr_results_missing_hash(engine: Engine) -> list[dict[str, Any]]:
     """Return OCR results that have a file_path but no file_hash."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     stmt = t.select().where(t.c.file_hash.is_(None)).where(t.c.file_path.isnot(None))
     with engine.connect() as conn:
         return [dict(row) for row in conn.execute(stmt).mappings()]
@@ -278,7 +288,7 @@ def get_ocr_results_missing_hash(engine: Engine) -> list[dict]:
 
 def update_ocr_file_hash(engine: Engine, document_id: str, file_hash: str) -> bool:
     """Set file_hash on an OCR result. Returns True if the row was updated."""
-    t = OcrResult.__table__
+    t = _OCR_RESULTS_TABLE
     with engine.begin() as conn:
         result = conn.execute(
             sa.update(t).where(t.c.document_id == document_id).values(file_hash=file_hash)
@@ -306,7 +316,7 @@ def save_file_content(
     s3_blobs.put(s3_key, data, mime_type)
     insert_or_ignore(
         engine,
-        FileContentBlob.__table__,
+        _FILE_CONTENT_BLOBS_TABLE,
         {
             "id": content_id,
             "s3_key": s3_key,
@@ -317,11 +327,11 @@ def save_file_content(
     )
 
 
-def get_file_content(engine: Engine, content_id: str) -> dict | None:
+def get_file_content(engine: Engine, content_id: str) -> dict[str, Any] | None:
     """Look up file content by ID, fetching the bytes from S3 under ``data``."""
     from forge_contracts import s3_blobs
 
-    t = FileContentBlob.__table__
+    t = _FILE_CONTENT_BLOBS_TABLE
     stmt = t.select().where(t.c.id == content_id)
     with engine.connect() as conn:
         row = conn.execute(stmt).mappings().first()
@@ -336,7 +346,7 @@ def delete_file_content(engine: Engine, content_id: str) -> None:
     """Delete file content by ID, removing both the DB row and the S3 object."""
     from forge_contracts import s3_blobs
 
-    t = FileContentBlob.__table__
+    t = _FILE_CONTENT_BLOBS_TABLE
     with engine.begin() as conn:
         s3_key = conn.execute(sa.select(t.c.s3_key).where(t.c.id == content_id)).scalar()
         conn.execute(sa.delete(t).where(t.c.id == content_id))
@@ -371,7 +381,7 @@ def save_ocr_image(
     s3_blobs.put(s3_key, data, mime_type)
     insert_or_ignore(
         engine,
-        OcrImage.__table__,
+        _OCR_IMAGES_TABLE,
         {
             "id": image_id,
             "document_id": document_id,
@@ -397,7 +407,7 @@ def update_ocr_images_document_id(
     """Set document_id on ocr_images rows by image UUIDs."""
     if not image_ids:
         return
-    t = OcrImage.__table__
+    t = _OCR_IMAGES_TABLE
     with engine.begin() as conn:
         conn.execute(sa.update(t).where(t.c.id.in_(image_ids)).values(document_id=document_id))
 
@@ -410,7 +420,7 @@ def reassign_ocr_images_document_id(
     """Bulk reassign images from old document_ids to new_document_id (chunk reassembly)."""
     if not old_document_ids:
         return
-    t = OcrImage.__table__
+    t = _OCR_IMAGES_TABLE
     with engine.begin() as conn:
         conn.execute(
             sa.update(t)
@@ -419,9 +429,9 @@ def reassign_ocr_images_document_id(
         )
 
 
-def get_ocr_images(engine: Engine, document_id: str) -> list[dict]:
+def get_ocr_images(engine: Engine, document_id: str) -> list[dict[str, Any]]:
     """List images for a document (metadata only, no blob data)."""
-    t = OcrImage.__table__
+    t = _OCR_IMAGES_TABLE
     cols = [
         t.c.id,
         t.c.document_id,
@@ -441,11 +451,11 @@ def get_ocr_images(engine: Engine, document_id: str) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-def get_ocr_image(engine: Engine, image_id: str) -> dict | None:
+def get_ocr_image(engine: Engine, image_id: str) -> dict[str, Any] | None:
     """Get a single image, fetching its bytes from S3 under the ``data`` key."""
     from forge_contracts import s3_blobs
 
-    t = OcrImage.__table__
+    t = _OCR_IMAGES_TABLE
     stmt = t.select().where(t.c.id == image_id)
     with engine.connect() as conn:
         row = conn.execute(stmt).mappings().first()
@@ -462,7 +472,7 @@ def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> No
         return
     from forge_contracts import s3_blobs
 
-    t = OcrImage.__table__
+    t = _OCR_IMAGES_TABLE
     with engine.begin() as conn:
         s3_keys = list(
             conn.execute(sa.select(t.c.s3_key).where(t.c.document_id.in_(document_ids))).scalars()
@@ -490,7 +500,7 @@ def upsert_ocr_job_status(
 ) -> None:
     """Insert or update the coarse processing status for a request."""
     status_value = status.value if isinstance(status, OcrProcessingStatus) else status
-    t = OcrJobStatus.__table__
+    t = _OCR_JOB_STATUS_TABLE
     now = datetime.now(UTC)
     with engine.begin() as conn:
         existing = conn.execute(
@@ -516,9 +526,9 @@ def upsert_ocr_job_status(
             )
 
 
-def get_ocr_job_status(engine: Engine, request_id: str) -> dict | None:
+def get_ocr_job_status(engine: Engine, request_id: str) -> dict[str, Any] | None:
     """Return the OCR processing-status row for a request, or None."""
-    t = OcrJobStatus.__table__
+    t = _OCR_JOB_STATUS_TABLE
     with engine.connect() as conn:
         row = conn.execute(t.select().where(t.c.request_id == request_id)).mappings().first()
         return dict(row) if row is not None else None

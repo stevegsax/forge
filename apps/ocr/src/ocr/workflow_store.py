@@ -73,7 +73,7 @@ class OcrStoreWorkflow:
             raise ApplicationError("OCR batch result has no body")
 
         try:
-            store_result = await workflow.execute_activity(
+            store_result: OcrStoreResult = await workflow.execute_activity(
                 "store_ocr_result",
                 json.dumps(
                     {

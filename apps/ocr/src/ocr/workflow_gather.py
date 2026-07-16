@@ -71,7 +71,7 @@ class OcrGatherWorkflow:
                 "total_pages": input.total_pages,
             }
         )
-        result = await workflow.execute_activity(
+        result: OcrStoreResult = await workflow.execute_activity(
             "reassemble_ocr_chunks",
             reassemble_data,
             start_to_close_timeout=_REASSEMBLE_TIMEOUT,
