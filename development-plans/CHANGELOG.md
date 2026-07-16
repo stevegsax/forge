@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-16 | [T2.3c — mypy strict: ocr (zero ignores)](tasks/T2.3c-mypy-strict-ocr.md) | [#35](https://github.com/stevegsax/forge/pull/35) |
 | 2026-07-16 | [T2.3b — mypy strict: sax-llm (zero ignores; one boundary cast)](tasks/T2.3b-mypy-strict-platform-llm.md) | [#34](https://github.com/stevegsax/forge/pull/34) |
 | 2026-07-16 | [T2.3a — mypy strict: forge-contracts (zero ignores); member mypy wired into make + CI](tasks/T2.3a-mypy-strict-platform-contracts.md) | [#33](https://github.com/stevegsax/forge/pull/33) |
 | 2026-07-16 | [T2.2 — Root gates: GitHub Actions CI, import-linter DAG contracts, 85% coverage gates everywhere](tasks/T2.2-root-gates.md) | [#32](https://github.com/stevegsax/forge/pull/32) |
