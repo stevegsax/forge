@@ -214,13 +214,19 @@ override production values in the same shell.
 ## Always-on and availability
 
 The desktop is the availability story, accepted by D99. Batch polling
-(D88's timer loops) stalls while the machine sleeps — a sleeping laptop
-lid silently pauses every in-flight workflow until wake. Keep the
-machine awake on AC power:
+(D88's timer loops) stalls while the machine sleeps — sleep silently
+pauses every in-flight workflow until wake. System sleep is therefore
+disabled on AC power (applied 2026-07-16):
 
 ```bash
 sudo pmset -c sleep 0 displaysleep 10 disksleep 0
 ```
+
+Verify with `pmset -g custom` — under `AC Power`, `sleep` must be `0`.
+That is the load-bearing setting; `displaysleep` and `disksleep` only
+affect the screen and (on this NVMe hardware) latency, not uptime.
+Residual exposure is reboots, unplugging, and hardware — nothing here
+protects against those.
 
 After a reboot: log in once — the launchd agents bring up the podman
 machine, the stack, and the workers without manual steps.

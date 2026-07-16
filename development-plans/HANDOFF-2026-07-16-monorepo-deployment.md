@@ -80,8 +80,9 @@ deleted. Remote access is deliberately out of scope (may return).
   since T1.0), and the pbook unit still set a SQLite-era `PBOOK_DB_PATH`.
 - **Still open** — see the "Tooling & ops debt" table in
   [../docs/OVERVIEW.md](../docs/OVERVIEW.md): no CI, uneven gates, four standing
-  lint/type findings, the dead `batch-status` skill, the dead skill-pbook eval
-  harness, and `pmset` not applied (owner parked it).
+  lint/type findings, the dead `batch-status` skill, and the dead skill-pbook
+  eval harness. (`pmset -c sleep 0` was applied 2026-07-16 — the desktop no
+  longer sleeps on AC power.)
 
 ## Where to start
 
