@@ -12,8 +12,10 @@
 #   APP_DIR              default /srv/forge-app
 #   SSM_PREFIX           default /forge
 #   FORGE_OCR_S3_BUCKET  required for OCR
-#   SAXLLM_REPO_URL, PBOOK_REPO_URL, FORGE_REF, SAXLLM_REF, PBOOK_REF
-#   WITH_PBOOK           "true" to deploy pbook + ingestion (default false)
+#   SAXLLM_REPO_URL, CONTRACTS_REPO_URL, FORGE_REF, SAXLLM_REF, CONTRACTS_REF
+#   WITH_PBOOK           "true" to enable the pbook worker unit + migrations
+#                        (default false; pbook code ships in the forge checkout
+#                        as the apps/pbook workspace member — D98)
 #   DATA_DEVICE          optional EBS device to mount at /data (e.g. /dev/nvme1n1)
 set -euo pipefail
 
@@ -57,7 +59,7 @@ if [[ -n "${DATA_DEVICE:-}" && -b "${DATA_DEVICE}" ]]; then
   grep -q "${DATA_DEVICE}" /etc/fstab || echo "${DATA_DEVICE} /data xfs defaults,nofail 0 2" >> /etc/fstab
   mount -a
 fi
-install -d -m 755 /data/forge/logs /data/repos /data/pbook
+install -d -m 755 /data/forge/logs /data/repos
 
 echo "==> Fetching secrets + TLS material from SSM"
 bash "${SCRIPT_DIR}/fetch-secrets.sh"
@@ -77,10 +79,12 @@ clone_or_pull() {  # clone_or_pull <url> <dir> <ref>
 }
 
 echo "==> Cloning sibling repositories"
+# The root pyproject's editable path sources resolve as ../sax-llm and
+# ../forge-contracts relative to $APP_DIR/forge, so both siblings must be
+# present for uv sync. pbook is no longer a sibling: it ships inside the
+# forge checkout as the apps/pbook workspace member (D98).
 clone_or_pull "${SAXLLM_REPO_URL:-$GH/sax-llm.git}" "$APP_DIR/sax-llm" "${SAXLLM_REF:-main}"
-if [[ "$WITH_PBOOK" == "true" ]]; then
-  clone_or_pull "${PBOOK_REPO_URL:-$GH/pbook.git}" "$APP_DIR/pbook" "${PBOOK_REF:-main}"
-fi
+clone_or_pull "${CONTRACTS_REPO_URL:-$GH/forge-contracts.git}" "$APP_DIR/forge-contracts" "${CONTRACTS_REF:-main}"
 
 echo "==> Building the Forge venv"
 # HOME=$APP_DIR so uv's managed Python + cache install under the (soon
@@ -89,7 +93,10 @@ echo "==> Building the Forge venv"
 
 if [[ "$WITH_PBOOK" == "true" ]]; then
   echo "==> Running pbook migrations (one-time)"
-  ( cd "$APP_DIR/pbook" && HOME="$APP_DIR" PBOOK_DB_PATH=/data/pbook/pbook.db uv run pbook migrate )
+  # PBOOK_DATABASE_URL comes from forge.env (fetch-secrets.sh emits it from
+  # SSM SUPABASE_PBOOK_DB_URL); the store is Postgres-only.
+  : "${PBOOK_DATABASE_URL:?PBOOK_DATABASE_URL must be set when WITH_PBOOK=true (create SSM ${SSM_PREFIX}/SUPABASE_PBOOK_DB_URL)}"
+  ( cd "$APP_DIR/forge" && HOME="$APP_DIR" uv run pbook migrate )
 fi
 
 echo "==> Starting the Temporal stack (frontend + UI + mTLS gateway)"
@@ -98,8 +105,8 @@ echo "==> Starting the Temporal stack (frontend + UI + mTLS gateway)"
 echo "==> Handing worker-owned paths to the forge account"
 # The hardened units run as forge with ProtectSystem=strict + ReadWritePaths on
 # these two trees. Everything root built above (venv, managed Python, cache,
-# repos, logs, pbook.db) must be forge-owned so the unprivileged worker can
-# read and write it.
+# repos, logs) must be forge-owned so the unprivileged worker can read and
+# write it.
 chown -R forge:forge "$APP_DIR" /data
 
 echo "==> Installing systemd worker units"

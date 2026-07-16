@@ -16,14 +16,16 @@ Type=simple
 # creates it and chowns the paths below.
 User=forge
 Group=forge
-WorkingDirectory=/srv/forge-app/pbook
+# pbook ships inside the forge checkout as the apps/pbook workspace member
+# (D98); the workspace venv at the forge root provides `pbook`.
+WorkingDirectory=/srv/forge-app/forge
 EnvironmentFile=/etc/forge/forge.env
 Environment=PBOOK_TEMPORAL_ADDRESS=127.0.0.1:7233
-Environment=PBOOK_DB_PATH=/data/pbook/pbook.db
 # HOME under the app dir (not /home) so uv's managed Python + cache resolve to a
 # forge-owned, writable path that survives ProtectHome=true.
 Environment=HOME=/srv/forge-app
-# OPENAI_API_KEY (pbook embeddings) and ANTHROPIC_API_KEY come from forge.env.
+# PBOOK_DATABASE_URL (Postgres-only store), OPENAI_API_KEY (pbook embeddings),
+# and ANTHROPIC_API_KEY come from forge.env.
 ExecStart=/usr/bin/env uv run pbook worker
 Restart=always
 RestartSec=5
@@ -33,8 +35,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-# Writes: the app dir (uv venv/cache under $HOME) and /data/pbook/pbook.db.
-ReadWritePaths=/srv/forge-app /data
+# Writes: the app dir only (uv venv/cache under $HOME); the store is remote
+# Postgres, so no /data access is needed.
+ReadWritePaths=/srv/forge-app
 
 [Install]
 WantedBy=multi-user.target

@@ -42,6 +42,7 @@ umask 077
   [[ -n "$OCR_BUCKET" ]] && echo "FORGE_OCR_S3_BUCKET=$OCR_BUCKET"
   m="$(ssm MISTRAL_API_KEY)";  [[ -n "$m" ]] && echo "MISTRAL_API_KEY=$m"
   o="$(ssm OPENAI_API_KEY)";   [[ -n "$o" ]] && echo "OPENAI_API_KEY=$o"
+  p="$(ssm SUPABASE_PBOOK_DB_URL)"; [[ -n "$p" ]] && echo "PBOOK_DATABASE_URL=$p"
 } > /etc/forge/forge.env
 chmod 600 /etc/forge/forge.env
 

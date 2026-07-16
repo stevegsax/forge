@@ -44,7 +44,7 @@ variable "with_pbook" {
 
 variable "repo_org" {
   type        = string
-  description = "GitHub org/owner for the forge, sax-llm, pbook repos."
+  description = "GitHub org/owner for the forge, sax-llm, forge-contracts repos."
   default     = "stevegsax"
 }
 
@@ -55,11 +55,6 @@ variable "forge_ref" {
 }
 
 variable "saxllm_ref" {
-  type    = string
-  default = "main"
-}
-
-variable "pbook_ref" {
   type    = string
   default = "main"
 }

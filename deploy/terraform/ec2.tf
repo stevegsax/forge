@@ -23,7 +23,6 @@ resource "aws_instance" "forge" {
     repo_org   = var.repo_org
     forge_ref  = var.forge_ref
     saxllm_ref = var.saxllm_ref
-    pbook_ref  = var.pbook_ref
     ocr_bucket = var.ocr_bucket_name
     with_pbook = var.with_pbook ? "true" : "false"
   })
