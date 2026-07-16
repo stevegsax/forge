@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run-worker.sh <forge|pbook> [worker-identity]
+# run-worker.sh <forge|pbook|ocr> [worker-identity]
 #
 # launchd entry point for a Forge or pbook worker. Loads secrets/config from
 # $XDG_CONFIG_HOME/forge/forge.env (chmod 600), then execs the worker from the
@@ -39,7 +39,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   export "$key=$value"
 done < "$ENV_FILE"
 
-worker="${1:?usage: run-worker.sh <forge|pbook> [worker-identity]}"
+worker="${1:?usage: run-worker.sh <forge|pbook|ocr> [worker-identity]}"
 cd "$REPO_ROOT"
 
 case "$worker" in
@@ -50,8 +50,13 @@ case "$worker" in
   pbook)
     exec uv run pbook worker
     ;;
+  ocr)
+    # ocr is a workspace member, not a forge dependency — --package syncs
+    # it into the shared venv (inexactly: nothing else is removed).
+    exec uv run --package ocr ocr worker
+    ;;
   *)
-    echo "run-worker.sh: unknown worker '$worker' (expected forge|pbook)" >&2
+    echo "run-worker.sh: unknown worker '$worker' (expected forge|pbook|ocr)" >&2
     exit 64  # EX_USAGE
     ;;
 esac

@@ -9,13 +9,14 @@ up at login.
 | `com.saxcapital.forge-stack` | RunAtLoad one-shot: `podman machine start` if needed, then `make stack-up` |
 | `com.saxcapital.forge-worker-1` / `-2` | KeepAlive: `uv run forge worker` (identities `desktop-forge-worker-1/2`) |
 | `com.saxcapital.pbook-worker` | KeepAlive: `uv run pbook worker` (opt-in) |
+| `com.saxcapital.ocr-worker` | KeepAlive: `uv run --package ocr ocr worker` (opt-in) |
 
 ## Install
 
 ```bash
 cp deploy/launchd/forge.env.example ~/.config/forge/forge.env
 chmod 600 ~/.config/forge/forge.env   # then fill in the CHANGEMEs
-deploy/launchd/install.sh             # add --with-pbook for ingestion
+deploy/launchd/install.sh             # --with-pbook for ingestion, --with-ocr for OCR
 ```
 
 `install.sh` renders `com.saxcapital.forge.plist.in` per agent into
