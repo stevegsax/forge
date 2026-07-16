@@ -62,9 +62,9 @@ state a desktop backup can cover.
 
 The workers run on the **host** (not in a container) because the forge
 worker is a build agent: it needs `git`, the target repositories, `uv`,
-and `ruff`/test tooling on a writable filesystem. Containerizing them is
-also blocked until the sax-llm absorption lands — an image build cannot
-COPY the `../` sibling sources (D99).
+and `ruff`/test tooling on a writable filesystem. (Containerizing them
+became *possible* when the workspace went self-contained in T2.1
+increment 2, but the build-agent rationale keeps them on the host.)
 
 ## External dependencies
 
@@ -76,41 +76,40 @@ COPY the `../` sibling sources (D99).
 | Mistral API | OCR pipeline | `MISTRAL_API_KEY` (only if OCR used) |
 | OpenAI API | pbook embeddings | `OPENAI_API_KEY` (only if pbook used) |
 | GitHub | Clone/push the repos Forge operates on | The operator's normal git credentials |
-| sax-llm + forge-contracts repos | Sibling Python packages (pbook ships inside the forge checkout) | Present as `../` checkouts (see Packaging) |
 
 ## Packaging
 
-The forge repo root is a uv workspace (D98): pbook ships **inside the
-forge checkout** as the `apps/pbook` workspace member, and the remaining
-siblings are editable path sources declared once at the root:
+The forge repo root is a uv workspace (D98) and is **self-contained**:
+every internal package is a workspace member, so one clone and one
+`uv sync` produce the whole runtime — no sibling checkouts.
 
 ```toml
 [tool.uv.workspace]
-members = ["apps/pbook"]
+members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts"]
 
 [tool.uv.sources]
-sax-llm = { path = "../sax-llm", editable = true }
+sax-llm = { workspace = true }
 pbook = { workspace = true }
-forge-contracts = { path = "../forge-contracts", editable = true }
+forge-contracts = { workspace = true }
 ```
 
-Neither `sax-llm` nor `forge-contracts` is published to a package index,
-so the deployment layout is the dev layout — sibling checkouts beside
-forge, one `uv sync` at the root:
-
 ```text
-~/repos-sax/
-├── forge/            # this repo — the workspace root; pbook at apps/pbook
-├── sax-llm/          # sibling — referenced as ../sax-llm
-└── forge-contracts/  # sibling — referenced as ../forge-contracts
+forge/                    # the workspace root — this is the whole deployment
+├── apps/pbook/           # knowledge playbook service
+├── libs/sax-llm/         # LLM provider abstraction
+└── libs/forge-contracts/ # shared wire contracts + platform primitives
 ```
 
 ```bash
-cd ~/repos-sax/forge
-uv sync               # installs forge + apps/pbook + both siblings
+git clone <forge> && cd forge
+uv sync               # installs forge + all three members
 uv run forge --version
 uv run pbook --help   # the same venv serves the pbook worker
 ```
+
+Pin deployments to a known-good commit or tag of this one repo. (The
+`ocr` app still lives in its own repo and sources `forge-contracts`
+via `../forge/libs/forge-contracts` until its absorption.)
 
 ## Deployment process
 

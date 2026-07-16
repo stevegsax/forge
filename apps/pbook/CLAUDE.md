@@ -36,7 +36,9 @@ The worker requires **both** LLM API keys in its environment: `ANTHROPIC_API_KEY
 
 `pytest` runs with `asyncio_mode = "auto"` and a session-scoped event loop. `tests/conftest.py` provisions a real Postgres for the session: it uses `PBOOK_TEST_DATABASE_URL` if set, otherwise starts a `pgvector/pgvector:pg17` container via **podman** (so the test run needs a running podman machine, or that env var). Per-test isolation is a `TRUNCATE ... RESTART IDENTITY` of the `pbk_` tables, so entry ids restart at 1 each test — tests never touch the developer's real database.
 
-`sax-llm` resolves through the workspace root's `[tool.uv.sources]`: an editable path source pointing at the `../sax-llm` sibling checkout of the forge monorepo. Local edits to `../sax-llm` are picked up directly — no tag pin, no re-lock for source changes. The path source retires when the sax-llm absorption increment lands (D98).
+`sax-llm` resolves through the workspace root's `[tool.uv.sources]` as a fellow
+workspace member (`libs/sax-llm` — absorbed in T2.1 increment 2, D98). Local
+edits to it are picked up directly; no tag pin, no re-lock for source changes.
 
 ## Architecture
 
