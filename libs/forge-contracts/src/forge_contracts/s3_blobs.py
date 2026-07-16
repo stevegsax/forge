@@ -21,6 +21,7 @@ a tracked follow-up — see development-plans/separate-ocr-into-its-own-repo.md.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 
 class S3ConfigError(RuntimeError):
@@ -40,10 +41,13 @@ def build_key(blob_id: str) -> str:
     return f"{os.environ.get('FORGE_OCR_S3_PREFIX', '')}{blob_id}"
 
 
-def _client():
+def _client() -> Any:
     # boto3 is heavy; import lazily so non-blob code paths don't pay for it. A
     # fresh client per call reuses the default session's cached service model and
     # keeps this module free of import-time / module-level I/O state.
+    #
+    # Typed ``Any``: boto3 ships no py.typed marker / stubs, so its client is
+    # unavoidably untyped here (no boto3-stubs dependency per task scope).
     import boto3
 
     return boto3.client("s3")
@@ -57,7 +61,8 @@ def put(key: str, data: bytes, content_type: str) -> None:
 def get(key: str) -> bytes:
     """Fetch bytes from ``s3://{bucket}/{key}``."""
     response = _client().get_object(Bucket=get_bucket(), Key=key)
-    return response["Body"].read()
+    body: bytes = response["Body"].read()
+    return body
 
 
 def delete(key: str) -> None:

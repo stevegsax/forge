@@ -7,12 +7,13 @@ identically across repos.
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
+from typing import Any, override
 
 import sqlalchemy as sa
 
 
-class UTCDateTime(sa.types.TypeDecorator):
+class UTCDateTime(sa.types.TypeDecorator[datetime]):
     """Always-UTC DateTime column type.
 
     SQLite cannot preserve tzinfo on DateTime columns, so we normalize
@@ -24,16 +25,19 @@ class UTCDateTime(sa.types.TypeDecorator):
     impl = sa.DateTime
     cache_ok = True
 
-    def process_bind_param(self, value, dialect):
+    @override
+    def process_bind_param(self, value: datetime | None, dialect: sa.Dialect) -> datetime | None:
         if value is None:
             return None
         if value.tzinfo is not None:
             return value.astimezone(UTC).replace(tzinfo=None)
         return value
 
-    def process_result_value(self, value, dialect):
+    @override
+    def process_result_value(self, value: Any, dialect: sa.Dialect) -> datetime | None:
         if value is None:
             return None
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
+        dt: datetime = value
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)

@@ -36,3 +36,20 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.8.0",
 ]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["src/forge_contracts"]
+strict = true
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_reexport = true
+
+# boto3 ships no py.typed marker / stubs; treat its imports as untyped at this
+# boundary (same pattern as the root pyproject's networkx override). No
+# boto3-stubs dependency is added — out of scope for this task.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore.*"]
+ignore_missing_imports = true
