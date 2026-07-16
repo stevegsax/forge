@@ -29,6 +29,7 @@ select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "TCH", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=forge_contracts --cov-report=term-missing --cov-fail-under=85"
 
 [dependency-groups]
 dev = [
