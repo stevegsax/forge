@@ -38,7 +38,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 
 ### Phase 2 — Monorepo (forge, D98)
 
-- [ ] [T2.1 — Monorepo workspace in forge (incremental absorption)](tasks/T2.1-workspace-creation.md) — increment 1 (pbook → `apps/pbook`) landed; remaining: sax-llm + forge-contracts → `libs/`, ocr → `apps/ocr`, gated 3.14 bump
+- [ ] [T2.1 — Monorepo workspace in forge (incremental absorption)](tasks/T2.1-workspace-creation.md) — increments 1–2 landed (pbook → `apps/pbook`; sax-llm + forge-contracts → `libs/`, Finding A closed); increment 3 (ocr → `apps/ocr`) active; then only the gated 3.14 bump
 - [ ] [T2.2 — Root gates](tasks/T2.2-root-gates.md)
 - [ ] [T2.3a — mypy strict: sax-platform contracts](tasks/T2.3a-mypy-strict-platform-contracts.md)
 - [ ] [T2.3b — mypy strict: sax-platform llm + rest](tasks/T2.3b-mypy-strict-platform-llm.md)
