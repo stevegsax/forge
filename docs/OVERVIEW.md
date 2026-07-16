@@ -12,7 +12,7 @@ Completion below was established by verifying against the code on 2026-06-04, no
 ## Status at a glance
 
 - **Release 1 (core orchestrator + batch) is shipped.** Phases 1–12 and 14 are implemented and wired into the worker; Phase 13 (tree-sitter) is deferred to Release 2. See [PHASES.md](PHASES.md).
-- **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch — since extracted to the sibling `ocr` repo), OCR separation (platform/consumer split via the shared `forge-contracts` package; merged 2026-06-05), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy; that infrastructure was retired by D99 in favor of the local-first deployment — client-side TLS code remains, dormant).
+- **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch — since extracted to the `ocr` app, now the `apps/ocr` workspace member), OCR separation (platform/consumer split via the shared `forge-contracts` package; merged 2026-06-05), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy; that infrastructure was retired by D99 in favor of the local-first deployment — client-side TLS code remains, dormant).
 - **The orchestrator is code-first in practice.** Despite the "task-agnostic" framing, context discovery is Python-specific (see tech debt below).
 
 ## Implemented capabilities
@@ -23,12 +23,12 @@ Module paths are under `src/forge/`.
 - **Planning & fan-out** — single-pass planner producing ordered `PlanStep`s with optional parallel `sub_tasks`; LLM conflict resolution: `activities/planner.py`, `workflows.py` (`ForgeSubTaskWorkflow`), `activities/conflict_resolution.py`.
 - **Context** — import-graph + PageRank + token-budget assembly, plus LLM-guided exploration: `code_intel/`, `activities/context.py`, `activities/exploration.py`.
 - **Output & validation** — diff-based edits with 4-level fuzzy fallback; ruff + optional tests with error-aware retries: `activities/output.py`, `activities/validate.py`.
-- **Model routing & thinking** — capability tiers, extended thinking for planning, prompt caching: `models.py` (`CapabilityTier`), `activities/planner.py`, `sax_llm.anthropic` (sibling `sax-llm` package).
+- **Model routing & thinking** — capability tiers, extended thinking for planning, prompt caching: `models.py` (`CapabilityTier`), `activities/planner.py`, `sax_llm.anthropic` (the `libs/sax-llm` workspace member).
 - **Batch** — async submission + polling via Anthropic/Mistral Batch APIs: `batch_poller_workflow.py`, `activities/batch_*`.
 - **Knowledge** — extraction → playbooks, transcript ingestion to pbook: `extraction_workflow.py`, `activities/extraction.py`, `ingestion_workflow.py`.
 - **Observability** — SQLite/Postgres store, Alembic migrations, CLI inspection: `store.py`, `alembic/`, `cli.py` (`forge status`).
-- **Batch SPI (OCR-agnostic)** — opaque-blob batch submit (`submit_batch_blob`) plus a domain-agnostic poller that forwards verbatim provider results to consumer workflows cross-queue: `activities/batch_submit.py`, `batch_poller_workflow.py`. OCR itself lives in the sibling `ocr` repo, consuming the platform via the shared `forge-contracts` package; neither repo imports the other.
-- **Providers** — provider protocol + Anthropic/Mistral adapters live in the sibling `sax-llm` package (`sax_llm/`), consumed via `get_provider`; Forge no longer carries its own provider layer.
+- **Batch SPI (OCR-agnostic)** — opaque-blob batch submit (`submit_batch_blob`) plus a domain-agnostic poller that forwards verbatim provider results to consumer workflows cross-queue: `activities/batch_submit.py`, `batch_poller_workflow.py`. OCR itself lives in the `apps/ocr` workspace member, consuming the platform via the shared `forge-contracts` package; neither package imports the other.
+- **Providers** — provider protocol + Anthropic/Mistral adapters live in the `sax-llm` workspace member (`libs/sax-llm`) (`sax_llm/`), consumed via `get_provider`; Forge no longer carries its own provider layer.
 
 ## Requirements: complete vs. remaining
 
@@ -38,7 +38,7 @@ The behavioral spec lives in [requirements/](requirements/) (18 Gherkin feature 
 
 | Feature spec | State | Evidence |
 | --- | --- | --- |
-| `requirements/ocr_web_api.feature` | **Not built** — no OpenAPI/paginated OCR web service; OCR now lives in the sibling `ocr` repo, so this API belongs there if built | No web framework (FastAPI/Flask/Starlette/uvicorn) exists anywhere in the repo |
+| `requirements/ocr_web_api.feature` | **Not built** — no OpenAPI/paginated OCR web service; OCR now lives in the `apps/ocr` workspace member, so this API belongs there if built | No web framework (FastAPI/Flask/Starlette/uvicorn) exists anywhere in the repo |
 | `requirements/human_in_the_loop.feature` | **Not built** — no structured pause/resume/approval primitive | No `HumanInputRequest`/`emit_user_prompt`; only batch-result and OCR-gather signals; human gating is out-of-band git review + manual playbook approval |
 
 ## Remaining work (beyond requirements)
@@ -73,4 +73,4 @@ Mined from the four code reviews in `archive/to-merge/code-review/` (≈2026-02-
 | Eval as release gate | Compares plan quality (baseline vs candidate) but isn't a CI gate; no end-to-end/adversarial coverage | `eval/runner.py` |
 | Domain-agnosticism | Prompts/validation parameterized per domain, but context discovery is Python/import-graph-specific; non-code domains have no positive validators | `domains.py::DomainConfig`, `code_intel/` |
 | Human-in-the-loop | Only batch/OCR signals + out-of-band merge gating + manual playbook approval; no structured intervention | `manual_playbook_workflow.py` |
-| Multi-provider parity | Protocol + Anthropic/Mistral adapters exist (in the sibling `sax-llm` package), but defaults are Anthropic and there's no cross-provider conformance suite | `sax_llm/protocol.py`, `sax_llm/registry.py` |
+| Multi-provider parity | Protocol + Anthropic/Mistral adapters exist (in the `libs/sax-llm` workspace member), but defaults are Anthropic and there's no cross-provider conformance suite | `sax_llm/protocol.py`, `sax_llm/registry.py` |

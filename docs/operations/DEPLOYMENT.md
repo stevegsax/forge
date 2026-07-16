@@ -55,6 +55,7 @@ state a desktop backup can cover.
 | MinIO | podman, host ports 9002/9003 | Dev only | Local S3 surface for dev; production blobs go to real S3 |
 | `forge worker` (×2) | launchd host processes | Always up | Poll `forge-task-queue`; need git/uv/ruff and repos on disk |
 | `pbook worker` | launchd host process | Optional | Only if transcript ingestion is used; polls `pbook-task-queue` |
+| `ocr worker` | launchd host process | Optional | Only if OCR is used (`install.sh --with-ocr`); polls `ocr-task-queue` |
 | `forge` / `pbook` CLIs | Host shell | On demand | Connect to `127.0.0.1:7233` |
 | Forge store | Supabase (`forge` database) | Always up | interactions, runs, playbooks, batch_jobs, OCR records |
 | pbook store | Supabase (`pbook` schema) | Optional | `PBOOK_DATABASE_URL`; Postgres-only |
@@ -85,7 +86,7 @@ every internal package is a workspace member, so one clone and one
 
 ```toml
 [tool.uv.workspace]
-members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts"]
+members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr"]
 
 [tool.uv.sources]
 sax-llm = { workspace = true }
@@ -96,20 +97,20 @@ forge-contracts = { workspace = true }
 ```text
 forge/                    # the workspace root — this is the whole deployment
 ├── apps/pbook/           # knowledge playbook service
+├── apps/ocr/             # document OCR app (member, not a forge dependency)
 ├── libs/sax-llm/         # LLM provider abstraction
 └── libs/forge-contracts/ # shared wire contracts + platform primitives
 ```
 
 ```bash
 git clone <forge> && cd forge
-uv sync               # installs forge + all three members
+uv sync --all-packages          # installs forge + all members (ocr included)
 uv run forge --version
-uv run pbook --help   # the same venv serves the pbook worker
+uv run pbook --help             # the same venv serves every worker
+uv run --package ocr ocr --help # ocr is not a forge dependency — use --package
 ```
 
-Pin deployments to a known-good commit or tag of this one repo. (The
-`ocr` app still lives in its own repo and sources `forge-contracts`
-via `../forge/libs/forge-contracts` until its absorption.)
+Pin deployments to a known-good commit or tag of this one repo.
 
 ## Deployment process
 

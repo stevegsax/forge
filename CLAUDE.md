@@ -20,10 +20,11 @@ A merged platform redesign plan was approved 2026-06-10. It is the active projec
 
 ## Cross-Project Dependencies
 
-Forge is the monorepo (D98): the repo root is a uv workspace with one `uv.lock` and one venv, and every internal package is a workspace member — `apps/pbook`, `libs/sax-llm`, `libs/forge-contracts` — so a bare checkout is self-contained (no sibling checkouts; Finding A closed). Members declare no `[tool.uv.sources]` of their own. The one external consumer left is the **ocr** app (own repo, own queue), which sources forge-contracts via an editable path at `../forge/libs/forge-contracts` until its absorption into `apps/ocr`. Version pinning inside the set is deliberately gone: the suites are the compatibility contract.
+Forge is the monorepo (D98, consolidation complete): the repo root is a uv workspace with one `uv.lock` and one venv, and every internal package is a workspace member — `apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts` — so a bare checkout is self-contained. Members declare no `[tool.uv.sources]` of their own. ocr is the one member forge does **not** depend on (apps never import apps): setup is `uv sync --all-packages` and its CLI runs as `uv run --package ocr ocr <cmd>`. Version pinning inside the set is deliberately gone: the suites are the compatibility contract.
 
 - **forge-contracts** (`libs/forge-contracts`, workspace member) — the shared SPI surface between the platform and its consumer apps: batch wire models (`BatchResult`, `BatchSubmitSpiInput`, `BatchJobStatus`, the result-payload envelope), the survivable `persist_block` primitive, `s3_blobs`, the Temporal connect helper, generic DB helpers, queue/namespace/signal constants, and the read-only `batch_jobs` schema. Both Forge and the OCR app import it; neither imports the other.
 - **sax-llm** (`libs/sax-llm`, workspace member) — shared LLM provider abstraction, output type registry, and batch response parsing.
+- **ocr** (`apps/ocr`, workspace member; **not** a forge dependency) — document OCR via the Mistral batch API, consuming the platform through the batch SPI. Own Temporal worker on `ocr-task-queue`; cross-queue SPI calls to `forge-task-queue`; own Alembic chain (`alembic_version_ocr`, four `ocr_*` tables) in the shared `FORGE_DB_URL` database; reads `batch_jobs` read-only via the forge-contracts mirror. Imports `forge_contracts` only, never `forge`.
 - **pbook** (`apps/pbook`, workspace member) — cross-project knowledge store, a required dependency. Forge's transcript ingestion workflows call pbook's `ExtractionWorkflow` and `record_ingested_session` activity cross-queue on `pbook-task-queue`. An import guard (`_INGESTION_AVAILABLE` in worker.py) gates workflow registration only — pbook itself is installed unconditionally. (Forge's ingestion side is deleted in T6.4.) Forge's own playbook store (`forge.db` `playbooks` table) is separate from pbook's `entries` table — the two stores are parallel and do not share data. (The playbooks store is superseded by pbook in T6.7.) See `diataxis/explanation/learning-loops.md` for the design discussion.
 
 ## Documentation
@@ -33,7 +34,7 @@ See [TOC.md](TOC.md) for a full table of contents covering design docs, phase sp
 ## Build, Test, and Lint Commands
 
 ```bash
-uv sync                          # Install dependencies
+uv sync --all-packages           # Install dependencies (all workspace members)
 uv run pytest                    # Run all tests (excludes e2e and postgres markers by default)
 uv run pytest tests/test_foo.py  # Run a single test file
 uv run pytest tests/test_foo.py::TestClass::test_name  # Run a single test
@@ -46,7 +47,7 @@ uv run ruff check --fix .        # Auto-fix lint issues
 
 Coverage is enforced at 85% by default (`--cov-fail-under=85` in pyproject.toml). When running a single test file, use `--no-cov` to avoid failing on aggregate coverage.
 
-Workspace command discipline: the commands above, run from the root, cover forge only (`testpaths = ["tests"]` keeps the members out of the default run). Each member's suite runs from its own directory so its own config applies: `cd apps/pbook && uv run pytest` (84% gate; its conftest needs a running podman machine or `PBOOK_TEST_DATABASE_URL`), `cd libs/sax-llm && uv run pytest` (85% gate), `cd libs/forge-contracts && uv run pytest`. Never run a member's tests from the root (e.g. `pytest apps/pbook/tests`): forge's addopts would apply and the member's conftest would run under the wrong config.
+Workspace command discipline: the commands above, run from the root, cover forge only (`testpaths = ["tests"]` keeps the members out of the default run). Setup is `uv sync --all-packages` (a bare exact `uv sync` prunes ocr's packages, since forge doesn't depend on it; `uv run`'s inexact sync self-heals). Each member's suite runs from its own directory so its own config applies: `cd apps/pbook && uv run pytest` (84% gate; its conftest needs a running podman machine or `PBOOK_TEST_DATABASE_URL`), `cd apps/ocr && uv run pytest` (no gate yet — T2.2), `cd libs/sax-llm && uv run pytest` (85% gate), `cd libs/forge-contracts && uv run pytest`. Never run a member's tests from the root (e.g. `pytest apps/pbook/tests`): forge's addopts would apply and the member's conftest would run under the wrong config.
 
 The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-skipping environment (`WorkflowEnvironment.start_time_skipping` in `conftest.py`). Two markers are excluded from default runs: `postgres` (Alembic migrations against a real Postgres via testcontainers) and `e2e`. The `e2e` marker is defined but currently empty in forge — `tests/test_e2e.py` is a default-run integration suite with mocked LLM calls (T8.2 renames it to `test_pipeline.py` and restores marker honesty).
 

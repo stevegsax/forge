@@ -9,7 +9,7 @@ Git and worktrees serve as the general-purpose data store and isolation mechanis
 ## Prerequisites
 
 - The local stack running: `make stack-up` brings up [Temporal](https://temporal.io/), Postgres, and MinIO under podman (see [deploy/local-stack/](deploy/local-stack/)). Any Temporal server reachable at `FORGE_TEMPORAL_ADDRESS` works; the default is `localhost:7233`.
-- The workspace synced: `uv sync` from the repo root. The root is a uv workspace (`apps/pbook`, `libs/sax-llm`, `libs/forge-contracts`) and is self-contained — a bare clone resolves with no sibling checkouts.
+- The workspace synced: `uv sync --all-packages` from the repo root. The root is a uv workspace (`apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts`) and is self-contained — a bare clone resolves with no sibling checkouts.
 
 ## Architecture
 
@@ -283,7 +283,7 @@ Requires pbook to be installed. Sessions already recorded in pbook's `ingested_s
 
 ### `forge start`
 
-Start an arbitrary registered Temporal workflow by name, without a Python script. Workflows registered on `forge-task-queue`: `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`, `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, and `BatchPollerWorkflow`. (OCR workflows moved to the sibling `ocr` app with its own queue and CLI.)
+Start an arbitrary registered Temporal workflow by name, without a Python script. Workflows registered on `forge-task-queue`: `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`, `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, and `BatchPollerWorkflow`. (OCR workflows live in the `apps/ocr` workspace member, on `ocr-task-queue` with its own CLI: `uv run --package ocr ocr <cmd>`.)
 
 ```bash
 forge start BatchPollerWorkflow --wait                 # one poll pass over pending batch jobs

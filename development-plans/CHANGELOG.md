@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-16 | [T2.1 increment 3 — ocr absorbed into apps/ocr; D98 repo consolidation complete; task continues (3.14 bump)](tasks/T2.1-workspace-creation.md) | — |
 | 2026-07-16 | [T2.1 increment 2 — sax-llm + forge-contracts absorbed into libs/; Finding A closed; ocr repointed; task continues](tasks/T2.1-workspace-creation.md) | — |
 | 2026-07-16 | [T2.1 increment 1 — pbook absorbed as a workspace member at apps/pbook (D98); task continues](tasks/T2.1-workspace-creation.md) | — |
 | 2026-07-16 | [T1.0 amendment — sax-llm editable everywhere; pin workaround unwound (pbook + forge)](tasks/T1.0-uniform-editable-sibling-sources.md) | — |
