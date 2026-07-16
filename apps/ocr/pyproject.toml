@@ -1,6 +1,6 @@
 [project]
 name = "ocr"
-version = "0.1.1"
+version = "0.1.2"
 description = "OCR application: document OCR via Mistral batch, consuming the Forge platform"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,9 +17,6 @@ dependencies = [
 
 [project.scripts]
 ocr = "ocr.cli:main"
-
-[tool.uv.sources]
-forge-contracts = { path = "../forge/libs/forge-contracts", editable = true }
 
 [build-system]
 requires = ["hatchling"]
