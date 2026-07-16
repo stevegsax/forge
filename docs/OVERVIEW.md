@@ -78,13 +78,11 @@ Mined from the four code reviews in `archive/to-merge/code-review/` (≈2026-02-
 | Human-in-the-loop | Only batch/OCR signals + out-of-band merge gating + manual playbook approval; no structured intervention | `manual_playbook_workflow.py` |
 | Multi-provider parity | Protocol + Anthropic/Mistral adapters exist (in the `libs/sax-llm` workspace member), but defaults are Anthropic and there's no cross-provider conformance suite | `sax_llm/protocol.py`, `sax_llm/registry.py` |
 
-**Tooling & ops debt** (surfaced 2026-07-16 during the monorepo/deployment work; T2.2 owns most of it):
+**Tooling & ops debt** (surfaced 2026-07-16 during the monorepo/deployment work; T2.2 closed the CI/gates/findings rows the same 2026-07-16 — GitHub Actions CI, import-linter DAG contracts, all five packages gated at 85% coverage, the four standing findings fixed):
 
 | Item | Detail | Pointer |
 | --- | --- | --- |
-| No CI at all | Every gate is a local `uv run` by hand; nothing runs on push. The workspace now makes one root gate possible | T2.2 |
-| Gates are uneven across members | forge 85%, pbook 84%, sax-llm 85%; `apps/ocr` and `libs/forge-contracts` have **no coverage gate**; mypy still covers `src/forge` only | T2.2, T2.3a–d |
-| Four standing lint/type findings | 2× ruff `TC003` in `tests/test_worker.py`; 2× mypy `type-arg`/`arg-type` in `src/forge/alembic/versions/002_idempotency_rekey.py`. Pre-existing, never gated, deliberately not fixed in-flight | T2.2 |
+| mypy covers `src/forge` only | Root CI runs mypy, but the members are untyped-checked until strict mypy rolls across them | T2.3a–d |
 | `batch-status` skill is dead | `.claude/skills/batch-status/batch-status.sh` still resolves a SQLite store (`FORGE_DB_PATH` → `$XDG_STATE_HOME/forge/forge.db`) — broken since the Postgres externalization. Needs a rework against `FORGE_DB_URL` or retirement (its `.agents/` Codex copy too) | `.claude/skills/batch-status/` |
 | pbook skill's eval harness is dead | The `skill-pbook` repo's Makefile seeds a SQLite test DB (`sqlite3 .backup`, `PBOOK_DB_PATH`); pbook has been Postgres+pgvector-only since its cutover. Trigger evals unaffected | `~/repos-sax/skill-pbook` |
 | Desktop is the availability story | Accepted by D99: there is one host, and batch polling (D88 timer loops) stalls whenever it is off or asleep. System sleep is disabled on AC power (`pmset -c sleep 0`, applied 2026-07-16), so the residual exposure is reboots, unplugging, and hardware — not idle sleep | [operations/DEPLOYMENT.md](operations/DEPLOYMENT.md) |
