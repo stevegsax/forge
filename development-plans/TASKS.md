@@ -20,7 +20,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [ ] [T0.4 — Docs truth sweep (pre-migration)](tasks/T0.4-docs-truth-sweep.md)
 - [ ] [T0.5 — Idempotent, path-safe edit application](tasks/T0.5-idempotent-edit-application.md) *(added 2026-07-08 sweep)*
 - [ ] [T0.6 — Eval judge integrity](tasks/T0.6-eval-judge-integrity.md) *(added 2026-07-08 sweep)*
-- [ ] [T0.7 — Deploy hardening](tasks/T0.7-deploy-hardening.md) *(added 2026-07-08 sweep)*
+- [ ] [T0.7 — Local deployment: retire EC2 (D99)](tasks/T0.7-deploy-hardening.md) *(added 2026-07-08 sweep; rewritten 2026-07-16 per D99 — most original findings mooted by EC2 removal)*
 - [ ] [T0.8 — Record the pre-migration operating decision](tasks/T0.8-operating-decision.md) *(added 2026-07-08 sweep)*
 
 ### Phase 1 — Stop the bleeding (current repos)
