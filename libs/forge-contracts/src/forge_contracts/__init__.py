@@ -7,4 +7,4 @@ connection helper, and shared survivable-write primitives. It must not import
 ``forge`` or any consumer package — the dependency arrows point inward, here.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
