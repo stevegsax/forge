@@ -40,3 +40,13 @@ dev = [
     "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
 ]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["src/sax_llm"]
+strict = true
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_reexport = true

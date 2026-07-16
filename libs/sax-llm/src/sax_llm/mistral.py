@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sax_llm.models import (
     BatchPollResult,
@@ -21,6 +21,8 @@ from sax_llm.models import (
 )
 
 if TYPE_CHECKING:
+    from mistralai import Mistral
+    from mistralai.models.batcherror import BatchError
     from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,9 @@ def _snake_case(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _content_block_to_mistral(block: TextContent | ImageContent | DocumentContent) -> dict:
+def _content_block_to_mistral(
+    block: TextContent | ImageContent | DocumentContent,
+) -> dict[str, Any]:
     """Convert a ContentBlock to Mistral API format."""
     if isinstance(block, TextContent):
         return {"type": "text", "text": block.text}
@@ -54,14 +58,14 @@ def _content_block_to_mistral(block: TextContent | ImageContent | DocumentConten
 
 def _content_to_mistral(
     content: str | list[TextContent | ImageContent | DocumentContent],
-) -> str | list[dict]:
+) -> str | list[dict[str, Any]]:
     """Convert message content to Mistral format."""
     if isinstance(content, str):
         return content
     return [_content_block_to_mistral(b) for b in content]
 
 
-def _messages_to_mistral(messages: list[Message]) -> list[dict]:
+def _messages_to_mistral(messages: list[Message]) -> list[dict[str, Any]]:
     """Convert Message list to Mistral format (system messages stay in array)."""
     return [{"role": msg.role, "content": _content_to_mistral(msg.content)} for msg in messages]
 
@@ -76,7 +80,7 @@ def _is_set(value: object) -> bool:
     return bool(value)
 
 
-def _format_batch_errors(errors: list) -> str:
+def _format_batch_errors(errors: list[BatchError]) -> str:
     """Format a list of BatchError objects into a human-readable string."""
     parts: list[str] = []
     for err in errors:
@@ -88,7 +92,7 @@ def _format_batch_errors(errors: list) -> str:
     return "; ".join(parts)
 
 
-async def _download_file_content(client: object, file_id: str) -> str:
+async def _download_file_content(client: Mistral, file_id: str) -> str:
     """Download a Mistral file and return its decoded text content."""
     output_file = await client.files.download_async(file_id=file_id)
     if hasattr(output_file, "aread"):
@@ -125,7 +129,7 @@ def _parse_error_file_entries(content: str) -> list[BatchResultEntry]:
     return entries
 
 
-def _extract_images_from_response(response_body: dict) -> list[ExtractedImage]:
+def _extract_images_from_response(response_body: dict[str, Any]) -> list[ExtractedImage]:
     """Extract images from an OCR response and strip base64 data from the body."""
     extracted: list[ExtractedImage] = []
     pages = response_body.get("pages", [])
@@ -195,9 +199,9 @@ class MistralProvider:
         cache_instructions: bool = True,
         cache_tool_definitions: bool = True,
         thinking_budget_tokens: int = 0,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build Mistral chat.complete kwargs."""
-        params: dict = {
+        params: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
             "messages": _messages_to_mistral(messages),
@@ -221,11 +225,11 @@ class MistralProvider:
 
         return params
 
-    async def call(self, params: dict) -> ProviderResponse:
+    async def call(self, params: dict[str, Any]) -> ProviderResponse:
         """Call the Mistral API and return a normalized response."""
         response = await self._client.chat.complete_async(**params)
 
-        tool_input: dict = {}
+        tool_input: dict[str, Any] = {}
         text_content: str | None = None
         has_tools = "tools" in params and params["tools"]
 
@@ -258,11 +262,13 @@ class MistralProvider:
     def supports_batch(self) -> bool:
         return True
 
-    def build_batch_request(self, request_id: str, params: dict) -> dict:
+    def build_batch_request(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         body = {k: v for k, v in params.items() if k != "model"}
         return {"custom_id": request_id, "body": body}
 
-    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
+    async def submit_batch(
+        self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
+    ) -> str:
         from mistralai.types.basemodel import UnrecognizedStr
 
         resolved_endpoint = endpoint or _DEFAULT_MISTRAL_ENDPOINT
@@ -280,7 +286,9 @@ class MistralProvider:
         )
         return job.id
 
-    async def _submit_batch_via_file(self, requests: list[dict], model: str, endpoint: str) -> str:
+    async def _submit_batch_via_file(
+        self, requests: list[dict[str, Any]], model: str, endpoint: str
+    ) -> str:
         from mistralai.types.basemodel import UnrecognizedStr
 
         lines = [json.dumps(r) for r in requests]
@@ -414,7 +422,7 @@ class MistralProvider:
             raise KeyError(msg)
 
         choices = data.get("choices", [])
-        tool_input: dict = {}
+        tool_input: dict[str, Any] = {}
         if choices:
             message = choices[0].get("message", {})
             tool_calls = message.get("tool_calls", [])

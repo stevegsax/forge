@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -64,7 +64,7 @@ def text_messages(
 class ProviderResponse(BaseModel):
     """Normalized response from any LLM provider."""
 
-    tool_input: dict = Field(
+    tool_input: dict[str, Any] = Field(
         default_factory=dict,
         description="Parsed structured output (tool call arguments).",
     )
