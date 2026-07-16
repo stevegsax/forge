@@ -24,7 +24,11 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts"]
+# apps/ocr is a member but NOT a forge dependency (apps never import
+# apps), so a bare exact `uv sync` won't install it — use
+# `uv sync --all-packages` for setup and `uv run --package ocr` to
+# invoke it; `uv run`'s inexact sync keeps both coexisting in the venv.
+members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr"]
 
 [tool.uv.sources]
 # Every internal package is a workspace member, so a bare checkout (or a
