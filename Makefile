@@ -19,8 +19,11 @@ lint:
 	uv run ruff check .
 	uv run ruff format --check .
 
+# Per-package mypy, from each package's own directory (T2.3b-d append
+# theirs as each strictness flip lands).
 typecheck:
 	uv run mypy
+	cd libs/forge-contracts && uv run mypy
 
 lint-imports:
 	uv run lint-imports
@@ -51,7 +54,7 @@ help:
 	@echo "Gates (T2.2): what CI runs"
 	@echo "  make gates        lint + typecheck + lint-imports + test"
 	@echo "  make lint         ruff check + format --check (workspace-wide)"
-	@echo "  make typecheck    mypy (currently src/forge only; widened by T2.3a-d)"
+	@echo "  make typecheck    mypy: src/forge + forge-contracts (T2.3b-d widen further)"
 	@echo "  make lint-imports import-linter DAG contracts (root pyproject)"
 	@echo "  make test         all five package suites, each from its own directory"
 	@echo ""
