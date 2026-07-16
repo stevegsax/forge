@@ -98,8 +98,7 @@ def build_analysis_system_prompt() -> str:
     parts.append("")
     parts.append("For each experience, provide:")
     parts.append(
-        "- problem: A specific description of what unexpected situation occurred "
-        "(2-4 sentences)"
+        "- problem: A specific description of what unexpected situation occurred (2-4 sentences)"
     )
     parts.append(
         "- resolution: How it was resolved — the specific fix, workaround, "

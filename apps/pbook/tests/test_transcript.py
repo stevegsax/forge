@@ -140,7 +140,9 @@ class TestParseJsonlFile:
 
     def test_skips_command_only_messages(self, tmp_path):
         lines = [
-            _user_msg('<command-name>/clear</command-name>\n<command-message>clear</command-message>'),
+            _user_msg(
+                "<command-name>/clear</command-name>\n<command-message>clear</command-message>"
+            ),
             _user_msg("Real question"),
         ]
         path = _write_jsonl(tmp_path / "session.jsonl", lines)
@@ -159,9 +161,11 @@ class TestParseJsonlFile:
 
     def test_compacts_tool_use(self, tmp_path):
         lines = [
-            _assistant_msg([
-                _tool_use_block("Read", {"file_path": "src/main.py"}),
-            ]),
+            _assistant_msg(
+                [
+                    _tool_use_block("Read", {"file_path": "src/main.py"}),
+                ]
+            ),
         ]
         path = _write_jsonl(tmp_path / "session.jsonl", lines)
         result = parse_jsonl_file(path)
@@ -172,9 +176,11 @@ class TestParseJsonlFile:
 
     def test_compacts_tool_result(self, tmp_path):
         lines = [
-            _user_msg_blocks([
-                _tool_result_block("x" * 500),
-            ]),
+            _user_msg_blocks(
+                [
+                    _tool_result_block("x" * 500),
+                ]
+            ),
         ]
         path = _write_jsonl(tmp_path / "session.jsonl", lines)
         result = parse_jsonl_file(path)
@@ -183,10 +189,12 @@ class TestParseJsonlFile:
 
     def test_skips_thinking_blocks(self, tmp_path):
         lines = [
-            _assistant_msg([
-                {"type": "thinking", "thinking": "Let me think about this..."},
-                {"type": "text", "text": "Here is the answer."},
-            ]),
+            _assistant_msg(
+                [
+                    {"type": "thinking", "thinking": "Let me think about this..."},
+                    {"type": "text", "text": "Here is the answer."},
+                ]
+            ),
         ]
         path = _write_jsonl(tmp_path / "session.jsonl", lines)
         result = parse_jsonl_file(path)
@@ -211,9 +219,11 @@ class TestParseJsonlFile:
 
     def test_bash_tool_use_truncation(self, tmp_path):
         lines = [
-            _assistant_msg([
-                _tool_use_block("Bash", {"command": "a" * 200}),
-            ]),
+            _assistant_msg(
+                [
+                    _tool_use_block("Bash", {"command": "a" * 200}),
+                ]
+            ),
         ]
         path = _write_jsonl(tmp_path / "session.jsonl", lines)
         result = parse_jsonl_file(path)
@@ -249,10 +259,14 @@ class TestRenderTranscript:
         assert "ASSISTANT: I found the issue" in rendered
 
     def test_tool_messages_rendered_without_label(self):
-        transcript = ParsedTranscript(messages=[
-            TranscriptMessage(role="assistant", text="[tool: Read src/main.py]", tool_name="Read"),
-            TranscriptMessage(role="user", text="[tool result: 200 chars]"),
-        ])
+        transcript = ParsedTranscript(
+            messages=[
+                TranscriptMessage(
+                    role="assistant", text="[tool: Read src/main.py]", tool_name="Read"
+                ),
+                TranscriptMessage(role="user", text="[tool result: 200 chars]"),
+            ]
+        )
         rendered = render_transcript(transcript)
         assert "[tool: Read src/main.py]" in rendered
         assert "[tool result: 200 chars]" in rendered
@@ -267,17 +281,18 @@ class TestRenderTranscript:
 
 class TestChunkTranscript:
     def test_small_transcript_single_chunk(self):
-        transcript = ParsedTranscript(messages=[
-            TranscriptMessage(role="user", text="short"),
-        ])
+        transcript = ParsedTranscript(
+            messages=[
+                TranscriptMessage(role="user", text="short"),
+            ]
+        )
         chunks = chunk_transcript(transcript, max_chars=1000)
         assert len(chunks) == 1
         assert chunks[0].messages == transcript.messages
 
     def test_large_transcript_multiple_chunks(self):
         messages = [
-            TranscriptMessage(role="user", text=f"Message {i}: " + "x" * 100)
-            for i in range(50)
+            TranscriptMessage(role="user", text=f"Message {i}: " + "x" * 100) for i in range(50)
         ]
         transcript = ParsedTranscript(messages=messages)
         chunks = chunk_transcript(transcript, max_chars=500, overlap_messages=2)
@@ -293,10 +308,7 @@ class TestChunkTranscript:
 
     def test_chunks_share_metadata(self):
         meta = TranscriptMeta(session_id="s1", project_name="proj")
-        messages = [
-            TranscriptMessage(role="user", text="x" * 200)
-            for _ in range(10)
-        ]
+        messages = [TranscriptMessage(role="user", text="x" * 200) for _ in range(10)]
         transcript = ParsedTranscript(meta=meta, messages=messages)
         chunks = chunk_transcript(transcript, max_chars=300)
         for chunk in chunks:

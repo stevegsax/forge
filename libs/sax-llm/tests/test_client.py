@@ -16,6 +16,7 @@ class TestBuildToolDefinition:
     def test_basic(self):
         class MyTool(BaseModel):
             """A test tool."""
+
             value: str
 
         tool = build_tool_definition(MyTool)

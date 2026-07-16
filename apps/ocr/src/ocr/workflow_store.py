@@ -60,9 +60,7 @@ class OcrStoreWorkflow:
                 timeout=_BATCH_WAIT_TIMEOUT,
             )
         except TimeoutError as exc:
-            await self._mark_failed(
-                input, f"OCR batch wait timed out after {_BATCH_WAIT_TIMEOUT}"
-            )
+            await self._mark_failed(input, f"OCR batch wait timed out after {_BATCH_WAIT_TIMEOUT}")
             raise ApplicationError("OCR batch wait timed out") from exc
 
         result = self._batch_results[input.request_id]

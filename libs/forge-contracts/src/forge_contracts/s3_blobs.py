@@ -31,9 +31,7 @@ def get_bucket() -> str:
     """Return the configured blob bucket, or raise if unset."""
     bucket = os.environ.get("FORGE_OCR_S3_BUCKET")
     if not bucket:
-        raise S3ConfigError(
-            "FORGE_OCR_S3_BUCKET is not set; blob storage requires an S3 bucket."
-        )
+        raise S3ConfigError("FORGE_OCR_S3_BUCKET is not set; blob storage requires an S3 bucket.")
     return bucket
 
 

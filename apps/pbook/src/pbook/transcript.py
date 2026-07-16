@@ -62,22 +62,20 @@ class SessionInfo(BaseModel):
 # Line types to skip entirely
 # ---------------------------------------------------------------------------
 
-_SKIP_TYPES = frozenset({
-    "file-history-snapshot",
-    "permission-mode",
-    "attachment",
-    "last-prompt",
-})
+_SKIP_TYPES = frozenset(
+    {
+        "file-history-snapshot",
+        "permission-mode",
+        "attachment",
+        "last-prompt",
+    }
+)
 
 # Regex to strip <system-reminder>...</system-reminder> blocks
-_SYSTEM_REMINDER_RE = re.compile(
-    r"<system-reminder>.*?</system-reminder>", re.DOTALL
-)
+_SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 
 # Regex to detect slash-command-only messages
-_COMMAND_ONLY_RE = re.compile(
-    r"^\s*<command-name>/\w+</command-name>", re.DOTALL
-)
+_COMMAND_ONLY_RE = re.compile(r"^\s*<command-name>/\w+</command-name>", re.DOTALL)
 
 # Regex to detect local-command-caveat wrapper
 _LOCAL_COMMAND_RE = re.compile(
@@ -119,13 +117,15 @@ def discover_sessions(
         session_id = jsonl_file.stem
         project_dir_name = jsonl_file.parent.name
 
-        sessions.append(SessionInfo(
-            path=str(jsonl_file),
-            session_id=session_id,
-            project_dir_name=project_dir_name,
-            project_name=infer_project_name(project_dir_name),
-            size_bytes=size,
-        ))
+        sessions.append(
+            SessionInfo(
+                path=str(jsonl_file),
+                session_id=session_id,
+                project_dir_name=project_dir_name,
+                project_name=infer_project_name(project_dir_name),
+                size_bytes=size,
+            )
+        )
 
     sessions.sort(key=lambda s: s.size_bytes, reverse=True)
     return sessions
@@ -237,9 +237,13 @@ def _parse_line(data: dict) -> list[TranscriptMessage] | None:
         elif block_type == "tool_use":
             summary = _summarize_tool_use(block)
             if summary:
-                result.append(TranscriptMessage(
-                    role=role, text=summary, tool_name=block.get("name", ""),
-                ))
+                result.append(
+                    TranscriptMessage(
+                        role=role,
+                        text=summary,
+                        tool_name=block.get("name", ""),
+                    )
+                )
 
         elif block_type == "tool_result":
             summary = _compact_tool_result(block)
@@ -271,7 +275,10 @@ def _clean_text(text: str) -> str:
 
     # Strip local-command-stdout tags (keep content)
     text = re.sub(
-        r"<local-command-stdout>(.*?)</local-command-stdout>", r"\1", text, flags=re.DOTALL,
+        r"<local-command-stdout>(.*?)</local-command-stdout>",
+        r"\1",
+        text,
+        flags=re.DOTALL,
     )
     text = re.sub(r"<local-command-caveat>.*?</local-command-caveat>", "", text, flags=re.DOTALL)
 
@@ -301,7 +308,7 @@ def _summarize_tool_use(block: dict) -> str:
 
     if name == "Agent":
         desc = inp.get("description", "")
-        return f"[tool: Agent \"{desc}\"]" if desc else "[tool: Agent]"
+        return f'[tool: Agent "{desc}"]' if desc else "[tool: Agent]"
 
     return f"[tool: {name}]"
 
@@ -386,10 +393,12 @@ def chunk_transcript(
             char_count += msg_len
             end += 1
 
-        chunks.append(ParsedTranscript(
-            meta=transcript.meta,
-            messages=messages[start:end],
-        ))
+        chunks.append(
+            ParsedTranscript(
+                meta=transcript.meta,
+                messages=messages[start:end],
+            )
+        )
 
         # Advance with overlap
         start = max(start + 1, end - overlap_messages)

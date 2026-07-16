@@ -62,10 +62,12 @@ class RetrievalWorkflow:
             )
             similarities = await workflow.execute_activity(
                 "compute_similarities_by_id",
-                json.dumps({
-                    "query_embedding_b64": query_b64,
-                    "ids": [m["id"] for m in meta if "id" in m],
-                }),
+                json.dumps(
+                    {
+                        "query_embedding_b64": query_b64,
+                        "ids": [m["id"] for m in meta if "id" in m],
+                    }
+                ),
                 start_to_close_timeout=_SIMILARITY_TIMEOUT,
                 result_type=dict,
             )
@@ -74,14 +76,16 @@ class RetrievalWorkflow:
         # for top-N only.
         result = await workflow.execute_activity(
             "score_and_pack",
-            json.dumps({
-                "meta": meta,
-                "similarities": similarities,
-                "tags": input.tags,
-                "mode": input.mode.value,
-                "token_budget": input.token_budget,
-                "threshold": input.threshold,
-            }),
+            json.dumps(
+                {
+                    "meta": meta,
+                    "similarities": similarities,
+                    "tags": input.tags,
+                    "mode": input.mode.value,
+                    "token_budget": input.token_budget,
+                    "threshold": input.threshold,
+                }
+            ),
             start_to_close_timeout=_PACK_TIMEOUT,
             result_type=dict,
         )

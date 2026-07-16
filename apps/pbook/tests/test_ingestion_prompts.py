@@ -56,20 +56,24 @@ class TestTranscriptAnalysisResult:
         assert result.experiences == []
 
     def test_with_experiences(self):
-        result = TranscriptAnalysisResult(experiences=[
-            AnalyzedExperience(
-                problem="SQLite locked",
-                resolution="Use WAL mode",
-                context="Multi-threaded Temporal activities",
-            ),
-        ])
+        result = TranscriptAnalysisResult(
+            experiences=[
+                AnalyzedExperience(
+                    problem="SQLite locked",
+                    resolution="Use WAL mode",
+                    context="Multi-threaded Temporal activities",
+                ),
+            ]
+        )
         assert len(result.experiences) == 1
         assert result.experiences[0].problem == "SQLite locked"
 
     def test_serialization_roundtrip(self):
-        result = TranscriptAnalysisResult(experiences=[
-            AnalyzedExperience(problem="p", resolution="r"),
-        ])
+        result = TranscriptAnalysisResult(
+            experiences=[
+                AnalyzedExperience(problem="p", resolution="r"),
+            ]
+        )
         json_str = result.model_dump_json()
         restored = TranscriptAnalysisResult.model_validate_json(json_str)
         assert restored.experiences[0].problem == "p"

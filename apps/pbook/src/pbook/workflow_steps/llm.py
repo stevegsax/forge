@@ -48,7 +48,7 @@ class LLMChatInput(BaseModel):
     )
     model: str = Field(
         description=(
-            "Provider-qualified model id (\"anthropic:claude-...\") or "
+            'Provider-qualified model id ("anthropic:claude-...") or '
             "bare model name. Empty string is rejected — the workflow "
             "is expected to resolve a model deliberately."
         ),

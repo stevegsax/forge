@@ -63,10 +63,7 @@ def _content_to_mistral(
 
 def _messages_to_mistral(messages: list[Message]) -> list[dict]:
     """Convert Message list to Mistral format (system messages stay in array)."""
-    return [
-        {"role": msg.role, "content": _content_to_mistral(msg.content)}
-        for msg in messages
-    ]
+    return [{"role": msg.role, "content": _content_to_mistral(msg.content)} for msg in messages]
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +112,7 @@ def _parse_error_file_entries(content: str) -> list[BatchResultEntry]:
             continue
 
         custom_id = data.get("custom_id", "unknown")
-        error_detail = (
-            data.get("response", {}).get("body", {}).get("error")
-            or data.get("error")
-        )
+        error_detail = data.get("response", {}).get("body", {}).get("error") or data.get("error")
         error_str = json.dumps(error_detail) if error_detail else "Unknown error"
 
         entries.append(
@@ -212,9 +206,7 @@ class MistralProvider:
         if output_type is not None:
             schema = output_type.model_json_schema()
             tool_name = _snake_case(output_type.__name__)
-            description = (
-                (output_type.__doc__ or "").strip() or f"Structured output: {tool_name}"
-            )
+            description = (output_type.__doc__ or "").strip() or f"Structured output: {tool_name}"
 
             tool_def = {
                 "type": "function",
@@ -270,9 +262,7 @@ class MistralProvider:
         body = {k: v for k, v in params.items() if k != "model"}
         return {"custom_id": request_id, "body": body}
 
-    async def submit_batch(
-        self, requests: list[dict], model: str, *, endpoint: str = ""
-    ) -> str:
+    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
         from mistralai.types.basemodel import UnrecognizedStr
 
         resolved_endpoint = endpoint or _DEFAULT_MISTRAL_ENDPOINT
@@ -290,9 +280,7 @@ class MistralProvider:
         )
         return job.id
 
-    async def _submit_batch_via_file(
-        self, requests: list[dict], model: str, endpoint: str
-    ) -> str:
+    async def _submit_batch_via_file(self, requests: list[dict], model: str, endpoint: str) -> str:
         from mistralai.types.basemodel import UnrecognizedStr
 
         lines = [json.dumps(r) for r in requests]
@@ -326,11 +314,15 @@ class MistralProvider:
 
         if getattr(job, "errors", None):
             logger.warning(
-                "Batch %s errors: %s", batch_id, _format_batch_errors(job.errors),
+                "Batch %s errors: %s",
+                batch_id,
+                _format_batch_errors(job.errors),
             )
         if getattr(job, "failed_requests", None) and job.failed_requests > 0:
             logger.warning(
-                "Batch %s has %d failed request(s)", batch_id, job.failed_requests,
+                "Batch %s has %d failed request(s)",
+                batch_id,
+                job.failed_requests,
             )
 
         if poll_status != BatchPollStatus.ENDED:
@@ -338,9 +330,7 @@ class MistralProvider:
 
         entries: list[BatchResultEntry] = []
         if _is_set(getattr(job, "error_file", None)):
-            error_content = await _download_file_content(
-                self._client, cast("str", job.error_file)
-            )
+            error_content = await _download_file_content(self._client, cast("str", job.error_file))
             error_entries = _parse_error_file_entries(error_content)
             entries.extend(error_entries)
 
@@ -352,7 +342,8 @@ class MistralProvider:
             )
             logger.warning(
                 "Batch %s succeeded but output_file is not set: %s",
-                batch_id, error_detail,
+                batch_id,
+                error_detail,
             )
             return BatchPollResult(status=BatchPollStatus.FAILED, entries=entries)
 

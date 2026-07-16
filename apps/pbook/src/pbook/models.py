@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field
 class EntryType(StrEnum):
     """Content type for playbook entries."""
 
-    PITFALL = "pitfall"       # Extracted from experience — unexpected + actionable
-    CURATED = "curated"       # Human-submitted general advice
+    PITFALL = "pitfall"  # Extracted from experience — unexpected + actionable
+    CURATED = "curated"  # Human-submitted general advice
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +56,8 @@ class PlaybookEntry(BaseModel):
 class RetrievalMode(StrEnum):
     """Intent mode for retrieval ranking."""
 
-    CREATE = "create"   # Boosts general knowledge
-    FIX = "fix"         # Boosts project-specific pitfalls
+    CREATE = "create"  # Boosts general knowledge
+    FIX = "fix"  # Boosts project-specific pitfalls
 
 
 class RetrievalInput(BaseModel):

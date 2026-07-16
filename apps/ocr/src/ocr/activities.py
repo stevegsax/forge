@@ -200,9 +200,7 @@ def execute_read_and_store_file(file_path: str, engine: Engine) -> FileContentRe
         mime_type=mime_type,
         file_size_bytes=len(raw),
     )
-    return FileContentRef(
-        content_id=content_id, mime_type=mime_type, file_size_bytes=len(raw)
-    )
+    return FileContentRef(content_id=content_id, mime_type=mime_type, file_size_bytes=len(raw))
 
 
 def execute_split_file_into_chunks(
@@ -524,9 +522,7 @@ def execute_check_ocr_duplicate(file_path: str, engine: Engine) -> OcrDuplicateC
     file_hash = compute_file_hash(file_path)
     row = find_ocr_result_by_hash(engine, file_hash)
     if row is not None:
-        return OcrDuplicateCheckResult(
-            is_duplicate=True, existing_document_id=row["document_id"]
-        )
+        return OcrDuplicateCheckResult(is_duplicate=True, existing_document_id=row["document_id"])
     return OcrDuplicateCheckResult(is_duplicate=False)
 
 

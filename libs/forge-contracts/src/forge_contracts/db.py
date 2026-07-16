@@ -98,7 +98,9 @@ def insert_or_ignore(
         raise StoreConfigError(msg)
 
     stmt = (
-        _dialect_insert(table).values(**values).on_conflict_do_nothing(index_elements=index_elements)
+        _dialect_insert(table)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=index_elements)
     )
     with engine.begin() as conn:
         result = conn.execute(stmt)

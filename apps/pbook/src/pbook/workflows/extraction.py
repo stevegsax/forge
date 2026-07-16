@@ -114,17 +114,19 @@ class ExtractionWorkflow:
                 )
 
             # Step 4: match-or-attach each entry plus its source row.
-            save_input = json.dumps({
-                "entries": entries,
-                "project": project,
-                "source": {
-                    "session_id": metadata.get("session_id", ""),
-                    "project_name": exp.project or project,
-                    "experience_hash": metadata.get("experience_hash"),
-                    "source_context": situation_text,
-                    "source_context_embedding": situation_embedding,
-                },
-            })
+            save_input = json.dumps(
+                {
+                    "entries": entries,
+                    "project": project,
+                    "source": {
+                        "session_id": metadata.get("session_id", ""),
+                        "project_name": exp.project or project,
+                        "experience_hash": metadata.get("experience_hash"),
+                        "source_context": situation_text,
+                        "source_context_embedding": situation_embedding,
+                    },
+                }
+            )
             count = await workflow.execute_activity(
                 "save_extracted_entries",
                 save_input,
