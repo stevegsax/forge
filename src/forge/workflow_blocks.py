@@ -14,7 +14,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ApplicationError
+from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from forge_contracts.persist import (
@@ -40,12 +40,30 @@ with workflow.unsafe.imports_passed_through():
 
 
 __all__ = [
+    "BATCH_WAIT_FAILURES",
     "batch_submit_and_wait",
+    "cleanup_worktree_after_failure",
     "conflict_resolution_dispatch",
     "generation_dispatch",
     "persist_block",
     "remove_worktree",
 ]
+
+# A batch wait fails in exactly two shapes, and both must leave a terminal run
+# row and no orphaned worktree instead of crashing out of the workflow (T1.6b):
+#   * a genuine 25h timeout — ``workflow.wait_condition(timeout=...)`` delegates to
+#     ``asyncio.wait_for`` and raises ``asyncio.TimeoutError``, which on Python
+#     3.11+ *is* the builtin ``TimeoutError`` (verified in the installed temporalio
+#     ``workflow_wait_condition``). This is deliberately the builtin — NOT
+#     ``temporalio.exceptions.TimeoutError`` (a different class, for activity
+#     timeouts) — so it is not imported here where it would shadow the builtin.
+#   * a fast failure surfaced by ``batch_submit_and_wait`` as an ``ApplicationError``
+#     — an error-payload ``BatchResult`` from a MISSING batch (T1.3), or a result
+#     with neither an inline body nor an ``s3_key``.
+# Both are raised in workflow code (not wrapped in ``ActivityError``), so a
+# workflow ``run()`` catches them directly; ordinary activity failures are
+# untouched.
+BATCH_WAIT_FAILURES: tuple[type[BaseException], ...] = (TimeoutError, ApplicationError)
 
 
 # ---------------------------------------------------------------------------
@@ -250,3 +268,25 @@ async def remove_worktree(repo_root: str, task_id: str) -> None:
         retry_policy=_LOCAL_RETRY,
         result_type=type(None),
     )
+
+
+async def cleanup_worktree_after_failure(repo_root: str, task_id: str, exc: BaseException) -> None:
+    """Clean up a worktree after a batch wait fails; never raises.
+
+    The shared failure-symmetry handler for ``ForgeTaskWorkflow`` and
+    ``ForgeSubTaskWorkflow`` (T1.6b): a batch wait that times out (25h) or errors
+    (T1.3 fast failure) must leave no orphaned worktree, yet it must not let a
+    cleanup blip mask the terminal run record the caller still has to write.
+    Worktree removal is therefore best-effort — only ``ActivityError`` is swallowed
+    (``CancelledError`` must still propagate), so the caller can persist its
+    FAILURE_TERMINAL row unconditionally.
+    """
+    workflow.logger.warning("Batch wait failed; cleaning worktree task_id=%s: %r", task_id, exc)
+    try:
+        await remove_worktree(repo_root, task_id)
+    except ActivityError as cleanup_exc:
+        workflow.logger.warning(
+            "Worktree cleanup after batch failure did not complete: task_id=%s: %r",
+            task_id,
+            cleanup_exc,
+        )

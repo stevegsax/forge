@@ -3918,6 +3918,7 @@ class TestSanityCheckSkipsLastStep:
 _BATCH_CALL_LOG: list[str] = []
 _BATCH_TRANSITION_SEQUENCE: list[str] = []
 _BATCH_PARSE_RESPONSES: list[ParsedLLMResponse] = []
+_BATCH_PERSISTED: list[PersistRequest] = []
 
 
 def _reset_batch_mock_state(
@@ -3927,10 +3928,19 @@ def _reset_batch_mock_state(
     _BATCH_CALL_LOG.clear()
     _BATCH_TRANSITION_SEQUENCE.clear()
     _BATCH_PARSE_RESPONSES.clear()
+    _BATCH_PERSISTED.clear()
     if transitions:
         _BATCH_TRANSITION_SEQUENCE.extend(transitions)
     if parse_responses:
         _BATCH_PARSE_RESPONSES.extend(parse_responses)
+
+
+@activity.defn(name="persist_to_store")
+async def mock_batch_persist_to_store(req: PersistRequest) -> PersistResult:
+    """Capturing survivable-write mock: records each request so tests can assert
+    that a FAILURE_TERMINAL run row was written on the batch-failure path (T1.6b)."""
+    _BATCH_PERSISTED.append(req)
+    return PersistResult(kind=req.kind, applied=True)
 
 
 @activity.defn(name="create_worktree_activity")
@@ -4016,7 +4026,7 @@ async def mock_batch_evaluate_transition(input: TransitionInput) -> str:
 
 
 _BATCH_MOCK_ACTIVITIES = [
-    mock_persist_to_store,
+    mock_batch_persist_to_store,
     mock_batch_create_worktree,
     mock_batch_remove_worktree,
     mock_batch_commit_changes,
@@ -4086,7 +4096,9 @@ class TestBatchSingleStep:
         assert result.output_files == {"hello.py": "print('hello')\n"}
 
     @pytest.mark.asyncio
-    async def test_batch_error_in_signal_raises(self, env: WorkflowEnvironment) -> None:
+    async def test_batch_error_in_signal_records_failure(self, env: WorkflowEnvironment) -> None:
+        """An error-payload BatchResult (T1.3 fast failure) ends in a graceful
+        FAILURE_TERMINAL run row + cleaned worktree, not a raw workflow crash (T1.6b)."""
         _reset_batch_mock_state()
 
         task = TaskDefinition(
@@ -4115,7 +4127,9 @@ class TestBatchSingleStep:
                 task_queue=FORGE_TASK_QUEUE,
             )
 
-            # Send signal with error
+            # Send signal with error — the waiter turns result.error into an
+            # ApplicationError (T1.3), which the run() failure-symmetry handler
+            # catches instead of letting it crash the workflow.
             batch_result = BatchResult(
                 request_id="req-test-123",
                 batch_id="msgbatch_test123",
@@ -4124,10 +4138,18 @@ class TestBatchSingleStep:
             )
             await handle.signal(ForgeTaskWorkflow.batch_result_received, batch_result)
 
-            from temporalio.client import WorkflowFailureError
+            result = await handle.result()
 
-            with pytest.raises(WorkflowFailureError):
-                await handle.result()
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert "ApplicationError" in (result.error or "")
+        assert "Batch expired" in (result.error or "")
+        # Worktree was cleaned — no orphan left behind.
+        assert "remove_worktree" in _BATCH_CALL_LOG
+        # Exactly one FAILURE_TERMINAL run row was persisted (same PersistRun the
+        # success path uses, keyed on (workflow_id, run_id)).
+        runs = [r for r in _BATCH_PERSISTED if r.kind == "run"]
+        assert len(runs) == 1
+        assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
 
     @pytest.mark.asyncio
     async def test_batch_result_correlated_by_request_id(
@@ -4204,6 +4226,119 @@ class TestBatchSingleStep:
 
         assert result.status == TransitionSignal.SUCCESS
         assert result.output_files == {"hello.py": "print('hello')\n"}
+
+
+# ---------------------------------------------------------------------------
+# Tests — batch-wait failure symmetry (T1.6b)
+# ---------------------------------------------------------------------------
+
+# Sub-task workflow batch activities with a NON-signaling submit, so the 25h
+# batch wait times out (skipped by the time-skipping env) inside the sub-task.
+_SUBTASK_TIMEOUT_ACTIVITIES = [
+    mock_persist_to_store,
+    mock_subtask_create_worktree,
+    mock_subtask_remove_worktree,
+    mock_assemble_sub_task_context,
+    mock_subtask_write_output,
+    mock_subtask_validate_output,
+    mock_subtask_evaluate_transition,
+    mock_batch_submit,  # returns req-test-123 and never signals
+    mock_parse_response,
+]
+
+
+class TestBatchWaitFailure:
+    """A batch wait that times out or errors leaves a run row and no orphan (T1.6b)."""
+
+    @pytest.mark.asyncio
+    async def test_wait_timeout_records_failure_and_cleans_worktree(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """The 25h wait raises the builtin TimeoutError; run() records a terminal
+        row and removes the worktree instead of crashing out with an orphan."""
+        _reset_batch_mock_state()
+
+        task = TaskDefinition(
+            task_id="batch-timeout",
+            description="Timeout test.",
+            target_files=["x.py"],
+        )
+        input = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            max_attempts=1,
+            max_exploration_rounds=0,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_BATCH_MOCK_ACTIVITIES,
+        ):
+            # Never signal: mock_batch_submit returns req-test-123 but the result
+            # never arrives, so wait_condition times out (the time-skipping env
+            # fast-forwards the 25h timer).
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                input,
+                id="test-batch-wait-timeout",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert "TimeoutError" in (result.error or "")
+        # Worktree was cleaned — no orphan.
+        assert "remove_worktree" in _BATCH_CALL_LOG
+        # Exactly one FAILURE_TERMINAL run row was persisted (same PersistRun the
+        # success path uses).
+        runs = [r for r in _BATCH_PERSISTED if r.kind == "run"]
+        assert len(runs) == 1
+        assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_subtask_wait_timeout_returns_terminal_and_cleans_worktree(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """A sub-task batch wait timing out returns a FAILURE_TERMINAL SubTaskResult
+        (so the parent records the run row) and removes its own worktree (T1.6b)."""
+        global _test_client
+        _test_client = env.client
+        _reset_subtask_mock_state()
+
+        input = SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Analyze schema.",
+                target_files=["schema.py"],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=1,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeSubTaskWorkflow],
+            activities=_SUBTASK_TIMEOUT_ACTIVITIES,
+        ):
+            result = await env.client.execute_workflow(
+                ForgeSubTaskWorkflow.run,
+                input,
+                id="test-subtask-wait-timeout",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.sub_task_id == "st1"
+        assert "TimeoutError" in (result.error or "")
+        # The sub-task's own compound-id worktree was removed — no orphan.
+        assert "remove_worktree:parent-task.sub.st1" in _SUBTASK_CALL_LOG
 
 
 # ---------------------------------------------------------------------------

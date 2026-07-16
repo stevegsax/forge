@@ -32,7 +32,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T1.4 — Unblock the worker event loop](tasks/T1.4-unblock-worker-event-loop.md)
 - [x] [T1.5 — Nested fan-out propagation fix](tasks/T1.5-nested-fan-out-propagation.md)
 - [x] [T1.6a — Idempotency rekey](tasks/T1.6a-idempotency-rekey.md)
-- [ ] [T1.6b — Batch-wait failure symmetry](tasks/T1.6b-batch-wait-failure-symmetry.md)
+- [x] [T1.6b — Batch-wait failure symmetry](tasks/T1.6b-batch-wait-failure-symmetry.md)
 - [x] [T1.7 — Env scrub at model-influenced subprocess seams](tasks/T1.7-env-scrub-subprocess-seams.md)
 - [ ] [T1.8 — Small dedup batch + kill runs-extraction](tasks/T1.8-small-dedup-batch.md)
 

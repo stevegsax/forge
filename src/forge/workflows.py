@@ -199,7 +199,13 @@ with workflow.unsafe.imports_passed_through():
     from forge.persist_models import build_interaction_idempotency_key as _build_interaction_key
     from forge.persist_models import build_persist_interaction as _build_persist_interaction
     from forge.workflow_blocks import (
+        BATCH_WAIT_FAILURES,
+    )
+    from forge.workflow_blocks import (
         batch_submit_and_wait as _call_llm_batch_dispatch,
+    )
+    from forge.workflow_blocks import (
+        cleanup_worktree_after_failure as _cleanup_worktree_after_failure,
     )
     from forge.workflow_blocks import (
         conflict_resolution_dispatch as _call_conflict_resolution_dispatch,
@@ -302,13 +308,26 @@ class ForgeTaskWorkflow:
             input.plan,
             input.sync_mode,
         )
-        if input.plan:
-            result = await self._run_planned(input)
-        else:
-            result = await self._run_single_step(input)
-        # Survivably persist the run result (idempotent on workflow_id) so every
-        # execution records a row — including fire-and-forget submissions, which
-        # the old CLI-side _persist_run never covered.
+        try:
+            if input.plan:
+                result = await self._run_planned(input)
+            else:
+                result = await self._run_single_step(input)
+        except BATCH_WAIT_FAILURES as exc:
+            # The batch wait timed out (25h) or delivered an error/body-less result
+            # (T1.3). Clean the worktree and record a terminal failure so the run
+            # never crashes out leaving no row and an orphaned worktree (T1.6b).
+            await _cleanup_worktree_after_failure(input.repo_root, input.task.task_id, exc)
+            result = TaskResult(
+                task_id=input.task.task_id,
+                status=TransitionSignal.FAILURE_TERMINAL,
+                error=f"Batch wait failed: {type(exc).__name__}: {exc}",
+            )
+        # Survivably persist the run result (idempotent on (workflow_id, run_id)) so
+        # every execution records a row — including a batch-wait failure and
+        # fire-and-forget submissions, which the old CLI-side _persist_run never
+        # covered. The failure path above reuses this exact persist, so its row is
+        # keyed and written identically to the success path.
         await _persist_block(
             PersistRun(
                 workflow_id=workflow.info().workflow_id,
@@ -1505,9 +1524,22 @@ class ForgeSubTaskWorkflow:
             input.depth,
             input.max_depth,
         )
-        if input.sub_task.sub_tasks and input.depth < input.max_depth:
-            return await self._run_nested_fan_out(input)
-        return await self._run_single_step(input)
+        try:
+            if input.sub_task.sub_tasks and input.depth < input.max_depth:
+                return await self._run_nested_fan_out(input)
+            return await self._run_single_step(input)
+        except BATCH_WAIT_FAILURES as exc:
+            # Same batch-wait failure symmetry as the parent (T1.6b): clean this
+            # node's own worktree and return a terminal SubTaskResult instead of
+            # crashing out. Sub-tasks write no run row of their own — returning a
+            # normal failure lets the parent's failure handling record the run row.
+            compound_id = f"{input.parent_task_id}.sub.{input.sub_task.sub_task_id}"
+            await _cleanup_worktree_after_failure(input.repo_root, compound_id, exc)
+            return SubTaskResult(
+                sub_task_id=input.sub_task.sub_task_id,
+                status=TransitionSignal.FAILURE_TERMINAL,
+                error=f"Batch wait failed: {type(exc).__name__}: {exc}",
+            )
 
     # ------------------------------------------------------------------
     # LLM dispatch methods (delegating to module-level shared functions)
