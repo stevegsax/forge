@@ -66,6 +66,27 @@ class TestDbRowToEntryDict:
 
 
 # ---------------------------------------------------------------------------
+# export_single_entry (error branches)
+# ---------------------------------------------------------------------------
+
+
+class TestExportSingleEntry:
+    @pytest.mark.asyncio
+    async def test_no_store_configured_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With the store disabled, export_single_entry fails loudly rather than no-op-ing."""
+        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
+
+        with pytest.raises(RuntimeError, match="No store available"):
+            await export_single_entry(1)
+
+    @pytest.mark.asyncio
+    async def test_missing_entry_raises(self) -> None:
+        """A well-formed but nonexistent entry id is reported by id, not swallowed."""
+        with pytest.raises(RuntimeError, match="Entry 999 not found"):
+            await export_single_entry(999)
+
+
+# ---------------------------------------------------------------------------
 # ExportWorkflow
 # ---------------------------------------------------------------------------
 
