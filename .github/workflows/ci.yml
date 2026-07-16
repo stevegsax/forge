@@ -35,6 +35,8 @@ jobs:
       - uses: astral-sh/setup-uv@v8.3.2
         with:
           enable-cache: true
+      # forge's exploration provider (handle_search_code) shells out to rg
+      - run: sudo apt-get install -y --no-install-recommends ripgrep
       - run: uv python install
       - run: uv sync --locked --all-packages
       - run: uv run pytest
