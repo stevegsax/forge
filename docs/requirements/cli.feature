@@ -105,11 +105,6 @@ Feature: CLI Commands
     When the user runs "forge worker --batch-poll-interval 300"
     Then the batch poller runs every 300 seconds
 
-  @standard @temporal @knowledge
-  Scenario: Worker extraction interval is configurable
-    When the user runs "forge worker --extraction-interval 7200"
-    Then the extraction workflow runs every 7200 seconds
-
   # --- forge status ---
 
   @standard @observability
@@ -132,28 +127,6 @@ Feature: CLI Commands
     Given no database file exists
     When the user runs "forge status"
     Then the exit code is 1
-
-  # --- forge extract ---
-
-  @standard @knowledge
-  Scenario: Extract knowledge from completed runs
-    When the user runs "forge extract"
-    Then the extraction workflow processes unextracted runs
-
-  @standard @knowledge
-  Scenario: Extract with --dry-run previews without processing
-    When the user runs "forge extract --dry-run"
-    Then unextracted runs are listed without starting the extraction workflow
-
-  @standard @knowledge
-  Scenario: Extract with --limit controls batch size
-    When the user runs "forge extract --limit 5"
-    Then at most 5 runs are processed
-
-  @standard @knowledge
-  Scenario: Extract with --since-hours controls look-back window
-    When the user runs "forge extract --since-hours 48"
-    Then only runs from the last 48 hours are considered
 
   # --- forge playbooks ---
 

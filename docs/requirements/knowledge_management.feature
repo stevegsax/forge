@@ -119,19 +119,3 @@ Feature: Knowledge Management
     Given the database is unavailable
     When the orchestrator attempts to load playbooks
     Then an empty list is returned without raising an error
-
-  # --- Scheduled Execution ---
-
-  @standard @temporal
-  Scenario: Extraction runs on a configurable schedule
-    Given the worker is started with extraction_interval of 14400 seconds
-    When the worker schedules extraction
-    Then extraction runs every 14400 seconds (4 hours)
-
-  # --- Dry-Run Preview ---
-
-  @standard @cli
-  Scenario: Dry-run lists unextracted runs without processing
-    Given completed runs that have not been extracted
-    When the user runs "forge extract --dry-run"
-    Then the unextracted runs are listed without starting the extraction workflow

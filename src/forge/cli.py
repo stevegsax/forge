@@ -1,17 +1,17 @@
 """CLI entry point for Forge.
 
 Provides ``forge run``, ``forge worker``, ``forge status``,
-``forge eval-planner``, ``forge extract``, ``forge playbooks``,
+``forge eval-planner``, ``forge playbooks``,
 and ``forge start`` subcommands.
 
 Follows Function Core / Imperative Shell:
 - Pure functions: format_task_result, format_validation_results,
   build_task_definition, load_task_definition, format_eval_result,
-  format_deterministic_result, format_extraction_result, format_playbook_entry,
+  format_deterministic_result, format_playbook_entry,
   load_workflow_input
-- Async shell: _submit_and_wait, _submit_no_wait, _run_eval, _submit_extraction,
-  _start_workflow, _start_workflow_and_wait
-- Click commands: main, run, worker, status, eval_planner, extract, playbooks, start
+- Async shell: _submit_and_wait, _submit_no_wait, _run_eval, _start_workflow,
+  _start_workflow_and_wait
+- Click commands: main, run, worker, status, eval_planner, playbooks, start
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ if TYPE_CHECKING:
     from forge.eval.models import DeterministicResult, PlanEvalResult
     from forge.models import (
         ExportPlaybookResult,
-        ExtractionWorkflowResult,
         LLMStats,
         ManualPlaybookResult,
         StepResult,
@@ -367,7 +366,9 @@ async def _submit_and_wait(
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
 
-    from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
+    from forge_contracts.constants import FORGE_TASK_QUEUE
+
+    from forge.workflows import ForgeTaskWorkflow
 
     client = await connect_temporal(temporal_address)
 
@@ -416,7 +417,9 @@ async def _submit_no_wait(
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
 
-    from forge.workflows import FORGE_TASK_QUEUE, ForgeTaskWorkflow
+    from forge_contracts.constants import FORGE_TASK_QUEUE
+
+    from forge.workflows import ForgeTaskWorkflow
 
     client = await connect_temporal(temporal_address)
 
@@ -820,13 +823,6 @@ def run(
     help="Seconds between batch polling runs.",
 )
 @click.option(
-    "--extraction-interval",
-    type=int,
-    default=14400,
-    show_default=True,
-    help="Seconds between knowledge extraction schedule runs (default 4 hours).",
-)
-@click.option(
     "--worker-identity",
     envvar="FORGE_WORKER_IDENTITY",
     default=None,
@@ -835,7 +831,6 @@ def run(
 def worker(
     temporal_address: str,
     batch_poll_interval: int,
-    extraction_interval: int,
     worker_identity: str | None,
 ) -> None:
     """Start the Temporal worker."""
@@ -850,7 +845,6 @@ def worker(
         run_worker(
             address=temporal_address,
             batch_poll_interval=batch_poll_interval,
-            extraction_interval=extraction_interval,
             identity=worker_identity,
         )
     )
@@ -939,110 +933,6 @@ def status(
 
 
 # ---------------------------------------------------------------------------
-# Extract command (Phase 6)
-# ---------------------------------------------------------------------------
-
-
-def format_extraction_result(result: ExtractionWorkflowResult) -> str:
-    """Format an ExtractionWorkflowResult for human-readable output."""
-    lines = [
-        f"Entries created: {result.entries_created}",
-        f"Runs processed: {len(result.source_workflow_ids)}",
-    ]
-    if result.source_workflow_ids:
-        lines.append("")
-        lines.append("Source workflows:")
-        for wid in result.source_workflow_ids:
-            lines.append(f"  {wid}")
-    return "\n".join(lines)
-
-
-async def _submit_extraction(
-    temporal_address: str,
-    limit: int,
-    since_hours: int,
-) -> ExtractionWorkflowResult:
-    """Submit extraction workflow to Temporal and wait for completion."""
-
-    from forge.extraction_workflow import ForgeExtractionWorkflow
-    from forge.models import ExtractionWorkflowInput
-    from forge.workflows import FORGE_TASK_QUEUE
-
-    client = await connect_temporal(temporal_address)
-
-    result: ExtractionWorkflowResult = await client.execute_workflow(
-        ForgeExtractionWorkflow.run,
-        ExtractionWorkflowInput(limit=limit, since_hours=since_hours),
-        id="forge-extraction",
-        task_queue=FORGE_TASK_QUEUE,
-    )
-    return result
-
-
-@main.command()
-@click.option(
-    "--limit",
-    default=10,
-    show_default=True,
-    type=int,
-    help="Max runs to process.",
-)
-@click.option(
-    "--since-hours",
-    default=24,
-    show_default=True,
-    type=int,
-    help="Look-back window in hours.",
-)
-@click.option("--dry-run", is_flag=True, help="Show unextracted runs without running extraction.")
-@click.option("--json", "output_json", is_flag=True, help="Output result as JSON.")
-@click.option(
-    "--temporal-address",
-    envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
-)
-def extract(
-    limit: int,
-    since_hours: int,
-    dry_run: bool,
-    output_json: bool,
-    temporal_address: str,
-) -> None:
-    """Extract knowledge from completed runs into playbooks."""
-    if dry_run:
-        from forge.store import get_unextracted_runs
-
-        engine = _require_store_engine()
-        runs = get_unextracted_runs(engine, limit=limit)
-
-        if not runs:
-            click.echo("No unextracted runs found.")
-            return
-
-        click.echo(f"Unextracted runs ({len(runs)}):")
-        click.echo("")
-        for r in runs:
-            click.echo(
-                f"  {r['workflow_id']}  {r['run_id']}  {r['task_id']}  "
-                f"{r['status']}  {r['created_at']}"
-            )
-        return
-
-    try:
-        result = asyncio.run(_submit_extraction(temporal_address, limit, since_hours))
-
-        if output_json:
-            click.echo(result.model_dump_json(indent=2))
-        else:
-            click.echo(format_extraction_result(result))
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(EXIT_INFRASTRUCTURE_ERROR)
-
-
-# ---------------------------------------------------------------------------
 # Ingest command — submit Claude Code transcripts to BatchIngestionWorkflow
 # ---------------------------------------------------------------------------
 
@@ -1088,7 +978,7 @@ async def _submit_ingestion(
     """Submit BatchIngestionWorkflow to Temporal and wait for completion."""
     import time
 
-    from forge.workflows import FORGE_TASK_QUEUE
+    from forge_contracts.constants import FORGE_TASK_QUEUE
 
     client = await connect_temporal(temporal_address)
 
@@ -1346,9 +1236,10 @@ async def _submit_manual_playbook(
     """Submit manual playbook workflow to Temporal and wait for completion."""
     from uuid import uuid4
 
+    from forge_contracts.constants import FORGE_TASK_QUEUE
+
     from forge.manual_playbook_workflow import ManualPlaybookWorkflow
     from forge.models import ManualPlaybookInput
-    from forge.workflows import FORGE_TASK_QUEUE
 
     client = await connect_temporal(temporal_address)
 
@@ -1431,9 +1322,10 @@ async def _submit_export_playbooks(
     """Submit export playbook workflow to Temporal and wait for completion."""
     from uuid import uuid4
 
+    from forge_contracts.constants import FORGE_TASK_QUEUE
+
     from forge.export_playbook_workflow import ExportPlaybookWorkflow
     from forge.models import ExportPlaybookInput
-    from forge.workflows import FORGE_TASK_QUEUE
 
     client = await connect_temporal(temporal_address)
 

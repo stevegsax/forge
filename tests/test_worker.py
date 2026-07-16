@@ -76,14 +76,14 @@ class TestEnsureSchedule:
 
         await worker_mod._ensure_schedule(
             client,
-            schedule_id="forge-extraction-schedule",
-            workflow_name="ForgeExtractionWorkflow",
-            workflow_arg=worker_mod.ExtractionWorkflowInput(),
-            interval=timedelta(hours=4),
-            execution_timeout=timedelta(hours=1),
+            schedule_id="forge-batch-poller",
+            workflow_name="BatchPollerWorkflow",
+            workflow_arg=worker_mod.BatchPollerInput(),
+            interval=timedelta(minutes=10),
+            execution_timeout=timedelta(minutes=10),
         )
 
-        client.get_schedule_handle.assert_called_once_with("forge-extraction-schedule")
+        client.get_schedule_handle.assert_called_once_with("forge-batch-poller")
         handle.update.assert_awaited_once()
 
         updater = handle.update.await_args.args[0]
@@ -105,9 +105,9 @@ class TestEnsureSchedule:
         # The update path reconciles spec, action, and policy so an already-running
         # schedule (created before T1.3) picks up the execution-timeout + overlap
         # backstop — not just the interval.
-        assert update.schedule.spec.intervals[0].every == timedelta(hours=4)
-        assert update.schedule.action.id == "forge-extraction-schedule-run"
-        assert update.schedule.action.execution_timeout == timedelta(hours=1)
+        assert update.schedule.spec.intervals[0].every == timedelta(minutes=10)
+        assert update.schedule.action.id == "forge-batch-poller-run"
+        assert update.schedule.action.execution_timeout == timedelta(minutes=10)
         assert update.schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
 
 
@@ -142,7 +142,6 @@ class TestRunWorker:
         ):
             await worker_mod.run_worker(
                 batch_poll_interval=300,
-                extraction_interval=7200,
                 identity="worker-123",
             )
 
@@ -154,18 +153,13 @@ class TestRunWorker:
             identity="worker-123",
         )
         mock_set_temporal_client.assert_called_once_with(mock_client)
-        assert mock_ensure_schedule.await_count == 2
+        assert mock_ensure_schedule.await_count == 1
 
         first_call = mock_ensure_schedule.await_args_list[0]
         assert first_call.args[0] is mock_client
         assert first_call.kwargs["schedule_id"] == "forge-batch-poller"
         assert first_call.kwargs["workflow_name"] == "BatchPollerWorkflow"
         assert first_call.kwargs["interval"] == timedelta(seconds=300)
-
-        second_call = mock_ensure_schedule.await_args_list[1]
-        assert second_call.kwargs["schedule_id"] == "forge-extraction-schedule"
-        assert second_call.kwargs["workflow_name"] == "ForgeExtractionWorkflow"
-        assert second_call.kwargs["interval"] == timedelta(seconds=7200)
 
         mock_worker.assert_called_once()
         worker_kwargs = mock_worker.call_args.kwargs

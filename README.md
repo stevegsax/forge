@@ -158,7 +158,6 @@ forge worker --temporal-address temporal.example.com:7233
 | -------- | --------- | ------------- |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 | `--batch-poll-interval` | `600` | Seconds between batch polling runs |
-| `--extraction-interval` | `14400` | Seconds between knowledge extraction runs (4 hours) |
 | `--worker-identity` | `{pid}@{hostname}` | Custom worker identity reported to Temporal (env: `FORGE_WORKER_IDENTITY`) |
 
 ### `forge status`
@@ -200,26 +199,6 @@ forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
 | `--dry-run` | off | List cases without evaluating |
 | `--output-dir` | — | Directory to save run results JSON |
 | `--json` | off | Output results as JSON |
-
-### `forge extract`
-
-Extract knowledge from completed workflow runs into playbook entries.
-
-```bash
-forge extract                          # Extract from last 24h, up to 10 runs
-forge extract --dry-run                # List unextracted runs without processing
-forge extract --limit 50 --since-hours 168  # Last week, up to 50 runs
-```
-
-**Options:**
-
-| Option | Default | Description |
-| -------- | --------- | ------------- |
-| `--limit` | `10` | Max runs to process |
-| `--since-hours` | `24` | Look-back window in hours |
-| `--dry-run` | off | List unextracted runs without running extraction |
-| `--json` | off | Machine-readable JSON output |
-| `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 
 ### `forge playbooks`
 

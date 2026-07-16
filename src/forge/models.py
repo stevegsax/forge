@@ -1053,7 +1053,7 @@ class SaveExtractionInput(BaseModel):
 
 
 class ExtractionWorkflowInput(BaseModel):
-    """Input to ForgeExtractionWorkflow."""
+    """Parameters for a knowledge-extraction run."""
 
     limit: int = Field(default=10, description="Max runs to extract from.")
     since_hours: int = Field(default=24, description="Look-back window in hours.")
@@ -1061,7 +1061,7 @@ class ExtractionWorkflowInput(BaseModel):
 
 
 class ExtractionWorkflowResult(BaseModel):
-    """Output of ForgeExtractionWorkflow."""
+    """Result of a knowledge-extraction run."""
 
     entries_created: int
     source_workflow_ids: list[str] = Field(default_factory=list)

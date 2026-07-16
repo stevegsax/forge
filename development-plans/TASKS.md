@@ -34,7 +34,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T1.6a — Idempotency rekey](tasks/T1.6a-idempotency-rekey.md)
 - [x] [T1.6b — Batch-wait failure symmetry](tasks/T1.6b-batch-wait-failure-symmetry.md)
 - [x] [T1.7 — Env scrub at model-influenced subprocess seams](tasks/T1.7-env-scrub-subprocess-seams.md)
-- [ ] [T1.8 — Small dedup batch + kill runs-extraction](tasks/T1.8-small-dedup-batch.md)
+- [x] [T1.8 — Small dedup batch + kill runs-extraction](tasks/T1.8-small-dedup-batch.md)
 
 ### Phase 2 — Monorepo `sax`
 

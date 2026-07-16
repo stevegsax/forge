@@ -70,7 +70,6 @@ from forge.activities import (
 from forge.activities.batch_poll import set_temporal_client
 from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.export_playbook_workflow import ExportPlaybookWorkflow
-from forge.extraction_workflow import ForgeExtractionWorkflow
 
 try:
     from forge.activities.ingestion import prepare_transcript
@@ -82,23 +81,24 @@ except ImportError:
     prepare_transcript = None  # type: ignore[assignment]
     BatchIngestionWorkflow = None  # type: ignore[assignment,misc]
     TranscriptIngestionWorkflow = None  # type: ignore[assignment,misc]
+from forge_contracts.constants import FORGE_TASK_QUEUE
+
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
-from forge.models import BatchPollerInput, ExtractionWorkflowInput
+from forge.models import BatchPollerInput
 from forge.temporal_client import connect_temporal
-from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
+from forge.workflows import ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
-# INTERIM (Phase 4 deletes the schedules): execution-timeout backstops for
-# scheduled runs. A run that exceeds its timeout is terminated by Temporal so the
-# overlap=SKIP schedule can fire the next run — guarding against a single wedged
-# run starving every later cycle. The poller activity's start_to_close is 5 min;
-# extraction runs several LLM calls, so it gets a wider budget.
+# INTERIM (Phase 4 deletes the schedules): execution-timeout backstop for the
+# scheduled batch-poller run. A run that exceeds its timeout is terminated by
+# Temporal so the overlap=SKIP schedule can fire the next run — guarding against a
+# single wedged run starving every later cycle. The poller activity's
+# start_to_close is 5 min, so the schedule gets a wider 10-minute budget.
 _POLLER_EXECUTION_TIMEOUT = timedelta(minutes=10)
-_EXTRACTION_EXECUTION_TIMEOUT = timedelta(hours=1)
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,6 @@ async def run_worker(
     address: str | None = None,
     *,
     batch_poll_interval: int = 600,
-    extraction_interval: int = 14400,
     identity: str | None = None,
 ) -> None:
     """Connect to Temporal and run the Forge worker."""
@@ -261,19 +260,9 @@ async def run_worker(
         execution_timeout=_POLLER_EXECUTION_TIMEOUT,
     )
 
-    await _ensure_schedule(
-        client,
-        schedule_id="forge-extraction-schedule",
-        workflow_name="ForgeExtractionWorkflow",
-        workflow_arg=ExtractionWorkflowInput(),
-        interval=timedelta(seconds=extraction_interval),
-        execution_timeout=_EXTRACTION_EXECUTION_TIMEOUT,
-    )
-
     workflows: list[type] = [
         ForgeTaskWorkflow,
         ForgeSubTaskWorkflow,
-        ForgeExtractionWorkflow,
         ExportPlaybookWorkflow,
         ManualPlaybookWorkflow,
         BatchPollerWorkflow,

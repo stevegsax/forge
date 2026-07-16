@@ -18,6 +18,8 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
+    from forge_contracts.constants import FORGE_TASK_QUEUE
+
     from forge.models import (
         AssembleContextInput,
         AssembledContext,
@@ -83,8 +85,6 @@ _PersistResult = (
     | ConflictResolutionCallResult
     | ExtractionCallResult
 )
-
-FORGE_TASK_QUEUE = "forge-task-queue"
 
 # ---------------------------------------------------------------------------
 # Activity timeout presets

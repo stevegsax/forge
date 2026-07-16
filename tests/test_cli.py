@@ -1492,62 +1492,6 @@ class TestStatusCommand:
 # ---------------------------------------------------------------------------
 
 
-class TestExtractCommand:
-    def test_help(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(main, ["extract", "--help"])
-        assert result.exit_code == 0
-        assert "--limit" in result.output
-        assert "--dry-run" in result.output
-
-    def test_dry_run_no_store(self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FORGE_DB_URL", raising=False)
-        result = cli_runner.invoke(main, ["extract", "--dry-run"])
-        assert result.exit_code == EXIT_FAILURE
-        assert "FORGE_DB_URL" in result.stderr
-
-    def test_dry_run_with_runs(
-        self,
-        cli_runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
-
-        from forge.store import get_store_engine, run_migrations, save_run
-
-        run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
-        save_run(
-            engine,
-            TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
-            "wf-123",
-            "run-1",
-        )
-
-        result = cli_runner.invoke(main, ["extract", "--dry-run"])
-        assert result.exit_code == 0
-        assert "wf-123" in result.output
-        assert "Unextracted runs" in result.output
-
-    def test_dry_run_no_unextracted(
-        self,
-        cli_runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        db_path = tmp_path / "test.db"
-        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
-
-        from forge.store import run_migrations
-
-        run_migrations(f"sqlite:///{db_path}")
-
-        result = cli_runner.invoke(main, ["extract", "--dry-run"])
-        assert result.exit_code == 0
-        assert "No unextracted runs found" in result.output
-
-
 class TestPlaybooksCommand:
     def test_help(self, cli_runner: CliRunner) -> None:
         result = cli_runner.invoke(main, ["playbooks", "--help"])
