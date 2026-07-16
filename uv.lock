@@ -10,7 +10,9 @@ resolution-markers = [
 [manifest]
 members = [
     "forge",
+    "forge-contracts",
     "pbook",
+    "sax-llm",
 ]
 
 [[package]]
@@ -499,7 +501,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.40.0" },
     { name = "boto3", specifier = ">=1.34" },
     { name = "click", specifier = ">=8.1.0" },
-    { name = "forge-contracts", editable = "../forge-contracts" },
+    { name = "forge-contracts", editable = "libs/forge-contracts" },
     { name = "grimp", specifier = ">=3.5" },
     { name = "networkx", specifier = ">=3.0" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
@@ -508,7 +510,7 @@ requires-dist = [
     { name = "pbook", editable = "apps/pbook" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "sax-llm", editable = "../sax-llm" },
+    { name = "sax-llm", editable = "libs/sax-llm" },
     { name = "scipy", specifier = ">=1.14" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.9.0" },
@@ -527,12 +529,18 @@ dev = [
 
 [[package]]
 name = "forge-contracts"
-source = { editable = "../forge-contracts" }
+source = { editable = "libs/forge-contracts" }
 dependencies = [
     { name = "boto3" },
     { name = "pydantic" },
     { name = "sqlalchemy" },
     { name = "temporalio" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -1330,7 +1338,7 @@ wheels = [
 
 [[package]]
 name = "pbook"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "apps/pbook" }
 dependencies = [
     { name = "alembic" },
@@ -1362,7 +1370,7 @@ requires-dist = [
     { name = "pgvector", specifier = ">=0.3.6" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "sax-llm", editable = "../sax-llm" },
+    { name = "sax-llm", editable = "libs/sax-llm" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.9.0" },
 ]
@@ -1820,12 +1828,20 @@ wheels = [
 
 [[package]]
 name = "sax-llm"
-version = "0.1.1"
-source = { editable = "../sax-llm" }
+version = "0.1.2"
+source = { editable = "libs/sax-llm" }
 dependencies = [
     { name = "anthropic" },
     { name = "mistralai" },
     { name = "pydantic" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
 ]
 
 [package.metadata]

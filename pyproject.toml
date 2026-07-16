@@ -24,16 +24,15 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["apps/pbook"]
+members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts"]
 
 [tool.uv.sources]
-# Root sources apply to all workspace members (members declare no
-# [tool.uv.sources] of their own). The ../ path sources are not portable
-# outside a sibling checkout (Finding A, D98) — each retires as its
-# sibling is absorbed into the workspace.
-sax-llm = { path = "../sax-llm", editable = true }
+# Every internal package is a workspace member, so a bare checkout (or a
+# uvx clone of a tag) is self-contained — Finding A closed (D98). Members
+# declare no [tool.uv.sources] of their own.
+sax-llm = { workspace = true }
 pbook = { workspace = true }
-forge-contracts = { path = "../forge-contracts", editable = true }
+forge-contracts = { workspace = true }
 
 [project.scripts]
 forge = "forge.cli:main"
