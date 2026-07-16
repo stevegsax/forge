@@ -1,6 +1,6 @@
 [project]
 name = "pbook"
-version = "0.2.1"
+version = "0.2.2"
 description = "Knowledge playbook service — pitfalls, curated advice, and API doc records"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,9 +15,6 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pgvector>=0.3.6",
 ]
-
-[tool.uv.sources]
-sax-llm = { path = "../sax-llm", editable = true }
 
 [project.scripts]
 pbook = "pbook.cli:main"

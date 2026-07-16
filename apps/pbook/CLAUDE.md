@@ -1,8 +1,19 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with pbook.
+
+pbook is a workspace member of the forge monorepo at `apps/pbook` (D98 in the
+root `docs/DECISIONS.md`), absorbed with full history from the standalone
+`stevegsax/pbook` repo (now archived). The workspace has one root `uv.lock`
+and one venv. This member declares no `[tool.uv.sources]` of its own — sibling
+sources are declared once at the workspace root.
 
 ## Commands
+
+Run all pbook commands from this directory (`apps/pbook/`) so pbook's own
+pytest and coverage configuration applies. Never run `pytest apps/pbook/tests`
+from the workspace root — the root's addopts (forge's coverage gate) would
+apply and the podman-backed conftest would run under the wrong config.
 
 All Python invocations go through `uv` — never call `python` or `pytest` directly.
 
@@ -25,7 +36,7 @@ The worker requires **both** LLM API keys in its environment: `ANTHROPIC_API_KEY
 
 `pytest` runs with `asyncio_mode = "auto"` and a session-scoped event loop. `tests/conftest.py` provisions a real Postgres for the session: it uses `PBOOK_TEST_DATABASE_URL` if set, otherwise starts a `pgvector/pgvector:pg17` container via **podman** (so the test run needs a running podman machine, or that env var). Per-test isolation is a `TRUNCATE ... RESTART IDENTITY` of the `pbk_` tables, so entry ids restart at 1 each test — tests never touch the developer's real database.
 
-`sax-llm` is a git dependency pinned to a release tag in `[tool.uv.sources]` (currently `rev = "v0.1.0"` against `github.com/stevegsax/sax-llm`). Local edits to a `../sax-llm` checkout are no longer picked up — to change `sax-llm` types or providers, cut a new tag there and bump the pin with `uv add "sax-llm @ git+https://github.com/stevegsax/sax-llm.git@<tag>"`, or temporarily switch the source to an editable path for local iteration.
+`sax-llm` resolves through the workspace root's `[tool.uv.sources]`: an editable path source pointing at the `../sax-llm` sibling checkout of the forge monorepo. Local edits to `../sax-llm` are picked up directly — no tag pin, no re-lock for source changes. The path source retires when the sax-llm absorption increment lands (D98).
 
 ## Architecture
 
@@ -58,7 +69,3 @@ The extraction prompt is built around: **better to extract nothing than to extra
 ## Authoritative documentation
 
 Source-of-truth design notes live in `design/` (OVERVIEW, DECISIONS, DATA_MODEL, WORKFLOWS, CLI, INTEGRATION). Read them before changing architecture; update them in the same change as the code.
-
-## Diataxis Documentation
-
-The `diataxis/` directory contains generated, human-facing documentation built with Hugo. It is an output artifact — disposable and never authoritative. Do not use it as input for design decisions, code generation, or development work. If the code and the diataxis docs disagree, the code is right.
