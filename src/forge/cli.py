@@ -1689,7 +1689,7 @@ def start(
 ) -> None:
     """Start an arbitrary Temporal workflow by name.
 
-    WORKFLOW is the workflow class name (e.g. OcrSubmitWorkflow).
+    WORKFLOW is the workflow class name (e.g. BatchPollerWorkflow).
     INPUT_JSON is an optional JSON object passed as the workflow argument.
     """
     import json

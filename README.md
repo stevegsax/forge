@@ -8,8 +8,8 @@ Git and worktrees serve as the general-purpose data store and isolation mechanis
 
 ## Prerequisites
 
-- A running [Temporal](https://temporal.io/) server (default `localhost:7233`)
-- Python with the `forge` package installed (`uv sync`)
+- The local stack running: `make stack-up` brings up [Temporal](https://temporal.io/), Postgres, and MinIO under podman (see [deploy/local-stack/](deploy/local-stack/)). Any Temporal server reachable at `FORGE_TEMPORAL_ADDRESS` works; the default is `localhost:7233`.
+- The workspace synced: `uv sync` from the repo root. The root is a uv workspace (pbook lives at `apps/pbook`) and needs the `sax-llm` and `forge-contracts` sibling checkouts beside this repo — see [docs/operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md).
 
 ## Architecture
 
@@ -202,7 +202,7 @@ forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
 
 ### `forge playbooks`
 
-List and inspect playbook entries.
+List, add, and export playbook entries. `playbooks` is a command group; invoked bare it lists entries.
 
 ```bash
 forge playbooks                        # List recent playbooks
@@ -210,7 +210,7 @@ forge playbooks --tag python           # Filter by tag
 forge playbooks --task-id my-task      # Filter by source task
 ```
 
-**Options:**
+**Options (listing):**
 
 | Option | Default | Description |
 | -------- | --------- | ------------- |
@@ -218,6 +218,42 @@ forge playbooks --task-id my-task      # Filter by source task
 | `--task-id` | — | Filter by source task ID |
 | `--limit` | `20` | Max entries to show |
 | `--json` | off | Machine-readable JSON output |
+
+#### `forge playbooks add`
+
+Add a playbook entry with LLM review (runs `ManualPlaybookWorkflow`).
+
+```bash
+forge playbooks add --schema           # Print the PlaybookEntry JSON schema
+forge playbooks add --file entry.json  # Submit an entry from a JSON file
+```
+
+**Options:**
+
+| Option | Description |
+| -------- | ------------- |
+| `--file`, `-f` | Path to a JSON file matching the `PlaybookEntry` schema |
+| `--schema` | Print the `PlaybookEntry` JSON schema and exit |
+| `--temporal-address` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
+
+#### `forge playbooks export`
+
+Export entries as `PlaybookEntry`-compatible JSON for backup or sharing.
+
+```bash
+forge playbooks export                            # All entries to stdout
+forge playbooks export --tag python -o out.json   # Filtered, to a file
+```
+
+**Options:**
+
+| Option | Default | Description |
+| -------- | --------- | ------------- |
+| `--tag` | — | Filter by tag (repeatable, OR match) |
+| `--task-id` | — | Filter by source task ID |
+| `--limit` | `0` | Max entries to export (0 = all) |
+| `--output`, `-o` | stdout | Write to a file instead of stdout |
+| `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 
 ### `forge ingest`
 
@@ -245,33 +281,13 @@ forge ingest --all --force                                  # Reprocess already-
 
 Requires pbook to be installed. Sessions already recorded in pbook's `ingested_sessions` table are skipped unless `--force` is passed.
 
-### `forge ocr-jobs`
-
-List OCR job submissions with file path, document ID, status, and timestamp.
-
-```bash
-forge ocr-jobs                         # List recent OCR jobs
-forge ocr-jobs --status succeeded      # Filter by status
-forge ocr-jobs --limit 10              # Limit results
-```
-
-**Options:**
-
-| Option | Default | Description |
-| -------- | --------- | ------------- |
-| `--limit` | `50` | Maximum number of jobs to return |
-| `--status` | — | Filter by status: `processing`, `succeeded`, `errored`, `unknown` |
-| `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
-
 ### `forge start`
 
-Start an arbitrary Temporal workflow by name. Useful for launching OCR, batch polling, or other registered workflows without a Python script.
+Start an arbitrary registered Temporal workflow by name, without a Python script. Workflows registered on `forge-task-queue`: `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`, `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, and `BatchPollerWorkflow`. (OCR workflows moved to the sibling `ocr` app with its own queue and CLI.)
 
 ```bash
-forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}'
-forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}' --wait
-forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}' --wait  # batch mode
-forge start BatchPollerWorkflow --wait
+forge start BatchPollerWorkflow --wait                 # one poll pass over pending batch jobs
+forge start <WorkflowName> '{"field": "value"}' --wait # any registered workflow taking JSON input
 ```
 
 **Options:**
