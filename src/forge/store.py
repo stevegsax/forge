@@ -16,7 +16,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import sqlalchemy as sa
 from forge_contracts.db import (
@@ -242,8 +242,21 @@ def build_playbook_dict(
 # ---------------------------------------------------------------------------
 
 
+# Serializes concurrent migrators on Postgres. Every worker runs migrations at
+# startup and Alembic takes no lock of its own, so two simultaneous boots race
+# the DDL (the loser dies on e.g. DuplicateColumn). Any stable bigint works;
+# this one spells the ASCII bytes "forge-mg".
+_MIGRATION_LOCK_KEY: Final[int] = int.from_bytes(b"forge-mg", "big")
+
+
 def run_migrations(url: str) -> None:
-    """Run Alembic migrations against the store URL (SQLite or Postgres)."""
+    """Run Alembic migrations against the store URL (SQLite or Postgres).
+
+    On Postgres, a session-level ``pg_advisory_lock`` serializes concurrent
+    callers: the second migrator blocks until the first finishes, then finds
+    the schema at head and no-ops. SQLite callers are single-process dev/test
+    paths; no lock is taken.
+    """
     from alembic import command
     from alembic.config import Config
 
@@ -253,14 +266,35 @@ def run_migrations(url: str) -> None:
     cfg = Config(str(ini_path))
     cfg.set_main_option("script_location", str(alembic_dir))
 
-    if make_url(url).get_backend_name() == "sqlite":
+    backend = make_url(url).get_backend_name()
+    if backend == "sqlite":
         ensure_sqlite_parent(url)
     # Alembic's Config is backed by configparser with interpolation enabled, so a
     # bare '%' (e.g. URL-encoded password chars %23, %21, %40) is parsed as an
     # interpolation token and raises. Escape as '%%'; get_main_option() in env.py
     # reverses this on read, so the engine still receives the original URL.
     cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
-    command.upgrade(cfg, "head")
+
+    if backend != "postgresql":
+        command.upgrade(cfg, "head")
+        return
+
+    # The lock lives on its own connection and is held across Alembic's whole
+    # run (Alembic builds its own engine from cfg). Closing the connection
+    # releases a session-level advisory lock, so the explicit unlock is belt
+    # and braces for the happy path.
+    lock_engine = sa.create_engine(url, poolclass=sa.pool.NullPool)
+    try:
+        with lock_engine.connect() as conn:
+            conn.execute(sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+            try:
+                command.upgrade(cfg, "head")
+            finally:
+                conn.execute(
+                    sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+                )
+    finally:
+        lock_engine.dispose()
 
 
 def save_interaction(engine: Engine, **kwargs: object) -> bool:

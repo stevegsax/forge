@@ -96,6 +96,55 @@ def test_migrations_rerun_is_noop_on_postgres(postgres_url: str) -> None:
     run_migrations(postgres_url)
 
 
+def test_concurrent_migrations_serialize_on_postgres(postgres_url: str) -> None:
+    """Simultaneous migrators must serialize, not race Alembic's DDL.
+
+    Reproduces the launchd first-boot failure: both workers migrate at
+    startup, both saw the schema behind head, and the loser died on
+    ``DuplicateColumn``. ``run_migrations`` now takes a session-level
+    ``pg_advisory_lock``, so the second caller blocks, then no-ops.
+
+    Runs against a fresh database inside the module's container — the shared
+    ``postgres_url`` database is already at head by the time this test runs,
+    which would mask the race.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import sqlalchemy as sa
+
+    from forge.store import run_migrations
+
+    admin = sa.create_engine(postgres_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.execute(sa.text("CREATE DATABASE concurrent_migrations"))
+    finally:
+        admin.dispose()
+    fresh_url = (
+        sa.engine.make_url(postgres_url)
+        .set(database="concurrent_migrations")
+        .render_as_string(hide_password=False)
+    )
+
+    barrier = threading.Barrier(2)
+
+    def migrate() -> None:
+        barrier.wait()
+        run_migrations(fresh_url)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(migrate) for _ in range(2)]
+        for future in futures:
+            future.result()  # raises if a migrator raced and died
+
+    engine = sa.create_engine(fresh_url)
+    try:
+        assert set(sa.inspect(engine).get_table_names()) >= _EXPECTED_TABLES
+    finally:
+        engine.dispose()
+
+
 def test_insert_or_ignore_idempotent_on_postgres(
     postgres_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
