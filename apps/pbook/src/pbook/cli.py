@@ -56,7 +56,8 @@ def _execute_workflow(
 
     async def _submit():
         client = await Client.connect(
-            temporal_address, data_converter=pydantic_data_converter,
+            temporal_address,
+            data_converter=pydantic_data_converter,
         )
         return await client.execute_workflow(
             workflow_fn,
@@ -118,7 +119,11 @@ def _emit_json(payload, *, indent: int = 2) -> None:
 
 
 def _emit_error(
-    code: str, message: str, *, json_mode: bool, exit_code: int = 1,
+    code: str,
+    message: str,
+    *,
+    json_mode: bool,
+    exit_code: int = 1,
 ) -> NoReturn:
     """Emit a structured error and exit non-zero.
 
@@ -173,7 +178,8 @@ def main(verbose: bool) -> None:
 
 @main.command()
 @click.option(
-    "--temporal-address", default="localhost:7233",
+    "--temporal-address",
+    default="localhost:7233",
     help="Temporal server address.",
 )
 def worker(temporal_address: str) -> None:
@@ -191,7 +197,8 @@ def worker(temporal_address: str) -> None:
 @click.option("--project", default="", help="Filter by source project.")
 @click.option("--needs-review", is_flag=True, help="Only show entries flagged for review.")
 @click.option(
-    "--include-rejected", is_flag=True,
+    "--include-rejected",
+    is_flag=True,
     help="Include entries that have been rejected (excluded by default).",
 )
 @click.option("--limit", default=20, help="Maximum entries to return.")
@@ -246,13 +253,16 @@ def get(entry_id: int, output_json: bool) -> None:
     from pbook.workflows.cli_ops import GetEntryWorkflow
 
     entry = _execute_workflow(
-        GetEntryWorkflow.run, GetEntryInput(entry_id=entry_id),
+        GetEntryWorkflow.run,
+        GetEntryInput(entry_id=entry_id),
         id_prefix="pbook-get",
     )
 
     if entry is None:
         _emit_error(
-            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+            "not_found",
+            f"Entry {entry_id} not found.",
+            json_mode=output_json,
         )
 
     if output_json:
@@ -263,13 +273,15 @@ def get(entry_id: int, output_json: bool) -> None:
 
 @main.command()
 @click.option(
-    "--file", "file_path",
+    "--file",
+    "file_path",
     type=click.Path(exists=True, path_type=Path),
     help="JSON file containing PlaybookEntry. If omitted, JSON is read from stdin.",
 )
 @click.option("--schema", "show_schema", is_flag=True, help="Print JSON schema.")
 @click.option(
-    "--needs-review", is_flag=True,
+    "--needs-review",
+    is_flag=True,
     help="Flag the entry as needing review (default: stored as approved).",
 )
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
@@ -302,7 +314,9 @@ def add(
         entry = PlaybookEntry.model_validate_json(raw_json)
     except Exception as exc:
         _emit_error(
-            "validation_error", f"Validation error: {exc}", json_mode=output_json,
+            "validation_error",
+            f"Validation error: {exc}",
+            json_mode=output_json,
         )
 
     # Tag pre-validation in the CLI gives a fast, friendly error before
@@ -311,7 +325,9 @@ def add(
     tag_errors = validate_tags(entry.tags)
     if tag_errors:
         _emit_error(
-            "tag_invalid", "; ".join(tag_errors), json_mode=output_json,
+            "tag_invalid",
+            "; ".join(tag_errors),
+            json_mode=output_json,
         )
 
     from pbook.models import AddEntryInput
@@ -325,17 +341,21 @@ def add(
 
     if result.get("error") == "tag_invalid":
         _emit_error(
-            "tag_invalid", "; ".join(result.get("messages", [])), json_mode=output_json,
+            "tag_invalid",
+            "; ".join(result.get("messages", [])),
+            json_mode=output_json,
         )
 
     if output_json:
-        _emit_json({
-            "id": result["id"],
-            "title": result["title"],
-            "approved": not result["needs_review"],
-            "needs_review": result["needs_review"],
-            "rejected": result["rejected"],
-        })
+        _emit_json(
+            {
+                "id": result["id"],
+                "title": result["title"],
+                "approved": not result["needs_review"],
+                "needs_review": result["needs_review"],
+                "rejected": result["rejected"],
+            }
+        )
     else:
         click.echo(f"Added entry {result['id']}: {result['title']}")
 
@@ -343,7 +363,9 @@ def add(
 @main.command()
 @click.argument("entry_id", type=int)
 @click.option(
-    "--file", "file_path", required=True,
+    "--file",
+    "file_path",
+    required=True,
     type=click.Path(exists=True, path_type=Path),
     help="JSON file with updated fields.",
 )
@@ -383,12 +405,15 @@ def approve(entry_id: int, output_json: bool) -> None:
     from pbook.workflows.cli_ops import ApproveEntryWorkflow
 
     result = _execute_workflow(
-        ApproveEntryWorkflow.run, ApproveEntryInput(entry_id=entry_id),
+        ApproveEntryWorkflow.run,
+        ApproveEntryInput(entry_id=entry_id),
         id_prefix="pbook-approve",
     )
     if result.get("error") == "not_found":
         _emit_error(
-            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+            "not_found",
+            f"Entry {entry_id} not found.",
+            json_mode=output_json,
         )
 
     if output_json:
@@ -414,7 +439,9 @@ def reject(entry_id: int, reason: str, output_json: bool) -> None:
     )
     if result.get("error") == "not_found":
         _emit_error(
-            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+            "not_found",
+            f"Entry {entry_id} not found.",
+            json_mode=output_json,
         )
 
     if output_json:
@@ -451,12 +478,15 @@ def check_duplicate_cmd(title: str, tag: tuple[str, ...]) -> None:
 
 @main.command()
 @click.option(
-    "--file", "file_path", required=True,
+    "--file",
+    "file_path",
+    required=True,
     type=click.Path(exists=True, path_type=Path),
     help="JSON file with PushExperienceInput data.",
 )
 @click.option(
-    "--temporal-address", default="localhost:7233",
+    "--temporal-address",
+    default="localhost:7233",
     help="Temporal server address.",
 )
 def push(file_path: Path, temporal_address: str) -> None:
@@ -489,7 +519,8 @@ def push(file_path: Path, temporal_address: str) -> None:
         from pbook.workflows.extraction import ExtractionWorkflow
 
         client = await Client.connect(
-            temporal_address, data_converter=pydantic_data_converter,
+            temporal_address,
+            data_converter=pydantic_data_converter,
         )
         result = await client.execute_workflow(
             ExtractionWorkflow.run,
@@ -512,28 +543,37 @@ def push(file_path: Path, temporal_address: str) -> None:
 @click.argument("query", required=False, default="")
 @click.option("--tag", multiple=True, help="Filter by tag (repeatable, AND-merged with query).")
 @click.option(
-    "--threshold", type=float, default=0.0,
+    "--threshold",
+    type=float,
+    default=0.0,
     help="Drop matches below this cosine similarity (0.0 disables the cutoff).",
 )
 @click.option(
-    "--mode", type=click.Choice(["create", "fix"]), default="create",
+    "--mode",
+    type=click.Choice(["create", "fix"]),
+    default="create",
     help="Tiebreaker mode when ranking ties on similarity.",
 )
 @click.option("--limit", default=20, type=int, help="Cap on returned entries.")
 @click.option(
-    "--token-budget", default=5000, type=int,
+    "--token-budget",
+    default=5000,
+    type=int,
     help="Token budget for the packed result.",
 )
 @click.option(
-    "--include-rejected", is_flag=True,
+    "--include-rejected",
+    is_flag=True,
     help="Include entries that have been rejected.",
 )
 @click.option(
-    "--include-unapproved", is_flag=True,
+    "--include-unapproved",
+    is_flag=True,
     help="Include entries flagged needs_review (default: only approved entries).",
 )
 @click.option(
-    "--temporal-address", default="localhost:7233",
+    "--temporal-address",
+    default="localhost:7233",
     help="Temporal server address.",
 )
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
@@ -574,7 +614,8 @@ def search(
         from pbook.workflows.retrieval import RetrievalWorkflow
 
         client = await Client.connect(
-            temporal_address, data_converter=pydantic_data_converter,
+            temporal_address,
+            data_converter=pydantic_data_converter,
         )
         retrieval_mode = RetrievalMode(mode)
         return await client.execute_workflow(
@@ -604,11 +645,13 @@ def search(
     entries = result.entries[:limit] if limit else result.entries
 
     if output_json:
-        _emit_json({
-            "entries": [_reshape_entry(e) for e in entries],
-            "total_candidates": result.total_candidates,
-            "token_count": result.token_count,
-        })
+        _emit_json(
+            {
+                "entries": [_reshape_entry(e) for e in entries],
+                "total_candidates": result.total_candidates,
+                "token_count": result.token_count,
+            }
+        )
         return
 
     if not entries:
@@ -639,7 +682,9 @@ def _group_review_by_experience(
 @click.option("--limit", default=20, help="Maximum entries to show.")
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 @click.option(
-    "--by-experience", "by_experience", is_flag=True,
+    "--by-experience",
+    "by_experience",
+    is_flag=True,
     help="Group entries by experience_hash to surface over-extraction clusters.",
 )
 def review(limit: int, output_json: bool, by_experience: bool) -> None:
@@ -658,17 +703,19 @@ def review(limit: int, output_json: bool, by_experience: bool) -> None:
         singletons = result.get("singletons", [])
 
         if output_json:
-            _emit_json({
-                "clusters": [
-                    {
-                        "experience_hash": c["experience_hash"],
-                        "project_name": c.get("project_name", ""),
-                        "entries": [_reshape_entry(e) for e in c["entries"]],
-                    }
-                    for c in clusters
-                ],
-                "singletons": [_reshape_entry(e) for e in singletons],
-            })
+            _emit_json(
+                {
+                    "clusters": [
+                        {
+                            "experience_hash": c["experience_hash"],
+                            "project_name": c.get("project_name", ""),
+                            "entries": [_reshape_entry(e) for e in c["entries"]],
+                        }
+                        for c in clusters
+                    ],
+                    "singletons": [_reshape_entry(e) for e in singletons],
+                }
+            )
             return
 
         if not clusters and not singletons:
@@ -713,7 +760,10 @@ def review(limit: int, output_json: bool, by_experience: bool) -> None:
 @main.command()
 @click.argument("entry_id", type=int)
 @click.option(
-    "--json", "output_json", is_flag=True, default=True,
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=True,
     help="Machine-readable JSON output (default).",
 )
 def sources(entry_id: int, output_json: bool) -> None:
@@ -722,12 +772,15 @@ def sources(entry_id: int, output_json: bool) -> None:
     from pbook.workflows.cli_ops import ListSourcesWorkflow
 
     result = _execute_workflow(
-        ListSourcesWorkflow.run, ListSourcesInput(entry_id=entry_id),
+        ListSourcesWorkflow.run,
+        ListSourcesInput(entry_id=entry_id),
         id_prefix="pbook-sources",
     )
     if not result.get("found"):
         _emit_error(
-            "not_found", f"Entry {entry_id} not found.", json_mode=output_json,
+            "not_found",
+            f"Entry {entry_id} not found.",
+            json_mode=output_json,
         )
 
     rows = result.get("rows", [])
@@ -753,16 +806,20 @@ def sources(entry_id: int, output_json: bool) -> None:
 @main.command(name="session-text")
 @click.argument("session_id")
 @click.option(
-    "--path", "path_override",
+    "--path",
+    "path_override",
     type=click.Path(exists=True, path_type=Path),
     help="Override transcript path (used when the session isn't in ingested_sessions).",
 )
 @click.option(
-    "--raw", is_flag=True,
+    "--raw",
+    is_flag=True,
     help="Emit the JSONL bytes verbatim instead of rendered text.",
 )
 @click.option(
-    "--json", "output_json", is_flag=True,
+    "--json",
+    "output_json",
+    is_flag=True,
     help="JSON-wrap the output (otherwise plain text).",
 )
 def session_text(
@@ -799,19 +856,24 @@ def session_text(
 
     text = result["text"]
     if output_json:
-        _emit_json({
-            "session_id": session_id,
-            "raw": raw,
-            "text": text,
-            "project_name": result.get("project_name", ""),
-        })
+        _emit_json(
+            {
+                "session_id": session_id,
+                "raw": raw,
+                "text": text,
+                "project_name": result.get("project_name", ""),
+            }
+        )
     else:
         click.echo(text)
 
 
 @main.command()
 @click.option(
-    "--json", "output_json", is_flag=True, default=True,
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=True,
     help="Machine-readable JSON output (default).",
 )
 def tags(output_json: bool) -> None:
@@ -824,7 +886,9 @@ def tags(output_json: bool) -> None:
     from pbook.workflows.cli_ops import ListTagsWorkflow
 
     payload = _execute_workflow(
-        ListTagsWorkflow.run, ListTagsInput(), id_prefix="pbook-tags",
+        ListTagsWorkflow.run,
+        ListTagsInput(),
+        id_prefix="pbook-tags",
     )
 
     if output_json:
@@ -860,7 +924,10 @@ def migrate() -> None:
 @main.command()
 @click.argument("entry_id", type=int)
 @click.option(
-    "--helpful", "is_helpful", flag_value=True, default=None,
+    "--helpful",
+    "is_helpful",
+    flag_value=True,
+    default=None,
     help="Mark entry as helpful.",
 )
 @click.option("--harmful", "is_helpful", flag_value=False, help="Mark entry as harmful.")
@@ -894,17 +961,23 @@ def feedback(entry_id: int, is_helpful: bool | None, context: str) -> None:
 
 @main.command()
 @click.option(
-    "--dry-run", is_flag=True, default=False,
+    "--dry-run",
+    is_flag=True,
+    default=False,
     help="List candidates without changing anything.",
 )
 @click.option("--apply", is_flag=True, default=False, help="Mark candidates for review.")
 @click.option("--min-retrievals", default=5, help="Minimum retrievals for harmful ratio check.")
 @click.option(
-    "--max-harmful-ratio", default=0.5, type=float,
+    "--max-harmful-ratio",
+    default=0.5,
+    type=float,
     help="Harmful ratio threshold.",
 )
 @click.option(
-    "--max-stale-days", default=180, type=int,
+    "--max-stale-days",
+    default=180,
+    type=int,
     help="Days before unretrieved entry is stale.",
 )
 def prune(
@@ -950,7 +1023,8 @@ def prune(
 
 @main.command()
 @click.argument(
-    "transcript_path", required=False,
+    "transcript_path",
+    required=False,
     type=click.Path(exists=True, path_type=Path),
 )
 @click.option("--all", "ingest_all", is_flag=True, help="Discover and ingest all sessions.")
@@ -959,7 +1033,8 @@ def prune(
 @click.option("--dry-run", is_flag=True, help="Show sessions/stats without ingesting.")
 @click.option("--force", is_flag=True, help="Reprocess already-ingested sessions.")
 @click.option(
-    "--temporal-address", default="localhost:7233",
+    "--temporal-address",
+    default="localhost:7233",
     help="Temporal server address.",
 )
 def ingest(
@@ -1010,13 +1085,15 @@ def ingest(
         assert path is not None
         session_id = path.stem
         proj = project or infer_project_name(path.parent.name)
-        sessions = [SessionInfo(
-            path=str(path),
-            session_id=session_id,
-            project_dir_name=path.parent.name,
-            project_name=proj,
-            size_bytes=path.stat().st_size,
-        )]
+        sessions = [
+            SessionInfo(
+                path=str(path),
+                session_id=session_id,
+                project_dir_name=path.parent.name,
+                project_name=proj,
+                size_bytes=path.stat().st_size,
+            )
+        ]
 
     if not sessions:
         _emit({"status": "no_sessions", "discovered": 0, "skipped_already_ingested": 0})
@@ -1041,11 +1118,13 @@ def ingest(
         skipped = before - len(sessions)
 
     if not sessions:
-        _emit({
-            "status": "all_ingested",
-            "skipped_already_ingested": skipped,
-            "hint": "use --force to reprocess",
-        })
+        _emit(
+            {
+                "status": "all_ingested",
+                "skipped_already_ingested": skipped,
+                "hint": "use --force to reprocess",
+            }
+        )
         return
 
     # Dry-run: emit session info as JSON
@@ -1069,26 +1148,29 @@ def ingest(
                     detail["message_count"] = len(transcript.messages)
                     detail["rendered_chars"] = len(rendered)
                 session_details.append(detail)
-            projects_payload.append({
-                "project": proj_name,
-                "session_count": len(proj_sessions),
-                "size_bytes": sum(s.size_bytes for s in proj_sessions),
-                "sessions": session_details,
-            })
+            projects_payload.append(
+                {
+                    "project": proj_name,
+                    "session_count": len(proj_sessions),
+                    "size_bytes": sum(s.size_bytes for s in proj_sessions),
+                    "sessions": session_details,
+                }
+            )
 
-        _emit({
-            "status": "dry_run",
-            "session_count": len(sessions),
-            "skipped_already_ingested": skipped,
-            "total_size_bytes": sum(s.size_bytes for s in sessions),
-            "projects": projects_payload,
-        })
+        _emit(
+            {
+                "status": "dry_run",
+                "session_count": len(sessions),
+                "skipped_already_ingested": skipped,
+                "total_size_bytes": sum(s.size_bytes for s in sessions),
+                "projects": projects_payload,
+            }
+        )
         return
 
     # Submit to forge's task queue via Temporal
     session_dicts = [
-        {"path": s.path, "project": s.project_name, "session_id": s.session_id}
-        for s in sessions
+        {"path": s.path, "project": s.project_name, "session_id": s.session_id} for s in sessions
     ]
 
     workflow_id = f"pbook-batch-ingest-{int(time.time())}"
@@ -1098,7 +1180,8 @@ def ingest(
         from temporalio.contrib.pydantic import pydantic_data_converter
 
         client = await Client.connect(
-            temporal_address, data_converter=pydantic_data_converter,
+            temporal_address,
+            data_converter=pydantic_data_converter,
         )
         handle = await client.start_workflow(
             "BatchIngestionWorkflow",
@@ -1125,8 +1208,10 @@ def ingest(
         RecordStartedSessionsInput(
             sessions=[
                 IngestedSessionStub(
-                    session_id=s.session_id, project_name=s.project_name,
-                ) for s in sessions
+                    session_id=s.session_id,
+                    project_name=s.project_name,
+                )
+                for s in sessions
             ],
             workflow_id=workflow_id,
             run_id=run_id,
@@ -1134,15 +1219,17 @@ def ingest(
         id_prefix="pbook-ingest-seed",
     )
 
-    _emit({
-        "status": "submitted",
-        "workflow_id": workflow_id,
-        "run_id": run_id,
-        "task_queue": "forge-task-queue",
-        "submitted_sessions": len(sessions),
-        "skipped_already_ingested": skipped,
-        "session_ids": [s.session_id for s in sessions],
-    })
+    _emit(
+        {
+            "status": "submitted",
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "task_queue": "forge-task-queue",
+            "submitted_sessions": len(sessions),
+            "skipped_already_ingested": skipped,
+            "session_ids": [s.session_id for s in sessions],
+        }
+    )
 
 
 @main.command()
@@ -1185,11 +1272,15 @@ def sessions(project: str, limit: int, output_json: bool) -> None:
 
 @main.command(name="skill-prompt")
 @click.option(
-    "--operation", default="",
+    "--operation",
+    default="",
     help="Limit output to one workflow (query | discuss | review_queue | add).",
 )
 @click.option(
-    "--json", "output_json", is_flag=True, default=True,
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=True,
     help="Machine-readable JSON output (default).",
 )
 def skill_prompt(operation: str, output_json: bool) -> None:
@@ -1210,7 +1301,8 @@ def skill_prompt(operation: str, output_json: bool) -> None:
         payload = build_skill_prompt(operation)
     except KeyError as exc:
         _emit_error(
-            "validation_error", str(exc).strip("'"),
+            "validation_error",
+            str(exc).strip("'"),
             json_mode=output_json,
         )
 

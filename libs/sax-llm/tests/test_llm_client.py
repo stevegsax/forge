@@ -419,9 +419,7 @@ class TestGetAnthropicClient:
     """SDK-level retries must be disabled: they belong to the consumer's durable
     retry layer, not the Anthropic SDK (stacking hides 429/529 backoff)."""
 
-    def test_constructs_client_with_retries_disabled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_constructs_client_with_retries_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_client()
         captured: dict[str, object] = {}
 

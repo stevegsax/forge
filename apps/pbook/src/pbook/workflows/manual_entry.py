@@ -89,17 +89,18 @@ class ManualEntryWorkflow:
         # Combine duplicates and existing entries for the reviewer.
         # Prioritize duplicates in the review context.
         context_entries = duplicates + [
-            e for e in existing
-            if e["id"] not in {d["id"] for d in duplicates}
+            e for e in existing if e["id"] not in {d["id"] for d in duplicates}
         ]
 
         # Step 5: LLM review via the generic chat step. The proposed entry
         # is the Pydantic class; the embedding lives separately as a
         # base64 string and is re-attached after apply_suggestions.
-        proposed = PlaybookEntry.model_validate({
-            **entry_dict,
-            "embedding": None,  # PlaybookEntry expects bytes; keep base64 separate
-        })
+        proposed = PlaybookEntry.model_validate(
+            {
+                **entry_dict,
+                "embedding": None,  # PlaybookEntry expects bytes; keep base64 separate
+            }
+        )
         model = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
 
         chat_result = await workflow.execute_activity(
@@ -130,10 +131,12 @@ class ManualEntryWorkflow:
         # base64; matches save_extracted_entries' expectation
         final_dict["embedding"] = entry_embedding
 
-        save_input = json.dumps({
-            "entries": [final_dict],
-            "project": final_dict.get("source_project", ""),
-        })
+        save_input = json.dumps(
+            {
+                "entries": [final_dict],
+                "project": final_dict.get("source_project", ""),
+            }
+        )
         count = await workflow.execute_activity(
             "save_extracted_entries",
             save_input,

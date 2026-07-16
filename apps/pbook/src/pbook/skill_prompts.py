@@ -79,8 +79,7 @@ _COMMANDS: dict[str, dict[str, str]] = {
         ),
         "args": "--file P --needs-review --schema --json",
         "example": (
-            'echo \'{"title":"...","content":"...",'
-            '"tags":["lang:python"]}\' | pbook add --json'
+            'echo \'{"title":"...","content":"...","tags":["lang:python"]}\' | pbook add --json'
         ),
     },
     "feedback": {
@@ -273,10 +272,7 @@ def build_skill_prompt(operation: str = "") -> dict:
     """
     if operation:
         if operation not in _WORKFLOWS:
-            msg = (
-                f"Unknown operation {operation!r}. Available: "
-                f"{sorted(_WORKFLOWS)}"
-            )
+            msg = f"Unknown operation {operation!r}. Available: {sorted(_WORKFLOWS)}"
             raise KeyError(msg)
         return {
             "workflow": _WORKFLOWS[operation],

@@ -21,17 +21,20 @@ from sax_llm.registry import (
 class TestParseModelId:
     def test_explicit_anthropic(self):
         assert parse_model_id("anthropic:claude-sonnet-4-5-20250929") == (
-            "anthropic", "claude-sonnet-4-5-20250929",
+            "anthropic",
+            "claude-sonnet-4-5-20250929",
         )
 
     def test_explicit_mistral(self):
         assert parse_model_id("mistral:mistral-large-latest") == (
-            "mistral", "mistral-large-latest",
+            "mistral",
+            "mistral-large-latest",
         )
 
     def test_bare_name_defaults_anthropic(self):
         assert parse_model_id("claude-sonnet-4-5-20250929") == (
-            "anthropic", "claude-sonnet-4-5-20250929",
+            "anthropic",
+            "claude-sonnet-4-5-20250929",
         )
 
     def test_unknown_provider(self):

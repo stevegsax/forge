@@ -17,15 +17,15 @@ class TestBuildSkillPrompt:
         commands = payload["commands"]
         # The four user-facing capability bundles must each have at
         # least one corresponding command documented.
-        assert "search" in commands       # query
+        assert "search" in commands  # query
         assert "list" in commands
         assert "get" in commands
-        assert "sources" in commands      # discuss
+        assert "sources" in commands  # discuss
         assert "session-text" in commands
-        assert "approve" in commands      # review queue
+        assert "approve" in commands  # review queue
         assert "reject" in commands
         assert "review" in commands
-        assert "add" in commands          # add
+        assert "add" in commands  # add
         assert "tags" in commands
 
     def test_each_command_has_description_args_example(self):
@@ -38,7 +38,11 @@ class TestBuildSkillPrompt:
     def test_workflows_cover_the_five_skill_capabilities(self):
         payload = build_skill_prompt()
         assert set(payload["workflows"]) == {
-            "query", "discuss", "feedback", "review_queue", "add",
+            "query",
+            "discuss",
+            "feedback",
+            "review_queue",
+            "add",
         }
 
     def test_each_workflow_has_nontrivial_markdown(self):
@@ -77,7 +81,7 @@ class TestBuildSkillPrompt:
             match = bare_play.search(md)
             assert match is None, (
                 f"{name} workflow uses bare 'play(s)': "
-                f"{md[max(0, match.start()-20):match.end()+20]!r}"
+                f"{md[max(0, match.start() - 20) : match.end() + 20]!r}"
             )
 
     def test_tags_section_includes_namespaces_and_notes(self):

@@ -94,10 +94,12 @@ def _extract_system_and_messages(
             if msg.cache_control:
                 system_cache = True
         else:
-            conversation.append({
-                "role": msg.role,
-                "content": _content_to_anthropic(msg.content),
-            })
+            conversation.append(
+                {
+                    "role": msg.role,
+                    "content": _content_to_anthropic(msg.content),
+                }
+            )
 
     system_text = "\n".join(system_parts)
     system = build_system_param(system_text, cache_control=cache_instructions and system_cache)
@@ -236,8 +238,8 @@ class AnthropicProvider:
 
         from sax_llm.client import parse_batch_response_json
 
-        parsed, model_name, in_tok, out_tok, cache_create, cache_read = (
-            parse_batch_response_json(raw_json, output_type_name)
+        parsed, model_name, in_tok, out_tok, cache_create, cache_read = parse_batch_response_json(
+            raw_json, output_type_name
         )
 
         tool_input = json.loads(parsed.model_dump_json())

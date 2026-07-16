@@ -105,8 +105,10 @@ class TestLLMChat:
 
         result = await llm_chat(
             LLMChatInput(
-                system_prompt="sys", user_prompt="usr",
-                output_type_name="ToyResult", model="anthropic:claude-x",
+                system_prompt="sys",
+                user_prompt="usr",
+                output_type_name="ToyResult",
+                model="anthropic:claude-x",
             ),
         )
 
@@ -128,8 +130,10 @@ class TestLLMChat:
 
         result = await llm_chat(
             LLMChatInput(
-                system_prompt="s", user_prompt="u",
-                output_type_name="ToyResult", model="anthropic:m",
+                system_prompt="s",
+                user_prompt="u",
+                output_type_name="ToyResult",
+                model="anthropic:m",
             ),
         )
         validated = _ToyResult.model_validate(result.tool_input)
@@ -142,8 +146,10 @@ class TestLLMChat:
         with pytest.raises(KeyError):
             await llm_chat(
                 LLMChatInput(
-                    system_prompt="s", user_prompt="u",
-                    output_type_name="NeverRegistered", model="anthropic:x",
+                    system_prompt="s",
+                    user_prompt="u",
+                    output_type_name="NeverRegistered",
+                    model="anthropic:x",
                 ),
             )
 
@@ -154,8 +160,10 @@ class TestLLMChat:
         with pytest.raises(ValueError, match="empty model"):
             await llm_chat(
                 LLMChatInput(
-                    system_prompt="s", user_prompt="u",
-                    output_type_name="ToyResult", model="",
+                    system_prompt="s",
+                    user_prompt="u",
+                    output_type_name="ToyResult",
+                    model="",
                 ),
             )
 
@@ -167,8 +175,10 @@ class TestLLMChat:
 
         await llm_chat(
             LLMChatInput(
-                system_prompt="s", user_prompt="u",
-                output_type_name="ToyResult", model="anthropic:m",
+                system_prompt="s",
+                user_prompt="u",
+                output_type_name="ToyResult",
+                model="anthropic:m",
                 max_tokens=512,
             ),
         )
@@ -190,7 +200,8 @@ class TestLLMChat:
 
         await llm_chat(
             LLMChatInput(
-                system_prompt="s", user_prompt="u",
+                system_prompt="s",
+                user_prompt="u",
                 output_type_name="ToyResult",
                 model="anthropic:claude-haiku-4-5-20251001",
             ),
@@ -208,7 +219,8 @@ class TestLLMChat:
 
         await llm_chat(
             LLMChatInput(
-                system_prompt="s", user_prompt="u",
+                system_prompt="s",
+                user_prompt="u",
                 output_type_name="ToyResult",
                 model="claude-haiku-4-5-20251001",
             ),
@@ -237,8 +249,10 @@ class TestLLMChatRetryClassification:
         with pytest.raises(ApplicationError) as excinfo:
             await llm_chat(
                 LLMChatInput(
-                    system_prompt="s", user_prompt="u",
-                    output_type_name="ToyResult", model="anthropic:m",
+                    system_prompt="s",
+                    user_prompt="u",
+                    output_type_name="ToyResult",
+                    model="anthropic:m",
                 ),
             )
 
@@ -254,7 +268,9 @@ class TestLLMChatRetryClassification:
         with pytest.raises(ConnectionError, match="connection reset"):
             await llm_chat(
                 LLMChatInput(
-                    system_prompt="s", user_prompt="u",
-                    output_type_name="ToyResult", model="anthropic:m",
+                    system_prompt="s",
+                    user_prompt="u",
+                    output_type_name="ToyResult",
+                    model="anthropic:m",
                 ),
             )

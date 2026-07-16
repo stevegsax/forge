@@ -19,9 +19,7 @@ if TYPE_CHECKING:
 
 
 def _store_input() -> OcrStoreInput:
-    return OcrStoreInput(
-        batch_id="b1", request_id="r1", document_id="doc-1", file_path="/a.pdf"
-    )
+    return OcrStoreInput(batch_id="b1", request_id="r1", document_id="doc-1", file_path="/a.pdf")
 
 
 def _mock_activities(calls: dict[str, list]) -> list:
