@@ -20,7 +20,7 @@ the request shape. They carry no domain fields — ``batch_jobs`` is generic.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 from temporalio import workflow
@@ -80,7 +80,7 @@ async def persist_block(req: BaseModel, *, task_queue: str | None = None) -> Per
     platform queue). A transient DB outage retries only this cheap write; the
     expensive call that produced ``req`` already returned and is never re-run.
     """
-    kwargs: dict = {
+    kwargs: dict[str, Any] = {
         "start_to_close_timeout": _PERSIST_START_TO_CLOSE,
         "schedule_to_close_timeout": _PERSIST_SCHEDULE_TO_CLOSE,
         "retry_policy": _PERSIST_RETRY,
@@ -88,4 +88,7 @@ async def persist_block(req: BaseModel, *, task_queue: str | None = None) -> Per
     }
     if task_queue is not None:
         kwargs["task_queue"] = task_queue
-    return await workflow.execute_activity("persist_to_store", req, **kwargs)
+    # The string-name overload of execute_activity returns Any; result_type above
+    # only steers runtime deserialization, so narrow via an annotated local.
+    result: PersistResult = await workflow.execute_activity("persist_to_store", req, **kwargs)
+    return result

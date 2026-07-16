@@ -19,7 +19,13 @@ import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sqlalchemy import Engine, Table
+    from sqlalchemy.dialects.postgresql import Insert as PostgresInsert
+    from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert
+    from sqlalchemy.engine.interfaces import DBAPIConnection
+    from sqlalchemy.pool import ConnectionPoolEntry
 
 
 class StoreConfigError(RuntimeError):
@@ -64,8 +70,10 @@ def get_store_engine() -> Engine:
         engine = sa.create_engine(url)
 
         @sa.event.listens_for(engine, "connect")
-        def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
-            cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
+        def _set_sqlite_pragma(
+            dbapi_connection: DBAPIConnection, _connection_record: ConnectionPoolEntry
+        ) -> None:
+            cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.close()
 
@@ -77,7 +85,7 @@ def get_store_engine() -> Engine:
 def insert_or_ignore(
     engine: Engine,
     table: Table,
-    values: dict,
+    values: Mapping[str, object],
     *,
     index_elements: list[str],
 ) -> bool:
@@ -89,19 +97,31 @@ def insert_or_ignore(
     tell whether it was the first writer.
     """
     dialect = engine.dialect.name
+    # sqlite's and postgres's `insert()` return dialect-specific `Insert` types
+    # (different `on_conflict_do_nothing` signatures under the stubs), so each
+    # branch builds and types its own statement rather than funneling both
+    # through one shared, incompatibly-typed callable.
+    stmt: SQLiteInsert | PostgresInsert
     if dialect == "sqlite":
-        from sqlalchemy.dialects.sqlite import insert as _dialect_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        stmt = (
+            sqlite_insert(table)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=index_elements)
+        )
     elif dialect == "postgresql":
-        from sqlalchemy.dialects.postgresql import insert as _dialect_insert
+        from sqlalchemy.dialects.postgresql import insert as postgres_insert
+
+        stmt = (
+            postgres_insert(table)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=index_elements)
+        )
     else:  # pragma: no cover - only sqlite/postgres are supported stores
         msg = f"insert_or_ignore is unsupported on dialect {dialect!r}"
         raise StoreConfigError(msg)
 
-    stmt = (
-        _dialect_insert(table)
-        .values(**values)
-        .on_conflict_do_nothing(index_elements=index_elements)
-    )
     with engine.begin() as conn:
         result = conn.execute(stmt)
     return bool(result.rowcount)

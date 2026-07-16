@@ -8,6 +8,7 @@ via ``pydantic_data_converter``.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -115,7 +116,7 @@ class BatchSubmitSpiInput(BaseModel):
 
 def dump_batch_result_payload(
     raw_response_json: str | None,
-    extracted_images: list[dict],
+    extracted_images: list[dict[str, Any]],
 ) -> str:
     """Serialize the result envelope stashed to S3 (pure)."""
     import json
@@ -125,7 +126,7 @@ def dump_batch_result_payload(
     )
 
 
-def parse_batch_result_payload(envelope_json: str) -> tuple[str | None, list[dict]]:
+def parse_batch_result_payload(envelope_json: str) -> tuple[str | None, list[dict[str, Any]]]:
     """Parse the S3 result envelope back into (body, images) (pure)."""
     import json
 
@@ -133,7 +134,7 @@ def parse_batch_result_payload(envelope_json: str) -> tuple[str | None, list[dic
     return data.get("raw_response_json"), data.get("extracted_images", [])
 
 
-def resolve_batch_result(result: BatchResult) -> tuple[str | None, list[dict]]:
+def resolve_batch_result(result: BatchResult) -> tuple[str | None, list[dict[str, Any]]]:
     """Return ``(raw_response_json, extracted_images)`` for a delivered result.
 
     Fetches the S3 envelope when the result was delivered by reference, else uses
