@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "forge-contracts"
-source = { editable = "../forge-contracts" }
+source = { editable = "../forge/libs/forge-contracts" }
 dependencies = [
     { name = "boto3" },
     { name = "pydantic" },
@@ -710,7 +710,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "click", specifier = ">=8.1.0" },
-    { name = "forge-contracts", editable = "../forge-contracts" },
+    { name = "forge-contracts", editable = "../forge/libs/forge-contracts" },
     { name = "mistralai", specifier = ">=1.0.0" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.10.0" },

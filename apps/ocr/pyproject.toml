@@ -19,7 +19,7 @@ dependencies = [
 ocr = "ocr.cli:main"
 
 [tool.uv.sources]
-forge-contracts = { path = "../forge-contracts", editable = true }
+forge-contracts = { path = "../forge/libs/forge-contracts", editable = true }
 
 [build-system]
 requires = ["hatchling"]
