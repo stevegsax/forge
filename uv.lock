@@ -7,6 +7,12 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+members = [
+    "forge",
+    "pbook",
+]
+
 [[package]]
 name = "alembic"
 version = "1.18.3"
@@ -499,7 +505,7 @@ requires-dist = [
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0" },
-    { name = "pbook", editable = "../pbook" },
+    { name = "pbook", editable = "apps/pbook" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "sax-llm", editable = "../sax-llm" },
@@ -1324,8 +1330,8 @@ wheels = [
 
 [[package]]
 name = "pbook"
-version = "0.2.1"
-source = { editable = "../pbook" }
+version = "0.2.2"
+source = { editable = "apps/pbook" }
 dependencies = [
     { name = "alembic" },
     { name = "click" },
@@ -1337,6 +1343,14 @@ dependencies = [
     { name = "sax-llm" },
     { name = "sqlalchemy" },
     { name = "temporalio" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
 ]
 
 [package.metadata]

@@ -23,15 +23,16 @@ dependencies = [
     "forge-contracts",
 ]
 
+[tool.uv.workspace]
+members = ["apps/pbook"]
+
 [tool.uv.sources]
-# All three siblings use editable path sources so forge tracks the
-# working-tree siblings directly. Requires pbook's own [tool.uv.sources] to
-# agree on sax-llm's source (uv rejects conflicting sources for one package)
-# — pbook switched to the same editable path on 2026-07-16. Version pinning
-# inside the sibling set is deliberately gone: the suites are the contract
-# until T2.1 collapses the repos into the sax monorepo.
+# Root sources apply to all workspace members (members declare no
+# [tool.uv.sources] of their own). The ../ path sources are not portable
+# outside a sibling checkout (Finding A, D98) — each retires as its
+# sibling is absorbed into the workspace.
 sax-llm = { path = "../sax-llm", editable = true }
-pbook = { path = "../pbook", editable = true }
+pbook = { workspace = true }
 forge-contracts = { path = "../forge-contracts", editable = true }
 
 [project.scripts]
