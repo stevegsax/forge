@@ -216,7 +216,7 @@ def unmark_cmd(document_id: str, temporal_address: str) -> None:
 
 def _echo(result: object) -> None:
     if hasattr(result, "model_dump_json"):
-        click.echo(result.model_dump_json(indent=2))  # type: ignore[attr-defined]
+        click.echo(result.model_dump_json(indent=2))
     else:
         click.echo(json.dumps(result, indent=2, default=str))
 

@@ -42,6 +42,8 @@ def run_migrations_online() -> None:
     from sqlalchemy import create_engine
 
     url = context.config.get_main_option("sqlalchemy.url")
+    if url is None:
+        raise RuntimeError("sqlalchemy.url is not configured for Alembic")
     connectable = create_engine(url)
     with connectable.connect() as connection:
         context.configure(

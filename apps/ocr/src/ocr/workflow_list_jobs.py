@@ -34,7 +34,7 @@ class OcrListJobsWorkflow:
             input.status_filter or "(none)",
         )
 
-        result = await workflow.execute_activity(
+        result: OcrListJobsResult = await workflow.execute_activity(
             "list_ocr_jobs",
             input.model_dump_json(),
             start_to_close_timeout=_QUERY_TIMEOUT,

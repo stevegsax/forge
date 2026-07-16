@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from forge_contracts.constants import OCR_TASK_QUEUE
 from forge_contracts.temporal import connect_temporal
@@ -17,6 +18,10 @@ from temporalio.worker.workflow_sandbox import (
     SandboxedWorkflowRunner,
     SandboxRestrictions,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
 
 from ocr.activities import (
     build_ocr_request_blob,
@@ -87,7 +92,7 @@ def workflows() -> list[type]:
     ]
 
 
-def activities() -> list:
+def activities() -> list[Callable[..., Any]]:
     """The OCR activity functions registered on the worker."""
     return [
         read_and_store_file_content,

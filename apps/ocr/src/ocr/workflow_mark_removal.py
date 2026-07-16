@@ -33,7 +33,7 @@ class OcrMarkForRemovalWorkflow:
             input.document_id,
         )
 
-        result = await workflow.execute_activity(
+        result: OcrMarkResult = await workflow.execute_activity(
             "mark_ocr_for_removal",
             input.document_id,
             start_to_close_timeout=_MARK_TIMEOUT,
@@ -61,7 +61,7 @@ class OcrClearRemovalMarkWorkflow:
             input.document_id,
         )
 
-        result = await workflow.execute_activity(
+        result: OcrMarkResult = await workflow.execute_activity(
             "clear_ocr_removal_mark",
             input.document_id,
             start_to_close_timeout=_MARK_TIMEOUT,

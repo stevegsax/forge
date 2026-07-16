@@ -18,7 +18,7 @@ import mimetypes
 import re
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from forge_contracts.models import resolve_batch_result
 from temporalio import activity
@@ -55,11 +55,12 @@ def detect_mime_type(file_path: str) -> str:
     return mime_type or "application/octet-stream"
 
 
-def build_ocr_batch_body(base64_data: str, mime_type: str) -> dict:
+def build_ocr_batch_body(base64_data: str, mime_type: str) -> dict[str, Any]:
     """Build the request body for the /v1/ocr batch endpoint."""
     data_uri = f"data:{mime_type};base64,{base64_data}"
+    doc: dict[str, Any]
     if mime_type.startswith("image/"):
-        doc: dict = {"type": "image_url", "image_url": data_uri}
+        doc = {"type": "image_url", "image_url": data_uri}
     else:
         doc = {"type": "document_url", "document_url": data_uri}
     return {"document": doc, "include_image_base64": True}
@@ -89,7 +90,7 @@ def rewrite_image_references(markdown: str, image_mapping: dict[str, str]) -> st
     if not image_mapping:
         return markdown
 
-    def _replace(match: re.Match) -> str:
+    def _replace(match: re.Match[str]) -> str:
         alt_bracket = match.group(1)
         image_ref = match.group(2)
         if image_ref in image_mapping:
@@ -108,7 +109,7 @@ def rewrite_ocr_uris_to_local(markdown: str, image_id_to_filename: dict[str, str
     if not image_id_to_filename:
         return markdown
 
-    def _replace(match: re.Match) -> str:
+    def _replace(match: re.Match[str]) -> str:
         alt_bracket = match.group(1)
         image_id = match.group(2)
         if image_id in image_id_to_filename:
