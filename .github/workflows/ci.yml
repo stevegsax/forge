@@ -32,6 +32,9 @@ jobs:
       - name: mypy sax-llm (strict, T2.3b)
         working-directory: libs/sax-llm
         run: uv run mypy
+      - name: mypy ocr (strict, T2.3c)
+        working-directory: apps/ocr
+        run: uv run mypy
       - run: uv run lint-imports
 
   test-forge:

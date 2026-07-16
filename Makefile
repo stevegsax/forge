@@ -25,6 +25,7 @@ typecheck:
 	uv run mypy
 	cd libs/forge-contracts && uv run mypy
 	cd libs/sax-llm && uv run mypy
+	cd apps/ocr && uv run mypy
 
 lint-imports:
 	uv run lint-imports
