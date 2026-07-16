@@ -60,3 +60,7 @@ forge.db
 diataxis/public/
 diataxis/resources/
 diataxis/.hugo_build.lock
+
+# Local stack: machine-specific overrides + compose-direct data fallback
+deploy/local-stack/.env
+deploy/local-stack/data/
