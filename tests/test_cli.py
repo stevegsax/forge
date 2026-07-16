@@ -1414,6 +1414,7 @@ class TestStatusCommand:
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
             "wf-123",
+            "run-1",
         )
 
         result = cli_runner.invoke(main, ["status"])
@@ -1434,12 +1435,34 @@ class TestStatusCommand:
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
             "wf-123",
+            "run-1",
         )
 
         result = cli_runner.invoke(main, ["status", "--workflow-id", "wf-123"])
         assert result.exit_code == 0
         assert "wf-123" in result.output
+        assert "run-1" in result.output
         assert "t1" in result.output
+
+    def test_rerun_shows_both_runs(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reused workflow_id with two run_ids surfaces both runs in the listing."""
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
+
+        from forge.store import get_store_engine, run_migrations, save_run
+
+        run_migrations(f"sqlite:///{db_path}")
+        engine = get_store_engine()
+        task_result = TaskResult(task_id="t1", status=TransitionSignal.SUCCESS)
+        save_run(engine, task_result, "forge-task-t1", "run-A")
+        save_run(engine, task_result, "forge-task-t1", "run-B")
+
+        result = cli_runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "run-A" in result.output
+        assert "run-B" in result.output
 
     def test_json_output(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1455,6 +1478,7 @@ class TestStatusCommand:
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
             "wf-123",
+            "run-1",
         )
 
         result = cli_runner.invoke(main, ["status", "--json"])
@@ -1498,6 +1522,7 @@ class TestExtractCommand:
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
             "wf-123",
+            "run-1",
         )
 
         result = cli_runner.invoke(main, ["extract", "--dry-run"])

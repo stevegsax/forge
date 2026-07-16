@@ -70,7 +70,7 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
                 cache_read_input_tokens=req.cache_read_input_tokens,
             )
         case PersistRun():
-            applied = save_run(engine, req.task_result, req.workflow_id)
+            applied = save_run(engine, req.task_result, req.workflow_id, req.run_id)
         case PersistBatchSubmission():
             applied = record_batch_submission(
                 engine,

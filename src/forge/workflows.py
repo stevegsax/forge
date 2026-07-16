@@ -196,6 +196,7 @@ async def _assemble_conflict_resolution(
 
 with workflow.unsafe.imports_passed_through():
     from forge.persist_models import PersistRun
+    from forge.persist_models import build_interaction_idempotency_key as _build_interaction_key
     from forge.persist_models import build_persist_interaction as _build_persist_interaction
     from forge.workflow_blocks import (
         batch_submit_and_wait as _call_llm_batch_dispatch,
@@ -245,9 +246,11 @@ class ForgeTaskWorkflow:
         self._batch_results: dict[str, BatchResult] = {}
         self._sync_mode: bool = True
         self._log_messages: bool = False
-        # Monotonic counter for deterministic, replay-stable interaction
-        # idempotency keys (Phase C survivable writes).
-        self._persist_seq: int = 0
+        # Per-role occurrence counters for deterministic, replay-stable
+        # interaction idempotency keys (Phase C survivable writes). Held in
+        # workflow state so they replay identically; per-role so a repeated
+        # same-role call never collides (T1.6a).
+        self._persist_occurrences: dict[str, int] = {}
 
     async def _persist_interaction(
         self,
@@ -262,9 +265,15 @@ class ForgeTaskWorkflow:
         context_stats: ContextStats | None = None,
     ) -> None:
         """Survivably persist one LLM interaction (idempotent on a per-run key)."""
-        self._persist_seq += 1
+        occurrence = self._persist_occurrences.get(role, 0)
+        self._persist_occurrences[role] = occurrence + 1
         req = _build_persist_interaction(
-            idempotency_key=f"{workflow.info().workflow_id}:{role}:{self._persist_seq}",
+            idempotency_key=_build_interaction_key(
+                workflow_id=workflow.info().workflow_id,
+                run_id=workflow.info().run_id,
+                role=role,
+                occurrence=occurrence,
+            ),
             role=role,
             task_id=task_id,
             system_prompt=system_prompt,
@@ -301,7 +310,11 @@ class ForgeTaskWorkflow:
         # execution records a row — including fire-and-forget submissions, which
         # the old CLI-side _persist_run never covered.
         await _persist_block(
-            PersistRun(workflow_id=workflow.info().workflow_id, task_result=result)
+            PersistRun(
+                workflow_id=workflow.info().workflow_id,
+                run_id=workflow.info().run_id,
+                task_result=result,
+            )
         )
         return result
 
@@ -1439,7 +1452,8 @@ class ForgeSubTaskWorkflow:
         self._batch_results: dict[str, BatchResult] = {}
         self._sync_mode: bool = True
         self._log_messages: bool = False
-        self._persist_seq: int = 0
+        # Per-role occurrence counters for replay-stable interaction keys (T1.6a).
+        self._persist_occurrences: dict[str, int] = {}
 
     async def _persist_interaction(
         self,
@@ -1454,9 +1468,15 @@ class ForgeSubTaskWorkflow:
         context_stats: ContextStats | None = None,
     ) -> None:
         """Survivably persist one LLM interaction (idempotent on a per-run key)."""
-        self._persist_seq += 1
+        occurrence = self._persist_occurrences.get(role, 0)
+        self._persist_occurrences[role] = occurrence + 1
         req = _build_persist_interaction(
-            idempotency_key=f"{workflow.info().workflow_id}:{role}:{self._persist_seq}",
+            idempotency_key=_build_interaction_key(
+                workflow_id=workflow.info().workflow_id,
+                run_id=workflow.info().run_id,
+                role=role,
+                occurrence=occurrence,
+            ),
             role=role,
             task_id=task_id,
             system_prompt=system_prompt,

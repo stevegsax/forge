@@ -77,6 +77,13 @@ def test_migrations_apply_cleanly_on_postgres(postgres_url: str) -> None:
         for table in ("interactions", "playbooks"):
             cols = {c["name"] for c in insp.get_columns(table)}
             assert "idempotency_key" in cols, (table, cols)
+
+        # runs is rekeyed on (workflow_id, run_id) (T1.6a).
+        runs_cols = {c["name"] for c in insp.get_columns("runs")}
+        assert "run_id" in runs_cols, runs_cols
+        runs_uniques = {tuple(uc["column_names"]) for uc in insp.get_unique_constraints("runs")}
+        assert ("workflow_id", "run_id") in runs_uniques
+        assert ("workflow_id",) not in runs_uniques
     finally:
         engine.dispose()
 
@@ -103,8 +110,45 @@ def test_insert_or_ignore_idempotent_on_postgres(
     try:
         assert engine.dialect.name == "postgresql"
         task_result = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
-        assert save_run(engine, task_result, "wf-pg-idem") is True
-        assert save_run(engine, task_result, "wf-pg-idem") is False
+        assert save_run(engine, task_result, "wf-pg-idem", "run-1") is True
+        assert save_run(engine, task_result, "wf-pg-idem", "run-1") is False
+    finally:
+        engine.dispose()
+
+
+def test_runs_rekey_records_reruns_on_postgres(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The (workflow_id, run_id) rekey lets a reused workflow_id record reruns.
+
+    Exercises the real Postgres ON CONFLICT arbiter on the composite unique
+    ``uq_runs_workflow_id_run_id`` (T1.6a).
+    """
+    import sqlalchemy as sa
+
+    from forge.models import TaskResult, TransitionSignal
+    from forge.store import get_store_engine, list_recent_runs, run_migrations, save_run
+
+    run_migrations(postgres_url)
+    monkeypatch.setenv("FORGE_DB_URL", postgres_url)
+
+    engine = get_store_engine()
+    try:
+        # The rekey lives on the runs table as a composite unique constraint.
+        uniques = {
+            tuple(uc["column_names"]) for uc in sa.inspect(engine).get_unique_constraints("runs")
+        }
+        assert ("workflow_id", "run_id") in uniques
+
+        task_result = TaskResult(task_id="rk", status=TransitionSignal.SUCCESS)
+        assert save_run(engine, task_result, "forge-task-rk", "run-A") is True
+        assert save_run(engine, task_result, "forge-task-rk", "run-A") is False
+        assert save_run(engine, task_result, "forge-task-rk", "run-B") is True
+
+        run_ids = {
+            r["run_id"] for r in list_recent_runs(engine) if r["workflow_id"] == "forge-task-rk"
+        }
+        assert run_ids == {"run-A", "run-B"}
     finally:
         engine.dispose()
 

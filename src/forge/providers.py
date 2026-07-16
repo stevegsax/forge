@@ -379,7 +379,9 @@ def handle_past_runs(params: dict[str, str], repo_root: str, worktree_path: str)
 
     lines: list[str] = []
     for r in runs:
-        lines.append(f"{r['workflow_id']}  {r['task_id']}  {r['status']}  {r['created_at']}")
+        lines.append(
+            f"{r['workflow_id']}  {r['run_id']}  {r['task_id']}  {r['status']}  {r['created_at']}"
+        )
     return "\n".join(lines)
 
 

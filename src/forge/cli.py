@@ -895,6 +895,7 @@ def status(
             click.echo(json_mod.dumps(run_data, indent=2, default=str))
         else:
             click.echo(f"Workflow: {run_data['workflow_id']}")
+            click.echo(f"Run: {run_data['run_id']}")
             click.echo(f"Task: {run_data['task_id']}")
             click.echo(f"Status: {run_data['status']}")
             click.echo(f"Created: {run_data['created_at']}")
@@ -932,7 +933,8 @@ def status(
             click.echo("")
             for r in runs:
                 click.echo(
-                    f"  {r['workflow_id']}  {r['task_id']}  {r['status']}  {r['created_at']}"
+                    f"  {r['workflow_id']}  {r['run_id']}  {r['task_id']}  "
+                    f"{r['status']}  {r['created_at']}"
                 )
 
 
@@ -1022,7 +1024,10 @@ def extract(
         click.echo(f"Unextracted runs ({len(runs)}):")
         click.echo("")
         for r in runs:
-            click.echo(f"  {r['workflow_id']}  {r['task_id']}  {r['status']}  {r['created_at']}")
+            click.echo(
+                f"  {r['workflow_id']}  {r['run_id']}  {r['task_id']}  "
+                f"{r['status']}  {r['created_at']}"
+            )
         return
 
     try:

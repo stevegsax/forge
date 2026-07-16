@@ -30,6 +30,9 @@ from forge.persist_models import (
     PersistRequest,
     PersistResult,
     PersistRun,
+    build_interaction_idempotency_key,
+    reshape_legacy_interaction_key,
+    restore_legacy_interaction_key,
 )
 from forge.store import get_run, get_store_engine, run_migrations
 from forge.workflows import FORGE_TASK_QUEUE
@@ -48,6 +51,62 @@ def migrated(forge_db_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pure interaction-key helpers (T1.6a)
+# ---------------------------------------------------------------------------
+
+
+class TestInteractionKeyHelpers:
+    def test_key_shape_includes_run_id_and_occurrence(self) -> None:
+        key = build_interaction_idempotency_key(
+            workflow_id="forge-task-x", run_id="run-9", role="llm", occurrence=0
+        )
+        assert key == "forge-task-x:run-9:llm:0"
+
+    def test_reruns_produce_distinct_keys(self) -> None:
+        """Same workflow_id/role/occurrence but different run_id -> distinct keys."""
+        common = {"workflow_id": "forge-task-x", "role": "llm", "occurrence": 0}
+        a = build_interaction_idempotency_key(run_id="run-A", **common)
+        b = build_interaction_idempotency_key(run_id="run-B", **common)
+        assert a != b
+
+    def test_per_role_occurrence_distinguishes_repeats(self) -> None:
+        """A repeated same-role call (e.g. a second sanity check) never collides."""
+        keys = {
+            build_interaction_idempotency_key(
+                workflow_id="wf", run_id="r", role="sanity_check", occurrence=n
+            )
+            for n in range(3)
+        }
+        assert len(keys) == 3
+
+    @pytest.mark.parametrize(
+        ("legacy", "expected"),
+        [
+            ("forge-task-x:llm:1", "forge-task-x:legacy:llm:1"),
+            ("forge-task-x:sanity_check:2", "forge-task-x:legacy:sanity_check:2"),
+            ("weird:host:name:planner:5", "weird:host:name:legacy:planner:5"),
+            # Not a legacy positional key — left unchanged.
+            ("ewf-abc:extraction", "ewf-abc:extraction"),
+        ],
+    )
+    def test_reshape_legacy_key(self, legacy: str, expected: str) -> None:
+        assert reshape_legacy_interaction_key(legacy, run_id="legacy") == expected
+
+    @pytest.mark.parametrize(
+        "legacy",
+        ["forge-task-x:llm:1", "weird:host:name:planner:5", "a:legacy:llm:1"],
+    )
+    def test_reshape_roundtrips(self, legacy: str) -> None:
+        reshaped = reshape_legacy_interaction_key(legacy, run_id="legacy")
+        assert restore_legacy_interaction_key(reshaped, run_id="legacy") == legacy
+
+    def test_restore_leaves_real_run_keys_untouched(self) -> None:
+        """Downgrade must not strip a genuine (non-sentinel) run_id."""
+        real = "forge-task-x:0a1b2c3d:llm:0"
+        assert restore_legacy_interaction_key(real, run_id="legacy") == real
+
+
+# ---------------------------------------------------------------------------
 # Idempotency — persist_to_store dispatched directly as a plain async function
 # ---------------------------------------------------------------------------
 
@@ -57,12 +116,29 @@ class TestPersistIdempotency:
     async def test_run_idempotent(self, migrated: str) -> None:
         req = PersistRun(
             workflow_id="wf-1",
+            run_id="run-1",
             task_result=TaskResult(task_id="t", status=TransitionSignal.SUCCESS),
         )
         first = await persist_to_store(req)
         second = await persist_to_store(req)
         assert (first.applied, second.applied) == (True, False)
         assert get_run(get_store_engine(), "wf-1") is not None
+
+    @pytest.mark.asyncio
+    async def test_rerun_records_second_run(self, migrated: str) -> None:
+        """A rerun (same workflow_id, fresh run_id) is a distinct row, not swallowed."""
+        task_result = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        first = await persist_to_store(
+            PersistRun(workflow_id="wf-1", run_id="run-A", task_result=task_result)
+        )
+        second = await persist_to_store(
+            PersistRun(workflow_id="wf-1", run_id="run-B", task_result=task_result)
+        )
+        assert (first.applied, second.applied) == (True, True)
+        from forge.store import list_recent_runs
+
+        runs = list_recent_runs(get_store_engine())
+        assert {r["run_id"] for r in runs} == {"run-A", "run-B"}
 
     @pytest.mark.asyncio
     async def test_interaction_idempotent(self, migrated: str) -> None:
@@ -135,6 +211,7 @@ class _PersistRetryProbe:
         result = await persist_block(
             PersistRun(
                 workflow_id=workflow_id,
+                run_id=workflow.info().run_id,
                 task_result=TaskResult(task_id="t", status=TransitionSignal.SUCCESS),
             )
         )

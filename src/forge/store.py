@@ -101,10 +101,17 @@ class Interaction(Base):
 
 class Run(Base):
     __tablename__ = "runs"
+    # Keyed by (workflow_id, run_id): the deterministic forge-task-{id} workflow_id
+    # is reused on every rerun, so run_id (the Temporal execution id) is what makes
+    # a rerun a distinct row instead of one swallowed by insert_or_ignore (T1.6a).
+    __table_args__ = (
+        sa.UniqueConstraint("workflow_id", "run_id", name="uq_runs_workflow_id_run_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     task_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
-    workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
+    workflow_id: Mapped[str] = mapped_column(sa.String, nullable=False)
+    run_id: Mapped[str] = mapped_column(sa.String, nullable=False)
     status: Mapped[str] = mapped_column(sa.String, nullable=False)
     result_json: Mapped[str] = mapped_column(sa.Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -264,18 +271,23 @@ def save_interaction(engine: Engine, **kwargs: object) -> bool:
     return inserted
 
 
-def save_run(engine: Engine, task_result: TaskResult, workflow_id: str) -> bool:
-    """Insert a row into the runs table (idempotent on workflow_id)."""
+def save_run(engine: Engine, task_result: TaskResult, workflow_id: str, run_id: str) -> bool:
+    """Insert a row into the runs table (idempotent on ``(workflow_id, run_id)``).
+
+    ``run_id`` is the Temporal execution id, so a rerun of the same (reused)
+    ``workflow_id`` records a distinct row rather than being swallowed (T1.6a).
+    """
     inserted: bool = insert_or_ignore(
         engine,
         _RUNS_TABLE,
         {
             "task_id": task_result.task_id,
             "workflow_id": workflow_id,
+            "run_id": run_id,
             "status": task_result.status.value,
             "result_json": task_result.model_dump_json(),
         },
-        index_elements=["workflow_id"],
+        index_elements=["workflow_id", "run_id"],
     )
     return inserted
 
@@ -297,9 +309,17 @@ def get_interactions(
 
 
 def get_run(engine: Engine, workflow_id: str) -> dict[str, Any] | None:
-    """Query a single run by workflow ID."""
+    """Query the most recent run for a workflow ID.
+
+    A ``workflow_id`` can now own several runs (reruns, keyed by ``run_id``); the
+    detail view shows the latest. Use ``list_recent_runs`` to see every run.
+    """
     t = _RUNS_TABLE
-    stmt = t.select().where(t.c.workflow_id == workflow_id)
+    stmt = (
+        t.select()
+        .where(t.c.workflow_id == workflow_id)
+        .order_by(t.c.created_at.desc(), t.c.id.desc())
+    )
 
     with engine.connect() as conn:
         row = conn.execute(stmt).mappings().first()

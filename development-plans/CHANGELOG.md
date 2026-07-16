@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-15 | [T1.6a — Idempotency rekey](tasks/T1.6a-idempotency-rekey.md) | — |
 | 2026-07-15 | [T1.5 — Nested fan-out propagation fix](tasks/T1.5-nested-fan-out-propagation.md) | — |
 | 2026-07-15 | [T1.7 — Env scrub at model-influenced subprocess seams](tasks/T1.7-env-scrub-subprocess-seams.md) | — |
 | 2026-07-15 | [T1.4 — Unblock the worker event loop](tasks/T1.4-unblock-worker-event-loop.md) | — |

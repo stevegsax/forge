@@ -331,12 +331,13 @@ class TestRunRoundtrip:
         engine = _migrate(db_path)
 
         task_result = TaskResult(task_id="t1", status=TransitionSignal.SUCCESS)
-        save_run(engine, task_result, "wf-123")
+        save_run(engine, task_result, "wf-123", "run-1")
 
         run_data = get_run(engine, "wf-123")
         assert run_data is not None
         assert run_data["task_id"] == "t1"
         assert run_data["workflow_id"] == "wf-123"
+        assert run_data["run_id"] == "run-1"
         assert run_data["status"] == "success"
         assert run_data["result"]["task_id"] == "t1"
 
@@ -346,13 +347,26 @@ class TestRunRoundtrip:
 
         assert get_run(engine, "nonexistent") is None
 
+    def test_rerun_records_distinct_run(self, tmp_path: Path) -> None:
+        """A rerun (same workflow_id, fresh run_id) is a new row, not swallowed."""
+        db_path = tmp_path / "test.db"
+        engine = _migrate(db_path)
+
+        task_result = TaskResult(task_id="t1", status=TransitionSignal.SUCCESS)
+        assert save_run(engine, task_result, "wf-123", "run-A") is True
+        assert save_run(engine, task_result, "wf-123", "run-A") is False  # dup absorbed
+        assert save_run(engine, task_result, "wf-123", "run-B") is True  # rerun recorded
+
+        runs = list_recent_runs(engine)
+        assert {r["run_id"] for r in runs if r["workflow_id"] == "wf-123"} == {"run-A", "run-B"}
+
     def test_list_recent(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
         engine = _migrate(db_path)
 
         for i in range(3):
             result = TaskResult(task_id=f"t{i}", status=TransitionSignal.SUCCESS)
-            save_run(engine, result, f"wf-{i}")
+            save_run(engine, result, f"wf-{i}", f"run-{i}")
 
         runs = list_recent_runs(engine, limit=2)
         assert len(runs) == 2
@@ -552,6 +566,7 @@ class TestGetUnextractedRuns:
                 engine,
                 TaskResult(task_id=f"t{i}", status=TransitionSignal.SUCCESS),
                 f"wf-{i}",
+                f"run-{i}",
             )
 
         runs = get_unextracted_runs(engine, limit=50)
@@ -568,11 +583,13 @@ class TestGetUnextractedRuns:
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
             "wf-1",
+            "run-1",
         )
         save_run(
             engine,
             TaskResult(task_id="t2", status=TransitionSignal.SUCCESS),
             "wf-2",
+            "run-2",
         )
 
         # Mark wf-1 as extracted
@@ -604,6 +621,7 @@ class TestGetUnextractedRuns:
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
             "wf-1",
+            "run-1",
         )
 
         save_playbooks(

@@ -195,6 +195,7 @@ class TestUTCDateTime:
                 sa.insert(Run.__table__).values(
                     task_id="t",
                     workflow_id="wf-run-1",
+                    run_id="run-1",
                     status="succeeded",
                     result_json="{}",
                 )
