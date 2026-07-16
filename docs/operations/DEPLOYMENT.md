@@ -90,7 +90,7 @@ Docker because it is a self-contained service with no filesystem coupling.
 | Mistral API | OCR pipeline | `MISTRAL_API_KEY`, outbound HTTPS (only if OCR used) |
 | OpenAI API | pbook embeddings (semantic search / dedup) | `OPENAI_API_KEY`, outbound HTTPS (only if pbook used) |
 | GitHub | Clone/push the repos Forge operates on | `SAX_GITHUB_TOKEN`, outbound HTTPS |
-| pbook + sax-llm repos | Sibling Python packages | Present at build/deploy time (see Packaging) |
+| sax-llm + forge-contracts repos | Sibling Python packages (pbook ships inside the forge checkout) | Present at build/deploy time (see Packaging) |
 
 ## Prerequisite code changes
 
@@ -158,27 +158,32 @@ needs no bucket. Tests mock S3 with `moto` rather than storing bytes in SQLite.
 
 ## Packaging Forge and pbook for deployment
 
-Forge declares its sibling dependencies as **editable path sources** in
-`pyproject.toml`:
+The forge repo root is a uv workspace (D98): pbook ships **inside the forge
+checkout** as the `apps/pbook` workspace member, and the remaining siblings
+are editable path sources declared once at the root:
 
 ```toml
+[tool.uv.workspace]
+members = ["apps/pbook"]
+
 [tool.uv.sources]
 sax-llm = { path = "../sax-llm", editable = true }
-pbook  = { path = "../pbook",  editable = true }
+pbook = { workspace = true }
+forge-contracts = { path = "../forge-contracts", editable = true }
 ```
 
-Neither `sax-llm` nor `pbook` is published to a package index, so a plain
-`pip install forge` cannot resolve them. The dependency graph is:
+Neither `sax-llm` nor `forge-contracts` is published to a package index, so a
+plain `pip install forge` cannot resolve them. The dependency graph is:
 
 ```text
 sax-llm  (anthropic, mistralai, pydantic)
-   └── pbook  (+ temporalio, sqlalchemy, alembic, openai, numpy)
-         └── forge  (+ opentelemetry, grimp, networkx, scipy, pymupdf, click,
-                       psycopg2-binary, boto3)   ← last two added by the changes above
+   └── pbook  (+ temporalio, sqlalchemy, alembic, openai, numpy, psycopg, pgvector)
+         └── forge  (+ opentelemetry, grimp, networkx, scipy, click,
+                       psycopg2-binary, boto3, forge-contracts)
 ```
 
-Any packaging approach must bring **all three** repositories along. Three options,
-in increasing isolation:
+Any packaging approach must bring the forge checkout plus **both sibling
+repositories** along. Three options, in increasing isolation:
 
 ### Option A — Source tree + `uv sync` (recommended for low volume)
 
@@ -187,53 +192,55 @@ Simplest, matches development exactly, no extra build step.
 
 ```text
 /srv/forge-app/
-├── forge/      # this repo
-├── sax-llm/    # sibling — referenced as ../sax-llm
-└── pbook/      # sibling — referenced as ../pbook
+├── forge/            # this repo — the workspace root; pbook lives at apps/pbook
+├── sax-llm/          # sibling — referenced as ../sax-llm
+└── forge-contracts/  # sibling — referenced as ../forge-contracts
 ```
 
 ```bash
 cd /srv/forge-app/forge
-uv sync --frozen          # installs forge + sax-llm + pbook from uv.lock into .venv
+uv sync --frozen          # installs forge + apps/pbook + both siblings from uv.lock
 uv run forge --version    # smoke test
+uv run pbook --help       # the same venv serves the pbook worker
 ```
 
 Pin to a known-good commit per repo (record the three commit SHAs in your release
-notes). `--frozen` ensures the deployed dependency set matches `uv.lock`.
+notes). `--frozen` ensures the deployed dependency set matches the root `uv.lock`.
 
 ### Option B — Wheel bundle (cleaner artifact, no source at runtime)
 
-Build wheels for all three and install them into a venv. The runtime needs no
-source tree, only the wheels.
+Build wheels for all four packages and install them into a venv. The runtime
+needs no source tree, only the wheels.
 
 ```bash
-uv build --wheel ../sax-llm -o dist/   # sax_llm-0.1.0-*.whl
-uv build --wheel ../pbook   -o dist/   # pbook-0.1.0-*.whl
-uv build --wheel .          -o dist/   # forge-0.1.0-*.whl
+uv build --wheel ../sax-llm         -o dist/   # sax_llm-*.whl
+uv build --wheel ../forge-contracts -o dist/   # forge_contracts-*.whl
+uv build --wheel apps/pbook         -o dist/   # pbook-*.whl
+uv build --wheel .                  -o dist/   # forge-*.whl
 
 # On the instance:
-uv venv && uv pip install dist/sax_llm-*.whl dist/pbook-*.whl dist/forge-*.whl
+uv venv && uv pip install dist/*.whl
 ```
 
-A wheel's metadata requires `sax-llm`/`pbook` *by name* (the path sources are
-dev-time only), so install the three wheels together — `pip` won't find the
-siblings on an index.
+A wheel's metadata requires `sax-llm`/`pbook`/`forge-contracts` *by name* (the
+workspace and path sources are dev-time only), so install the wheels together —
+`pip` won't find them on an index.
 
 ### Option C — Container image (most reproducible)
 
-Build one image with all three repos copied in and `uv sync` baked into the layer.
-Best when you later move workers to ECS/containers. The worker image still needs
-`git` and any test tooling for the target repos, and must mount a volume for
-worktrees and the cloned repos.
+Build one image with the forge checkout and both siblings copied in and
+`uv sync` baked into the layer. Best when you later move workers to
+ECS/containers. The worker image still needs `git` and any test tooling for the
+target repos, and must mount a volume for worktrees and the cloned repos.
 
 ```dockerfile
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && pip install uv && rm -rf /var/lib/apt/lists/*
 WORKDIR /srv/forge-app
-COPY sax-llm/ ./sax-llm/
-COPY pbook/   ./pbook/
-COPY forge/   ./forge/
+COPY sax-llm/          ./sax-llm/
+COPY forge-contracts/  ./forge-contracts/
+COPY forge/            ./forge/
 WORKDIR /srv/forge-app/forge
 RUN uv sync --frozen
 ENTRYPOINT ["uv", "run", "forge", "worker"]
@@ -242,38 +249,26 @@ ENTRYPOINT ["uv", "run", "forge", "worker"]
 **Recommendation for this deployment:** Option A. It is the least friction for a
 single instance and lets you `git pull` + `uv sync` to upgrade.
 
-### pbook is a parallel deployment
+### pbook worker: same checkout, own queue
 
-If transcript ingestion (`forge ingest`) is in scope, pbook deploys alongside
-Forge. Verified specifics from the pbook repo:
+If transcript ingestion (`forge ingest`) is in scope, the pbook worker runs
+alongside Forge — from the same checkout and venv:
 
-- **Its own worker** — `pbook worker --temporal-address 127.0.0.1:7233`, polling
-  `pbook-task-queue` (separate from Forge's queue).
+- **Its own worker** — `uv run pbook worker` from `/srv/forge-app/forge`,
+  polling `pbook-task-queue` (separate from Forge's queue).
 - **Migrations are explicit** — unlike the Forge worker, the pbook worker does
-  **not** auto-run migrations on startup. Run `pbook migrate` once at deploy time
-  (and after upgrades).
+  **not** auto-run migrations on startup. Run `uv run pbook migrate` once at
+  deploy time (and after upgrades); bootstrap does this when `WITH_PBOOK=true`.
 - **An extra secret: `OPENAI_API_KEY`** — pbook generates embeddings via OpenAI
   (`text-embedding-3-small`) for semantic search and de-duplication, in addition
   to using Anthropic for extraction/review. Add it to SSM if pbook is in scope.
-- **Store path** — `PBOOK_DB_PATH` → `$XDG_STATE_HOME/pbook/pbook.db` (same XDG
-  pattern as Forge).
-- **sax-llm source differs** — pbook's own `pyproject.toml` pulls sax-llm from
-  GitHub (`rev = v0.1.0`), while Forge pins both siblings to local editable paths.
-  In the Forge workspace resolution Forge's local sources win, so a Forge `uv sync`
-  uses the local sax-llm/pbook. A *standalone* pbook build needs GitHub access.
+- **Store** — Postgres-only (pgvector), configured by `PBOOK_DATABASE_URL`;
+  fetch-secrets.sh emits it from SSM `SUPABASE_PBOOK_DB_URL`. There is no local
+  store: the SQLite-era `PBOOK_DB_PATH` is gone.
 
-**Externalizing pbook's store to Postgres is a *larger* change than Forge's.**
-pbook's tag query uses SQLite-specific `json_each(tags_json)` and relies on
-`PRAGMA foreign_keys=ON` for cascade deletes — neither runs on Postgres. Moving
-pbook's store would require rewriting that query (e.g. `jsonb_array_elements_text`)
-and the FK strategy on top of the connection/driver work. For low volume, the
-pragmatic choice is to **keep pbook on local SQLite** on the EBS volume (its
-embeddings are small float32 blobs, not S3-worthy) and revisit if it becomes a
-scaling concern.
-
-If ingestion is **not** in scope, omit the pbook worker entirely; the Forge worker
-logs a warning and skips ingestion workflows, and `forge ingest` exits with a clear
-error.
+If ingestion is **not** in scope, omit the pbook worker entirely
+(`with_pbook = false`); the Forge worker logs a warning and skips ingestion
+workflows, and `forge ingest` exits with a clear error.
 
 ## Deployment process
 
@@ -328,6 +323,7 @@ Put each secret in **SSM Parameter Store (SecureString)** (or Secrets Manager):
 - `/forge/ANTHROPIC_API_KEY`
 - `/forge/MISTRAL_API_KEY` (only if OCR used)
 - `/forge/OPENAI_API_KEY` (only if pbook ingestion used — for embeddings)
+- `/forge/SUPABASE_PBOOK_DB_URL` (only if pbook ingestion used — pbook's Postgres store)
 - `/forge/SAX_GITHUB_TOKEN`
 - `/forge/SUPABASE_TEMPORAL_PWD` and `/forge/SUPABASE_FORGE_DB_URL`
 
@@ -383,9 +379,9 @@ sudo dnf install -y git
 curl -LsSf https://astral.sh/uv/install.sh | sh   # uv (brings managed Python 3.12)
 
 sudo mkdir -p /srv/forge-app && cd /srv/forge-app
-git clone <forge>   forge
-git clone <sax-llm> sax-llm
-git clone <pbook>   pbook       # only if ingestion in scope
+git clone <forge>           forge             # workspace root; pbook ships inside at apps/pbook
+git clone <sax-llm>         sax-llm
+git clone <forge-contracts> forge-contracts
 cd forge && uv sync --frozen
 
 sudo mkdir -p /data/repos && git clone <target-repo> /data/repos/<name>
@@ -484,7 +480,7 @@ stand up the mutual-TLS gateway in [`deploy/`](../../deploy/) and have them foll
 | `ANTHROPIC_API_KEY` | Anthropic SDK auth | from SSM |
 | `MISTRAL_API_KEY` | Mistral OCR auth | from SSM (if OCR used) |
 | `OPENAI_API_KEY` | pbook embeddings auth | from SSM (if pbook used) |
-| `PBOOK_DB_PATH` | pbook SQLite store (if ingestion used) | `/data/pbook/pbook.db` |
+| `PBOOK_DATABASE_URL` | pbook Postgres store (if ingestion used) | from SSM `SUPABASE_PBOOK_DB_URL` |
 | `SAX_GITHUB_TOKEN` | Git access to private repos | from SSM |
 
 `FORGE_DB_URL` and `FORGE_OCR_S3_BUCKET` are introduced by the
@@ -582,9 +578,8 @@ Supabase connection caps as worker count grows.
 - **Supabase `CREATE DATABASE` privilege** — confirm, or plan for extra projects.
 - **IPv4 vs IPv6 egress** path from the VPC to Supabase.
 - **pbook scope** — is `forge ingest` part of this deployment? If so: provision
-  `OPENAI_API_KEY`, run `pbook migrate`, and stand up the pbook worker. Note
-  pbook's store is **not** Postgres-portable as-is (SQLite `json_each`/`PRAGMA
-  foreign_keys`), so plan to keep it on local SQLite unless you invest in rewriting
-  that query.
-- **Pinned commits** for forge, sax-llm, pbook recorded in release notes.
+  `OPENAI_API_KEY` and `SUPABASE_PBOOK_DB_URL` in SSM, run `uv run pbook migrate`,
+  and stand up the pbook worker (all from the forge checkout; `with_pbook = true`
+  drives this in Terraform).
+- **Pinned commits** for forge, sax-llm, forge-contracts recorded in release notes.
 - **Backup/restore drill** for Supabase (and S3 versioning) tested once.

@@ -12,19 +12,19 @@ Current status — completed and remaining requirements, plus known issues and t
 
 ## Current Project: 2026-06-10 Architecture Migration
 
-A merged platform redesign plan was approved 2026-06-10. It is the active project; [development-plans/TASKS.md](development-plans/TASKS.md) is the work queue (56 tasks: standalone Phase 0, T0.1–T0.8, plus the eight migration phases, T1.0–T8.4; amended 2026-07-08 per [forge-review-2026-07-08.md](forge-review-2026-07-08.md) and its capture sweep). No migration code has landed yet — the working tree is the pre-migration system, and this file describes that system. Sections below carry one-line notes where the migration deletes or replaces current machinery; do not extend anything so annotated.
+A merged platform redesign plan was approved 2026-06-10. It is the active project; [development-plans/TASKS.md](development-plans/TASKS.md) is the work queue (56 tasks: standalone Phase 0, T0.1–T0.8, plus the eight migration phases, T1.0–T8.4; amended 2026-07-08 per [forge-review-2026-07-08.md](forge-review-2026-07-08.md) and its capture sweep). Phase 1 (T1.0–T1.8) has landed, as has T2.1 increment 1 (pbook absorbed as a workspace member, D98); Phases 3–8 are still ahead, and sections below carry one-line notes where they delete or replace current machinery — do not extend anything so annotated.
 
 - **Reversals:** R1 — the signal-based batch SPI is replaced by per-workflow timer-loop polling (D88, Phase 4). R2 — pbook ingestion becomes sync inside pbook and forge's ingestion side is deleted (D91, T6.4).
 - **Phase ordering is load-bearing:** 1 → 2 → 3 → 4 → 5; Phase 6 runs after Phase 5; Phases 6 and 7 may run in parallel; Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0).
-- **Context:** handoff in [development-plans/HANDOFF-architecture-review-2026-06-10.md](development-plans/HANDOFF-architecture-review-2026-06-10.md); decisions D86–D97 in [docs/DECISIONS.md](docs/DECISIONS.md); review findings in [docs/reviews/2026-06-architecture-review.md](docs/reviews/2026-06-architecture-review.md).
+- **Context:** handoff in [development-plans/HANDOFF-architecture-review-2026-06-10.md](development-plans/HANDOFF-architecture-review-2026-06-10.md); decisions D86–D98 in [docs/DECISIONS.md](docs/DECISIONS.md); review findings in [docs/reviews/2026-06-architecture-review.md](docs/reviews/2026-06-architecture-review.md).
 
 ## Cross-Project Dependencies
 
-Forge depends on sibling packages via `[tool.uv.sources]`. As of T1.0 (amended 2026-07-16), all three siblings — `sax-llm`, `pbook`, `forge-contracts` — use editable path sources (`../sax-llm`, `../pbook`, `../forge-contracts`), so forge tracks the working-tree siblings directly. pbook's own `[tool.uv.sources]` uses the same editable `sax-llm` path (uv requires every consumer to agree on a package's source). Version pinning inside the sibling set is deliberately gone: the sibling suites are the compatibility contract. T2.1 collapses all five repos into the `sax` monorepo, where sources become workspace-relative.
+Forge is the monorepo (D98): siblings are absorbed into it incrementally, and the repo root is a uv workspace with one `uv.lock` and one venv. pbook is already a workspace member at `apps/pbook`. The remaining siblings — `sax-llm`, `forge-contracts` — use editable path sources (`../sax-llm`, `../forge-contracts`) declared once at the workspace root (members declare no `[tool.uv.sources]` of their own) until their absorption increments land in `libs/`; ocr follows into `apps/ocr`. Version pinning inside the set is deliberately gone: the suites are the compatibility contract.
 
 - **forge-contracts** (`../forge-contracts`) — the shared SPI surface between the platform and its consumer apps: batch wire models (`BatchResult`, `BatchSubmitSpiInput`, `BatchJobStatus`, the result-payload envelope), the survivable `persist_block` primitive, `s3_blobs`, the Temporal connect helper, generic DB helpers, queue/namespace/signal constants, and the read-only `batch_jobs` schema. Both Forge and the OCR app import it; neither imports the other.
 - **sax-llm** (`../sax-llm`) — shared LLM provider abstraction, output type registry, and batch response parsing.
-- **pbook** (`../pbook`) — cross-project knowledge store, a required dependency. Forge's transcript ingestion workflows call pbook's `ExtractionWorkflow` and `record_ingested_session` activity cross-queue on `pbook-task-queue`. An import guard (`_INGESTION_AVAILABLE` in worker.py) gates workflow registration only — pbook itself is installed unconditionally. (Forge's ingestion side is deleted in T6.4.) Forge's own playbook store (`forge.db` `playbooks` table) is separate from pbook's `entries` table — the two stores are parallel and do not share data. (The playbooks store is superseded by pbook in T6.7.) See `diataxis/explanation/learning-loops.md` for the design discussion.
+- **pbook** (`apps/pbook`, workspace member) — cross-project knowledge store, a required dependency. Forge's transcript ingestion workflows call pbook's `ExtractionWorkflow` and `record_ingested_session` activity cross-queue on `pbook-task-queue`. An import guard (`_INGESTION_AVAILABLE` in worker.py) gates workflow registration only — pbook itself is installed unconditionally. (Forge's ingestion side is deleted in T6.4.) Forge's own playbook store (`forge.db` `playbooks` table) is separate from pbook's `entries` table — the two stores are parallel and do not share data. (The playbooks store is superseded by pbook in T6.7.) See `diataxis/explanation/learning-loops.md` for the design discussion.
 
 ## Documentation
 
@@ -45,6 +45,8 @@ uv run ruff check --fix .        # Auto-fix lint issues
 ```
 
 Coverage is enforced at 85% by default (`--cov-fail-under=85` in pyproject.toml). When running a single test file, use `--no-cov` to avoid failing on aggregate coverage.
+
+Workspace command discipline: the commands above, run from the root, cover forge only (`testpaths = ["tests"]` keeps `apps/pbook` out of the default run). For pbook, `cd apps/pbook && uv run pytest` — its own config applies (84% gate; its conftest needs a running podman machine or `PBOOK_TEST_DATABASE_URL`). Never run `pytest apps/pbook/tests` from the root: forge's addopts would apply and the podman-backed conftest would run under the wrong config.
 
 The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-skipping environment (`WorkflowEnvironment.start_time_skipping` in `conftest.py`). Two markers are excluded from default runs: `postgres` (Alembic migrations against a real Postgres via testcontainers) and `e2e`. The `e2e` marker is defined but currently empty in forge — `tests/test_e2e.py` is a default-run integration suite with mocked LLM calls (T8.2 renames it to `test_pipeline.py` and restores marker honesty).
 
@@ -109,7 +111,7 @@ All modes include automatic context discovery (Phase 4), LLM-guided exploration 
 ## Release Roadmap
 
 - **Release 1** (shipped): Phases 1–12 and 14 — the core orchestrator with batch processing (Phase 13 deferred). See [docs/PHASES.md](docs/PHASES.md).
-- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 56 tasks (a standalone Phase 0 plus 8 migration phases), ending with the `sax` monorepo tagged v1.0.
+- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 56 tasks (a standalone Phase 0 plus 8 migration phases), ending with the forge monorepo tagged v1.0 (D98).
 - **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md) and [docs/PHASES.md](docs/PHASES.md).
 
 ## Development Plans

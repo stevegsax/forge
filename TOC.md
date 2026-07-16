@@ -2,6 +2,8 @@
 
 Start here: **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — current project status, completed/remaining requirements, and known issues.
 
+This repo is the monorepo root (D98). Workspace members keep their own docs: [apps/pbook/](apps/pbook/) has its own CLAUDE.md and `design/` notes.
+
 ## Status & Planning
 
 - [OVERVIEW.md](docs/OVERVIEW.md) — status-of-record: implemented capabilities, requirements complete/remaining, known issues & technical debt.
@@ -12,7 +14,7 @@ Start here: **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — current project status,
 ## Architecture & Decisions
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — how Forge works: universal workflow step, execution modes, context assembly, batch-vs-sync, key data models, module map, and subsystems beyond the core loop.
-- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D85, with supersession/stale markers.
+- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D98, with supersession/stale markers.
 
 ## Requirements
 
