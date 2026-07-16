@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -13,17 +15,35 @@ from ocr.activities import (
     MAX_FILE_SIZE_BYTES,
     MAX_PAGES,
     _derive_status,
+    _get_export_dir,
     _mime_to_extension,
     _strip_image_prefix,
     build_ocr_batch_body,
+    build_ocr_request_blob,
+    check_ocr_duplicate,
+    clear_ocr_removal_mark,
+    compute_file_hash,
+    delete_file_content_blob,
     detect_mime_type,
     execute_build_request_blob,
+    execute_check_ocr_duplicate,
+    execute_export_ocr_document,
     execute_list_ocr_jobs,
+    execute_read_and_store_file,
+    execute_reassemble_ocr_chunks,
     execute_split_file_into_chunks,
     execute_store_ocr_result,
+    export_ocr_document,
+    list_ocr_jobs,
+    mark_ocr_for_removal,
     parse_ocr_pages,
+    read_and_store_file_content,
+    reassemble_ocr_chunks,
     rewrite_image_references,
     rewrite_ocr_uris_to_local,
+    split_file_into_chunks,
+    store_ocr_result,
+    upsert_ocr_status,
     validate_file_size,
 )
 from ocr.models import OcrJobDerivedStatus
@@ -34,6 +54,7 @@ from ocr.store import (
     get_ocr_result,
     get_store_engine,
     save_file_content,
+    save_ocr_result,
     upsert_ocr_job_status,
 )
 
@@ -54,6 +75,12 @@ class TestPure:
         md = "see ![alt](img-0.jpeg) here"
         out = rewrite_image_references(md, {"img-0.jpeg": "uuid-1"})
         assert out == "see ![alt](ocr-image://uuid-1) here"
+
+    def test_rewrite_image_references_partial_mapping_leaves_unmapped(self) -> None:
+        """A ref not present in the mapping is left untouched (not just dropped)."""
+        md = "![a](img-0.jpeg) and ![b](img-1.jpeg)"
+        out = rewrite_image_references(md, {"img-0.jpeg": "uuid-1"})
+        assert out == "![a](ocr-image://uuid-1) and ![b](img-1.jpeg)"
 
     def test_rewrite_no_mapping_is_noop(self) -> None:
         assert rewrite_image_references("![a](img-0.jpeg)", {}) == "![a](img-0.jpeg)"
@@ -78,11 +105,26 @@ class TestPure:
         assert _strip_image_prefix(b"junk" + clean) == clean
         assert _strip_image_prefix(clean) == clean
 
+    def test_strip_image_prefix_no_marker_returns_unchanged(self) -> None:
+        """When no JPEG/PNG signature is found anywhere, the data passes through."""
+        data = b"not an image at all"
+        assert _strip_image_prefix(data) == data
+
     def test_derive_status(self) -> None:
         assert _derive_status("stored", "processing") == OcrJobDerivedStatus.SUCCEEDED.value
         assert _derive_status("failed", None) == OcrJobDerivedStatus.ERRORED.value
         assert _derive_status("submitted", "failed") == OcrJobDerivedStatus.ERRORED.value
         assert _derive_status("submitted", "submitted") == OcrJobDerivedStatus.PROCESSING.value
+
+    def test_derive_status_unknown_combination_falls_through(self) -> None:
+        """A status pair matching none of the known rules maps to UNKNOWN."""
+        assert _derive_status("queued", "running") == OcrJobDerivedStatus.UNKNOWN.value
+
+    def test_compute_file_hash_matches_sha256(self, tmp_path) -> None:
+        path = tmp_path / "content.bin"
+        data = b"some file bytes to hash" * 100
+        path.write_bytes(data)
+        assert compute_file_hash(str(path)) == hashlib.sha256(data).hexdigest()
 
 
 class TestDetectMimeType:
@@ -142,6 +184,27 @@ class TestRewriteOcrUrisToLocal:
     def test_no_ocr_uris(self) -> None:
         md = "![x](https://example.com/img.png)"
         assert rewrite_ocr_uris_to_local(md, {"abc": "abc.jpeg"}) == md
+
+
+# ---------------------------------------------------------------------------
+# execute_read_and_store_file
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteReadAndStoreFile:
+    def test_reads_and_stores_bytes(self, migrated: str, tmp_path) -> None:
+        engine = get_store_engine()
+        path = tmp_path / "doc.pdf"
+        data = b"%PDF-1.4 fake pdf bytes"
+        path.write_bytes(data)
+
+        ref = execute_read_and_store_file(str(path), engine)
+
+        assert ref.mime_type == "application/pdf"
+        assert ref.file_size_bytes == len(data)
+        stored = get_file_content(engine, ref.content_id)
+        assert stored is not None
+        assert stored["data"] == data
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +509,74 @@ class TestStoreOcrResult:
         execute_store_ocr_result(**kw)  # retry — must not raise or duplicate
         assert get_ocr_result(engine, "doc-3") is not None
 
+    def test_no_body_raises(self, migrated: str) -> None:
+        """Neither an inline body nor an s3 envelope is a hard failure."""
+        engine = get_store_engine()
+        with pytest.raises(RuntimeError, match="neither inline body nor"):
+            execute_store_ocr_result(
+                request_id="r4",
+                document_id="doc-4",
+                file_path="",
+                batch_id="b4",
+                workflow_id="wf",
+                raw_response_json=None,
+                s3_key=None,
+                engine=engine,
+            )
+
+    def test_image_with_data_uri_prefix_is_decoded(self, migrated: str) -> None:
+        """image_base64 delivered as a data: URI has its header stripped before decode."""
+        from forge_contracts import s3_blobs
+
+        engine = get_store_engine()
+        body = json.dumps(
+            {"model": "m", "pages": [{"markdown": "![x](img-0.jpeg)"}], "usage_info": {}}
+        )
+        images = [
+            {
+                "original_image_id": "img-0.jpeg",
+                "page_index": 0,
+                "image_base64": "data:image/png;base64,ZmFrZQ==",
+            }
+        ]
+        key = s3_blobs.build_key("batch-result-r5")
+        envelope = dump_batch_result_payload(body, images).encode("utf-8")
+        s3_blobs.put(key, envelope, "application/json")
+
+        execute_store_ocr_result(
+            request_id="r5",
+            document_id="doc-5",
+            file_path="",
+            batch_id="b5",
+            workflow_id="wf",
+            raw_response_json=None,
+            s3_key=key,
+            engine=engine,
+        )
+        imgs = get_ocr_images(engine, "doc-5")
+        assert len(imgs) == 1
+        assert imgs[0]["mime_type"] == "image/png"
+
+    def test_file_hash_computed_when_file_exists(self, migrated: str, tmp_path) -> None:
+        engine = get_store_engine()
+        path = tmp_path / "source.pdf"
+        data = b"%PDF-1.4 content"
+        path.write_bytes(data)
+        body = json.dumps({"model": "m", "pages": [{"markdown": "hi"}], "usage_info": {}})
+
+        execute_store_ocr_result(
+            request_id="r6",
+            document_id="doc-6",
+            file_path=str(path),
+            batch_id="b6",
+            workflow_id="wf",
+            raw_response_json=body,
+            s3_key=None,
+            engine=engine,
+        )
+        stored = get_ocr_result(engine, "doc-6")
+        assert stored["file_hash"] == hashlib.sha256(data).hexdigest()
+
 
 # ---------------------------------------------------------------------------
 # execute_build_request_blob
@@ -475,6 +606,185 @@ class TestBuildRequestBlob:
         requests = json.loads(s3_blobs.get(ref.s3_key).decode("utf-8"))
         assert requests[0]["custom_id"] == ref.request_id
         assert requests[0]["body"]["include_image_base64"] is True
+
+    def test_missing_content_raises(self, migrated: str) -> None:
+        engine = get_store_engine()
+        with pytest.raises(RuntimeError, match="File content not found"):
+            execute_build_request_blob(
+                content_id="nonexistent",
+                mime_type="application/pdf",
+                model_name="mistral:mistral-ocr-latest",
+                engine=engine,
+            )
+
+
+# ---------------------------------------------------------------------------
+# execute_reassemble_ocr_chunks
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteReassembleOcrChunks:
+    def test_combines_chunk_results_and_cleans_up(self, migrated: str) -> None:
+        engine = get_store_engine()
+        for doc_id, text, tokens_in, tokens_out in (
+            ("chunk-1", "page one", 5, 10),
+            ("chunk-2", "page two", 7, 14),
+        ):
+            save_ocr_result(
+                engine,
+                document_id=doc_id,
+                file_path="",
+                text=text,
+                model_name="mistral-ocr",
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+                batch_id="b-chunk",
+                workflow_id="wf-chunk",
+            )
+
+        result = execute_reassemble_ocr_chunks(
+            document_id="combined-doc",
+            chunk_document_ids=["chunk-1", "chunk-2"],
+            file_path="",
+            total_pages=2,
+            engine=engine,
+        )
+
+        assert result.document_id == "combined-doc"
+        assert result.page_count == 2
+        combined = get_ocr_result(engine, "combined-doc")
+        assert combined["text"] == "page one\n\npage two"
+        assert combined["input_tokens"] == 12
+        assert combined["output_tokens"] == 24
+        assert combined["model_name"] == "mistral-ocr"
+        # Chunk rows are removed after reassembly.
+        assert get_ocr_result(engine, "chunk-1") is None
+        assert get_ocr_result(engine, "chunk-2") is None
+
+    def test_missing_chunk_raises(self, migrated: str) -> None:
+        engine = get_store_engine()
+        with pytest.raises(RuntimeError, match="OCR result not found"):
+            execute_reassemble_ocr_chunks(
+                document_id="combined-doc",
+                chunk_document_ids=["no-such-chunk"],
+                file_path="",
+                total_pages=1,
+                engine=engine,
+            )
+
+
+# ---------------------------------------------------------------------------
+# _get_export_dir
+# ---------------------------------------------------------------------------
+
+
+class TestGetExportDir:
+    def test_explicit_output_dir_wins(self) -> None:
+        assert _get_export_dir("doc-1", "/explicit/dir") == Path("/explicit/dir")
+
+    def test_falls_back_to_xdg_data_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", "/xdg/data")
+        assert _get_export_dir("doc-1", "") == Path("/xdg/data") / "ocr" / "export" / "doc-1"
+
+    def test_falls_back_to_home_when_no_xdg(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        expected = Path.home() / ".local" / "share" / "ocr" / "export" / "doc-1"
+        assert _get_export_dir("doc-1", "") == expected
+
+
+# ---------------------------------------------------------------------------
+# execute_export_ocr_document
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteExportOcrDocument:
+    def test_not_found_document(self, migrated: str, tmp_path) -> None:
+        engine = get_store_engine()
+        result = execute_export_ocr_document(
+            document_id="no-such-doc", output_dir=str(tmp_path), engine=engine
+        )
+        assert result.status == "not_found"
+        assert result.image_count == 0
+        assert result.export_dir == ""
+
+    def test_exports_text_and_images(self, migrated: str, tmp_path) -> None:
+        from ocr.store import ocr_image_id, save_ocr_image
+
+        engine = get_store_engine()
+        image_id = ocr_image_id("req-export", "img-0.jpeg", 0)
+        save_ocr_image(
+            engine,
+            image_id=image_id,
+            document_id="doc-export",
+            page_index=0,
+            original_image_id="img-0.jpeg",
+            data=b"\xff\xd8\xffimgdata",
+            mime_type="image/jpeg",
+            file_size_bytes=10,
+        )
+        save_ocr_result(
+            engine,
+            document_id="doc-export",
+            file_path="/orig/report.pdf",
+            text=f"see ![x](ocr-image://{image_id})",
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="wf",
+        )
+
+        result = execute_export_ocr_document(
+            document_id="doc-export", output_dir=str(tmp_path), engine=engine
+        )
+
+        assert result.status == "exported"
+        assert result.image_count == 1
+        md_path = Path(result.markdown_path)
+        assert md_path.exists()
+        content = md_path.read_text()
+        assert f"]({image_id}.jpeg)" in content
+        assert (tmp_path / f"{image_id}.jpeg").exists()
+
+
+# ---------------------------------------------------------------------------
+# execute_check_ocr_duplicate
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteCheckOcrDuplicate:
+    def test_no_prior_result_is_not_duplicate(self, migrated: str, tmp_path) -> None:
+        engine = get_store_engine()
+        path = tmp_path / "fresh.pdf"
+        path.write_bytes(b"unique content")
+        result = execute_check_ocr_duplicate(str(path), engine)
+        assert result.is_duplicate is False
+        assert result.existing_document_id == ""
+
+    def test_matching_hash_is_duplicate(self, migrated: str, tmp_path) -> None:
+        from ocr.store import save_ocr_result as _save
+
+        engine = get_store_engine()
+        data = b"same bytes both times"
+        file_hash = hashlib.sha256(data).hexdigest()
+        _save(
+            engine,
+            document_id="doc-existing",
+            file_path="/other/path.pdf",
+            text="t",
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="wf",
+            file_hash=file_hash,
+        )
+        path = tmp_path / "dup.pdf"
+        path.write_bytes(data)
+
+        result = execute_check_ocr_duplicate(str(path), engine)
+        assert result.is_duplicate is True
+        assert result.existing_document_id == "doc-existing"
 
 
 # ---------------------------------------------------------------------------
@@ -517,3 +827,194 @@ class TestListOcrJobs:
         assert by_doc["d-ok"] == OcrJobDerivedStatus.SUCCEEDED.value
         assert by_doc["d-go"] == OcrJobDerivedStatus.PROCESSING.value
         assert by_doc["d-bad"] == OcrJobDerivedStatus.ERRORED.value
+
+    def test_status_filter_narrows_results(self, migrated: str) -> None:
+        from forge_contracts.batch_jobs import metadata as bj_metadata
+
+        engine = get_store_engine()
+        bj_metadata.create_all(engine)
+        upsert_ocr_job_status(
+            engine, request_id="r-a", document_id="d-a", file_path="/a.pdf", status="stored"
+        )
+        upsert_ocr_job_status(
+            engine, request_id="r-b", document_id="d-b", file_path="/b.pdf", status="submitted"
+        )
+
+        result = execute_list_ocr_jobs(engine, status_filter="stored")
+
+        assert result.total == 1
+        assert result.jobs[0].document_id == "d-a"
+
+
+# ---------------------------------------------------------------------------
+# Temporal activity wrappers — thin JSON-decode + engine-injection shells
+# ---------------------------------------------------------------------------
+
+
+class TestActivityWrappers:
+    """Exercises the ``@activity.defn`` functions directly as plain async calls.
+
+    Per project convention these are called without a Temporal worker. The only
+    "external" dependencies are the store (isolated sqlite via the ``migrated``
+    fixture) and S3 (moto, via the autouse ``ocr_s3`` fixture) — no real service
+    is reachable.
+    """
+
+    async def test_read_and_store_file_content(self, migrated: str, tmp_path) -> None:
+        path = tmp_path / "in.pdf"
+        path.write_bytes(b"%PDF-1.4 bytes")
+        ref = await read_and_store_file_content(str(path))
+        assert ref.mime_type == "application/pdf"
+        assert get_file_content(get_store_engine(), ref.content_id) is not None
+
+    async def test_split_file_into_chunks(self, migrated: str) -> None:
+        engine = get_store_engine()
+        save_file_content(
+            engine, content_id="split-me", data=b"img", mime_type="image/png", file_size_bytes=3
+        )
+        input_json = json.dumps(
+            {"content_id": "split-me", "mime_type": "image/png", "file_size_bytes": 3}
+        )
+        result = await split_file_into_chunks(input_json)
+        assert len(result.chunks) == 1
+        assert result.chunks[0].content_id == "split-me"
+
+    async def test_build_ocr_request_blob(self, migrated: str) -> None:
+        engine = get_store_engine()
+        save_file_content(
+            engine,
+            content_id="blob-me",
+            data=b"%PDF-1.4",
+            mime_type="application/pdf",
+            file_size_bytes=8,
+        )
+        input_json = json.dumps(
+            {
+                "content_id": "blob-me",
+                "mime_type": "application/pdf",
+                "model_name": "mistral:mistral-ocr-latest",
+            }
+        )
+        ref = await build_ocr_request_blob(input_json)
+        assert ref.model == "mistral-ocr-latest"
+
+    async def test_delete_file_content_blob(self, migrated: str) -> None:
+        engine = get_store_engine()
+        save_file_content(
+            engine, content_id="del-me", data=b"x", mime_type="image/png", file_size_bytes=1
+        )
+        await delete_file_content_blob("del-me")
+        assert get_file_content(engine, "del-me") is None
+
+    async def test_store_ocr_result(self, migrated: str) -> None:
+        body = json.dumps({"model": "m", "pages": [{"markdown": "hi"}], "usage_info": {}})
+        input_json = json.dumps(
+            {
+                "request_id": "wr-1",
+                "document_id": "wdoc-1",
+                "file_path": "",
+                "batch_id": "wb-1",
+                "workflow_id": "wf",
+                "raw_response_json": body,
+            }
+        )
+        result = await store_ocr_result(input_json)
+        assert result.document_id == "wdoc-1"
+        assert get_ocr_result(get_store_engine(), "wdoc-1") is not None
+
+    async def test_upsert_ocr_status(self, migrated: str) -> None:
+        input_json = json.dumps(
+            {
+                "request_id": "wr-2",
+                "document_id": "wdoc-2",
+                "file_path": "/a.pdf",
+                "status": "submitted",
+            }
+        )
+        await upsert_ocr_status(input_json)
+        assert get_ocr_job_status(get_store_engine(), "wr-2")["status"] == "submitted"
+
+    async def test_reassemble_ocr_chunks(self, migrated: str) -> None:
+        engine = get_store_engine()
+        for doc_id in ("wchunk-1", "wchunk-2"):
+            save_ocr_result(
+                engine,
+                document_id=doc_id,
+                file_path="",
+                text="t",
+                model_name="m",
+                input_tokens=1,
+                output_tokens=1,
+                batch_id="b",
+                workflow_id="wf",
+            )
+        input_json = json.dumps(
+            {
+                "document_id": "wcombined",
+                "chunk_document_ids": ["wchunk-1", "wchunk-2"],
+                "file_path": "",
+                "total_pages": 2,
+            }
+        )
+        result = await reassemble_ocr_chunks(input_json)
+        assert result.document_id == "wcombined"
+
+    async def test_export_ocr_document(self, migrated: str, tmp_path) -> None:
+        engine = get_store_engine()
+        save_ocr_result(
+            engine,
+            document_id="wexport",
+            file_path="/orig/f.pdf",
+            text="hello",
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="wf",
+        )
+        input_json = json.dumps({"document_id": "wexport", "output_dir": str(tmp_path)})
+        result = await export_ocr_document(input_json)
+        assert result.status == "exported"
+
+    async def test_check_ocr_duplicate(self, migrated: str, tmp_path) -> None:
+        path = tmp_path / "check.pdf"
+        path.write_bytes(b"content")
+        result = await check_ocr_duplicate(str(path))
+        assert result.is_duplicate is False
+
+    async def test_mark_and_clear_ocr_removal(self, migrated: str) -> None:
+        engine = get_store_engine()
+        save_ocr_result(
+            engine,
+            document_id="wmark",
+            file_path="",
+            text="t",
+            model_name="m",
+            input_tokens=0,
+            output_tokens=0,
+            batch_id="b",
+            workflow_id="wf",
+        )
+        marked = await mark_ocr_for_removal("wmark")
+        assert marked.found is True
+        assert get_ocr_result(engine, "wmark")["marked_for_removal"] is True
+
+        cleared = await clear_ocr_removal_mark("wmark")
+        assert cleared.found is True
+        assert get_ocr_result(engine, "wmark")["marked_for_removal"] is False
+
+    async def test_list_ocr_jobs(self, migrated: str) -> None:
+        from forge_contracts.batch_jobs import metadata as bj_metadata
+
+        engine = get_store_engine()
+        bj_metadata.create_all(engine)
+        upsert_ocr_job_status(
+            engine,
+            request_id="wr-list",
+            document_id="wdoc-list",
+            file_path="/x.pdf",
+            status="stored",
+        )
+        input_json = json.dumps({"limit": 10, "status_filter": ""})
+        result = await list_ocr_jobs(input_json)
+        assert result.total == 1
