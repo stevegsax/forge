@@ -4152,9 +4152,7 @@ class TestBatchSingleStep:
         assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
 
     @pytest.mark.asyncio
-    async def test_batch_result_correlated_by_request_id(
-        self, env: WorkflowEnvironment
-    ) -> None:
+    async def test_batch_result_correlated_by_request_id(self, env: WorkflowEnvironment) -> None:
         """A stale/duplicate signal must not be taken as this call's result.
 
         The submit mock waits on request_id ``req-test-123``. A different call's
