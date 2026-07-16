@@ -12,11 +12,19 @@ Current status — completed and remaining requirements, plus known issues and t
 
 ## Current Project: 2026-06-10 Architecture Migration
 
-A merged platform redesign plan was approved 2026-06-10. It is the active project; [development-plans/TASKS.md](development-plans/TASKS.md) is the work queue (56 tasks: standalone Phase 0, T0.1–T0.8, plus the eight migration phases, T1.0–T8.4; amended 2026-07-08 per [forge-review-2026-07-08.md](forge-review-2026-07-08.md) and its capture sweep). Phase 1 (T1.0–T1.8) has landed, as has T2.1 increment 1 (pbook absorbed as a workspace member, D98); Phases 3–8 are still ahead, and sections below carry one-line notes where they delete or replace current machinery — do not extend anything so annotated.
+A merged platform redesign plan was approved 2026-06-10. It is the active project; [development-plans/TASKS.md](development-plans/TASKS.md) is the work queue (56 tasks: standalone Phase 0, T0.1–T0.8, plus the eight migration phases, T1.0–T8.4; amended 2026-07-08 per [forge-review-2026-07-08.md](forge-review-2026-07-08.md) and its capture sweep). Sections below carry one-line notes where a later phase deletes or replaces current machinery — do not extend anything so annotated.
+
+**Landed** (as of 2026-07-16): **Phase 1** (T1.0–T1.8); **T2.1** — the monorepo is complete (all four packages absorbed as workspace members, D98; Python pinned to 3.14); **T0.7** — EC2 retired for the local-first deployment (D99). **Next up: T2.2** (root gates/CI across the workspace) and **T2.3a–d** (mypy strict per package), which close Phase 2. Phase 0's other tasks (T0.1–T0.6, T0.8) are independent of every phase and can land anytime. Phases 3–8 are ahead.
 
 - **Reversals:** R1 — the signal-based batch SPI is replaced by per-workflow timer-loop polling (D88, Phase 4). R2 — pbook ingestion becomes sync inside pbook and forge's ingestion side is deleted (D91, T6.4).
-- **Phase ordering is load-bearing:** 1 → 2 → 3 → 4 → 5; Phase 6 runs after Phase 5; Phases 6 and 7 may run in parallel; Phase 8 closes. Within Phase 1 all tasks are independent except T1.3 (needs T1.0).
-- **Context:** handoff in [development-plans/HANDOFF-architecture-review-2026-06-10.md](development-plans/HANDOFF-architecture-review-2026-06-10.md); decisions D86–D98 in [docs/DECISIONS.md](docs/DECISIONS.md); review findings in [docs/reviews/2026-06-architecture-review.md](docs/reviews/2026-06-architecture-review.md).
+- **Phase ordering is load-bearing:** 1 → 2 → 3 → 4 → 5; Phase 6 runs after Phase 5; Phases 6 and 7 may run in parallel; Phase 8 closes.
+- **Context:** handoffs in [development-plans/](development-plans/) (`HANDOFF-architecture-review-2026-06-10.md` for the plan's origin; `HANDOFF-2026-07-16-monorepo-deployment.md` for the current state); decisions D86–D99 in [docs/DECISIONS.md](docs/DECISIONS.md); review findings in [docs/reviews/2026-06-architecture-review.md](docs/reviews/2026-06-architecture-review.md).
+
+## Running the System (D99)
+
+Deployment is **local-first on this desktop** — there is no cloud host and no remote access. Temporal self-hosts in the podman stack (`make stack-up`; frontend `127.0.0.1:7233`, UI `http://localhost:8233`, Postgres, MinIO), the forge/pbook/ocr workers run as launchd-supervised host processes reading `~/.config/forge/forge.env`, and the application stores stay managed (Supabase Postgres, S3). Full detail: [docs/operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md), [deploy/local-stack/README.md](deploy/local-stack/README.md), [deploy/launchd/README.md](deploy/launchd/README.md).
+
+> **The ambient shell env points at production** (`FORGE_DB_URL` → Supabase, `AWS_*` → real S3). Override every relevant var before any local DB/blob command. On this machine the local stack's Postgres is on **port 5434** (5433 is taken by another project; the override lives in the gitignored `deploy/local-stack/.env`).
 
 ## Cross-Project Dependencies
 
@@ -53,6 +61,7 @@ The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-s
 
 ## Development Conventions
 
+- Python: **3.14**, standard GIL (pinned in `.python-version`; `requires-python` floors stay `>=3.12`)
 - Python package management: `uv`
 - Linting and formatting: `ruff`
 - Data models: `pydantic`
@@ -112,7 +121,7 @@ All modes include automatic context discovery (Phase 4), LLM-guided exploration 
 ## Release Roadmap
 
 - **Release 1** (shipped): Phases 1–12 and 14 — the core orchestrator with batch processing (Phase 13 deferred). See [docs/PHASES.md](docs/PHASES.md).
-- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 56 tasks (a standalone Phase 0 plus 8 migration phases), ending with the forge monorepo tagged v1.0 (D98).
+- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 56 tasks (a standalone Phase 0 plus 8 migration phases); Phases 1 and most of 2 are landed, ending with the forge monorepo tagged v1.0 (D98).
 - **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md) and [docs/PHASES.md](docs/PHASES.md).
 
 ## Development Plans

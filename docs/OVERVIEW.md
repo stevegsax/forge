@@ -7,11 +7,14 @@ Forge is a batch-first LLM task orchestrator: it decomposes a request into indep
 - **How it works** (architecture): [ARCHITECTURE.md](ARCHITECTURE.md) · **Why** (decisions): [DECISIONS.md](DECISIONS.md)
 - **Behavioral spec** (Gherkin): [requirements/](requirements/)
 
-Completion below was established by verifying against the code on 2026-06-04, not by prior documentation. The OCR extraction was verified against the code on 2026-06-09 (merge `2556bfe` on `main`; sibling repos populated and pushed).
+Completion below was established by verifying against the code on 2026-06-04, not by prior documentation. The OCR extraction was verified against the code on 2026-06-09 (merge `2556bfe`); the packages it created were later absorbed back into this repo as workspace members (D98, 2026-07-16) — the platform/consumer split survives as a package boundary, not a repo boundary.
 
 ## Status at a glance
 
 - **Release 1 (core orchestrator + batch) is shipped.** Phases 1–12 and 14 are implemented and wired into the worker; Phase 13 (tree-sitter) is deferred to Release 2. See [PHASES.md](PHASES.md).
+- **This repo is the monorepo** (D98, T2.1 complete 2026-07-16): one uv workspace, one lock, one venv — `apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts`. A bare clone is self-contained; Python is pinned to **3.14** (standard GIL). The five predecessor repos are archived.
+- **Deployment is local-first** (D99, T0.7 complete 2026-07-16): Temporal self-hosts in the podman stack with persistence in that stack's Postgres; the workers run under launchd on an always-on desktop; Supabase Postgres + S3 remain the managed stores. EC2, Terraform, and the mTLS remote-access gateway are deleted — remote access is out of scope until revisited.
+- **Migration status:** Phase 1 done; Phase 2 has T2.2 (root gates) and T2.3a–d (mypy strict) left; Phases 3–8 ahead. Live queue: [../development-plans/TASKS.md](../development-plans/TASKS.md).
 - **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch — since extracted to the `ocr` app, now the `apps/ocr` workspace member), OCR separation (platform/consumer split via the shared `forge-contracts` package; merged 2026-06-05), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy; that infrastructure was retired by D99 in favor of the local-first deployment — client-side TLS code remains, dormant).
 - **The orchestrator is code-first in practice.** Despite the "task-agnostic" framing, context discovery is Python-specific (see tech debt below).
 
@@ -74,3 +77,14 @@ Mined from the four code reviews in `archive/to-merge/code-review/` (≈2026-02-
 | Domain-agnosticism | Prompts/validation parameterized per domain, but context discovery is Python/import-graph-specific; non-code domains have no positive validators | `domains.py::DomainConfig`, `code_intel/` |
 | Human-in-the-loop | Only batch/OCR signals + out-of-band merge gating + manual playbook approval; no structured intervention | `manual_playbook_workflow.py` |
 | Multi-provider parity | Protocol + Anthropic/Mistral adapters exist (in the `libs/sax-llm` workspace member), but defaults are Anthropic and there's no cross-provider conformance suite | `sax_llm/protocol.py`, `sax_llm/registry.py` |
+
+**Tooling & ops debt** (surfaced 2026-07-16 during the monorepo/deployment work; T2.2 owns most of it):
+
+| Item | Detail | Pointer |
+| --- | --- | --- |
+| No CI at all | Every gate is a local `uv run` by hand; nothing runs on push. The workspace now makes one root gate possible | T2.2 |
+| Gates are uneven across members | forge 85%, pbook 84%, sax-llm 85%; `apps/ocr` and `libs/forge-contracts` have **no coverage gate**; mypy still covers `src/forge` only | T2.2, T2.3a–d |
+| Four standing lint/type findings | 2× ruff `TC003` in `tests/test_worker.py`; 2× mypy `type-arg`/`arg-type` in `src/forge/alembic/versions/002_idempotency_rekey.py`. Pre-existing, never gated, deliberately not fixed in-flight | T2.2 |
+| `batch-status` skill is dead | `.claude/skills/batch-status/batch-status.sh` still resolves a SQLite store (`FORGE_DB_PATH` → `$XDG_STATE_HOME/forge/forge.db`) — broken since the Postgres externalization. Needs a rework against `FORGE_DB_URL` or retirement (its `.agents/` Codex copy too) | `.claude/skills/batch-status/` |
+| pbook skill's eval harness is dead | The `skill-pbook` repo's Makefile seeds a SQLite test DB (`sqlite3 .backup`, `PBOOK_DB_PATH`); pbook has been Postgres+pgvector-only since its cutover. Trigger evals unaffected | `~/repos-sax/skill-pbook` |
+| Desktop is the availability story | Accepted by D99: batch polling (D88 timer loops) stalls while the machine sleeps. `pmset -c sleep 0` is documented but **not yet applied** | [operations/DEPLOYMENT.md](operations/DEPLOYMENT.md) |

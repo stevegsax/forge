@@ -10,6 +10,7 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 - [PHASES.md](docs/PHASES.md) — the 14-phase roadmap (1–12 + 14 done with module map; 13 deferred).
 - [development-plans/TASKS.md](development-plans/TASKS.md) — live task list (completed vs uncompleted).
 - [development-plans/PROCESS.md](development-plans/PROCESS.md) — how to pick up and work a task.
+- [development-plans/HANDOFF-2026-07-16-monorepo-deployment.md](development-plans/HANDOFF-2026-07-16-monorepo-deployment.md) — current state: the monorepo consolidation (D98) and local-first deployment (D99), what to know before touching anything, and where to start.
 
 ## Architecture & Decisions
 
