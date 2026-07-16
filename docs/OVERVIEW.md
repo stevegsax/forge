@@ -82,7 +82,7 @@ Mined from the four code reviews in `archive/to-merge/code-review/` (≈2026-02-
 
 | Item | Detail | Pointer |
 | --- | --- | --- |
-| mypy strict is partial | forge and forge-contracts are strict-checked in CI (T2.3a, zero ignores); sax-llm, ocr, and pbook remain until their flips land | T2.3b–d |
+| mypy strict is partial | forge, forge-contracts (T2.3a), and sax-llm (T2.3b) are strict-checked in CI, all with zero ignores; ocr and pbook remain until their flips land | T2.3c–d |
 | `batch-status` skill is dead | `.claude/skills/batch-status/batch-status.sh` still resolves a SQLite store (`FORGE_DB_PATH` → `$XDG_STATE_HOME/forge/forge.db`) — broken since the Postgres externalization. Needs a rework against `FORGE_DB_URL` or retirement (its `.agents/` Codex copy too) | `.claude/skills/batch-status/` |
 | pbook skill's eval harness is dead | The `skill-pbook` repo's Makefile seeds a SQLite test DB (`sqlite3 .backup`, `PBOOK_DB_PATH`); pbook has been Postgres+pgvector-only since its cutover. Trigger evals unaffected | `~/repos-sax/skill-pbook` |
 | Desktop is the availability story | Accepted by D99: there is one host, and batch polling (D88 timer loops) stalls whenever it is off or asleep. System sleep is disabled on AC power (`pmset -c sleep 0`, applied 2026-07-16), so the residual exposure is reboots, unplugging, and hardware — not idle sleep | [operations/DEPLOYMENT.md](operations/DEPLOYMENT.md) |
