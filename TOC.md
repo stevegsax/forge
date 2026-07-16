@@ -30,8 +30,7 @@ This repo is the monorepo root (D98). Workspace members keep their own docs: [ap
 
 - [operations/USAGE.md](docs/operations/USAGE.md) — submitting code and research tasks to Forge.
 - [operations/WORKERS.md](docs/operations/WORKERS.md) — worker overview, identity, and scaling.
-- [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — self-hosted AWS EC2 + Supabase Postgres + S3 deployment.
-- [operations/SECURE-REMOTE-ACCESS.md](docs/operations/SECURE-REMOTE-ACCESS.md) — mTLS-secured remote Temporal access.
+- [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — local-first deployment: podman stack (Temporal + Postgres + MinIO), launchd workers, Supabase + S3 stores (D99).
 - [operations/DEBUGGING.md](docs/operations/DEBUGGING.md) — logging, observability store, API message logs, OTel tracing, env vars.
 - [operations/ADDING_A_DOMAIN.md](docs/operations/ADDING_A_DOMAIN.md) — parameterizing LLM behavior through task domains.
 - [operations/test-strategy.md](docs/operations/test-strategy.md) — testing pyramid and signal quality.

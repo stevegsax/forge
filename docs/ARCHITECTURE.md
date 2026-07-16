@@ -449,7 +449,7 @@ src/forge/
     └── workflow_mark_removal.py # Mark / clear-removal workflows
 ```
 
-> The map above covers the core loop. Major shipped subsystems — batch execution (the default), the OCR pipeline, transcript ingestion, the knowledge/playbook lifecycle, planner evaluation, store externalization (Postgres + S3 with survivable writes), and mTLS remote access — are summarized in [Subsystems Beyond the Core Loop](#subsystems-beyond-the-core-loop). Their modules (`ingestion_workflow.py`, `manual_playbook_workflow.py`, `export_playbook_workflow.py`, `temporal_client.py`, `persist_models.py`, `alembic/`, and `activities/{ingestion,persist,playbook_export,playbook_review}.py`) are not all shown above.
+> The map above covers the core loop. Major shipped subsystems — batch execution (the default), the OCR pipeline, transcript ingestion, the knowledge/playbook lifecycle, planner evaluation, store externalization (Postgres + S3 with survivable writes), and mTLS remote access (infrastructure since removed, D99) — are summarized in [Subsystems Beyond the Core Loop](#subsystems-beyond-the-core-loop). Their modules (`ingestion_workflow.py`, `manual_playbook_workflow.py`, `export_playbook_workflow.py`, `temporal_client.py`, `persist_models.py`, `alembic/`, and `activities/{ingestion,persist,playbook_export,playbook_review}.py`) are not all shown above.
 
 ---
 
@@ -533,6 +533,6 @@ Scheduled extraction (`extraction_workflow.py`) mines completed runs into playbo
 
 The observability store runs on SQLite (dev/test) or Postgres (production) behind one SQLAlchemy interface (`store.py`, `alembic/`). Writes funnel through a single idempotent, retried `persist_to_store` activity (`activities/persist.py`, `persist_models.py`) that fails the workflow loudly on prolonged DB outage rather than silently dropping data (supersedes the original best-effort policy, D42).
 
-### mTLS remote access
+### mTLS remote access (infrastructure removed, D99)
 
-`temporal_client.py` (`build_tls_config`) builds the mutual-TLS config for connecting the worker and CLI to a remote Temporal server.
+`temporal_client.py` (`build_tls_config`) builds the mutual-TLS config for connecting the worker and CLI to a remote Temporal server. The remote-access infrastructure (EC2 gateway, certs) was removed by D99 — Temporal is loopback-only on the deployment desktop — so this path is dormant; the code stays should remote access return.

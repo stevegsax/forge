@@ -12,7 +12,7 @@ Completion below was established by verifying against the code on 2026-06-04, no
 ## Status at a glance
 
 - **Release 1 (core orchestrator + batch) is shipped.** Phases 1–12 and 14 are implemented and wired into the worker; Phase 13 (tree-sitter) is deferred to Release 2. See [PHASES.md](PHASES.md).
-- **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch — since extracted to the sibling `ocr` repo), OCR separation (platform/consumer split via the shared `forge-contracts` package; merged 2026-06-05), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy).
+- **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch — since extracted to the sibling `ocr` repo), OCR separation (platform/consumer split via the shared `forge-contracts` package; merged 2026-06-05), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy; that infrastructure was retired by D99 in favor of the local-first deployment — client-side TLS code remains, dormant).
 - **The orchestrator is code-first in practice.** Despite the "task-agnostic" framing, context discovery is Python-specific (see tech debt below).
 
 ## Implemented capabilities

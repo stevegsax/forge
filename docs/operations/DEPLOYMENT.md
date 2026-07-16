@@ -1,166 +1,88 @@
-# Deployment: Self-Hosted Forge on AWS EC2
+# Deployment: Local-First Forge on an Always-On Desktop
 
-This document describes how to deploy Forge to a single AWS EC2 instance for a
-small team at low volume. Temporal is **self-hosted** on the instance with its
-persistence backed by a **Supabase-hosted PostgreSQL** database. Forge's own
-store (`forge.db`) is **also** backed by Supabase Postgres, and OCR image/file
-blobs are stored in **S3** with only references kept in the database. The result
-is an instance that holds almost no durable state of its own.
+Forge deploys to a single always-on macOS desktop (D99). Temporal is
+**self-hosted in the local podman stack** with persistence in that stack's
+Postgres; the forge and pbook **workers run as launchd-supervised host
+processes** from the repo checkout; Forge's and pbook's application state
+lives in **Supabase Postgres**; OCR/batch blobs live in **S3** with only
+references in the database. The desktop holds Temporal's workflow
+histories and disposable work products (worktrees, cloned repos, logs) —
+application state of record stays managed and offsite.
 
-It covers the target architecture, the code changes required to externalize the
-Forge store, how to package Forge and its sibling dependencies, the step-by-step
-deployment process, configuration, and the gotchas that bite specifically with
-the Temporal + Supabase + S3 combination.
-
-> Scope: single-instance, small-team, low-volume. High availability and
-> multi-region are out of scope. Multi-host workers become *possible* once the
-> store is on Postgres (see [Scaling](#scaling)), but the steps below describe a
-> single instance.
->
-> **Remote CLI access over the internet.** This document's base design keeps
-> Temporal loopback-only and reaches it via an SSM tunnel. If users must run the
-> `forge`/`ocr`/`pbook` CLIs directly over the internet, deploy the **mutual-TLS
-> gateway** in [`deploy/`](../../deploy/) and follow
-> [SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md), which is the authoritative
-> guide for that path (it adds an mTLS-gated `:443` listener; the rest of this
-> document still applies).
+> Scope: single-operator, low-volume, one machine. There is **no remote
+> access**: Temporal binds to loopback only. The EC2/mTLS deployment this
+> replaces was removed by D99 (its Terraform, SSM bootstrap, gateway, and
+> cert tooling live in git history; remote access may return later).
+> High availability is explicitly out of scope — see
+> [Always-on and availability](#always-on-and-availability).
 
 ## Architecture
 
 ```text
-┌──────────────────────── EC2 (Amazon Linux 2023, t3.large) ─────────────────────────┐
-│                                                                                     │
-│  Docker Compose                          systemd                                    │
-│  ┌─────────────────────────┐   ┌──────────────────────────────────────────────┐    │
-│  │ temporal (auto-setup)   │   │ forge-worker@1 / @2   →  forge worker         │    │
-│  │   :7233 (gRPC, local)   │◄──┤   FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233       │    │
-│  │ temporal-ui :8080       │   │   FORGE_DB_URL=postgresql+psycopg2://…/forge  │    │
-│  └────────────┬────────────┘   │   FORGE_OCR_S3_BUCKET=…  (IAM role for S3)    │    │
-│               │                 │ pbook-worker          →  pbook worker         │    │
-│               │ TLS (5432)      │   (only if `forge ingest` is used)            │    │
-│               │                 └───────────────┬──────────────────────────────┘    │
-│  /data (EBS): in-progress worktrees, cloned repos, logs  (re-clonable / disposable) │
-└───────────────┼─────────────────────────────────┼──────────────────────────────────┘
-                │                                  │ outbound HTTPS / AWS APIs
-                ▼                                  ▼
-        Supabase PostgreSQL                Anthropic · Mistral · GitHub · S3
-        ├─ temporal            (Temporal durable state)
-        ├─ temporal_visibility (Temporal visibility)
-        └─ forge               (Forge store: interactions, runs, playbooks,
-                                batch_jobs, OCR records + S3 references)
-                                                   │
-                                                   ▼
-                                          S3 bucket (OCR image/file blobs)
+┌────────────────────── always-on macOS desktop ───────────────────────┐
+│                                                                       │
+│  podman (deploy/local-stack)          launchd (deploy/launchd)        │
+│  ┌──────────────────────────┐   ┌───────────────────────────────────┐ │
+│  │ temporal :7233 (loopback)│◄──┤ forge-worker-1 / -2 → forge worker │ │
+│  │   persistence ─┐         │   │   FORGE_TEMPORAL_ADDRESS=          │ │
+│  │ temporal-ui :8233        │   │     127.0.0.1:7233                 │ │
+│  │ postgres :5433 ◄┘        │   │ pbook-worker → pbook worker (opt)  │ │
+│  │   forge_dev + temporal + │   │   env: ~/.config/forge/forge.env   │ │
+│  │   temporal_visibility    │   └───────────────┬───────────────────┘ │
+│  │ minio :9002/:9003 (dev)  │                   │                     │
+│  └──────────────────────────┘                   │ outbound HTTPS      │
+│  worktrees, cloned repos, logs (disposable)     │                     │
+└─────────────────────────────────────────────────┼─────────────────────┘
+                                                  ▼
+                              Supabase Postgres (forge + pbook state)
+                              S3 (OCR/batch blobs) · Anthropic · Mistral
 ```
 
-**Why this shape.** Both halves of Forge's durable state now live off the
-instance: Temporal's orchestration state and Forge's own application store are in
-Supabase, and large OCR blobs are in S3. The EC2 box keeps only **in-progress git
-worktrees** and **cloned target repos** on its EBS volume — both disposable
-(completed output is committed and pushed to the target repo; repos are
-re-clonable). You can terminate and recreate the instance and lose nothing
-durable. The worker is still a *build agent* that needs git, repos, `uv`, and
-`ruff` on local disk to do its work — that local disk is just no longer where the
-records of that work are kept.
+**Why this shape.** The operator's desktop is always on, so the EC2 box
+that existed to host Temporal and the workers was pure overhead (D99).
+Temporal persists locally because with the engine local, Supabase
+persistence would put the internet inside every workflow tick; the
+application stores stay on Supabase/S3 because offsite durability matters
+for the state of record and buys nothing for replayable orchestration
+state a desktop backup can cover.
 
 ### What runs where
 
 | Component | Where | Lifetime | Notes |
 | --- | --- | --- | --- |
-| Temporal server | Docker on EC2 | Always up | Persistence → Supabase (`temporal`, `temporal_visibility`) over TLS |
-| Temporal Web UI | Docker on EC2 | Always up | Bind to localhost; reach via SSM tunnel |
-| `forge worker` (×2) | systemd on EC2 host | Always up | Polls `forge-task-queue`; needs repos + git + ruff on host |
-| `pbook worker` | systemd on EC2 host | Optional | Only if transcript ingestion is used; polls `pbook-task-queue` |
-| `forge run` / CLI | On the instance (via SSM) | On demand | Connects to `127.0.0.1:7233` |
+| Temporal server + UI | podman (`deploy/local-stack`) | Always up | Persistence → the stack's Postgres (`temporal`, `temporal_visibility`) |
+| Stack Postgres | podman, host port 5433 | Always up | Temporal persistence + the `forge_dev` dev database |
+| MinIO | podman, host ports 9002/9003 | Dev only | Local S3 surface for dev; production blobs go to real S3 |
+| `forge worker` (×2) | launchd host processes | Always up | Poll `forge-task-queue`; need git/uv/ruff and repos on disk |
+| `pbook worker` | launchd host process | Optional | Only if transcript ingestion is used; polls `pbook-task-queue` |
+| `forge` / `pbook` CLIs | Host shell | On demand | Connect to `127.0.0.1:7233` |
 | Forge store | Supabase (`forge` database) | Always up | interactions, runs, playbooks, batch_jobs, OCR records |
-| OCR blobs | S3 | Always up | Image/file bytes; database holds the S3 key + `ocr-image://` URI |
+| pbook store | Supabase (`pbook` schema) | Optional | `PBOOK_DATABASE_URL`; Postgres-only |
+| Blobs | S3 | Always up | Image/file bytes; DB holds the S3 key; lifecycle policy in `deploy/s3/` |
 
-The worker runs on the **host** (not in a container) because it is a build agent:
-it needs `git`, the target repositories, `uv`, and `ruff`/test tooling on a
-writable filesystem to create worktrees and validate output. Temporal runs in
-Docker because it is a self-contained service with no filesystem coupling.
+The workers run on the **host** (not in a container) because the forge
+worker is a build agent: it needs `git`, the target repositories, `uv`,
+and `ruff`/test tooling on a writable filesystem. Containerizing them is
+also blocked until the sax-llm absorption lands — an image build cannot
+COPY the `../` sibling sources (D99).
 
 ## External dependencies
 
 | Dependency | Purpose | Requirement |
 | --- | --- | --- |
-| Supabase PostgreSQL | Temporal state **and** Forge store | Postgres 12+; three databases; TLS; direct (non-transaction-pooled) connection |
-| S3 bucket | OCR image/file blobs | IAM instance-role access (no static keys) |
-| Anthropic API | All Forge LLM calls; pbook extraction/review | `ANTHROPIC_API_KEY`, outbound HTTPS |
-| Mistral API | OCR pipeline | `MISTRAL_API_KEY`, outbound HTTPS (only if OCR used) |
-| OpenAI API | pbook embeddings (semantic search / dedup) | `OPENAI_API_KEY`, outbound HTTPS (only if pbook used) |
-| GitHub | Clone/push the repos Forge operates on | `SAX_GITHUB_TOKEN`, outbound HTTPS |
-| sax-llm + forge-contracts repos | Sibling Python packages (pbook ships inside the forge checkout) | Present at build/deploy time (see Packaging) |
+| Supabase Postgres | Forge store (and pbook store if used) | `FORGE_DB_URL`; direct (non-transaction-pooled) connection |
+| S3 bucket | OCR/batch blobs | Creds via `~/.aws` or the env file; lifecycle policy: [deploy/s3/](../../deploy/s3/) |
+| Anthropic API | All Forge LLM calls; pbook extraction/review | `ANTHROPIC_API_KEY` |
+| Mistral API | OCR pipeline | `MISTRAL_API_KEY` (only if OCR used) |
+| OpenAI API | pbook embeddings | `OPENAI_API_KEY` (only if pbook used) |
+| GitHub | Clone/push the repos Forge operates on | The operator's normal git credentials |
+| sax-llm + forge-contracts repos | Sibling Python packages (pbook ships inside the forge checkout) | Present as `../` checkouts (see Packaging) |
 
-## Prerequisite code changes
+## Packaging
 
-Forge originally stored everything in local SQLite (`forge.db`) and kept OCR
-blobs as `LargeBinary` columns. This deployment required two contained store
-changes — both now **implemented and merged to `main`** (Phases A and B below;
-survivable writes followed as Phase C). They were well-scoped because store
-access is centralized.
-
-### A. Back the Forge store with Postgres
-
-All store access funnels through `get_db_path()` → `get_engine(db_path)` (~10 call
-sites in activities, context providers, and the CLI), so the change is central:
-
-1. **Connection resolution** — resolve `FORGE_DB_URL` (e.g.
-   `postgresql+psycopg2://user:pwd@host:5432/forge?sslmode=require`) and fall back
-   to the SQLite path when unset. `get_engine` builds the engine from the URL.
-   Keep SQLite working for local dev and the test suite.
-2. **WAL pragma** — the `PRAGMA journal_mode=WAL` listener in `get_engine`
-   (`src/forge/store.py:327`) is SQLite-only; gate it on `engine.dialect.name == "sqlite"`.
-3. **Alembic** — `run_migrations` already overrides `sqlalchemy.url`
-   programmatically, so it works against Postgres as-is; just pass the URL. The
-   hardcoded `sqlite:///forge.db` in `alembic/alembic.ini` is an unused default.
-   Verify migration `008` (`batch_alter_table`) applies on Postgres — batch mode
-   degrades to a native `ALTER COLUMN` there.
-4. **Driver** — add `psycopg2-binary` to `pyproject.toml`. The store is
-   **synchronous** SQLAlchemy, and sync `psycopg2` does not issue server-side
-   prepared statements, which keeps it compatible with Supabase's pooler.
-5. **Pool sizing** — set a small `pool_size`/`max_overflow` to respect Supabase
-   connection caps.
-
-Schema portability is already fine: every column is `sa.Text`/`sa.Integer`/
-`sa.LargeBinary`/`UTCDateTime` — no SQLite-only types. All store access happens in
-activities and CLI code (never in workflow code), so this does not affect Temporal
-determinism.
-
-### B. Move OCR blobs to S3, keep references in Postgres
-
-Today `file_content_blobs.data` and `ocr_images.data` are `LargeBinary`
-(`src/forge/store.py:199,215`). Replace the bytes with an S3 reference:
-
-1. **Schema migration** — add `s3_key` (and keep `mime_type`, `file_size_bytes`,
-   the `ocr-image://` URI); drop the `data` column.
-2. **Write path** — `save_file_content` / `save_ocr_result` (and the OCR store
-   activity, `src/forge/ocr/activities.py`) upload bytes to S3 under a
-   deterministic key and persist the key + metadata.
-3. **Read path** — `get_file_content` and the `ocr-image://` resolver fetch from
-   S3 by key.
-4. **Client + auth** — add `boto3`; access S3 via the **EC2 instance role** (no
-   static keys). Config: `FORGE_OCR_S3_BUCKET`, optional `FORGE_OCR_S3_PREFIX`,
-   region from the instance.
-5. **Lifecycle** — S3 lifecycle rules can expire old blobs; the database row is
-   the index of record.
-
-S3 is the only OCR blob store — there is no inline-in-DB fallback. `FORGE_OCR_S3_BUCKET`
-unset or S3 unreachable fails the OCR *task* (the worker keeps running); non-OCR work
-needs no bucket. Tests mock S3 with `moto` rather than storing bytes in SQLite.
-
-> **Implemented and merged (Phases A, B, C)** — see
-> [development-plans/externalize-store-postgres-s3.md](../../development-plans/externalize-store-postgres-s3.md):
-> the store is configured by a required `FORGE_DB_URL` and OCR blobs live in S3
-> (`s3_key` references; migration `014`). Phase C makes every store write
-> idempotent and survivable via the `persist_to_store` activity (migration `015`
-> adds the nullable-unique `idempotency_key` columns).
-
-## Packaging Forge and pbook for deployment
-
-The forge repo root is a uv workspace (D98): pbook ships **inside the forge
-checkout** as the `apps/pbook` workspace member, and the remaining siblings
-are editable path sources declared once at the root:
+The forge repo root is a uv workspace (D98): pbook ships **inside the
+forge checkout** as the `apps/pbook` workspace member, and the remaining
+siblings are editable path sources declared once at the root:
 
 ```toml
 [tool.uv.workspace]
@@ -172,414 +94,152 @@ pbook = { workspace = true }
 forge-contracts = { path = "../forge-contracts", editable = true }
 ```
 
-Neither `sax-llm` nor `forge-contracts` is published to a package index, so a
-plain `pip install forge` cannot resolve them. The dependency graph is:
+Neither `sax-llm` nor `forge-contracts` is published to a package index,
+so the deployment layout is the dev layout — sibling checkouts beside
+forge, one `uv sync` at the root:
 
 ```text
-sax-llm  (anthropic, mistralai, pydantic)
-   └── pbook  (+ temporalio, sqlalchemy, alembic, openai, numpy, psycopg, pgvector)
-         └── forge  (+ opentelemetry, grimp, networkx, scipy, click,
-                       psycopg2-binary, boto3, forge-contracts)
-```
-
-Any packaging approach must bring the forge checkout plus **both sibling
-repositories** along. Three options, in increasing isolation:
-
-### Option A — Source tree + `uv sync` (recommended for low volume)
-
-Reproduce the dev layout on the instance and let `uv` build the editable install.
-Simplest, matches development exactly, no extra build step.
-
-```text
-/srv/forge-app/
-├── forge/            # this repo — the workspace root; pbook lives at apps/pbook
+~/repos-sax/
+├── forge/            # this repo — the workspace root; pbook at apps/pbook
 ├── sax-llm/          # sibling — referenced as ../sax-llm
 └── forge-contracts/  # sibling — referenced as ../forge-contracts
 ```
 
 ```bash
-cd /srv/forge-app/forge
-uv sync --frozen          # installs forge + apps/pbook + both siblings from uv.lock
-uv run forge --version    # smoke test
-uv run pbook --help       # the same venv serves the pbook worker
+cd ~/repos-sax/forge
+uv sync               # installs forge + apps/pbook + both siblings
+uv run forge --version
+uv run pbook --help   # the same venv serves the pbook worker
 ```
-
-Pin to a known-good commit per repo (record the three commit SHAs in your release
-notes). `--frozen` ensures the deployed dependency set matches the root `uv.lock`.
-
-### Option B — Wheel bundle (cleaner artifact, no source at runtime)
-
-Build wheels for all four packages and install them into a venv. The runtime
-needs no source tree, only the wheels.
-
-```bash
-uv build --wheel ../sax-llm         -o dist/   # sax_llm-*.whl
-uv build --wheel ../forge-contracts -o dist/   # forge_contracts-*.whl
-uv build --wheel apps/pbook         -o dist/   # pbook-*.whl
-uv build --wheel .                  -o dist/   # forge-*.whl
-
-# On the instance:
-uv venv && uv pip install dist/*.whl
-```
-
-A wheel's metadata requires `sax-llm`/`pbook`/`forge-contracts` *by name* (the
-workspace and path sources are dev-time only), so install the wheels together —
-`pip` won't find them on an index.
-
-### Option C — Container image (most reproducible)
-
-Build one image with the forge checkout and both siblings copied in and
-`uv sync` baked into the layer. Best when you later move workers to
-ECS/containers. The worker image still needs `git` and any test tooling for the
-target repos, and must mount a volume for worktrees and the cloned repos.
-
-```dockerfile
-FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && pip install uv && rm -rf /var/lib/apt/lists/*
-WORKDIR /srv/forge-app
-COPY sax-llm/          ./sax-llm/
-COPY forge-contracts/  ./forge-contracts/
-COPY forge/            ./forge/
-WORKDIR /srv/forge-app/forge
-RUN uv sync --frozen
-ENTRYPOINT ["uv", "run", "forge", "worker"]
-```
-
-**Recommendation for this deployment:** Option A. It is the least friction for a
-single instance and lets you `git pull` + `uv sync` to upgrade.
-
-### pbook worker: same checkout, own queue
-
-If transcript ingestion (`forge ingest`) is in scope, the pbook worker runs
-alongside Forge — from the same checkout and venv:
-
-- **Its own worker** — `uv run pbook worker` from `/srv/forge-app/forge`,
-  polling `pbook-task-queue` (separate from Forge's queue).
-- **Migrations are explicit** — unlike the Forge worker, the pbook worker does
-  **not** auto-run migrations on startup. Run `uv run pbook migrate` once at
-  deploy time (and after upgrades); bootstrap does this when `WITH_PBOOK=true`.
-- **An extra secret: `OPENAI_API_KEY`** — pbook generates embeddings via OpenAI
-  (`text-embedding-3-small`) for semantic search and de-duplication, in addition
-  to using Anthropic for extraction/review. Add it to SSM if pbook is in scope.
-- **Store** — Postgres-only (pgvector), configured by `PBOOK_DATABASE_URL`;
-  fetch-secrets.sh emits it from SSM `SUPABASE_PBOOK_DB_URL`. There is no local
-  store: the SQLite-era `PBOOK_DB_PATH` is gone.
-
-If ingestion is **not** in scope, omit the pbook worker entirely
-(`with_pbook = false`); the Forge worker logs a warning and skips ingestion
-workflows, and `forge ingest` exits with a clear error.
 
 ## Deployment process
 
-### 1. Provision Supabase Postgres
-
-1. Create a Supabase project in a **region close to your intended EC2 region** —
-   both Temporal and now the Forge store are chatty with this database.
-2. Create the three databases. Connect with the **direct connection** (port 5432)
-   as the project's `postgres` role:
-
-   ```sql
-   CREATE DATABASE temporal;
-   CREATE DATABASE temporal_visibility;
-   CREATE DATABASE forge;
-   ```
-
-   If your Supabase plan/role cannot `CREATE DATABASE`, fall back to additional
-   Supabase projects. See [Supabase gotchas](#supabase-specific-gotchas).
-3. Record connection details for both Temporal (`temporal`/`temporal_visibility`)
-   and Forge (`forge`). **Do not** use the transaction-mode pooler (port 6543).
-
-### 2. Provision the S3 bucket
-
-1. Create a private S3 bucket for OCR blobs (e.g. `forge-ocr-blobs-<acct>`), same
-   region as EC2. Block all public access.
-2. Optionally set a lifecycle rule to expire blobs after N days.
-3. The EC2 instance role (below) gets `s3:GetObject`/`PutObject`/`DeleteObject` on
-   `arn:aws:s3:::forge-ocr-blobs-<acct>/*` — and nothing broader.
-
-### 3. Provision the EC2 instance
-
-- **Instance type:** `t3.large` (2 vCPU / 8 GB) is comfortable; `t3.medium` works
-  at very low volume. Avoid spot — workflows run long (48 h default timeout) and a
-  batch poller fires every 10 min.
-- **EBS:** a `gp3` volume mounted at `/data` for worktrees, cloned repos, and
-  logs. This volume now holds **no durable records** — it can be smaller and
-  snapshots are optional (nice-to-have for faster instance rebuilds, not for data
-  safety).
-- **Security group:** **no inbound** rules. Allow all egress. Manage via **SSM
-  Session Manager** — no SSH key, no open ports.
-- **IAM instance role:** read on the SSM/Secrets Manager parameters holding the
-  keys + Supabase password; S3 access scoped to the OCR bucket;
-  `AmazonSSMManagedInstanceCore` for Session Manager.
-- **Egress note:** Supabase direct connections are **IPv6-only** without the IPv4
-  add-on. Ensure VPC IPv6 egress, enable the Supabase IPv4 add-on, or use the
-  session-mode pooler (port 5432, IPv4).
-
-### 4. Store secrets
-
-Put each secret in **SSM Parameter Store (SecureString)** (or Secrets Manager):
-
-- `/forge/ANTHROPIC_API_KEY`
-- `/forge/MISTRAL_API_KEY` (only if OCR used)
-- `/forge/OPENAI_API_KEY` (only if pbook ingestion used — for embeddings)
-- `/forge/SUPABASE_PBOOK_DB_URL` (only if pbook ingestion used — pbook's Postgres store)
-- `/forge/SAX_GITHUB_TOKEN`
-- `/forge/SUPABASE_TEMPORAL_PWD` and `/forge/SUPABASE_FORGE_DB_URL`
-
-Note S3 needs **no secret** — the instance role handles it. Load secrets into an
-`EnvironmentFile` (`/etc/forge/forge.env`, `chmod 600`) on boot via cloud-init
-running `aws ssm get-parameter --with-decryption`. Never bake secrets into the AMI
-or repo.
-
-### 5. Run Temporal (Docker) against Supabase
-
-Install Docker + Compose. Run Temporal with SQL persistence pointed at Supabase.
-Use the `auto-setup` image for the **first** boot (it creates and versions the
-Temporal schema in `temporal`/`temporal_visibility`), then set
-`SKIP_SCHEMA_SETUP=true` (or switch to `temporalio/server`) for steady state.
-
-```yaml
-# /srv/forge-app/temporal/compose.yaml (illustrative — fill from forge.env)
-services:
-  temporal:
-    image: temporalio/auto-setup:1.25.0
-    ports:
-      - "127.0.0.1:7233:7233"          # gRPC, host-local only
-    environment:
-      DB: postgres12
-      POSTGRES_SEEDS: ${SUPABASE_HOST}  # db.<ref>.supabase.co
-      DB_PORT: "5432"                   # direct connection, NOT 6543
-      POSTGRES_USER: ${SUPABASE_USER}
-      POSTGRES_PWD: ${SUPABASE_TEMPORAL_PWD}
-      DBNAME: temporal
-      VISIBILITY_DBNAME: temporal_visibility
-      SQL_TLS_ENABLED: "true"
-      ENABLE_ES: "false"                # SQL-based advanced visibility, no Elasticsearch
-      SQL_MAX_CONNS: "10"
-      # SKIP_SCHEMA_SETUP: "true"       # set after first successful boot
-  temporal-ui:
-    image: temporalio/ui:2.31.0
-    depends_on: [temporal]
-    ports:
-      - "127.0.0.1:8080:8080"
-    environment:
-      TEMPORAL_ADDRESS: temporal:7233
-```
+### 1. Bring up the stack
 
 ```bash
-docker compose -f /srv/forge-app/temporal/compose.yaml up -d
-temporal operator namespace list --address 127.0.0.1:7233   # 'default' should exist
+podman machine start          # first time: podman machine init
+make stack-up                 # Postgres + Temporal + UI + MinIO
 ```
 
-### 6. Install the Forge runtime and code
+Temporal's auto-setup creates its databases in the stack's Postgres on
+first boot. UI: `http://localhost:8233`. Details, ports, and overrides:
+[deploy/local-stack/README.md](../../deploy/local-stack/README.md).
+
+### 2. Configure the worker environment
 
 ```bash
-sudo dnf install -y git
-curl -LsSf https://astral.sh/uv/install.sh | sh   # uv (brings managed Python 3.12)
-
-sudo mkdir -p /srv/forge-app && cd /srv/forge-app
-git clone <forge>           forge             # workspace root; pbook ships inside at apps/pbook
-git clone <sax-llm>         sax-llm
-git clone <forge-contracts> forge-contracts
-cd forge && uv sync --frozen
-
-sudo mkdir -p /data/repos && git clone <target-repo> /data/repos/<name>
+mkdir -p ~/.config/forge
+cp deploy/launchd/forge.env.example ~/.config/forge/forge.env
+chmod 600 ~/.config/forge/forge.env   # then fill in the CHANGEMEs
 ```
 
-The worker runs Forge's Alembic migrations against the `forge` Postgres database
-automatically on startup (`_init_store()` in `src/forge/worker.py`).
+One file replaces the EC2-era SSM plumbing: `FORGE_DB_URL` (Supabase),
+`ANTHROPIC_API_KEY`, `FORGE_OCR_S3_BUCKET`, and friends. The launchd
+wrapper parses it without shell evaluation, so URLs with `&` are safe.
 
-### 7. systemd units for the workers
+### 3. Migrations
 
-```ini
-# /etc/systemd/system/forge-worker@.service
-[Unit]
-Description=Forge worker %i
-After=network-online.target docker.service
-Wants=network-online.target
+The forge worker runs its own Alembic migrations at startup. pbook does
+**not**: if ingestion is in scope, run `uv run pbook migrate` once (and
+after upgrades that ship pbook migrations).
 
-[Service]
-Type=simple
-WorkingDirectory=/srv/forge-app/forge
-EnvironmentFile=/etc/forge/forge.env
-Environment=FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233
-Environment=FORGE_DB_URL=${SUPABASE_FORGE_DB_URL}
-Environment=FORGE_OCR_S3_BUCKET=forge-ocr-blobs-<acct>
-Environment=FORGE_LOG_DIR=/data/forge/logs
-Environment=FORGE_OTEL_EXPORTER=none
-Environment=FORGE_WORKER_IDENTITY=ec2-forge-%i
-ExecStart=/usr/bin/env uv run forge worker
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+### 4. Install the launchd agents
 
 ```bash
-sudo systemctl enable --now forge-worker@1 forge-worker@2
+deploy/launchd/install.sh             # add --with-pbook for ingestion
 ```
 
-Run **two** workers for redundancy. They now share the same Postgres store, so
-their observability data is coherent regardless of host (this is the property the
-store change unlocks). If pbook ingestion is in scope, add a `pbook-worker.service`
-pointed at the same Temporal address (polls `pbook-task-queue`).
+Installs the stack agent (RunAtLoad: podman machine + `stack-up` at
+login) and the KeepAlive worker agents. Operation, logs, and restart
+commands: [deploy/launchd/README.md](../../deploy/launchd/README.md).
 
-### 8. Verify end to end
+### 5. Verify
 
 ```bash
-temporal task-queue describe --task-queue forge-task-queue --address 127.0.0.1:7233
-
-cd /srv/forge-app/forge
-uv run forge run \
-  --task-id smoke-test \
-  --description "Add a docstring to the module" \
-  --target-file /data/repos/<name>/<some_file>.py
-
-uv run forge status --limit 5   # reads from the Supabase forge store
+podman ps                                            # 4 containers healthy
+tail -f ~/.local/state/forge/logs/forge-worker-1.log # "worker started", polling
+uv run forge status --limit 3                        # CLI → Temporal + store
+open http://localhost:8233                           # workers visible under Workers
 ```
 
-Confirm an OCR run writes a blob to S3 and a reference row to Postgres:
+### 6. Apply the S3 lifecycle policy (once)
 
 ```bash
-uv run forge start OcrSyncWorkflow '{"file_path": "/data/repos/<name>/sample.pdf"}' --wait
-aws s3 ls s3://forge-ocr-blobs-<acct>/   # blob present
-uv run forge ocr-jobs --limit 5          # reference row present
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket "$FORGE_OCR_S3_BUCKET" \
+  --lifecycle-configuration file://deploy/s3/lifecycle.json
 ```
 
-Browse the Temporal UI via SSM port forwarding:
+Rationale and what it deliberately does not expire:
+[deploy/s3/README.md](../../deploy/s3/README.md).
 
-```bash
-aws ssm start-session --target <instance-id> \
-  --document-name AWS-StartPortForwardingSession \
-  --parameters '{"portNumber":["8080"],"localPortNumber":["8080"]}'
-# then open http://localhost:8080
-```
+## Configuration
 
-To submit tasks from a laptop without exposing 7233, port-forward 7233 the same
-way and set `FORGE_TEMPORAL_ADDRESS=127.0.0.1:7233` locally.
-
-For users who must submit **directly over the internet** (not via SSM),
-stand up the mutual-TLS gateway in [`deploy/`](../../deploy/) and have them follow
-[`deploy/client/ONBOARDING.md`](../../deploy/client/ONBOARDING.md); see
-[SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md).
-
-## Configuration reference
+Worker/CLI environment (the launchd agents read these from
+`~/.config/forge/forge.env`):
 
 | Variable | Purpose | Production value |
 | --- | --- | --- |
-| `FORGE_TEMPORAL_ADDRESS` | Temporal frontend address | `127.0.0.1:7233` |
-| `FORGE_DB_URL` | **Required.** Forge store connection: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://…` (prod). Unset → hard error; no disable-store mode | `postgresql+psycopg2://…/forge?sslmode=require` |
-| `FORGE_OCR_S3_BUCKET` | S3 bucket for OCR blobs. Required for OCR work; unset or unreachable → the OCR task fails (no inline-in-DB fallback) | `forge-ocr-blobs-<acct>` |
-| `FORGE_OCR_S3_PREFIX` | Optional key prefix for OCR blobs | e.g. `ocr/` |
-| `FORGE_LOG_DIR` | Log directory (empty = disable file logging) | `/data/forge/logs` |
-| `FORGE_OTEL_EXPORTER` | Trace exporter: `console`/`otlp_grpc`/`otlp_http`/`none` | `none` (default `console` is noisy) |
-| `FORGE_OTEL_ENDPOINT` | OTel collector endpoint | set only if exporting traces |
-| `FORGE_WORKER_IDENTITY` | Worker identity in Temporal | `ec2-forge-1`, `ec2-forge-2`, … |
-| `ANTHROPIC_API_KEY` | Anthropic SDK auth | from SSM |
-| `MISTRAL_API_KEY` | Mistral OCR auth | from SSM (if OCR used) |
-| `OPENAI_API_KEY` | pbook embeddings auth | from SSM (if pbook used) |
-| `PBOOK_DATABASE_URL` | pbook Postgres store (if ingestion used) | from SSM `SUPABASE_PBOOK_DB_URL` |
-| `SAX_GITHUB_TOKEN` | Git access to private repos | from SSM |
+| `FORGE_TEMPORAL_ADDRESS` | Temporal frontend | `127.0.0.1:7233` |
+| `FORGE_DB_URL` | **Required.** Forge store. Unset → hard error | `postgresql+psycopg2://…supabase…/forge?sslmode=require` |
+| `FORGE_OCR_S3_BUCKET` | S3 bucket for blobs; required for OCR work | bucket name |
+| `FORGE_OCR_S3_PREFIX` | Optional key prefix for blobs | e.g. `ocr/` |
+| `FORGE_LOG_DIR` | App log directory (empty = no file logging) | `$XDG_STATE_HOME/forge/logs` |
+| `FORGE_OTEL_EXPORTER` | `console`/`otlp_grpc`/`otlp_http`/`none` | `none` |
+| `FORGE_WORKER_IDENTITY` | Worker identity in Temporal | set by the launchd agents (`desktop-forge-worker-1/2`) |
+| `ANTHROPIC_API_KEY` | Anthropic SDK auth | key |
+| `MISTRAL_API_KEY` | Mistral OCR auth | key (if OCR used) |
+| `OPENAI_API_KEY` | pbook embeddings | key (if pbook used) |
+| `PBOOK_DATABASE_URL` | pbook Postgres store | Supabase URL (if pbook used) |
+| `PBOOK_TEMPORAL_ADDRESS` | pbook worker → Temporal | `127.0.0.1:7233` |
+| `AWS_*` | S3 auth if not using `~/.aws` | keys/region |
 
-`FORGE_DB_URL` and `FORGE_OCR_S3_BUCKET` are introduced by the
-[prerequisite code changes](#prerequisite-code-changes). The **worker** connects
-to a co-located Temporal at `127.0.0.1:7233` in plaintext (loopback, never
-exposed) — no TLS needed there. (The Supabase TLS is separate, on the Postgres
-connections, via `FORGE_DB_URL`'s `sslmode=require` and Temporal's
-`SQL_TLS_ENABLED`.)
+For the **dev** stack surfaces (local `forge_dev` Postgres, MinIO), see
+[deploy/local-stack/.env.example](../../deploy/local-stack/.env.example)
+— and note its footgun warning: the dev `AWS_*`/`FORGE_DB_URL` exports
+override production values in the same shell.
 
-**Remote CLIs** that reach Temporal over the internet authenticate with mutual
-TLS through the gateway (see [SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md)).
-Both CLIs read these (forge uses `FORGE_…`, pbook uses `PBOOK_…`):
+## Supabase gotchas
 
-| Variable | Purpose | Value (remote CLI) |
-| --- | --- | --- |
-| `…_TEMPORAL_ADDRESS` | Gateway endpoint | `<public-dns-or-eip>:443` |
-| `…_TEMPORAL_TLS` | Enable TLS | `1` (unset on the on-box worker) |
-| `…_TEMPORAL_TLS_SERVER_CA` | PEM verifying the gateway | path to `server-ca.crt` |
-| `…_TEMPORAL_TLS_CLIENT_CERT` | User's client cert (mTLS) | path to `<user>.crt` |
-| `…_TEMPORAL_TLS_CLIENT_KEY` | User's private key (mTLS) | path to `<user>.key` |
-| `…_TEMPORAL_TLS_SERVER_NAME` | Server-name override (dialing by IP) | `temporal.forge.internal` |
+1. **One database now.** Only the `forge` database (plus pbook's schema
+   if used) lives in Supabase — Temporal's `temporal`/`temporal_visibility`
+   moved into the local stack (D99).
+2. **No transaction-mode pooling.** The Supavisor pooler in transaction
+   mode (6543) breaks prepared statements. Use the direct connection
+   (5432) or session-mode pooler in `FORGE_DB_URL`.
+3. **IPv6.** Supabase direct connections are IPv6-only without the IPv4
+   add-on; from a residential/office network this usually just works,
+   but if connections hang, check IPv6 egress or use the session pooler.
 
-## Supabase-specific gotchas
+## Always-on and availability
 
-1. **Three databases now.** `temporal`, `temporal_visibility`, **and** `forge`.
-   A Supabase project ships a single `postgres` database; create the others via
-   `CREATE DATABASE` on the direct connection, or use additional projects.
-2. **No transaction-mode pooling.** The Supavisor pooler in transaction mode
-   (6543) breaks both Temporal's and (for async drivers) Postgres prepared
-   statements. Use the **direct connection (5432)** or **session-mode pooler**.
-   Forge's store uses sync `psycopg2`, which is tolerant, but keep it consistent.
-3. **IPv6 / IPv4.** Supabase direct connections are IPv6-only without the IPv4
-   add-on. Ensure VPC IPv6 egress, buy the add-on, or use the session-mode pooler.
-4. **TLS is mandatory.** `SQL_TLS_ENABLED=true` for Temporal; `sslmode=require` in
-   `FORGE_DB_URL`.
-5. **Connection caps.** Temporal pools per service, and now Forge's workers each
-   open a pool against `forge`. Keep both small (`SQL_MAX_CONNS=10`; small
-   SQLAlchemy `pool_size`) and prefer a paid tier for headroom.
-6. **Latency and cost.** Every Temporal transition and every store write is a DB
-   round trip to Supabase; co-locate regions. OCR blobs are in S3, so the large
-   payloads stay out of Postgres — this is why S3 matters at any non-trivial OCR
-   volume.
-7. **`auto-setup` re-runs schema on every start.** Use it for the first boot only.
+The desktop is the availability story, accepted by D99. Batch polling
+(D88's timer loops) stalls while the machine sleeps — a sleeping laptop
+lid silently pauses every in-flight workflow until wake. Keep the
+machine awake on AC power:
 
-## Persistence and backups
+```bash
+sudo pmset -c sleep 0 displaysleep 10 disksleep 0
+```
 
-Durable state now lives in three managed stores; the EC2 disk holds none of it:
+After a reboot: log in once — the launchd agents bring up the podman
+machine, the stack, and the workers without manual steps.
 
-- **Temporal state (Supabase `temporal`/`temporal_visibility`):** workflow history,
-  schedules, task queues. Enable Supabase automated backups / PITR.
-- **Forge store (Supabase `forge`):** interactions, runs, playbooks, batch jobs,
-  OCR reference rows. Same Supabase backup covers it.
-- **OCR blobs (S3):** enable versioning and/or a lifecycle policy; S3 is durable by
-  design.
-- **EBS volume:** only in-progress worktrees + cloned repos + logs. **No backup
-  required for data safety** — completed output is committed to its target repo and
-  pushed; worktrees are disposable; repos are re-clonable. Snapshot only if you
-  want faster instance rebuilds.
+## Backup
 
-## Scaling
+- **Supabase** (forge/pbook state of record): Supabase's own backups.
+- **Stack Postgres** (Temporal workflow histories): rides the machine's
+  backup discipline (Time Machine covers
+  `$XDG_DATA_HOME/forge/postgres`); losing it loses in-flight workflow
+  state, not records of completed work.
+- **S3**: versioned; noncurrent versions expire per the lifecycle policy.
 
-The SQLite-on-local-disk constraint that previously prevented multi-host workers
-is removed by the store-on-Postgres change: workers on different hosts share one
-`forge` database, so observability and playbook data stay coherent. Temporal state
-is already external. OCR blobs are in shared S3.
+## History
 
-The remaining per-host requirement is the **build-agent filesystem**: each worker
-host needs the target repos checked out and disk for worktrees. To add a second
-worker host you provision another instance with the same runtime, repos, and
-`forge.env`, pointed at the same Temporal and the same `forge` database. Watch
-Supabase connection caps as worker count grows.
-
-## Security checklist
-
-- Manage via SSM Session Manager; reach the Temporal UI via SSM port forwarding.
-  Temporal OSS has **no built-in authentication**, so **never expose the raw 7233
-  frontend** — keep it loopback-only. For remote CLI access over the internet, the
-  *only* inbound port is the mutual-TLS gateway on `:443`, which rejects any
-  client without a CA-signed certificate (see
-  [SECURE-REMOTE-ACCESS.md](SECURE-REMOTE-ACCESS.md)). If you don't need remote
-  CLIs, run with **no inbound ports** at all and use SSM tunnels.
-- API keys and the Supabase password live in SSM/Secrets Manager, injected at
-  boot; the instance role grants read on only those parameters.
-- S3 access is via the instance role, scoped to the OCR bucket only — no static S3
-  keys anywhere.
-- `forge.env` is `chmod 600`, owned by the worker user.
-- Postgres connections use TLS; the `forge` database password is a role scoped to
-  only that database.
-
-## Open questions to resolve before go-live
-
-- **Prerequisite code changes (A), (B), and (C)** implemented, tested (SQLite path
-  still green for the test suite; migrations validated on real Postgres; OCR e2e
-  green against the live Mistral API), and merged.
-- **Supabase `CREATE DATABASE` privilege** — confirm, or plan for extra projects.
-- **IPv4 vs IPv6 egress** path from the VPC to Supabase.
-- **pbook scope** — is `forge ingest` part of this deployment? If so: provision
-  `OPENAI_API_KEY` and `SUPABASE_PBOOK_DB_URL` in SSM, run `uv run pbook migrate`,
-  and stand up the pbook worker (all from the forge checkout; `with_pbook = true`
-  drives this in Terraform).
-- **Pinned commits** for forge, sax-llm, forge-contracts recorded in release notes.
-- **Backup/restore drill** for Supabase (and S3 versioning) tested once.
+This replaced the EC2 + mTLS deployment (D99, 2026-07-16). That design —
+Terraform, SSM secret bootstrap, an nginx mutual-TLS gateway for remote
+CLIs, and Supabase-backed Temporal — survives in git history
+(`deploy/terraform`, `deploy/scripts`, `deploy/certs`, `deploy/client`,
+`docs/operations/SECURE-REMOTE-ACCESS.md` before this change). The
+client-side TLS env handling in forge-contracts remains in the code,
+dormant, should remote access return.
