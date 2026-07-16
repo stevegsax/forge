@@ -36,9 +36,9 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T1.7 — Env scrub at model-influenced subprocess seams](tasks/T1.7-env-scrub-subprocess-seams.md)
 - [x] [T1.8 — Small dedup batch + kill runs-extraction](tasks/T1.8-small-dedup-batch.md)
 
-### Phase 2 — Monorepo `sax`
+### Phase 2 — Monorepo (forge, D98)
 
-- [ ] [T2.1 — Workspace creation](tasks/T2.1-workspace-creation.md)
+- [ ] [T2.1 — Monorepo workspace in forge (incremental absorption)](tasks/T2.1-workspace-creation.md) — increment 1 (pbook → `apps/pbook`) landed; remaining: sax-llm + forge-contracts → `libs/`, ocr → `apps/ocr`, gated 3.14 bump
 - [ ] [T2.2 — Root gates](tasks/T2.2-root-gates.md)
 - [ ] [T2.3a — mypy strict: sax-platform contracts](tasks/T2.3a-mypy-strict-platform-contracts.md)
 - [ ] [T2.3b — mypy strict: sax-platform llm + rest](tasks/T2.3b-mypy-strict-platform-llm.md)
