@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import forge.worker as worker_mod
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestInitStore:
@@ -194,8 +197,8 @@ class TestRunWorker:
             patch("forge.tracing.init_tracing", MagicMock()),
             patch("forge.tracing.shutdown_tracing", MagicMock()) as mock_shutdown_tracing,
             patch("forge.logging_config.silence_noisy_loggers", MagicMock()),
+            pytest.raises(RuntimeError, match="worker boom"),
         ):
-            with pytest.raises(RuntimeError, match="worker boom"):
-                await worker_mod.run_worker(address="localhost:7233")
+            await worker_mod.run_worker(address="localhost:7233")
 
         mock_shutdown_tracing.assert_called_once_with()

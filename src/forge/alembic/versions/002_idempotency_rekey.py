@@ -26,6 +26,8 @@ Create Date: 2026-07-15
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -33,6 +35,9 @@ from forge.persist_models import (
     reshape_legacy_interaction_key,
     restore_legacy_interaction_key,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.schema import SchemaItem
 
 revision = "002"
 down_revision = "001"
@@ -52,7 +57,7 @@ def _runs_table(*, with_run_id: bool, with_composite_uq: bool) -> sa.Table:
     Mirrors the baseline columns (plus ``run_id`` when present). Constraints are
     included/omitted per the flags so the recreate drops exactly what we want.
     """
-    columns: list[sa.Column] = [
+    columns: list[sa.Column[Any]] = [
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column("task_id", sa.String, nullable=False),
         sa.Column("workflow_id", sa.String, nullable=False),
@@ -64,7 +69,7 @@ def _runs_table(*, with_run_id: bool, with_composite_uq: bool) -> sa.Table:
         sa.Column("result_json", sa.Text, nullable=False),
         sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
     ]
-    args: list[object] = [sa.Index("ix_runs_task_id", "task_id")]
+    args: list[SchemaItem] = [sa.Index("ix_runs_task_id", "task_id")]
     if with_composite_uq:
         args.append(sa.UniqueConstraint("workflow_id", "run_id", name=_RUNS_UQ))
     return sa.Table("runs", sa.MetaData(), *columns, *args)
