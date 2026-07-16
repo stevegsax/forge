@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
     from anthropic.types import Message
     from pydantic import BaseModel
 
@@ -32,13 +33,13 @@ def build_tool_definition(
     output_type: type[BaseModel],
     *,
     cache_control: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Build an Anthropic tool definition from a Pydantic model."""
     schema = output_type.model_json_schema()
     tool_name = _snake_case(output_type.__name__)
     description = (output_type.__doc__ or "").strip() or f"Structured output: {tool_name}"
 
-    tool: dict = {
+    tool: dict[str, Any] = {
         "name": tool_name,
         "description": description,
         "input_schema": schema,
@@ -52,7 +53,7 @@ def build_system_param(
     system_prompt: str,
     *,
     cache_control: bool = True,
-) -> list[dict] | str:
+) -> list[dict[str, Any]] | str:
     """Build the system parameter for messages.create."""
     if cache_control:
         return [
@@ -68,7 +69,7 @@ def build_system_param(
 def build_thinking_param(
     model_name: str,
     budget_tokens: int,
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Build the thinking parameter for messages.create.
 
     Returns a thinking dict for Anthropic models, or None for non-Anthropic/Haiku.
@@ -98,13 +99,13 @@ def build_messages_params(
     cache_instructions: bool = True,
     cache_tool_definitions: bool = True,
     thinking_budget_tokens: int = 0,
-) -> dict:
+) -> dict[str, Any]:
     """Build the full kwargs dict for client.messages.create."""
     tool_def = build_tool_definition(output_type, cache_control=cache_tool_definitions)
     tool_name = tool_def["name"]
     system = build_system_param(system_prompt, cache_control=cache_instructions)
 
-    params: dict = {
+    params: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
@@ -151,7 +152,7 @@ def extract_usage(message: Message) -> tuple[int, int, int, int]:
 # ---------------------------------------------------------------------------
 
 
-def build_batch_request(custom_id: str, params: dict) -> dict:
+def build_batch_request(custom_id: str, params: dict[str, Any]) -> dict[str, Any]:
     """Wrap messages.create params into a batch request item."""
     return {"custom_id": custom_id, "params": params}
 
@@ -159,7 +160,7 @@ def build_batch_request(custom_id: str, params: dict) -> dict:
 def parse_batch_response_json(
     raw_json: str,
     output_type_name: str,
-) -> tuple:
+) -> tuple[BaseModel, str, int, int, int, int]:
     """Deserialize a raw Anthropic Message JSON from a batch response.
 
     Returns (parsed_model, model_name, input_tokens, output_tokens,
@@ -191,10 +192,10 @@ def parse_batch_response_json(
 # Imperative shell
 # ---------------------------------------------------------------------------
 
-_client = None
+_client: AsyncAnthropic | None = None
 
 
-def get_anthropic_client():
+def get_anthropic_client() -> AsyncAnthropic:
     """Get or create a shared AsyncAnthropic client."""
     global _client
     if _client is None:

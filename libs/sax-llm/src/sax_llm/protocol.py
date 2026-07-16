@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -30,11 +30,11 @@ class LLMProvider(Protocol):
         cache_instructions: bool = True,
         cache_tool_definitions: bool = True,
         thinking_budget_tokens: int = 0,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build provider-specific request parameters."""
         ...
 
-    async def call(self, params: dict) -> ProviderResponse:
+    async def call(self, params: dict[str, Any]) -> ProviderResponse:
         """Execute a synchronous LLM call and return a normalized response."""
         ...
 
@@ -45,11 +45,13 @@ class LLMProvider(Protocol):
         """Whether this provider supports the batch API."""
         ...
 
-    def build_batch_request(self, request_id: str, params: dict) -> dict:
+    def build_batch_request(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """Wrap request params into a batch request entry."""
         ...
 
-    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
+    async def submit_batch(
+        self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
+    ) -> str:
         """Submit a batch of requests. Returns the batch job ID."""
         ...
 

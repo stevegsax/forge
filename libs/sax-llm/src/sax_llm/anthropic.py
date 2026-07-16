@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from sax_llm.client import (
     build_batch_request,
@@ -24,6 +24,7 @@ from sax_llm.models import (
 )
 
 if TYPE_CHECKING:
+    from anthropic.types.messages import batch_create_params
     from pydantic import BaseModel
 
 
@@ -32,7 +33,9 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _content_block_to_anthropic(block: TextContent | ImageContent | DocumentContent) -> dict:
+def _content_block_to_anthropic(
+    block: TextContent | ImageContent | DocumentContent,
+) -> dict[str, Any]:
     """Convert a ContentBlock to Anthropic API format."""
     if isinstance(block, TextContent):
         return {"type": "text", "text": block.text}
@@ -61,7 +64,7 @@ def _content_block_to_anthropic(block: TextContent | ImageContent | DocumentCont
 def _content_to_anthropic(
     content: str | list[TextContent | ImageContent | DocumentContent],
     cache_control: bool = False,
-) -> str | list[dict]:
+) -> str | list[dict[str, Any]]:
     """Convert message content to Anthropic format."""
     if isinstance(content, str):
         if cache_control:
@@ -77,11 +80,11 @@ def _content_to_anthropic(
 def _extract_system_and_messages(
     messages: list[Message],
     cache_instructions: bool = True,
-) -> tuple[str | list[dict], list[dict]]:
+) -> tuple[str | list[dict[str, Any]], list[dict[str, Any]]]:
     """Split messages into Anthropic's top-level system param and message array."""
     system_parts: list[str] = []
     system_cache = False
-    conversation: list[dict] = []
+    conversation: list[dict[str, Any]] = []
 
     for msg in messages:
         if msg.role == "system":
@@ -125,11 +128,11 @@ class AnthropicProvider:
         cache_instructions: bool = True,
         cache_tool_definitions: bool = True,
         thinking_budget_tokens: int = 0,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build Anthropic messages.create kwargs."""
         system, conversation = _extract_system_and_messages(messages, cache_instructions)
 
-        params: dict = {
+        params: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
             "system": system,
@@ -151,12 +154,12 @@ class AnthropicProvider:
 
         return params
 
-    async def call(self, params: dict) -> ProviderResponse:
+    async def call(self, params: dict[str, Any]) -> ProviderResponse:
         """Call the Anthropic API and return a normalized response."""
         client = self._get_client()
         message = await client.messages.create(**params)
 
-        tool_input: dict = {}
+        tool_input: dict[str, Any] = {}
         text_content: str | None = None
         has_tools = "tools" in params and params["tools"]
 
@@ -189,12 +192,22 @@ class AnthropicProvider:
     def supports_batch(self) -> bool:
         return True
 
-    def build_batch_request(self, request_id: str, params: dict) -> dict:
+    def build_batch_request(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         return build_batch_request(request_id, params)
 
-    async def submit_batch(self, requests: list[dict], model: str, *, endpoint: str = "") -> str:
+    async def submit_batch(
+        self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
+    ) -> str:
         client = self._get_client()
-        batch = await client.messages.batches.create(requests=requests)
+        # requests is provider-agnostic dict[str, Any] at the protocol boundary
+        # (shared with Mistral); each entry was built by build_batch_request()
+        # above as {"custom_id": ..., "params": <messages.create kwargs>}, which
+        # is exactly the shape of anthropic's Request TypedDict. The SDK wants
+        # that precise TypedDict rather than a generic mapping, so narrow with a
+        # cast at this validated boundary instead of threading a TypedDict
+        # through the whole cross-provider request-building pipeline.
+        typed_requests = cast("list[batch_create_params.Request]", requests)
+        batch = await client.messages.batches.create(requests=typed_requests)
         return batch.id
 
     async def poll_batch(self, batch_id: str) -> BatchPollResult:
@@ -207,8 +220,9 @@ class AnthropicProvider:
         results_iter = await client.messages.batches.results(batch_id)
         entries: list[BatchResultEntry] = []
         async for entry in results_iter:
-            result_type = entry.result.type
-            if result_type == "succeeded":
+            # Compare the discriminator inline (not via an intermediate local)
+            # so mypy narrows entry.result to MessageBatchSucceededResult below.
+            if entry.result.type == "succeeded":
                 entries.append(
                     BatchResultEntry(
                         custom_id=entry.custom_id,
