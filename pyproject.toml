@@ -106,6 +106,7 @@ dev = [
     "mypy>=1.13.0",
     "moto[s3]>=5.0",
     "testcontainers[postgres]>=4.0",
+    "import-linter>=2.0",
 ]
 
 [tool.mypy]
@@ -127,3 +128,50 @@ module = [
     "networkx.*",
 ]
 ignore_missing_imports = true
+
+# Import DAG enforcement across the workspace (D87, adapted to the current
+# pre-Phase-3 topology by T2.2): apps never import apps, libs never import
+# apps or each other. The sax_platform.contracts internal-layering contract
+# lands in Phase 3 when that package exists.
+[tool.importlinter]
+root_packages = ["forge", "pbook", "ocr", "sax_llm", "forge_contracts"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "pbook and ocr are independent of each other"
+type = "independence"
+modules = ["pbook", "ocr"]
+
+[[tool.importlinter.contracts]]
+name = "apps never import forge"
+type = "forbidden"
+source_modules = ["pbook", "ocr"]
+forbidden_modules = ["forge"]
+
+# forge -> pbook is deliberately allowed until T6.4 deletes forge's
+# ingestion side; add pbook to forbidden_modules then.
+[[tool.importlinter.contracts]]
+name = "forge never imports ocr"
+type = "forbidden"
+source_modules = ["forge"]
+forbidden_modules = ["ocr"]
+
+[[tool.importlinter.contracts]]
+name = "libs never import apps or each other"
+type = "forbidden"
+source_modules = ["sax_llm", "forge_contracts"]
+forbidden_modules = ["forge", "pbook", "ocr"]
+
+[[tool.importlinter.contracts]]
+name = "sax-llm and forge-contracts are independent of each other"
+type = "independence"
+modules = ["sax_llm", "forge_contracts"]
+
+# Precursor of the Phase-3 sax_platform.contracts sandbox-light rule.
+# boto3/sqlalchemy stay legal here for now: they are real forge-contracts
+# dependencies today (D89 records this).
+[[tool.importlinter.contracts]]
+name = "forge-contracts never imports LLM SDKs"
+type = "forbidden"
+source_modules = ["forge_contracts"]
+forbidden_modules = ["anthropic", "openai", "mistralai"]

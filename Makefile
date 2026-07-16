@@ -1,16 +1,38 @@
-# Local stack targets for Forge.
-#
-# Forge itself is driven with `uv run ...` (see CLAUDE.md); this Makefile only
-# wraps the podman-managed local stack in deploy/local-stack — Postgres +
-# MinIO + Temporal (the production workflow engine per D99; the app stores'
-# production homes stay Supabase/S3). The default test suite runs on SQLite
-# and needs none of this.
+# Root targets for Forge: workspace-wide gates (T2.2) and the podman-managed
+# local stack in deploy/local-stack — Postgres + MinIO + Temporal (the
+# production workflow engine per D99; the app stores' production homes stay
+# Supabase/S3). The default test suites run without the stack, except pbook's
+# (its conftest needs a podman machine or PBOOK_TEST_DATABASE_URL).
 #
 # Typical first run:
 #   make stack-up     # start Postgres + Temporal + UI + MinIO (needs podman machine)
 #   make db-migrate   # apply Forge's Alembic migrations (needs FORGE_DB_URL set)
+#   make gates        # everything CI runs: lint, typecheck, lint-imports, test
+#
+# Per-package suites run from each package's own directory so its own config
+# applies (workspace command discipline — see CLAUDE.md).
 
-.PHONY: help stack-up stack-down stack-logs stack-psql db-migrate
+.PHONY: help lint typecheck lint-imports test gates \
+	stack-up stack-down stack-logs stack-psql db-migrate
+
+lint:
+	uv run ruff check .
+	uv run ruff format --check .
+
+typecheck:
+	uv run mypy
+
+lint-imports:
+	uv run lint-imports
+
+test:
+	uv run pytest
+	cd apps/pbook && uv run pytest
+	cd apps/ocr && uv run pytest
+	cd libs/sax-llm && uv run pytest
+	cd libs/forge-contracts && uv run pytest
+
+gates: lint typecheck lint-imports test
 
 COMPOSE_DIR := deploy/local-stack
 
@@ -26,6 +48,13 @@ export FORGE_PG_DATA = $(PG_DATA_DIR)
 export FORGE_MINIO_DATA = $(MINIO_DATA_DIR)
 
 help:
+	@echo "Gates (T2.2): what CI runs"
+	@echo "  make gates        lint + typecheck + lint-imports + test"
+	@echo "  make lint         ruff check + format --check (workspace-wide)"
+	@echo "  make typecheck    mypy (currently src/forge only; widened by T2.3a-d)"
+	@echo "  make lint-imports import-linter DAG contracts (root pyproject)"
+	@echo "  make test         all five package suites, each from its own directory"
+	@echo ""
 	@echo "Local stack (deploy/local-stack): Postgres + MinIO + Temporal"
 	@echo "  data dirs: $(PG_DATA_DIR) | $(MINIO_DATA_DIR)"
 	@echo "  make stack-up     start the stack (Postgres + Temporal + UI + MinIO + bucket init)"
