@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-16 | [T1.0 amendment — sax-llm editable everywhere; pin workaround unwound (pbook + forge)](tasks/T1.0-uniform-editable-sibling-sources.md) | — |
 | 2026-07-15 | [T1.8 — Small dedup batch + kill runs-extraction](tasks/T1.8-small-dedup-batch.md) | — |
 | 2026-07-15 | [T1.6b — Batch-wait failure symmetry](tasks/T1.6b-batch-wait-failure-symmetry.md) | — |
 | 2026-07-15 | [T1.6a — Idempotency rekey](tasks/T1.6a-idempotency-rekey.md) | — |

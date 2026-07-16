@@ -24,14 +24,13 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-# pbook and forge-contracts use editable path sources so forge tracks the
-# working-tree siblings directly. sax-llm stays pinned to git tag v0.1.1
-# because pbook's own [tool.uv.sources] pins sax-llm to that same tag, and uv
-# requires every path/editable dependency to agree on a package's source; an
-# editable sax-llm here would conflict with pbook's git pin and fail to lock.
-# Resolved fully when the repos collapse into the sax monorepo (T2.1). See
-# T1.0 Development Notes.
-sax-llm = { git = "https://github.com/stevegsax/sax-llm.git", tag = "v0.1.1" }
+# All three siblings use editable path sources so forge tracks the
+# working-tree siblings directly. Requires pbook's own [tool.uv.sources] to
+# agree on sax-llm's source (uv rejects conflicting sources for one package)
+# — pbook switched to the same editable path on 2026-07-16. Version pinning
+# inside the sibling set is deliberately gone: the suites are the contract
+# until T2.1 collapses the repos into the sax monorepo.
+sax-llm = { path = "../sax-llm", editable = true }
 pbook = { path = "../pbook", editable = true }
 forge-contracts = { path = "../forge-contracts", editable = true }
 
