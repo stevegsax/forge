@@ -23,14 +23,22 @@ from forge.message_log import write_message_log
 # BatchSubmitResult is instantiated below (runtime); BatchSubmitInput/BatchSubmitSpiInput
 # are activity-parameter types Temporal resolves at registration, so all three must be
 # real runtime imports (not TYPE_CHECKING-guarded).
-from forge.models import BatchSubmitInput, BatchSubmitResult, BatchSubmitSpiInput
+from forge.models import (
+    BatchSubmitInput,
+    BatchSubmitResult,
+    BatchSubmitSpiInput,
+    CapabilityTier,
+    ModelConfig,
+    resolve_model,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sax_llm.protocol import LLMProvider
 
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+# Shadow fallback for a missing context.model_name (see forge.activities.llm).
+DEFAULT_MODEL = resolve_model(CapabilityTier.GENERATION, ModelConfig())
 DEFAULT_MAX_TOKENS = 4096
 
 logger = logging.getLogger(__name__)
@@ -63,7 +71,8 @@ async def execute_batch_submit(
         output_type=output_type,
         model=model,
         max_tokens=input.max_tokens,
-        thinking_budget_tokens=input.thinking.budget_tokens,
+        thinking_enabled=input.thinking.enabled,
+        effort=input.thinking.effort,
     )
 
     if input.context.log_messages and input.context.worktree_path:

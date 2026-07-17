@@ -24,17 +24,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import click
+from click.core import ParameterSource
 
 from forge.domains import get_domain_config
 from forge.git import RepoDiscoveryError, discover_repo_root
 from forge.models import (
     ContextConfig,
+    Effort,
     ForgeTaskInput,
     ModelConfig,
     TaskDefinition,
     TaskDomain,
     TaskResult,
-    ThinkingConfig,
+    ThinkingPolicy,
     TransitionSignal,
     ValidationConfig,
 )
@@ -360,7 +362,7 @@ async def _submit_and_wait(
     sanity_check_interval: int = 0,
     resolve_conflicts: bool = True,
     model_routing: ModelConfig | None = None,
-    thinking: ThinkingConfig | None = None,
+    thinking: ThinkingPolicy | None = None,
     sync_mode: bool = True,
     log_messages: bool = False,
 ) -> TaskResult:
@@ -386,7 +388,7 @@ async def _submit_and_wait(
             sanity_check_interval=sanity_check_interval,
             resolve_conflicts=resolve_conflicts,
             model_routing=model_routing or ModelConfig(),
-            thinking=thinking or ThinkingConfig(),
+            thinking=thinking or ThinkingPolicy(),
             sync_mode=sync_mode,
             log_messages=log_messages,
         ),
@@ -411,7 +413,7 @@ async def _submit_no_wait(
     sanity_check_interval: int = 0,
     resolve_conflicts: bool = True,
     model_routing: ModelConfig | None = None,
-    thinking: ThinkingConfig | None = None,
+    thinking: ThinkingPolicy | None = None,
     sync_mode: bool = True,
     log_messages: bool = False,
 ) -> str:
@@ -437,7 +439,7 @@ async def _submit_no_wait(
             sanity_check_interval=sanity_check_interval,
             resolve_conflicts=resolve_conflicts,
             model_routing=model_routing or ModelConfig(),
-            thinking=thinking or ThinkingConfig(),
+            thinking=thinking or ThinkingPolicy(),
             sync_mode=sync_mode,
             log_messages=log_messages,
         ),
@@ -594,13 +596,24 @@ def main(log_verbosity: int) -> None:
     help="Override the model used for CLASSIFICATION tier (exploration).",
 )
 @click.option(
-    "--thinking-budget",
-    type=int,
-    default=10000,
+    "--effort",
+    type=click.Choice(["low", "medium", "high", "xhigh", "max"]),
+    default="high",
     show_default=True,
-    help="Token budget for extended thinking in planner (Sonnet). Opus uses adaptive.",
+    help=(
+        "Extended-thinking effort for planner/sanity-check/conflict-resolution "
+        "calls in planning mode (--plan). Single-step mode has no "
+        "thinking-configurable LLM call, so this has no effect there."
+    ),
 )
-@click.option("--no-thinking", is_flag=True, help="Disable extended thinking for planner.")
+@click.option(
+    "--no-thinking",
+    is_flag=True,
+    help=(
+        "Disable extended thinking for planner/sanity-check/conflict-resolution "
+        "calls in planning mode (--plan). Has no effect in single-step mode."
+    ),
+)
 @click.option(
     "--sanity-check-interval",
     type=int,
@@ -668,7 +681,7 @@ def run(
     generation_model: str | None,
     summarization_model: str | None,
     classification_model: str | None,
-    thinking_budget: int,
+    effort: Effort,
     no_thinking: bool,
     sanity_check_interval: int,
     no_resolve_conflicts: bool,
@@ -741,11 +754,26 @@ def run(
         model_overrides["classification"] = classification_model
     model_routing = ModelConfig(**model_overrides) if model_overrides else None
 
-    # --- Build thinking config ---
-    # ThinkingConfig disables thinking via budget_tokens=0 (no `enabled` field).
-    thinking = ThinkingConfig(
-        budget_tokens=0 if no_thinking else thinking_budget,
-    )
+    # --- Build thinking policy ---
+    thinking = ThinkingPolicy(enabled=not no_thinking, effort=effort)
+
+    # --- Warn when --effort/--no-thinking are explicitly passed but inert ---
+    # Single-step mode (plan=False) has no thinking-configurable LLM call: the
+    # sole call on that path is generation, which always runs thinking-disabled
+    # (workflow_blocks.generation_dispatch). Only warn when the user explicitly
+    # passed one of these flags — the flags' own defaults must stay silent.
+    if not use_plan:
+        ctx = click.get_current_context()
+        explicit_sources = (ParameterSource.COMMANDLINE, ParameterSource.ENVIRONMENT)
+        effort_explicit = ctx.get_parameter_source("effort") in explicit_sources
+        no_thinking_explicit = ctx.get_parameter_source("no_thinking") in explicit_sources
+        if effort_explicit or no_thinking_explicit:
+            click.echo(
+                "Warning: --effort/--no-thinking have no effect without --plan — "
+                "single-step mode has no thinking-configurable LLM call "
+                "(generation runs thinking-disabled).",
+                err=True,
+            )
 
     # --- Submit ---
     try:
@@ -1511,7 +1539,7 @@ async def _run_eval(
 @click.option(
     "--judge-model",
     default=None,
-    help="Model to use as judge (default: claude-sonnet-4-5-20250929).",
+    help="Model to use as judge (default: the REASONING tier's registry pin).",
 )
 @click.option("--dry-run", is_flag=True, help="List cases without evaluating.")
 @click.option(

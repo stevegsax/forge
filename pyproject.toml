@@ -21,6 +21,7 @@ dependencies = [
     "sax-llm",
     "pbook",
     "forge-contracts",
+    "sax-platform",
 ]
 
 [tool.uv.workspace]
@@ -37,6 +38,7 @@ members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr", "li
 sax-llm = { workspace = true }
 pbook = { workspace = true }
 forge-contracts = { workspace = true }
+sax-platform = { workspace = true }
 
 [project.scripts]
 forge = "forge.cli:main"

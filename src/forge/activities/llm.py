@@ -19,12 +19,23 @@ from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
 from forge.message_log import write_message_log
-from forge.models import AssembledContext, LLMCallResult, LLMResponse
+from forge.models import (
+    AssembledContext,
+    CapabilityTier,
+    LLMCallResult,
+    LLMResponse,
+    ModelConfig,
+    resolve_model,
+)
 
 if TYPE_CHECKING:
     from sax_llm.protocol import LLMProvider
 
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+# Shadow fallback for a missing context.model_name — the workflow always sets
+# it from CapabilityTier.GENERATION via ModelConfig, so this only fires if a
+# caller forgets. Resolved through the registry (T3.2) rather than a
+# hardcoded literal, so it tracks the tier's pinned default.
+DEFAULT_MODEL = resolve_model(CapabilityTier.GENERATION, ModelConfig())
 DEFAULT_MAX_TOKENS = 4096
 
 logger = logging.getLogger(__name__)

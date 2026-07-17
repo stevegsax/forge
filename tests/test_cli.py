@@ -822,6 +822,184 @@ class TestPlanFlag:
 
 
 # ---------------------------------------------------------------------------
+# T3.2: --effort/--no-thinking (ThinkingPolicy) CLI flags
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingCliFlags:
+    def test_effort_and_no_thinking_in_help(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert "--effort" in result.output
+        assert "--no-thinking" in result.output
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_thinking_policy_built_from_effort_flag(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--plan",
+                "--effort",
+                "xhigh",
+            ],
+        )
+        call_kwargs = mock_submit.call_args
+        thinking = call_kwargs[1]["thinking"]
+        assert thinking.enabled is True
+        assert thinking.effort == "xhigh"
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_no_thinking_flag_disables_policy(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--plan",
+                "--no-thinking",
+            ],
+        )
+        call_kwargs = mock_submit.call_args
+        thinking = call_kwargs[1]["thinking"]
+        assert thinking.enabled is False
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_warns_when_effort_passed_without_plan(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--effort",
+                "low",
+            ],
+        )
+        assert "no effect without --plan" in result.stderr
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_warns_when_no_thinking_passed_without_plan(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--no-thinking",
+            ],
+        )
+        assert "no effect without --plan" in result.stderr
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_no_warning_when_flags_default_without_plan(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+            ],
+        )
+        assert "no effect without --plan" not in result.stderr
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_no_warning_when_effort_passed_with_plan(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--plan",
+                "--effort",
+                "low",
+            ],
+        )
+        assert "no effect without --plan" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 CLI tests
 # ---------------------------------------------------------------------------
 

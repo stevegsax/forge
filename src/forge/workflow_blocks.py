@@ -35,7 +35,7 @@ with workflow.unsafe.imports_passed_through():
         ParsedLLMResponse,
         ParseResponseInput,
         RemoveWorktreeInput,
-        ThinkingConfig,
+        ThinkingPolicy,
     )
 
 
@@ -101,7 +101,7 @@ async def batch_submit_and_wait(
     context: AssembledContext,
     output_type_name: str | None,
     *,
-    thinking: ThinkingConfig | None = None,
+    thinking: ThinkingPolicy | None = None,
     max_tokens: int = 4096,
     submit_timeout: timedelta = _SUBMIT_TIMEOUT,
     wait_timeout: timedelta = _BATCH_WAIT_TIMEOUT,
@@ -117,7 +117,7 @@ async def batch_submit_and_wait(
             context=context,
             output_type_name=output_type_name or "",
             workflow_id=workflow.info().workflow_id,
-            thinking=thinking or ThinkingConfig(),
+            thinking=thinking or ThinkingPolicy(),
             max_tokens=max_tokens,
         ),
         start_to_close_timeout=submit_timeout,
@@ -188,7 +188,13 @@ async def generation_dispatch(
             result_type=LLMCallResult,
         )
         return sync_result
-    parsed = await batch_submit_and_wait(batch_results, context, "LLMResponse")
+    # Generation stays thinking-disabled, as today — but explicit now: unlike
+    # the old ThinkingConfig(), ThinkingPolicy()'s bare default is
+    # enabled=True (D94), so omitting `thinking` here would silently turn
+    # generation-path thinking on.
+    parsed = await batch_submit_and_wait(
+        batch_results, context, "LLMResponse", thinking=ThinkingPolicy(enabled=False)
+    )
     return LLMCallResult(
         task_id=context.task_id,
         response=LLMResponse.model_validate_json(parsed.parsed_json),

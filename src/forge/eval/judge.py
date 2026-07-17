@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from sax_llm.models import text_messages
 
 from forge.eval.models import EvalCase, JudgeCriterion, JudgeVerdict
+from forge.models import CapabilityTier, ModelConfig, resolve_model
 
 if TYPE_CHECKING:
     from sax_llm.protocol import LLMProvider
@@ -23,7 +24,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_JUDGE_MODEL = "claude-sonnet-4-5-20250929"
+# The judge evaluates plan quality — a REASONING-tier task, mirroring the
+# planner it judges. Resolved through the registry (T3.2) rather than a
+# hardcoded literal.
+DEFAULT_JUDGE_MODEL = resolve_model(CapabilityTier.REASONING, ModelConfig())
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 
 

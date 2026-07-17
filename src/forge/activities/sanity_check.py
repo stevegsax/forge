@@ -29,12 +29,15 @@ from forge.activities.context import (
 from forge.message_log import write_message_log
 from forge.models import (
     AssembleSanityCheckContextInput,
+    CapabilityTier,
+    ModelConfig,
     Plan,
     PlanStep,
     SanityCheckCallResult,
     SanityCheckInput,
     SanityCheckResponse,
     StepResult,
+    resolve_model,
 )
 
 if TYPE_CHECKING:
@@ -43,6 +46,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_SANITY_CHECK_MAX_TOKENS = 4096
+
+# Shadow fallback for a missing input.model_name — the workflow always sets it
+# from CapabilityTier.REASONING via ModelConfig, so this only fires if a
+# caller forgets (see forge.activities.llm).
+_DEFAULT_SANITY_CHECK_MODEL = resolve_model(CapabilityTier.REASONING, ModelConfig())
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +174,7 @@ async def execute_sanity_check_call(
     """
     from sax_llm import parse_model_id
 
-    full_model = input.model_name or "claude-sonnet-4-5-20250929"
+    full_model = input.model_name or _DEFAULT_SANITY_CHECK_MODEL
     _, model = parse_model_id(full_model)
     start = time.monotonic()
 
@@ -175,7 +183,8 @@ async def execute_sanity_check_call(
         output_type=SanityCheckResponse,
         model=model,
         max_tokens=DEFAULT_SANITY_CHECK_MAX_TOKENS,
-        thinking_budget_tokens=input.thinking.budget_tokens,
+        thinking_enabled=input.thinking.enabled,
+        effort=input.thinking.effort,
     )
     result = await provider.call(params)
 
@@ -242,7 +251,7 @@ async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_sanity_check") as span:
         logger.info("Sanity check call: task_id=%s", input.task_id)
-        provider = get_provider(input.model_name or "claude-sonnet-4-5-20250929")
+        provider = get_provider(input.model_name or _DEFAULT_SANITY_CHECK_MODEL)
         async with heartbeat_during():
             result = await execute_sanity_check_call(input, provider)
         logger.info(

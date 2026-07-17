@@ -22,7 +22,7 @@ from forge.models import (
     PlanStep,
     TaskDefinition,
     TaskDomain,
-    ThinkingConfig,
+    ThinkingPolicy,
 )
 from tests.conftest import build_mock_provider
 
@@ -429,31 +429,31 @@ class TestCallPlannerModelNameThreading:
 
 
 # ---------------------------------------------------------------------------
-# Phase 12: Extended thinking for planning (now in llm_client)
+# T3.2: extended thinking is adaptive+effort, not budget_tokens (D94)
 # ---------------------------------------------------------------------------
 
 
 class TestBuildThinkingParam:
-    def test_opus_gets_enabled(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", 10_000)
-        assert result == {"type": "enabled", "budget_tokens": 10_000}
+    def test_opus_gets_adaptive_when_enabled(self) -> None:
+        result = build_thinking_param("claude-opus-4-6", enabled=True)
+        assert result == {"type": "adaptive"}
 
-    def test_sonnet_gets_budget(self) -> None:
-        result = build_thinking_param("claude-sonnet-4-5-20250929", 10_000)
-        assert result == {"type": "enabled", "budget_tokens": 10_000}
+    def test_sonnet_gets_adaptive_when_enabled(self) -> None:
+        result = build_thinking_param("claude-sonnet-4-5-20250929", enabled=True)
+        assert result == {"type": "adaptive"}
 
     def test_haiku_returns_none(self) -> None:
-        result = build_thinking_param("claude-haiku-4-5-20251001", 10_000)
+        result = build_thinking_param("claude-haiku-4-5-20251001", enabled=True)
         assert result is None
 
-    def test_zero_budget_returns_none(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", 0)
-        assert result is None
+    def test_disabled_returns_explicit_disabled_shape(self) -> None:
+        result = build_thinking_param("claude-opus-4-6", enabled=False)
+        assert result == {"type": "disabled"}
 
 
 class TestCallPlannerThinkingThreading:
     @pytest.mark.asyncio
-    async def test_threads_thinking_config_to_params(self) -> None:
+    async def test_threads_thinking_policy_to_params(self) -> None:
         from forge.activities.planner import call_planner
 
         provider = build_mock_provider(
@@ -479,13 +479,14 @@ class TestCallPlannerThinkingThreading:
                 system_prompt="sys",
                 user_prompt="usr",
                 model_name="claude-opus-4-6",
-                thinking=ThinkingConfig(budget_tokens=10_000, effort="high"),
+                thinking=ThinkingPolicy(enabled=True, effort="high"),
             )
             await call_planner(planner_input)
 
             provider.build_request_params.assert_called_once()
             call_kwargs = provider.build_request_params.call_args
-            assert call_kwargs[1].get("thinking_budget_tokens") == 10_000
+            assert call_kwargs[1].get("thinking_enabled") is True
+            assert call_kwargs[1].get("effort") == "high"
 
 
 # ---------------------------------------------------------------------------

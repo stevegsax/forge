@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 
 # BatchResult and BatchJobStatus are the cross-queue wire contract; they now live
 # in forge-contracts and are re-exported here so existing `from forge.models
@@ -22,7 +22,26 @@ from forge_contracts.models import (
 )
 from pydantic import BaseModel, Field
 
-ThinkingEffort = Literal["low", "medium", "high", "max"]
+# The model-tier registry and thinking policy are single-sourced on the platform
+# (D94, T3.2): forge's former CapabilityTier/ModelConfig/resolve_model/
+# ThinkingConfig are retired in favor of these re-exports, so existing
+# `from forge.models import ...` call sites keep working unchanged. Explicit
+# `as` aliases satisfy mypy strict's no_implicit_reexport.
+from sax_platform.llm.tiers import (
+    CapabilityTier as CapabilityTier,
+)
+from sax_platform.llm.tiers import (
+    Effort as Effort,
+)
+from sax_platform.llm.tiers import (
+    ModelConfig as ModelConfig,
+)
+from sax_platform.llm.tiers import (
+    ThinkingPolicy as ThinkingPolicy,
+)
+from sax_platform.llm.tiers import (
+    resolve_model as resolve_model,
+)
 
 
 class MatchLevel(StrEnum):
@@ -63,59 +82,6 @@ class SanityCheckVerdict(StrEnum):
     CONTINUE = "continue"
     REVISE = "revise"
     ABORT = "abort"
-
-
-class CapabilityTier(StrEnum):
-    """Capability tier for model routing (Phase 11)."""
-
-    REASONING = "reasoning"
-    GENERATION = "generation"
-    SUMMARIZATION = "summarization"
-    CLASSIFICATION = "classification"
-
-
-# ---------------------------------------------------------------------------
-# Model routing (Phase 11)
-# ---------------------------------------------------------------------------
-
-_DEFAULT_TIER_MODELS: dict[CapabilityTier, str] = {
-    CapabilityTier.REASONING: "anthropic:claude-opus-4-6",
-    CapabilityTier.GENERATION: "anthropic:claude-sonnet-4-5-20250929",
-    CapabilityTier.SUMMARIZATION: "anthropic:claude-sonnet-4-5-20250929",
-    CapabilityTier.CLASSIFICATION: "anthropic:claude-haiku-4-5-20251001",
-}
-
-
-class ModelConfig(BaseModel):
-    """Maps capability tiers to concrete model names."""
-
-    reasoning: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.REASONING])
-    generation: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.GENERATION])
-    summarization: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.SUMMARIZATION])
-    classification: str = Field(default=_DEFAULT_TIER_MODELS[CapabilityTier.CLASSIFICATION])
-
-
-def resolve_model(tier: CapabilityTier, config: ModelConfig) -> str:
-    """Resolve a capability tier to a concrete model name."""
-    return {
-        CapabilityTier.REASONING: config.reasoning,
-        CapabilityTier.GENERATION: config.generation,
-        CapabilityTier.SUMMARIZATION: config.summarization,
-        CapabilityTier.CLASSIFICATION: config.classification,
-    }[tier]
-
-
-class ThinkingConfig(BaseModel):
-    """Extended thinking configuration (Phase 12).
-
-    Set budget_tokens=0 to disable thinking.
-    """
-
-    budget_tokens: int = Field(default=0, description="Token budget for thinking (0 = disabled).")
-    effort: ThinkingEffort = Field(
-        default="high",
-        description="Effort level for adaptive thinking (Opus 4.6+): low, medium, high, max.",
-    )
 
 
 class ValidationConfig(BaseModel):
@@ -638,7 +604,7 @@ class ConflictResolutionInput(BaseModel):
     worktree_path: str
     domain: TaskDomain
     model_name: str = ""
-    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
 
 
 class ConflictResolutionResponse(BaseModel):
@@ -658,7 +624,7 @@ class ConflictResolutionCallInput(BaseModel):
     system_prompt: str
     user_prompt: str
     model_name: str = ""
-    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     log_messages: bool = False
     worktree_path: str = ""
 
@@ -791,9 +757,7 @@ class ForgeTaskInput(BaseModel):
         description="Attempt LLM-based conflict resolution for fan-out file conflicts.",
     )
     model_routing: ModelConfig = Field(default_factory=ModelConfig)
-    thinking: ThinkingConfig = Field(
-        default_factory=lambda: ThinkingConfig(budget_tokens=10_000),
-    )
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     sync_mode: bool = Field(
         default=False,
         description="Use synchronous Messages API. False enables batch mode (default).",
@@ -889,9 +853,9 @@ class SubTaskInput(BaseModel):
         default_factory=ModelConfig,
         description="Capability-tier model routing. Inherited from parent workflow.",
     )
-    thinking: ThinkingConfig = Field(
-        default_factory=ThinkingConfig,
-        description="Extended thinking config. Inherited from parent workflow.",
+    thinking: ThinkingPolicy = Field(
+        default_factory=ThinkingPolicy,
+        description="Extended thinking policy. Inherited from parent workflow.",
     )
     sync_mode: bool = Field(
         default=False,
@@ -938,7 +902,7 @@ class PlannerInput(BaseModel):
     system_prompt: str
     user_prompt: str
     model_name: str = ""
-    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     log_messages: bool = False
     worktree_path: str = ""
 
@@ -990,7 +954,7 @@ class SanityCheckInput(BaseModel):
     system_prompt: str
     user_prompt: str
     model_name: str = ""
-    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     log_messages: bool = False
     worktree_path: str = ""
 
@@ -1078,7 +1042,7 @@ class BatchSubmitInput(BaseModel):
     context: AssembledContext
     output_type_name: str = Field(description="Key in get_output_type_registry().")
     workflow_id: str = Field(description="Temporal workflow ID for audit linkage.")
-    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     max_tokens: int = Field(default=4096, description="Max output tokens.")
 
 

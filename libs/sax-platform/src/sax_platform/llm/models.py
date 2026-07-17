@@ -8,10 +8,17 @@ in-flight call to raise from), and one classifier (`classify_message`) that
 both lanes call so refusal/truncation detection is defined exactly once.
 """
 
-from typing import final
+from __future__ import annotations
 
-import anthropic.types
+from typing import TYPE_CHECKING, final
+
 from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    # Annotation-only: classify/telemetry read Message attributes duck-typed,
+    # so the SDK never has to be imported at runtime — keeping this module
+    # importable inside the Temporal workflow sandbox without an HTTP stack.
+    import anthropic.types
 
 __all__ = [
     "ClassifiedMessage",
