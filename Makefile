@@ -65,7 +65,7 @@ help:
 	@echo "  make lint         ruff check + format --check (workspace-wide)"
 	@echo "  make typecheck    mypy strict across all six packages"
 	@echo "  make lint-imports import-linter DAG contracts (root pyproject)"
-	@echo "  make test         all five package suites, each from its own directory"
+	@echo "  make test         all six package suites, each from its own directory"
 	@echo ""
 	@echo "Local stack (deploy/local-stack): Postgres + MinIO + Temporal"
 	@echo "  data dirs: $(PG_DATA_DIR) | $(MINIO_DATA_DIR)"
