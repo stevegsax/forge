@@ -35,6 +35,9 @@ jobs:
       - name: mypy ocr (strict, T2.3c)
         working-directory: apps/ocr
         run: uv run mypy
+      - name: mypy pbook (strict, T2.3d)
+        working-directory: apps/pbook
+        run: uv run mypy
       - run: uv run lint-imports
 
   test-forge:
