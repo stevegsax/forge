@@ -60,7 +60,7 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D10: Model Routing via Capability Tiers
 
-> **Amended by D94** — the tier concept stands; the tier-to-model mapping is now single-sourced in `sax_platform.llm.tiers`, with the stale Sonnet pin updated to `claude-sonnet-4-6`.
+> **Amended by D94** — the tier concept stands; the tier-to-model mapping is now single-sourced in `sax_platform.llm.tiers`, with the pins live-verified at implementation time (see D94's 2026-07-16 note: sonnet-5/opus-4-8/haiku-4-5).
 
 **Decision:** The planner specifies a capability tier per task (reasoning, generation, summarization, classification). The orchestrator resolves tiers to concrete models at dispatch time.
 
@@ -384,7 +384,7 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D58: Capability Tiers Over Direct Model Names
 
-> **Amended by D94** — tiers stand; the forge and pbook copies of the mapping had drifted, so the registry is now single-sourced in `sax_platform.llm.tiers` with `claude-sonnet-4-6` (the `claude-sonnet-4-5-20250929` pin was stale).
+> **Amended by D94** — tiers stand; the forge and pbook copies of the mapping had drifted, so the registry is now single-sourced in `sax_platform.llm.tiers` with pins live-verified at implementation time (see D94's 2026-07-16 note: sonnet-5/opus-4-8/haiku-4-5).
 
 **Decision:** Route LLM calls via abstract capability tiers (REASONING, GENERATION, SUMMARIZATION, CLASSIFICATION) rather than passing concrete model names through the system.
 

@@ -125,10 +125,10 @@ Map scenarios to system capabilities:
 | `batch_processing.feature` | Batch submission, polling, multi-provider | `batch_poller_workflow.py`, `activities/batch_poll.py` |
 | `git_operations.feature` | Worktree lifecycle, branch naming | `git.py`, `activities/git_activities.py` |
 | `model_routing.feature` | Capability tiers, model resolution | `models.py` |
-| `llm_providers.feature` | Provider abstraction, degradation | `llm_providers/` |
+| `llm_providers.feature` | Provider abstraction, degradation | `sax_llm` (`libs/sax-llm/`) |
 | `knowledge_management.feature` | Extraction, playbooks, injection | `extraction_workflow.py`, `activities/extraction.py` |
-| `ocr_pipeline.feature` | OCR workflows, PDF chunking, blobs | `ocr/` |
-| `ocr_cli.feature` | OCR job listing/status CLI | `cli.py` (`ocr-jobs`), `ocr/workflow_list_jobs.py` |
+| `ocr_pipeline.feature` | OCR workflows, PDF chunking, blobs | `apps/ocr/` |
+| `ocr_cli.feature` | OCR job listing/status CLI | `apps/ocr/src/ocr/cli.py` (`ocr list`), `apps/ocr/src/ocr/workflow_list_jobs.py` |
 | `ocr_web_api.feature` | OCR OpenAPI web service, pagination *(not implemented)* | none — no web framework in repo |
 | `cli.feature` | CLI commands, flags, exit codes | `cli.py` |
 | `observability.feature` | SQLite store, 7 tables, migrations | `store.py` |

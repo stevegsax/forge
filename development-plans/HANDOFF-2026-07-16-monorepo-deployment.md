@@ -1,5 +1,7 @@
 # Handoff — Monorepo consolidation + local-first deployment
 
+> Superseded by [HANDOFF-2026-07-17-phase3.md](HANDOFF-2026-07-17-phase3.md) — kept as the dated record of the monorepo/deployment work.
+
 **Date:** 2026-07-16
 **Status:** Complete and shipped. All work is merged to `main` and pushed; the
 deployment is live. Nothing is in flight.

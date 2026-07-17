@@ -25,7 +25,7 @@ The `raw_response_json` contains the full Anthropic Message. The LLM returns a s
   "id": "msg_01XYZ...",
   "type": "message",
   "role": "assistant",
-  "model": "claude-sonnet-4-5-20250929",
+  "model": "claude-sonnet-5",
   "content": [
     {
       "type": "tool_use",
@@ -55,7 +55,7 @@ The `raw_response_json` contains the full Anthropic Message. The LLM returns a s
 
 ## Parsing
 
-The `parse_llm_response` activity in `src/forge/activities/batch_parse.py` delegates to `parse_batch_response_json()` in `src/forge/llm_client.py`:
+The `parse_llm_response` activity in `src/forge/activities/batch_parse.py` calls the sax_llm provider's `parse_batch_result()`, which delegates to `parse_batch_response_json()` in sax_llm (`libs/sax-llm/src/sax_llm/client.py`):
 
 1. Deserialize the raw JSON into an Anthropic `Message` object
 2. Call `extract_tool_result(message, LLMResponse)` — iterate `message.content`, find the first `tool_use` block, validate `block.input` against the Pydantic model
@@ -74,7 +74,7 @@ The result is a `ParsedLLMResponse` carrying the serialized model and usage stat
 ```python
 ParsedLLMResponse(
     parsed_json='{"files":[{"file_path":"hello.md","content":"# Hello\\n\\nHello! How can I help you today?"}],"edits":[],"explanation":"Created a greeting in hello.md."}',
-    model_name="claude-sonnet-4-5-20250929",
+    model_name="claude-sonnet-5",
     input_tokens=312,
     output_tokens=84,
     cache_creation_input_tokens=290,
@@ -90,7 +90,7 @@ Back in the workflow, the `ParsedLLMResponse` is deserialized into the final `LL
 LLMCallResult(
     task_id="say-hello",
     response=LLMResponse.model_validate_json(parsed.parsed_json),
-    model_name="claude-sonnet-4-5-20250929",
+    model_name="claude-sonnet-5",
     input_tokens=312,
     output_tokens=84,
     latency_ms=0.0,

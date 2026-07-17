@@ -9,7 +9,7 @@ Git and worktrees serve as the general-purpose data store and isolation mechanis
 ## Prerequisites
 
 - The local stack running: `make stack-up` brings up [Temporal](https://temporal.io/), Postgres, and MinIO under podman (see [deploy/local-stack/](deploy/local-stack/)). Any Temporal server reachable at `FORGE_TEMPORAL_ADDRESS` works; the default is `localhost:7233`.
-- The workspace synced: `uv sync --all-packages` from the repo root. The root is a uv workspace (`apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts`) and is self-contained — a bare clone resolves with no sibling checkouts.
+- The workspace synced: `uv sync --all-packages` from the repo root. The root is a uv workspace (`apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts`, `libs/sax-platform`) and is self-contained — a bare clone resolves with no sibling checkouts.
 
 ## Architecture
 
@@ -124,8 +124,8 @@ forge run --task-file task.json
 | `--generation-model` | — | Override model for GENERATION tier (code gen) |
 | `--summarization-model` | — | Override model for SUMMARIZATION tier (extraction) |
 | `--classification-model` | — | Override model for CLASSIFICATION tier (exploration) |
-| `--thinking-budget` | `10000` | Token budget for extended thinking in planner |
-| `--no-thinking` | off | Disable extended thinking for planner |
+| `--effort` | `high` | Extended-thinking effort for planner/sanity-check/conflict-resolution calls in planning mode (`--plan`): `low`, `medium`, `high`, `xhigh`, `max`. No effect in single-step mode. |
+| `--no-thinking` | off | Disable extended thinking for planner/sanity-check/conflict-resolution calls in planning mode. No effect in single-step mode. |
 | `--domain` | `code_generation` | Task domain: `code_generation`, `research`, `code_review`, `documentation`, `generic` |
 
 **API and debug options:**
@@ -195,7 +195,7 @@ forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
 | `--corpus-dir` | — | Directory containing eval case JSON files (required) |
 | `--plans-dir` | — | Directory containing plan JSON files |
 | `--judge / --no-judge` | `--no-judge` | Run LLM judge scoring |
-| `--judge-model` | `claude-sonnet-4-5-20250929` | Model to use as judge |
+| `--judge-model` | REASONING tier pin | Model to use as judge (defaults to the REASONING tier's registry pin) |
 | `--dry-run` | off | List cases without evaluating |
 | `--output-dir` | — | Directory to save run results JSON |
 | `--json` | off | Output results as JSON |

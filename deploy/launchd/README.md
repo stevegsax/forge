@@ -33,10 +33,15 @@ chmod 600. After a fresh boot the workers crash-loop politely
 ## Operate
 
 ```bash
-launchctl print gui/$UID/com.saxcapital.forge-worker-1 | head   # status
-launchctl kickstart -k gui/$UID/com.saxcapital.forge-worker-1   # restart
+make workers-status                                             # running workers (all)
+make workers-restart                                            # restart all (standard — see below)
+launchctl print gui/$UID/com.saxcapital.forge-worker-1 | head   # one agent's launchd status
+launchctl kickstart -k gui/$UID/com.saxcapital.forge-worker-1   # force-restart one agent (fallback)
 tail -f ~/.local/state/forge/logs/forge-worker-1.log            # logs
 ```
+
+`make workers-restart` is the standard way to restart; the `launchctl
+kickstart` line above is a per-agent troubleshooting fallback.
 
 `pbook migrate` is NOT automatic (the pbook worker never auto-migrates):
 run `uv run pbook migrate` once before first enabling the pbook agent,
@@ -55,6 +60,10 @@ whatever code is on disk in the repo checkout (`ThrottleInterval` is
 10s, so the relaunch is near-immediate). This is the standard way to
 pick up newly merged code without a manual `launchctl kickstart` per
 agent — no plist changes, no install.
+
+It prints one line per worker type (forge/ocr/pbook). A `none running —
+nothing to restart` line for the ocr or pbook worker is expected when that
+agent is not installed (both are opt-in) — it is not an error.
 
 `make workers-status` lists the currently running worker processes
 (read-only, safe to run anytime).

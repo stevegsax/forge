@@ -2,7 +2,7 @@
 
 Start here: **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — current project status, completed/remaining requirements, and known issues.
 
-This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pbook/) (own CLAUDE.md and `design/` notes), [apps/ocr/](apps/ocr/), [libs/sax-llm/](libs/sax-llm/), and [libs/forge-contracts/](libs/forge-contracts/).
+This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pbook/) (own CLAUDE.md and `design/` notes), [apps/ocr/](apps/ocr/), [libs/sax-llm/](libs/sax-llm/), [libs/forge-contracts/](libs/forge-contracts/), and [libs/sax-platform/](libs/sax-platform/) (the Phase 3 platform library).
 
 ## Status & Planning
 
@@ -10,7 +10,8 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 - [PHASES.md](docs/PHASES.md) — the 14-phase roadmap (1–12 + 14 done with module map; 13 deferred).
 - [development-plans/TASKS.md](development-plans/TASKS.md) — live task list (completed vs uncompleted).
 - [development-plans/PROCESS.md](development-plans/PROCESS.md) — how to pick up and work a task.
-- [development-plans/HANDOFF-2026-07-16-monorepo-deployment.md](development-plans/HANDOFF-2026-07-16-monorepo-deployment.md) — current state: the monorepo consolidation (D98) and local-first deployment (D99), what to know before touching anything, and where to start.
+- [development-plans/HANDOFF-2026-07-17-phase3.md](development-plans/HANDOFF-2026-07-17-phase3.md) — current state: Phase 2 close (root gates/CI, mypy strict) and Phase 3 T3.1–T3.3 (the `libs/sax-platform` platform library, one tier registry, MistralOcr); next task is T3.4.
+- [development-plans/HANDOFF-2026-07-16-monorepo-deployment.md](development-plans/HANDOFF-2026-07-16-monorepo-deployment.md) — prior handoff: the monorepo consolidation (D98) and local-first deployment (D99).
 
 ## Architecture & Decisions
 

@@ -9,7 +9,7 @@
 
 ## Authentication
 
-Set the `MISTRAL_API_KEY` environment variable. The `MistralProvider` reads it at init time (`src/forge/llm_providers/mistral.py:79`).
+Set the `MISTRAL_API_KEY` environment variable. The `make_mistral_client()` factory in `sax_platform.ocr` (`libs/sax-platform/src/sax_platform/ocr.py`) reads it and raises if it is unset.
 
 ## SDK
 
@@ -109,7 +109,7 @@ See also `scripts/mistral-batch-jobs.sh`.
 
 ## Forge integration
 
-- Provider: `src/forge/llm_providers/mistral.py`
+- Provider: `sax_platform.ocr.MistralOcr` (`libs/sax-platform/src/sax_platform/ocr.py`)
 - Unsupported features (silently skipped per D63 degradation policy):
 
   - Prompt caching

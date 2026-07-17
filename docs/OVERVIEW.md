@@ -12,26 +12,26 @@ Completion below was established by verifying against the code on 2026-06-04, no
 ## Status at a glance
 
 - **Release 1 (core orchestrator + batch) is shipped.** Phases 1–12 and 14 are implemented and wired into the worker; Phase 13 (tree-sitter) is deferred to Release 2. See [PHASES.md](PHASES.md).
-- **This repo is the monorepo** (D98, T2.1 complete 2026-07-16): one uv workspace, one lock, one venv — `apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts`. A bare clone is self-contained; Python is pinned to **3.14** (standard GIL). The five predecessor repos are archived.
+- **This repo is the monorepo** (D98, T2.1 complete 2026-07-16): one uv workspace, one lock, one venv — `apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts`, and `libs/sax-platform` (added by Phase 3, T3.1). A bare clone is self-contained; Python is pinned to **3.14** (standard GIL). The five predecessor repos are archived; `libs/sax-platform` is new to Phase 3, not a predecessor.
 - **Deployment is local-first** (D99, T0.7 complete 2026-07-16): Temporal self-hosts in the podman stack with persistence in that stack's Postgres; the workers run under launchd on an always-on desktop; Supabase Postgres + S3 remain the managed stores. EC2, Terraform, and the mTLS remote-access gateway are deleted — remote access is out of scope until revisited.
-- **Migration status:** Phase 1 done; Phase 2 has T2.2 (root gates) and T2.3a–d (mypy strict) left; Phases 3–8 ahead. Live queue: [../development-plans/TASKS.md](../development-plans/TASKS.md).
+- **Migration status:** Phases 1–2 done (root CI, 85% gates across the workspace, import-linter DAG contracts, mypy strict everywhere); Phase 3 in progress — T3.1–T3.3 landed the `sax-platform` package (its LLM client both lanes, the tiers registry, and the Mistral OCR capability); Phases 4–8 ahead. Live queue: [../development-plans/TASKS.md](../development-plans/TASKS.md).
 - **Work shipped outside the phase roadmap:** OCR pipeline (sync + batch — since extracted to the `ocr` app, now the `apps/ocr` workspace member), OCR separation (platform/consumer split via the shared `forge-contracts` package; merged 2026-06-05), store externalization (Postgres + S3 + survivable writes), transcript ingestion (`forge ingest` → pbook), planner evaluation framework, and secure remote access (mTLS + EC2 deploy; that infrastructure was retired by D99 in favor of the local-first deployment — client-side TLS code remains, dormant).
 - **The orchestrator is code-first in practice.** Despite the "task-agnostic" framing, context discovery is Python-specific (see tech debt below).
 
 ## Implemented capabilities
 
-Module paths are under `src/forge/`.
+Module paths are under `src/forge/` unless a workspace member (`sax_llm.*`, `sax_platform.*`, `forge_contracts.*`) is named explicitly.
 
 - **Core loop** — universal workflow step, transitions, git worktree isolation: `workflows.py` (`ForgeTaskWorkflow`), `activities/transition.py`, `git.py`.
 - **Planning & fan-out** — single-pass planner producing ordered `PlanStep`s with optional parallel `sub_tasks`; LLM conflict resolution: `activities/planner.py`, `workflows.py` (`ForgeSubTaskWorkflow`), `activities/conflict_resolution.py`.
 - **Context** — import-graph + PageRank + token-budget assembly, plus LLM-guided exploration: `code_intel/`, `activities/context.py`, `activities/exploration.py`.
 - **Output & validation** — diff-based edits with 4-level fuzzy fallback; ruff + optional tests with error-aware retries: `activities/output.py`, `activities/validate.py`.
-- **Model routing & thinking** — capability tiers, extended thinking for planning, prompt caching: `models.py` (`CapabilityTier`), `activities/planner.py`, `sax_llm.anthropic` (the `libs/sax-llm` workspace member).
-- **Batch** — async submission + polling via Anthropic/Mistral Batch APIs: `batch_poller_workflow.py`, `activities/batch_*`.
-- **Knowledge** — extraction → playbooks, transcript ingestion to pbook: `extraction_workflow.py`, `activities/extraction.py`, `ingestion_workflow.py`.
+- **Model routing & thinking** — capability tiers and the `ThinkingPolicy` (adaptive effort; the old `budget_tokens` knob is gone) single-sourced in `sax_platform.llm.tiers` and re-exported by `forge.models`; extended thinking for planning; prompt caching. The runtime call still runs through `sax_llm.anthropic`: `models.py`, `activities/planner.py`.
+- **Batch** — async submission + a shared poller (signal-based transport, interim until Phase 4). Forge's own LLM calls use the Anthropic Batch API; the opaque-blob SPI additionally routes OCR submissions to the Mistral batch API via `sax_platform.ocr.MistralOcr`: `batch_poller_workflow.py`, `activities/batch_*`, `activities/_mistral.py`.
+- **Knowledge** — extraction activities → playbooks (manual add with LLM review; the scheduled re-extraction loop was removed in T1.8), transcript ingestion to pbook: `activities/extraction.py`, `manual_playbook_workflow.py`, `ingestion_workflow.py`.
 - **Observability** — SQLite/Postgres store, Alembic migrations, CLI inspection: `store.py`, `alembic/`, `cli.py` (`forge status`).
 - **Batch SPI (OCR-agnostic)** — opaque-blob batch submit (`submit_batch_blob`) plus a domain-agnostic poller that forwards verbatim provider results to consumer workflows cross-queue: `activities/batch_submit.py`, `batch_poller_workflow.py`. OCR itself lives in the `apps/ocr` workspace member, consuming the platform via the shared `forge-contracts` package; neither package imports the other.
-- **Providers** — provider protocol + Anthropic/Mistral adapters live in the `sax-llm` workspace member (`libs/sax-llm`) (`sax_llm/`), consumed via `get_provider`; Forge no longer carries its own provider layer.
+- **Providers** — the provider protocol + registry live in the `sax-llm` workspace member (`libs/sax-llm`, `sax_llm/`), consumed via `get_provider`; Forge no longer carries its own provider layer. Only the Anthropic adapter ships: the Mistral chat adapter was deleted in T3.3, leaving Mistral solely as the OCR capability (`sax_platform.ocr.MistralOcr`).
 
 ## Requirements: complete vs. remaining
 
@@ -76,9 +76,9 @@ Mined from the four code reviews in `archive/to-merge/code-review/` (≈2026-02-
 | Eval as release gate | Compares plan quality (baseline vs candidate) but isn't a CI gate; no end-to-end/adversarial coverage | `eval/runner.py` |
 | Domain-agnosticism | Prompts/validation parameterized per domain, but context discovery is Python/import-graph-specific; non-code domains have no positive validators | `domains.py::DomainConfig`, `code_intel/` |
 | Human-in-the-loop | Only batch/OCR signals + out-of-band merge gating + manual playbook approval; no structured intervention | `manual_playbook_workflow.py` |
-| Multi-provider parity | Protocol + Anthropic/Mistral adapters exist (in the `libs/sax-llm` workspace member), but defaults are Anthropic and there's no cross-provider conformance suite | `sax_llm/protocol.py`, `sax_llm/registry.py` |
+| Multi-provider parity | The protocol + registry exist but ship only an Anthropic adapter — the Mistral chat adapter was deleted in T3.3, leaving Mistral solely as the OCR capability (`sax_platform.ocr.MistralOcr`). Every runtime tier defaults to Anthropic; there is no second chat provider to be at parity with, and no cross-provider conformance suite | `sax_llm/protocol.py`, `sax_llm/registry.py` |
 
-**Tooling & ops debt** (surfaced 2026-07-16 during the monorepo/deployment work; T2.2 closed the CI/gates/findings rows the same 2026-07-16 — GitHub Actions CI, import-linter DAG contracts, all five packages gated at 85% coverage, the four standing findings fixed):
+**Tooling & ops debt** (surfaced 2026-07-16 during the monorepo/deployment work; Phase 2 closed the CI/gates/findings rows — GitHub Actions CI, import-linter DAG contracts, all six workspace packages gated at 85% coverage, mypy strict across the workspace (T2.3a–d), the four standing findings fixed):
 
 | Item | Detail | Pointer |
 | --- | --- | --- |
