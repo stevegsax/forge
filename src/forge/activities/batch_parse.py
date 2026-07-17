@@ -15,7 +15,7 @@ import logging
 from temporalio import activity
 
 from forge.message_log import write_message_log
-from forge.models import ParsedLLMResponse, ParseResponseInput
+from forge.models import ParsedLLMResponse, ParseResponseInput, extract_stop_reason
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,12 @@ def execute_parse_llm_response(
         output_tokens=result.output_tokens,
         cache_creation_input_tokens=result.cache_creation_input_tokens,
         cache_read_input_tokens=result.cache_read_input_tokens,
+        # raw_json is the serialized anthropic.types.Message either way (sax_llm
+        # echoes it back verbatim on result.raw_response_json too); sax_llm's
+        # ProviderResponse has no typed stop_reason field, so pull it from the
+        # wire JSON directly rather than depend on a libs/ change (owner note:
+        # 2026-07 Phase 3 code review, item 3).
+        stop_reason=extract_stop_reason(raw_json),
     )
 
 
@@ -94,6 +100,16 @@ async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
             input.output_type_name,
             provider_name=input.provider,
         )
+
+        if result.stop_reason == "max_tokens":
+            logger.warning(
+                "Batch LLM call truncated at max_tokens: task_id=%s model=%s "
+                "max_tokens=%d output_tokens=%d",
+                input.task_id,
+                result.model_name,
+                input.max_tokens,
+                result.output_tokens,
+            )
 
         span.set_attributes(
             {

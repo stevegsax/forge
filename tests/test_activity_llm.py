@@ -103,6 +103,30 @@ class TestExecuteLlmCall:
 
         assert result.response.explanation == "Created output file."
 
+    @pytest.mark.asyncio
+    async def test_extracts_stop_reason(self) -> None:
+        context = self._make_context()
+        provider = build_mock_provider(
+            tool_input=LLMResponse(explanation="Done.").model_dump(),
+            raw_response_json='{"stop_reason": "end_turn"}',
+        )
+
+        result = await execute_llm_call(context, provider)
+
+        assert result.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_stop_reason_none_when_absent(self) -> None:
+        context = self._make_context()
+        provider = build_mock_provider(
+            tool_input=LLMResponse(explanation="Done.").model_dump(),
+            raw_response_json="{}",
+        )
+
+        result = await execute_llm_call(context, provider)
+
+        assert result.stop_reason is None
+
 
 # ---------------------------------------------------------------------------
 # Phase 9: cache stats extraction
@@ -211,3 +235,63 @@ class TestCallLlmModelNameThreading:
             result = await call_llm(context)
 
             assert result.model_name == DEFAULT_MODEL
+
+
+# ---------------------------------------------------------------------------
+# max_tokens truncation warning (owner-mandated token record-keeping caveat)
+# ---------------------------------------------------------------------------
+
+
+class TestCallLlmMaxTokensWarning:
+    @pytest.mark.asyncio
+    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
+        from forge.activities.llm import call_llm
+
+        provider = build_mock_provider(
+            tool_input=LLMResponse(explanation="partial").model_dump(),
+            model_name="claude-sonnet-4-5-20250929",
+            output_tokens=4096,
+            raw_response_json='{"stop_reason": "max_tokens"}',
+        )
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value = mock_span
+
+        with (
+            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.tracing.get_tracer", return_value=mock_tracer),
+            caplog.at_level("WARNING", logger="forge.activities.llm"),
+        ):
+            context = AssembledContext(task_id="t-trunc", system_prompt="sys", user_prompt="usr")
+            await call_llm(context)
+
+        assert any("truncated at max_tokens" in r.message for r in caplog.records)
+        assert any("t-trunc" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
+        from forge.activities.llm import call_llm
+
+        provider = build_mock_provider(
+            tool_input=LLMResponse(explanation="done").model_dump(),
+            raw_response_json='{"stop_reason": "end_turn"}',
+        )
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value = mock_span
+
+        with (
+            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.tracing.get_tracer", return_value=mock_tracer),
+            caplog.at_level("WARNING", logger="forge.activities.llm"),
+        ):
+            context = AssembledContext(task_id="t-ok", system_prompt="sys", user_prompt="usr")
+            await call_llm(context)
+
+        assert not any("truncated at max_tokens" in r.message for r in caplog.records)

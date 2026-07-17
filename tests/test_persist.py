@@ -189,6 +189,60 @@ class TestPersistIdempotency:
         result = await persist_to_store(PersistBatchStatus(request_id="req-s", status="processing"))
         assert result.applied is True
 
+    @pytest.mark.asyncio
+    async def test_interaction_row_carries_tokens_and_stop_reason(self, migrated: str) -> None:
+        """End-to-end: interactions rows actually get token + stop_reason columns
+        populated (2026-07 Phase 3 code review, item 3a/3b) — not just the
+        in-memory PersistInteraction DTO, the real DB row after a round trip
+        through persist_to_store -> save_interaction -> get_interactions."""
+        req = PersistInteraction(
+            idempotency_key="wf:llm:token-check",
+            task_id="t-token-check",
+            role="llm",
+            system_prompt="s",
+            user_prompt="u",
+            model_name="claude-sonnet-4-5-20250929",
+            input_tokens=321,
+            output_tokens=16384,
+            latency_ms=42.0,
+            cache_creation_input_tokens=11,
+            cache_read_input_tokens=22,
+            stop_reason="max_tokens",
+        )
+        result = await persist_to_store(req)
+        assert result.applied is True
+
+        from forge.store import get_interactions
+
+        rows = get_interactions(get_store_engine(), "t-token-check")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["input_tokens"] == 321
+        assert row["output_tokens"] == 16384
+        assert row["cache_creation_input_tokens"] == 11
+        assert row["cache_read_input_tokens"] == 22
+        assert row["stop_reason"] == "max_tokens"
+
+    @pytest.mark.asyncio
+    async def test_interaction_row_stop_reason_defaults_to_none(self, migrated: str) -> None:
+        req = PersistInteraction(
+            idempotency_key="wf:llm:no-stop-reason",
+            task_id="t-no-stop-reason",
+            role="llm",
+            system_prompt="s",
+            user_prompt="u",
+            model_name="m",
+            input_tokens=1,
+            output_tokens=2,
+            latency_ms=3.0,
+        )
+        await persist_to_store(req)
+
+        from forge.store import get_interactions
+
+        rows = get_interactions(get_store_engine(), "t-no-stop-reason")
+        assert rows[0]["stop_reason"] is None
+
 
 # ---------------------------------------------------------------------------
 # Pause-and-retry — a probe workflow runs one "expensive" activity, then a

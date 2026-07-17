@@ -132,8 +132,20 @@ def make_mistral_client(api_key: str | None = None) -> Mistral:
     (`os.environ.get("MISTRAL_API_KEY", "")`) before constructing the SDK
     client; this factory preserves that exact fallback rather than relying
     on SDK behavior that doesn't exist.
+
+    Raises `ValueError` if the resolved key is empty or missing — the ocr
+    worker calls this at startup, which is exactly where an operator should
+    learn of a missing `MISTRAL_API_KEY`, rather than the client silently
+    constructing with `api_key=""` and failing every call hours later with a
+    401.
     """
     resolved_key = api_key if api_key is not None else os.environ.get("MISTRAL_API_KEY", "")
+    if not resolved_key:
+        msg = (
+            "MISTRAL_API_KEY is not set (and no api_key was passed explicitly). "
+            "Set the MISTRAL_API_KEY environment variable or pass api_key explicitly."
+        )
+        raise ValueError(msg)
     return Mistral(api_key=resolved_key)
 
 
@@ -190,7 +202,14 @@ def _parse_error_file_entries(content: str) -> list[BatchResultEntry]:
             continue
 
         custom_id = data.get("custom_id", "unknown")
-        error_detail = data.get("response", {}).get("body", {}).get("error") or data.get("error")
+        # `data.get("response", {})` only supplies the {} default when the
+        # key is *absent*. The error-file shape can carry an explicit
+        # `"response": null`, in which case `.get` returns the key's actual
+        # value (None) and a chained `.get("body", ...)` crashes. `(... or
+        # {})` normalizes both the missing-key and explicit-null cases.
+        response = data.get("response") or {}
+        body = response.get("body") or {}
+        error_detail = body.get("error") or data.get("error")
         error_str = json.dumps(error_detail) if error_detail else "Unknown error"
 
         entries.append(
@@ -302,7 +321,15 @@ class MistralOcr:
         `endpoint` stays a keyword parameter — defaulted to `/v1/ocr` — so
         the call shape matches what forge's opaque-blob SPI already calls:
         `provider.submit_batch(requests, model, endpoint=input.endpoint)`.
+
+        Forge's SPI shell always forwards an `endpoint` argument, and
+        `BatchSubmitSpiInput.endpoint` itself defaults to `""` rather than
+        being absent — so the keyword default above is dead on that call
+        path. `endpoint = endpoint or _OCR_ENDPOINT` restores the old
+        provider's normalization: an empty string is treated the same as
+        "not supplied."
         """
+        endpoint = endpoint or _OCR_ENDPOINT
         lines = [json.dumps(r) for r in requests]
         jsonl_bytes = ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -372,7 +399,10 @@ class MistralOcr:
                 continue
             entry_data = json.loads(line)
             custom_id = entry_data.get("custom_id", "")
-            response_body = entry_data.get("response", {}).get("body", {})
+            # `or {}` on both hops: .get's default only applies when the key is
+            # absent — a present "response": null would otherwise crash the
+            # whole poll (same defect class as _parse_error_file_entries).
+            response_body = (entry_data.get("response") or {}).get("body") or {}
             if custom_id in error_ids:
                 entries = [e for e in entries if e.custom_id != custom_id]
                 error_ids.discard(custom_id)

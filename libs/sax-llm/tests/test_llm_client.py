@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -124,6 +125,51 @@ class TestBuildThinkingParam:
     def test_non_anthropic_returns_none(self) -> None:
         result = build_thinking_param("mistral-large-latest", enabled=True)
         assert result is None
+
+    def test_pre_adaptive_model_name_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Regression test: build_thinking_param sends the adaptive/disabled
+        shape to every opus/sonnet/claude name, including pre-adaptive
+        generations (D94) that reject those shapes with a 400. A stale pin
+        matching a PRE_ADAPTIVE_HINTS fragment must trigger a warning
+        rather than silently building a shape the API will reject."""
+        import sax_llm.client as client_module
+
+        client_module._warned_pre_adaptive_models.clear()
+
+        with caplog.at_level(logging.WARNING):
+            result = build_thinking_param("claude-sonnet-4-5-20250929", enabled=True)
+
+        assert result == {"type": "adaptive"}  # shape is unchanged
+        assert len(caplog.records) == 1
+        assert "claude-sonnet-4-5-20250929" in caplog.text
+        assert "pre-adaptive" in caplog.text.lower() or "adaptive" in caplog.text.lower()
+
+    def test_current_generation_model_name_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import sax_llm.client as client_module
+
+        client_module._warned_pre_adaptive_models.clear()
+
+        with caplog.at_level(logging.WARNING):
+            result = build_thinking_param("claude-sonnet-5", enabled=True)
+
+        assert result == {"type": "adaptive"}
+        assert len(caplog.records) == 0
+
+    def test_pre_adaptive_warning_emitted_once_per_model_name(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import sax_llm.client as client_module
+
+        client_module._warned_pre_adaptive_models.clear()
+
+        with caplog.at_level(logging.WARNING):
+            build_thinking_param("claude-opus-4-6", enabled=True)
+            build_thinking_param("claude-opus-4-6", enabled=False)
+            build_thinking_param("claude-opus-4-6", enabled=True)
+
+        assert len(caplog.records) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from forge.models import (
     LLMCallResult,
     LLMResponse,
     ModelConfig,
+    extract_stop_reason,
     resolve_model,
 )
 
@@ -85,6 +86,7 @@ async def execute_llm_call(
         latency_ms=elapsed_ms,
         cache_creation_input_tokens=result.cache_creation_input_tokens,
         cache_read_input_tokens=result.cache_read_input_tokens,
+        stop_reason=extract_stop_reason(result.raw_response_json),
     )
 
 
@@ -113,6 +115,15 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
             result.output_tokens,
             result.latency_ms,
         )
+        if result.stop_reason == "max_tokens":
+            logger.warning(
+                "LLM call truncated at max_tokens: task_id=%s model=%s max_tokens=%d "
+                "output_tokens=%d",
+                context.task_id,
+                result.model_name,
+                DEFAULT_MAX_TOKENS,
+                result.output_tokens,
+            )
 
         span.set_attributes(
             llm_call_attributes(

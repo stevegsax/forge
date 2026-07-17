@@ -69,6 +69,7 @@ class PersistInteraction(BaseModel):
     context_stats_json: str | None = None
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    stop_reason: str | None = None
 
 
 class PersistRun(BaseModel):
@@ -213,4 +214,5 @@ def build_persist_interaction(
         context_stats_json=context_stats_json,
         cache_creation_input_tokens=getattr(result, "cache_creation_input_tokens", 0) or 0,
         cache_read_input_tokens=getattr(result, "cache_read_input_tokens", 0) or 0,
+        stop_reason=getattr(result, "stop_reason", None),
     )

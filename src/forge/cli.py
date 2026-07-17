@@ -507,6 +507,42 @@ def main(log_verbosity: int) -> None:
     configure_logging(log_verbosity)
 
 
+# ---------------------------------------------------------------------------
+# Model provider validation (CLI parse-time)
+# ---------------------------------------------------------------------------
+
+# The set of LLM providers sax_llm.registry.get_provider_by_name actually
+# resolves today — anthropic only. T3.3 deleted Mistral chat/registry support;
+# Mistral survives only as MistralOcr in sax_platform, a separate OCR pipeline
+# forge's LLM call paths (planner/sanity-check/conflict-resolution/generation)
+# never touch. Single source of truth so every tier-override flag below
+# validates against the same set instead of scattered literals.
+_SUPPORTED_MODEL_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
+
+
+def _validate_model_provider(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
+    """Validate the optional ``provider:`` prefix of a tier-override model string.
+
+    A bare model name (no ``:``) defaults to anthropic (mirrors
+    ``sax_llm.parse_model_id``) and always passes. Without this, an
+    unsupported provider prefix (e.g. ``mistral:foo``) surfaces only once the
+    value reaches ``sax_llm.registry.get_provider_by_name`` — deep inside a
+    retried Temporal activity, several attempts and minutes later. Reject it
+    here instead, at CLI parse time, with a clear message naming the
+    supported set.
+    """
+    if value is None or ":" not in value:
+        return value
+    provider, _, _ = value.partition(":")
+    if provider not in _SUPPORTED_MODEL_PROVIDERS:
+        supported = ", ".join(sorted(_SUPPORTED_MODEL_PROVIDERS))
+        msg = f"Unsupported provider {provider!r} in {value!r}. Supported providers: {supported}."
+        raise click.BadParameter(msg, ctx=ctx, param=param)
+    return value
+
+
 @main.command()
 @click.option("--task-id", help="Unique task identifier.")
 @click.option("--description", help="What the task should produce.")
@@ -578,21 +614,25 @@ def main(log_verbosity: int) -> None:
 @click.option(
     "--reasoning-model",
     default=None,
+    callback=_validate_model_provider,
     help="Override the model used for REASONING tier (planning).",
 )
 @click.option(
     "--generation-model",
     default=None,
+    callback=_validate_model_provider,
     help="Override the model used for GENERATION tier (code gen).",
 )
 @click.option(
     "--summarization-model",
     default=None,
+    callback=_validate_model_provider,
     help="Override the model used for SUMMARIZATION tier (extraction).",
 )
 @click.option(
     "--classification-model",
     default=None,
+    callback=_validate_model_provider,
     help="Override the model used for CLASSIFICATION tier (exploration).",
 )
 @click.option(

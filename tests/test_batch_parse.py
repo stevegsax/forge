@@ -22,6 +22,7 @@ def _build_message_json(
     output_tokens: int = 200,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
+    stop_reason: str = "tool_use",
 ) -> str:
     """Build a minimal valid Anthropic Message JSON string for testing."""
     message = {
@@ -37,7 +38,7 @@ def _build_message_json(
                 "input": tool_input,
             }
         ],
-        "stop_reason": "tool_use",
+        "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {
             "input_tokens": input_tokens,
@@ -133,3 +134,90 @@ class TestExecuteParseLLMResponse:
         result = execute_parse_llm_response(raw, "LLMResponse")
 
         assert result.latency_ms == 0.0
+
+    def test_extracts_stop_reason(self) -> None:
+        raw = _build_message_json(
+            "llm_response",
+            {"files": [], "edits": [], "explanation": "x"},
+            stop_reason="max_tokens",
+        )
+
+        result = execute_parse_llm_response(raw, "LLMResponse")
+
+        assert result.stop_reason == "max_tokens"
+
+
+# ---------------------------------------------------------------------------
+# parse_llm_response activity wrapper — max_tokens truncation warning
+# ---------------------------------------------------------------------------
+
+
+class TestParseLlmResponseMaxTokensWarning:
+    @pytest.mark.asyncio
+    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from forge.activities.batch_parse import parse_llm_response
+        from forge.models import ParseResponseInput
+
+        raw = _build_message_json(
+            "llm_response",
+            {"files": [], "edits": [], "explanation": "partial"},
+            output_tokens=16384,
+            stop_reason="max_tokens",
+        )
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value = mock_span
+
+        with (
+            patch("forge.tracing.get_tracer", return_value=mock_tracer),
+            caplog.at_level("WARNING", logger="forge.activities.batch_parse"),
+        ):
+            await parse_llm_response(
+                ParseResponseInput(
+                    raw_response_json=raw,
+                    output_type_name="LLMResponse",
+                    task_id="t-trunc",
+                    max_tokens=16384,
+                )
+            )
+
+        assert any("truncated at max_tokens" in r.message for r in caplog.records)
+        assert any("t-trunc" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from forge.activities.batch_parse import parse_llm_response
+        from forge.models import ParseResponseInput
+
+        raw = _build_message_json(
+            "llm_response",
+            {"files": [], "edits": [], "explanation": "done"},
+            stop_reason="tool_use",
+        )
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value = mock_span
+
+        with (
+            patch("forge.tracing.get_tracer", return_value=mock_tracer),
+            caplog.at_level("WARNING", logger="forge.activities.batch_parse"),
+        ):
+            await parse_llm_response(
+                ParseResponseInput(
+                    raw_response_json=raw,
+                    output_type_name="LLMResponse",
+                    task_id="t-ok",
+                )
+            )
+
+        assert not any("truncated at max_tokens" in r.message for r in caplog.records)

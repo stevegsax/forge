@@ -200,6 +200,7 @@ with workflow.unsafe.imports_passed_through():
     from forge.persist_models import build_persist_interaction as _build_persist_interaction
     from forge.workflow_blocks import (
         BATCH_WAIT_FAILURES,
+        THINKING_MAX_TOKENS,
     )
     from forge.workflow_blocks import (
         batch_submit_and_wait as _call_llm_batch_dispatch,
@@ -395,6 +396,7 @@ class ForgeTaskWorkflow:
                 context,
                 "Plan",
                 thinking=planner_input.thinking,
+                max_tokens=THINKING_MAX_TOKENS,
             )
             result = PlanCallResult(
                 task_id=planner_input.task_id,
@@ -405,6 +407,7 @@ class ForgeTaskWorkflow:
                 latency_ms=parsed.latency_ms,
                 cache_creation_input_tokens=parsed.cache_creation_input_tokens,
                 cache_read_input_tokens=parsed.cache_read_input_tokens,
+                stop_reason=parsed.stop_reason,
             )
         await self._persist_interaction(
             role="planner",
@@ -434,12 +437,9 @@ class ForgeTaskWorkflow:
             retry_policy=_LOCAL_RETRY,
             result_type=AssembledContext,
         )
-        # Explicit disable: ThinkingPolicy()'s bare default is enabled=True
-        # (D94), unlike the old ThinkingConfig() default — exploration stays
-        # thinking-disabled, as today.
-        parsed = await self._call_llm_batch(
-            context, "ExplorationResponse", thinking=ThinkingPolicy(enabled=False)
-        )
+        # Exploration stays thinking-disabled, as today. Omitting `thinking`
+        # relies on the shared batch dispatch fallback (disabled by default).
+        parsed = await self._call_llm_batch(context, "ExplorationResponse")
         return ExplorationResponse.model_validate_json(parsed.parsed_json)
 
     async def _call_sanity_check_llm(self, sanity_input: SanityCheckInput) -> SanityCheckCallResult:
@@ -466,6 +466,7 @@ class ForgeTaskWorkflow:
                 context,
                 "SanityCheckResponse",
                 thinking=sanity_input.thinking,
+                max_tokens=THINKING_MAX_TOKENS,
             )
             result = SanityCheckCallResult(
                 task_id=sanity_input.task_id,
@@ -476,6 +477,7 @@ class ForgeTaskWorkflow:
                 latency_ms=parsed.latency_ms,
                 cache_creation_input_tokens=parsed.cache_creation_input_tokens,
                 cache_read_input_tokens=parsed.cache_read_input_tokens,
+                stop_reason=parsed.stop_reason,
             )
         await self._persist_interaction(
             role="sanity_check",

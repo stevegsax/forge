@@ -37,6 +37,7 @@ from forge.models import (
     SanityCheckInput,
     SanityCheckResponse,
     StepResult,
+    extract_stop_reason,
     resolve_model,
 )
 
@@ -45,7 +46,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SANITY_CHECK_MAX_TOKENS = 4096
+# Sanity-check is a thinking-enabled call (D94): adaptive thinking now
+# competes for tokens inside max_tokens instead of riding on top of it, so
+# this is sized for adaptive thinking + structured output on the batch lane;
+# tokens-vs-cap telemetry decides future tuning (owner-adjudicated, 2026-07
+# Phase 3 code review).
+DEFAULT_SANITY_CHECK_MAX_TOKENS = 16384
 
 # Shadow fallback for a missing input.model_name — the workflow always sets it
 # from CapabilityTier.REASONING via ModelConfig, so this only fires if a
@@ -205,6 +211,7 @@ async def execute_sanity_check_call(
         latency_ms=elapsed_ms,
         cache_creation_input_tokens=result.cache_creation_input_tokens,
         cache_read_input_tokens=result.cache_read_input_tokens,
+        stop_reason=extract_stop_reason(result.raw_response_json),
     )
 
 
@@ -257,6 +264,15 @@ async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
         logger.info(
             "Sanity verdict: task_id=%s verdict=%s", input.task_id, result.response.verdict.value
         )
+        if result.stop_reason == "max_tokens":
+            logger.warning(
+                "Sanity check call truncated at max_tokens: task_id=%s model=%s max_tokens=%d "
+                "output_tokens=%d",
+                input.task_id,
+                result.model_name,
+                DEFAULT_SANITY_CHECK_MAX_TOKENS,
+                result.output_tokens,
+            )
 
         span.set_attributes(
             llm_call_attributes(

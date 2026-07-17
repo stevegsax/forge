@@ -174,15 +174,16 @@ async def execute_submit_batch_blob(
 def _resolve_blob_submit_provider(provider_name: str) -> _BlobSubmitProvider:
     """Resolve the batch-submit provider for the opaque-blob SPI.
 
-    Mistral routes through ``sax_platform.ocr.MistralOcr`` — sax_llm carries no
-    Mistral provider (T3.3 moved OCR's Mistral capability to the platform
-    library and deleted ``sax_llm.mistral`` entirely). Every other provider
-    name still resolves through sax_llm's registry, unchanged.
+    Mistral routes through the shared lazily-cached ``MistralOcr`` resolver
+    (``forge.activities._mistral``) — sax_llm carries no Mistral provider
+    (T3.3 moved OCR's Mistral capability to the platform library and deleted
+    ``sax_llm.mistral`` entirely). Every other provider name still resolves
+    through sax_llm's registry, unchanged.
     """
     if provider_name == "mistral":
-        from sax_platform.ocr import MistralOcr, make_mistral_client
+        from forge.activities._mistral import get_mistral_ocr
 
-        return MistralOcr(make_mistral_client())
+        return get_mistral_ocr()
 
     from sax_llm import get_provider_by_name
 

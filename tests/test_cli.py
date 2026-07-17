@@ -1000,6 +1000,111 @@ class TestThinkingCliFlags:
 
 
 # ---------------------------------------------------------------------------
+# Model provider validation (2026-07 Phase 3 code review, item 4)
+# ---------------------------------------------------------------------------
+
+
+class TestModelProviderValidation:
+    """Tier-override flags validate their provider prefix at CLI parse time.
+
+    Before this fix, an unsupported provider (e.g. ``mistral:foo`` — T3.3
+    deleted Mistral chat/registry support) passed CLI parsing silently and
+    failed only once ``sax_llm.registry.get_provider_by_name`` raised deep
+    inside a retried Temporal activity.
+    """
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "--reasoning-model",
+            "--generation-model",
+            "--summarization-model",
+            "--classification-model",
+        ],
+    )
+    def test_unsupported_provider_rejected_at_parse_time(
+        self, cli_runner: CliRunner, flag: str
+    ) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                flag,
+                "mistral:foo",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "Unsupported provider 'mistral'" in result.output
+        assert "anthropic" in result.output
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_anthropic_provider_accepted(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--reasoning-model",
+                "anthropic:claude-opus-4-6",
+            ],
+        )
+        assert result.exit_code == 0
+        call_kwargs = mock_submit.call_args
+        assert call_kwargs[1]["model_routing"].reasoning == "anthropic:claude-opus-4-6"
+
+    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli.discover_repo_root")
+    def test_bare_model_name_accepted(
+        self,
+        mock_discover: object,
+        mock_submit: MagicMock,
+        cli_runner: CliRunner,
+    ) -> None:
+        mock_discover.return_value = "/repo"  # type: ignore[attr-defined]
+        mock_submit.side_effect = _async_result(
+            TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "run",
+                "--task-id",
+                "t",
+                "--description",
+                "d",
+                "--target-file",
+                "a.py",
+                "--generation-model",
+                "claude-sonnet-4-5-20250929",
+            ],
+        )
+        assert result.exit_code == 0
+        call_kwargs = mock_submit.call_args
+        assert call_kwargs[1]["model_routing"].generation == "claude-sonnet-4-5-20250929"
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 CLI tests
 # ---------------------------------------------------------------------------
 

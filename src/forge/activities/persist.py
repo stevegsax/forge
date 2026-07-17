@@ -68,6 +68,7 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
                 context_stats_json=req.context_stats_json,
                 cache_creation_input_tokens=req.cache_creation_input_tokens,
                 cache_read_input_tokens=req.cache_read_input_tokens,
+                stop_reason=req.stop_reason,
             )
         case PersistRun():
             applied = save_run(engine, req.task_result, req.workflow_id, req.run_id)
