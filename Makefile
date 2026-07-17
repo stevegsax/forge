@@ -27,6 +27,7 @@ typecheck:
 	cd libs/sax-llm && uv run mypy
 	cd apps/ocr && uv run mypy
 	cd apps/pbook && uv run mypy
+	cd libs/sax-platform && uv run mypy
 
 lint-imports:
 	uv run lint-imports
@@ -37,6 +38,7 @@ test:
 	cd apps/ocr && uv run pytest
 	cd libs/sax-llm && uv run pytest
 	cd libs/forge-contracts && uv run pytest
+	cd libs/sax-platform && uv run pytest
 
 gates: lint typecheck lint-imports test
 

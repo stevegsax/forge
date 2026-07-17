@@ -38,6 +38,9 @@ jobs:
       - name: mypy pbook (strict, T2.3d)
         working-directory: apps/pbook
         run: uv run mypy
+      - name: mypy sax-platform (strict, T3.1)
+        working-directory: libs/sax-platform
+        run: uv run mypy
       - run: uv run lint-imports
 
   test-forge:
@@ -119,6 +122,19 @@ jobs:
       - run: uv sync --locked --all-packages
       - name: Run forge-contracts tests
         working-directory: libs/forge-contracts
+        run: uv run pytest
+
+  test-sax-platform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+      - run: uv python install
+      - run: uv sync --locked --all-packages
+      - name: Run sax-platform tests
+        working-directory: libs/sax-platform
         run: uv run pytest
 
   test-postgres-migrations:
