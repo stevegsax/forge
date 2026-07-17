@@ -6,8 +6,11 @@ and runs the worker until interrupted.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
+import signal
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -226,6 +229,36 @@ async def _ensure_schedule(
         logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
 
 
+async def _run_until_shutdown(worker: Worker, stop: asyncio.Event) -> None:
+    """Run ``worker`` until it exits on its own or ``stop`` requests a drain.
+
+    Races ``worker.run()`` against ``stop.wait()``. If ``stop`` fires first (a
+    signal handler set it), this requests a graceful shutdown and then waits
+    for ``run()`` to return — ``Worker.shutdown()`` and ``Worker.run()`` both
+    block until the same underlying drain completes, so the second await
+    resolves right away. If ``run()`` finishes first — clean exit or a crash —
+    the stop waiter is cancelled and ``run_task`` is awaited so any exception
+    propagates to the caller unchanged.
+    """
+    run_task: asyncio.Task[None] = asyncio.create_task(worker.run())
+    stop_task: asyncio.Task[bool] = asyncio.create_task(stop.wait())
+    done, _pending = await asyncio.wait({run_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+    if run_task in done:
+        stop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stop_task
+        await run_task  # re-raise a crash, if any
+        return
+    await worker.shutdown()
+    await run_task
+
+
+def _request_shutdown(sig: signal.Signals, stop: asyncio.Event) -> None:
+    """Signal handler: log receipt and flag the run loop to begin a graceful drain."""
+    logger.info("received %s — draining (graceful_shutdown_timeout=30s)", sig.name)
+    stop.set()
+
+
 async def run_worker(
     address: str | None = None,
     *,
@@ -324,7 +357,16 @@ async def run_worker(
         graceful_shutdown_timeout=timedelta(seconds=30),
     )
 
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    handled_signals = (signal.SIGTERM, signal.SIGINT)
+    for sig in handled_signals:
+        loop.add_signal_handler(sig, _request_shutdown, sig, stop)
+
     try:
-        await worker.run()
+        await _run_until_shutdown(worker, stop)
+        logger.info("worker exited cleanly")
     finally:
+        for sig in handled_signals:
+            loop.remove_signal_handler(sig)
         shutdown_tracing()

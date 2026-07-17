@@ -43,6 +43,22 @@ run `uv run pbook migrate` once before first enabling the pbook agent,
 and after upgrades that ship pbook migrations. The forge worker runs its
 own migrations at startup.
 
+## Restarting workers
+
+`make workers-restart` sends `SIGTERM` to every running forge/ocr/pbook
+worker process. Each worker now handles `SIGTERM` (and `SIGINT`, for
+foreground runs) by draining gracefully — it stops polling for new
+work, waits up to `graceful_shutdown_timeout` (30s) for in-flight
+activities to finish, then exits 0. launchd's `KeepAlive` is
+unconditional, so a clean exit relaunches the agent immediately from
+whatever code is on disk in the repo checkout (`ThrottleInterval` is
+10s, so the relaunch is near-immediate). This is the standard way to
+pick up newly merged code without a manual `launchctl kickstart` per
+agent — no plist changes, no install.
+
+`make workers-status` lists the currently running worker processes
+(read-only, safe to run anytime).
+
 ## Always-on
 
 The desktop is the availability story: D88's batch polling stalls while

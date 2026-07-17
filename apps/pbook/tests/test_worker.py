@@ -1,4 +1,6 @@
-"""Tests for ocr.worker."""
+"""Tests for pbook.worker."""
+
+from __future__ import annotations
 
 import asyncio
 import signal
@@ -6,34 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import ocr.worker as worker_mod
-from ocr.deps import get_mistral_ocr, reset_mistral_ocr
-
-
-@pytest.fixture(autouse=True)
-def _isolate_mistral_ocr_state() -> None:
-    """Ensure a clean ocr.deps registry between tests, regardless of outcome."""
-    reset_mistral_ocr()
-    yield
-    reset_mistral_ocr()
-
-
-class TestInitMistralOcr:
-    def test_constructs_client_and_registers_capability(self) -> None:
-        mock_client = MagicMock(name="mistral-client")
-        mock_capability = MagicMock(name="mistral-ocr-capability")
-        mock_make_client = MagicMock(return_value=mock_client)
-        mock_mistral_ocr_cls = MagicMock(return_value=mock_capability)
-
-        with (
-            patch("sax_platform.ocr.make_mistral_client", mock_make_client),
-            patch("sax_platform.ocr.MistralOcr", mock_mistral_ocr_cls),
-        ):
-            worker_mod._init_mistral_ocr()
-
-        mock_make_client.assert_called_once_with()
-        mock_mistral_ocr_cls.assert_called_once_with(mock_client)
-        assert get_mistral_ocr() is mock_capability
+import pbook.worker as worker_mod
 
 
 class TestRequestShutdown:
@@ -98,65 +73,43 @@ class TestRunUntilShutdown:
 
 class TestRunWorker:
     @pytest.mark.asyncio
-    async def test_bootstraps_worker_and_installs_mistral_ocr_seam(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_bootstraps_worker_and_runs_until_clean_exit(self) -> None:
         mock_client = MagicMock()
         mock_worker_instance = MagicMock()
         mock_worker_instance.run = AsyncMock()
-        mock_init_store = MagicMock()
-        mock_init_mistral_ocr = MagicMock()
-
-        # A shared parent so call *order* (store, then the Mistral OCR seam,
-        # before the worker connects) is observable, not just call counts.
-        manager = MagicMock()
-        manager.attach_mock(mock_init_store, "init_store")
-        manager.attach_mock(mock_init_mistral_ocr, "init_mistral_ocr")
-
-        monkeypatch.setenv("FORGE_TEMPORAL_ADDRESS", "temporal.example:7233")
 
         with (
-            patch.object(worker_mod, "_init_store", mock_init_store),
-            patch.object(worker_mod, "_init_mistral_ocr", mock_init_mistral_ocr),
-            patch.object(
-                worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)
-            ) as mock_connect,
+            patch.object(worker_mod, "_register_llm_provider", MagicMock()),
+            patch.object(worker_mod, "_register_output_types", MagicMock()),
+            patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
+            patch("pbook.log_config.setup_logging", MagicMock()),
+            patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
             patch.object(worker_mod, "Worker", return_value=mock_worker_instance) as mock_worker,
         ):
-            await worker_mod.run_worker(identity="worker-123")
-
-        mock_init_store.assert_called_once_with()
-        mock_init_mistral_ocr.assert_called_once_with()
-        assert [call[0] for call in manager.mock_calls] == ["init_store", "init_mistral_ocr"]
-
-        mock_connect.assert_awaited_once_with("temporal.example:7233", identity="worker-123")
+            await worker_mod.run_worker(address="localhost:7233")
 
         mock_worker.assert_called_once()
         worker_kwargs = mock_worker.call_args.kwargs
-        assert worker_kwargs["task_queue"] == worker_mod.OCR_TASK_QUEUE
+        assert worker_kwargs["task_queue"] == worker_mod.PBOOK_TASK_QUEUE
+        assert worker_kwargs["graceful_shutdown_timeout"].total_seconds() == 30
         mock_worker_instance.run.assert_awaited_once_with()
 
     @pytest.mark.asyncio
-    async def test_uses_default_address_when_env_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_worker_crash_propagates(self) -> None:
         mock_client = MagicMock()
         mock_worker_instance = MagicMock()
-        mock_worker_instance.run = AsyncMock()
-
-        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
+        mock_worker_instance.run = AsyncMock(side_effect=RuntimeError("worker boom"))
 
         with (
-            patch.object(worker_mod, "_init_store", MagicMock()),
-            patch.object(worker_mod, "_init_mistral_ocr", MagicMock()),
-            patch.object(
-                worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)
-            ) as mock_connect,
+            patch.object(worker_mod, "_register_llm_provider", MagicMock()),
+            patch.object(worker_mod, "_register_output_types", MagicMock()),
+            patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
+            patch("pbook.log_config.setup_logging", MagicMock()),
+            patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
             patch.object(worker_mod, "Worker", return_value=mock_worker_instance),
+            pytest.raises(RuntimeError, match="worker boom"),
         ):
-            await worker_mod.run_worker()
-
-        mock_connect.assert_awaited_once_with(worker_mod.DEFAULT_TEMPORAL_ADDRESS, identity=None)
+            await worker_mod.run_worker(address="localhost:7233")
 
     @pytest.mark.asyncio
     async def test_registers_and_removes_sigterm_sigint_handlers(self) -> None:
@@ -176,14 +129,16 @@ class TestRunWorker:
             return True
 
         with (
-            patch.object(worker_mod, "_init_store", MagicMock()),
-            patch.object(worker_mod, "_init_mistral_ocr", MagicMock()),
-            patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)),
+            patch.object(worker_mod, "_register_llm_provider", MagicMock()),
+            patch.object(worker_mod, "_register_output_types", MagicMock()),
+            patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
+            patch("pbook.log_config.setup_logging", MagicMock()),
+            patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
             patch.object(worker_mod, "Worker", return_value=mock_worker_instance),
             patch.object(loop, "add_signal_handler", _fake_add_signal_handler),
             patch.object(loop, "remove_signal_handler", _fake_remove_signal_handler),
         ):
-            await worker_mod.run_worker()
+            await worker_mod.run_worker(address="localhost:7233")
 
         registered = {sig for sig, _args in add_calls}
         assert registered == {signal.SIGTERM, signal.SIGINT}
