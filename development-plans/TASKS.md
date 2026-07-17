@@ -49,7 +49,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 
 - [x] [T3.1 — Platform LLM client (both lanes)](tasks/T3.1-platform-llm-client.md)
 - [x] [T3.2 — One tier registry + thinking migration](tasks/T3.2-tier-registry-thinking-migration.md)
-- [ ] [T3.3 — MistralOcr; Mistral chat deleted](tasks/T3.3-mistral-ocr-chat-deleted.md)
+- [x] [T3.3 — MistralOcr; Mistral chat deleted](tasks/T3.3-mistral-ocr-chat-deleted.md)
 - [ ] [T3.4 — Platform plumbing modules](tasks/T3.4-platform-plumbing-modules.md)
 - [ ] [T3.5 — Forced-tool-use retirement](tasks/T3.5-forced-tool-use-retirement.md)
 - [ ] [T3.6 — Composition roots everywhere](tasks/T3.6-composition-roots.md)
