@@ -29,7 +29,8 @@ class LLMProvider(Protocol):
         *,
         cache_instructions: bool = True,
         cache_tool_definitions: bool = True,
-        thinking_budget_tokens: int = 0,
+        thinking_enabled: bool = False,
+        effort: str | None = None,
     ) -> dict[str, Any]:
         """Build provider-specific request parameters."""
         ...

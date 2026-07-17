@@ -198,9 +198,18 @@ class MistralProvider:
         *,
         cache_instructions: bool = True,
         cache_tool_definitions: bool = True,
-        thinking_budget_tokens: int = 0,
+        thinking_enabled: bool = False,
+        effort: str | None = None,
     ) -> dict[str, Any]:
-        """Build Mistral chat.complete kwargs."""
+        """Build Mistral chat.complete kwargs.
+
+        thinking_enabled and effort are accepted only to satisfy
+        LLMProvider's shared signature — callers dispatch through the
+        provider-agnostic protocol without knowing the concrete provider
+        (see sax_llm.registry.get_provider). Mistral has no thinking/effort
+        concept, so both are always ignored; nothing below threads them
+        into params.
+        """
         params: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,

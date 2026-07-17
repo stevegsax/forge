@@ -116,7 +116,7 @@ class TestBuildRequestParams:
         assert len(params["tools"]) == 1
         assert params["tools"][0]["name"] == "test_output"
 
-    def test_passes_thinking_budget(self) -> None:
+    def test_thinking_enabled_sets_adaptive_shape_and_auto_tool_choice(self) -> None:
         from pydantic import BaseModel
 
         class TestOutput(BaseModel):
@@ -130,10 +130,109 @@ class TestBuildRequestParams:
             output_type=TestOutput,
             model="claude-sonnet-4-5-20250929",
             max_tokens=1024,
-            thinking_budget_tokens=5000,
+            thinking_enabled=True,
         )
-        assert "thinking" in params
-        assert params["thinking"]["budget_tokens"] == 5000
+        assert params["thinking"] == {"type": "adaptive"}
+        assert params["tool_choice"] == {"type": "auto"}
+
+    def test_thinking_disabled_by_default_sets_explicit_disabled_shape(self) -> None:
+        """thinking_enabled defaults to False, but the "thinking" key must
+        still be the explicit disabled shape — omitting it entirely runs
+        adaptive thinking BY DEFAULT on these models."""
+        from pydantic import BaseModel
+
+        class TestOutput(BaseModel):
+            """Test output model."""
+
+            value: str
+
+        provider = AnthropicProvider()
+        params = provider.build_request_params(
+            messages=text_messages("sys", "user"),
+            output_type=TestOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=1024,
+        )
+        assert params["thinking"] == {"type": "disabled"}
+        assert params["tool_choice"] == {"type": "tool", "name": "test_output"}
+
+    def test_thinking_enabled_with_effort_sets_output_config(self) -> None:
+        from pydantic import BaseModel
+
+        class TestOutput(BaseModel):
+            """Test output model."""
+
+            value: str
+
+        provider = AnthropicProvider()
+        params = provider.build_request_params(
+            messages=text_messages("sys", "user"),
+            output_type=TestOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=1024,
+            thinking_enabled=True,
+            effort="high",
+        )
+        assert params["output_config"] == {"effort": "high"}
+
+    def test_thinking_enabled_without_effort_omits_output_config(self) -> None:
+        from pydantic import BaseModel
+
+        class TestOutput(BaseModel):
+            """Test output model."""
+
+            value: str
+
+        provider = AnthropicProvider()
+        params = provider.build_request_params(
+            messages=text_messages("sys", "user"),
+            output_type=TestOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=1024,
+            thinking_enabled=True,
+        )
+        assert "output_config" not in params
+
+    def test_thinking_disabled_with_effort_omits_output_config(self) -> None:
+        from pydantic import BaseModel
+
+        class TestOutput(BaseModel):
+            """Test output model."""
+
+            value: str
+
+        provider = AnthropicProvider()
+        params = provider.build_request_params(
+            messages=text_messages("sys", "user"),
+            output_type=TestOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=1024,
+            thinking_enabled=False,
+            effort="high",
+        )
+        assert "output_config" not in params
+
+    def test_haiku_thinking_enabled_omits_thinking_key(self) -> None:
+        """Haiku supports neither the adaptive nor the effort shape."""
+        from pydantic import BaseModel
+
+        class TestOutput(BaseModel):
+            """Test output model."""
+
+            value: str
+
+        provider = AnthropicProvider()
+        params = provider.build_request_params(
+            messages=text_messages("sys", "user"),
+            output_type=TestOutput,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            thinking_enabled=True,
+            effort="high",
+        )
+        assert "thinking" not in params
+        assert "output_config" not in params
+        assert params["tool_choice"] == {"type": "tool", "name": "test_output"}
 
     def test_cache_control_disabled(self) -> None:
         from pydantic import BaseModel

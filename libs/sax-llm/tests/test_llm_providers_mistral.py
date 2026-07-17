@@ -320,7 +320,10 @@ class TestBuildRequestParams:
             assert "cache_control" not in msg
         assert "cache_control" not in params["tools"][0]
 
-    def test_thinking_budget_silently_ignored(self) -> None:
+    def test_thinking_enabled_and_effort_silently_ignored(self) -> None:
+        """thinking_enabled/effort exist only to satisfy LLMProvider's shared
+        signature — Mistral has no thinking/effort concept, so both are
+        accepted and dropped rather than threaded into params."""
         from pydantic import BaseModel
 
         class TestOutput(BaseModel):
@@ -336,11 +339,13 @@ class TestBuildRequestParams:
             output_type=TestOutput,
             model="mistral-large-latest",
             max_tokens=1024,
-            thinking_budget_tokens=5000,
+            thinking_enabled=True,
+            effort="high",
         )
 
-        # No thinking param in output
+        # No thinking or output_config param in output
         assert "thinking" not in params
+        assert "output_config" not in params
 
     def test_output_type_none_omits_tools(self) -> None:
         provider = MistralProvider.__new__(MistralProvider)

@@ -127,7 +127,8 @@ class AnthropicProvider:
         *,
         cache_instructions: bool = True,
         cache_tool_definitions: bool = True,
-        thinking_budget_tokens: int = 0,
+        thinking_enabled: bool = False,
+        effort: str | None = None,
     ) -> dict[str, Any]:
         """Build Anthropic messages.create kwargs."""
         system, conversation = _extract_system_and_messages(messages, cache_instructions)
@@ -145,12 +146,14 @@ class AnthropicProvider:
             params["tools"] = [tool_def]
             params["tool_choice"] = {"type": "tool", "name": tool_name}
 
-        thinking = build_thinking_param(model, thinking_budget_tokens)
+        thinking = build_thinking_param(model, enabled=thinking_enabled)
         if thinking is not None:
             params["thinking"] = thinking
-            if "tool_choice" in params:
-                params["tool_choice"] = {"type": "auto"}
-            params["max_tokens"] = max(max_tokens, thinking_budget_tokens + max_tokens)
+            if thinking_enabled:
+                if "tool_choice" in params:
+                    params["tool_choice"] = {"type": "auto"}
+                if effort is not None:
+                    params["output_config"] = {"effort": effort}
 
         return params
 

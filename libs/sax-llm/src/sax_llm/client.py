@@ -68,23 +68,28 @@ def build_system_param(
 
 def build_thinking_param(
     model_name: str,
-    budget_tokens: int,
+    *,
+    enabled: bool,
 ) -> dict[str, Any] | None:
     """Build the thinking parameter for messages.create.
 
-    Returns a thinking dict for Anthropic models, or None for non-Anthropic/Haiku.
-    """
-    if budget_tokens <= 0:
-        return None
+    Post-D94, the model registry pins adaptive-generation Anthropic models
+    only; the pre-4.6 ``budget_tokens``-style thinking param those models
+    used is unsupported by the API (a 400) and is never emitted here.
+    Returns None for Haiku and non-Anthropic models, which support neither
+    the adaptive nor the disabled shape.
 
+    For every other (adaptive-generation Anthropic) model, the "thinking"
+    key is always populated in the result — never omitted. Omitting the key
+    entirely causes these models to run adaptive thinking BY DEFAULT, so
+    turning thinking "off" requires the explicit ``{"type": "disabled"}``
+    shape rather than leaving the parameter out.
+    """
     if "haiku" in model_name:
         return None
 
-    if "opus" in model_name:
-        return {"type": "enabled", "budget_tokens": budget_tokens}
-
-    if "sonnet" in model_name or "claude" in model_name:
-        return {"type": "enabled", "budget_tokens": budget_tokens}
+    if "opus" in model_name or "sonnet" in model_name or "claude" in model_name:
+        return {"type": "adaptive"} if enabled else {"type": "disabled"}
 
     return None
 
@@ -98,7 +103,8 @@ def build_messages_params(
     *,
     cache_instructions: bool = True,
     cache_tool_definitions: bool = True,
-    thinking_budget_tokens: int = 0,
+    thinking_enabled: bool = False,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Build the full kwargs dict for client.messages.create."""
     tool_def = build_tool_definition(output_type, cache_control=cache_tool_definitions)
@@ -114,11 +120,13 @@ def build_messages_params(
         "tool_choice": {"type": "tool", "name": tool_name},
     }
 
-    thinking = build_thinking_param(model, thinking_budget_tokens)
+    thinking = build_thinking_param(model, enabled=thinking_enabled)
     if thinking is not None:
         params["thinking"] = thinking
-        params["tool_choice"] = {"type": "auto"}
-        params["max_tokens"] = max(max_tokens, thinking_budget_tokens + max_tokens)
+        if thinking_enabled:
+            params["tool_choice"] = {"type": "auto"}
+            if effort is not None:
+                params["output_config"] = {"effort": effort}
 
     return params
 

@@ -8,7 +8,7 @@ import pytest
 from forge_contracts.models import BatchSubmitSpiInput
 
 from forge.activities.batch_submit import execute_batch_submit, execute_submit_batch_blob
-from forge.models import AssembledContext, BatchSubmitInput, ThinkingConfig
+from forge.models import AssembledContext, BatchSubmitInput, ThinkingPolicy
 from tests.conftest import build_mock_provider
 
 
@@ -29,7 +29,7 @@ def _make_input(
     *,
     model_name: str = "",
     output_type_name: str = "LLMResponse",
-    thinking: ThinkingConfig | None = None,
+    thinking: ThinkingPolicy | None = None,
     max_tokens: int = 4096,
 ) -> BatchSubmitInput:
     """Build a BatchSubmitInput with sensible defaults."""
@@ -43,7 +43,7 @@ def _make_input(
         context=context,
         output_type_name=output_type_name,
         workflow_id="wf-test-123",
-        thinking=thinking or ThinkingConfig(),
+        thinking=thinking or ThinkingPolicy(),
         max_tokens=max_tokens,
     )
 
@@ -88,17 +88,18 @@ class TestExecuteBatchSubmit:
         assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
 
     @pytest.mark.asyncio
-    async def test_passes_thinking_config_through(self) -> None:
+    async def test_passes_thinking_policy_through(self) -> None:
         provider = _make_mock_provider()
         input_data = _make_input(
             model_name="claude-sonnet-4-5-20250929",
-            thinking=ThinkingConfig(budget_tokens=10_000, effort="high"),
+            thinking=ThinkingPolicy(enabled=True, effort="high"),
         )
 
         await execute_batch_submit(input_data, provider)
 
         call_kwargs = provider.build_request_params.call_args
-        assert call_kwargs[1].get("thinking_budget_tokens") == 10_000
+        assert call_kwargs[1].get("thinking_enabled") is True
+        assert call_kwargs[1].get("effort") == "high"
 
     @pytest.mark.asyncio
     async def test_passes_max_tokens_through(self) -> None:

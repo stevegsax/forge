@@ -30,10 +30,13 @@ from forge.domains import get_domain_config
 from forge.message_log import write_message_log
 from forge.models import (
     AssembleContextInput,
+    CapabilityTier,
+    ModelConfig,
     Plan,
     PlanCallResult,
     PlannerInput,
     TaskDefinition,
+    resolve_model,
 )
 
 if TYPE_CHECKING:
@@ -42,6 +45,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PLANNER_MAX_TOKENS = 8192
+
+# Shadow fallback for a missing input.model_name — the workflow always sets it
+# from CapabilityTier.REASONING via ModelConfig, so this only fires if a
+# caller forgets (see forge.activities.llm).
+_DEFAULT_PLANNER_MODEL = resolve_model(CapabilityTier.REASONING, ModelConfig())
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +207,7 @@ async def execute_planner_call(
     """
     from sax_llm import parse_model_id
 
-    full_model = input.model_name or "claude-sonnet-4-5-20250929"
+    full_model = input.model_name or _DEFAULT_PLANNER_MODEL
     _, model = parse_model_id(full_model)
     start = time.monotonic()
 
@@ -208,7 +216,8 @@ async def execute_planner_call(
         output_type=Plan,
         model=model,
         max_tokens=DEFAULT_PLANNER_MAX_TOKENS,
-        thinking_budget_tokens=input.thinking.budget_tokens,
+        thinking_enabled=input.thinking.enabled,
+        effort=input.thinking.effort,
     )
     result = await provider.call(params)
 
@@ -321,7 +330,7 @@ async def call_planner(input: PlannerInput) -> PlanCallResult:
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_planner") as span:
         logger.info("Planner call: task_id=%s", input.task_id)
-        provider = get_provider(input.model_name or "claude-sonnet-4-5-20250929")
+        provider = get_provider(input.model_name or _DEFAULT_PLANNER_MODEL)
         async with heartbeat_during():
             result = await execute_planner_call(input, provider)
         logger.info("Plan produced: task_id=%s steps=%d", input.task_id, len(result.plan.steps))

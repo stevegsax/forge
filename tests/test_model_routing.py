@@ -45,18 +45,20 @@ class TestCapabilityTier:
 
 class TestModelConfig:
     def test_defaults_match_spec(self) -> None:
+        # Pins single-sourced on the platform (sax_platform.llm.tiers, D94/T3.2),
+        # live-verified 2026-07-16 against the Models API.
         config = ModelConfig()
-        assert config.reasoning == "anthropic:claude-opus-4-6"
-        assert config.generation == "anthropic:claude-sonnet-4-5-20250929"
-        assert config.summarization == "anthropic:claude-sonnet-4-5-20250929"
-        assert config.classification == "anthropic:claude-haiku-4-5-20251001"
+        assert config.reasoning == "anthropic:claude-opus-4-8"
+        assert config.generation == "anthropic:claude-sonnet-5"
+        assert config.summarization == "anthropic:claude-sonnet-5"
+        assert config.classification == "anthropic:claude-haiku-4-5"
 
     def test_custom_overrides(self) -> None:
         config = ModelConfig(reasoning="custom:model-a", generation="custom:model-b")
         assert config.reasoning == "custom:model-a"
         assert config.generation == "custom:model-b"
         # Others keep defaults
-        assert config.summarization == "anthropic:claude-sonnet-4-5-20250929"
+        assert config.summarization == "anthropic:claude-sonnet-5"
 
     def test_json_round_trip(self) -> None:
         config = ModelConfig(reasoning="custom:fast")

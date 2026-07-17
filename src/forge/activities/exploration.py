@@ -26,10 +26,13 @@ from forge.domains import get_domain_config
 from forge.message_log import write_message_log
 from forge.models import (
     AssembledContext,
+    CapabilityTier,
     ContextResult,
     ExplorationInput,
     ExplorationResponse,
     FulfillContextInput,
+    ModelConfig,
+    resolve_model,
 )
 
 if TYPE_CHECKING:
@@ -37,7 +40,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EXPLORATION_MODEL = "claude-sonnet-4-5-20250929"
+# Shadow fallback for a missing input.model_name (see forge.activities.llm).
+# Matches the live wiring in workflows.py, which routes exploration through
+# the CLASSIFICATION tier (cheap, high-volume calls) — the fallback must not
+# silently upgrade the model when a caller forgets model_name.
+DEFAULT_EXPLORATION_MODEL = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
 DEFAULT_EXPLORATION_MAX_TOKENS = 4096
 
 

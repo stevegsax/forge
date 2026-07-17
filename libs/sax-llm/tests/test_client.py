@@ -46,23 +46,26 @@ class TestBuildSystemParam:
 
 
 class TestBuildThinkingParam:
-    def test_opus(self):
-        result = build_thinking_param("claude-opus-4-6", 1000)
-        assert result is not None
-        assert result["budget_tokens"] == 1000
+    def test_opus_enabled_is_adaptive(self):
+        result = build_thinking_param("claude-opus-4-6", enabled=True)
+        assert result == {"type": "adaptive"}
 
-    def test_sonnet(self):
-        result = build_thinking_param("claude-sonnet-4-5", 500)
-        assert result is not None
+    def test_sonnet_enabled_is_adaptive(self):
+        result = build_thinking_param("claude-sonnet-4-5", enabled=True)
+        assert result == {"type": "adaptive"}
 
     def test_haiku_returns_none(self):
-        assert build_thinking_param("claude-haiku-4-5", 500) is None
+        assert build_thinking_param("claude-haiku-4-5", enabled=True) is None
 
-    def test_zero_budget(self):
-        assert build_thinking_param("claude-opus-4-6", 0) is None
+    def test_haiku_returns_none_when_disabled(self):
+        assert build_thinking_param("claude-haiku-4-5", enabled=False) is None
+
+    def test_disabled_is_explicit_shape(self):
+        """Omitting "thinking" runs adaptive BY DEFAULT — "off" must be explicit."""
+        assert build_thinking_param("claude-opus-4-6", enabled=False) == {"type": "disabled"}
 
     def test_non_anthropic(self):
-        assert build_thinking_param("mistral-large", 500) is None
+        assert build_thinking_param("mistral-large", enabled=True) is None
 
 
 class TestBuildBatchRequest:

@@ -64,7 +64,7 @@ with workflow.unsafe.imports_passed_through():
         TaskDefinition,
         TaskDomain,
         TaskResult,
-        ThinkingConfig,
+        ThinkingPolicy,
         TransitionInput,
         TransitionSignal,
         ValidateOutputInput,
@@ -157,7 +157,7 @@ async def _assemble_conflict_resolution(
     worktree_path: str,
     domain: TaskDomain,
     model_routing: ModelConfig,
-    thinking: ThinkingConfig,
+    thinking: ThinkingPolicy,
     *,
     log_messages: bool = False,
 ) -> ConflictResolutionCallInput:
@@ -346,7 +346,7 @@ class ForgeTaskWorkflow:
         context: AssembledContext,
         output_type_name: str,
         *,
-        thinking: ThinkingConfig | None = None,
+        thinking: ThinkingPolicy | None = None,
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
         return await _call_llm_batch_dispatch(
@@ -434,7 +434,12 @@ class ForgeTaskWorkflow:
             retry_policy=_LOCAL_RETRY,
             result_type=AssembledContext,
         )
-        parsed = await self._call_llm_batch(context, "ExplorationResponse")
+        # Explicit disable: ThinkingPolicy()'s bare default is enabled=True
+        # (D94), unlike the old ThinkingConfig() default — exploration stays
+        # thinking-disabled, as today.
+        parsed = await self._call_llm_batch(
+            context, "ExplorationResponse", thinking=ThinkingPolicy(enabled=False)
+        )
         return ExplorationResponse.model_validate_json(parsed.parsed_json)
 
     async def _call_sanity_check_llm(self, sanity_input: SanityCheckInput) -> SanityCheckCallResult:
@@ -1550,7 +1555,7 @@ class ForgeSubTaskWorkflow:
         context: AssembledContext,
         output_type_name: str,
         *,
-        thinking: ThinkingConfig | None = None,
+        thinking: ThinkingPolicy | None = None,
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
         return await _call_llm_batch_dispatch(

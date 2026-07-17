@@ -51,7 +51,7 @@ from forge.models import (
     SubTaskResult,
     TaskDefinition,
     TaskResult,
-    ThinkingConfig,
+    ThinkingPolicy,
     TransitionInput,
     TransitionSignal,
     ValidateOutputInput,
@@ -3256,7 +3256,7 @@ class TestRecursiveFanOutPropagatesThinkingAndRouting:
             # route via model_routing.reasoning instead (distinct value).
             model_name="anthropic:sub-generation-model",
             model_routing=ModelConfig(reasoning="anthropic:custom-reasoning-model"),
-            thinking=ThinkingConfig(budget_tokens=7777, effort="max"),
+            thinking=ThinkingPolicy(enabled=True, effort="max"),
         )
 
     @pytest.mark.asyncio
@@ -3316,8 +3316,8 @@ class TestRecursiveFanOutPropagatesThinkingAndRouting:
         assert len(captured) == 1
         cr_input = captured[0]
         assert cr_input.task_id == "parent-task.sub.st1.sub.mid"
-        # thinking propagated (parent's, not the pre-T1.5 hardcoded ThinkingConfig()).
-        assert cr_input.thinking == ThinkingConfig(budget_tokens=7777, effort="max")
+        # thinking propagated (parent's, not the pre-T1.5 hardcoded default).
+        assert cr_input.thinking == ThinkingPolicy(enabled=True, effort="max")
         # model_routing propagated: REASONING tier resolved from the parent's
         # ModelConfig, not the pre-T1.5 ModelConfig()/model_name override.
         assert cr_input.model_name == "anthropic:custom-reasoning-model"

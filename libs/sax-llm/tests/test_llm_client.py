@@ -99,20 +99,30 @@ class TestBuildSystemParam:
 
 
 class TestBuildThinkingParam:
-    def test_opus_gets_enabled(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", 10_000)
-        assert result == {"type": "enabled", "budget_tokens": 10_000}
+    def test_opus_enabled_gets_adaptive(self) -> None:
+        result = build_thinking_param("claude-opus-4-6", enabled=True)
+        assert result == {"type": "adaptive"}
 
-    def test_sonnet_gets_budget(self) -> None:
-        result = build_thinking_param("claude-sonnet-4-5-20250929", 10_000)
-        assert result == {"type": "enabled", "budget_tokens": 10_000}
+    def test_sonnet_enabled_gets_adaptive(self) -> None:
+        result = build_thinking_param("claude-sonnet-4-5-20250929", enabled=True)
+        assert result == {"type": "adaptive"}
 
     def test_haiku_returns_none(self) -> None:
-        result = build_thinking_param("claude-haiku-4-5-20251001", 10_000)
+        result = build_thinking_param("claude-haiku-4-5-20251001", enabled=True)
         assert result is None
 
-    def test_zero_budget_returns_none(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", 0)
+    def test_haiku_returns_none_when_disabled(self) -> None:
+        result = build_thinking_param("claude-haiku-4-5-20251001", enabled=False)
+        assert result is None
+
+    def test_disabled_returns_explicit_disabled_shape(self) -> None:
+        """The API runs adaptive thinking BY DEFAULT when "thinking" is
+        omitted, so "off" must be the explicit disabled shape, not None."""
+        result = build_thinking_param("claude-opus-4-6", enabled=False)
+        assert result == {"type": "disabled"}
+
+    def test_non_anthropic_returns_none(self) -> None:
+        result = build_thinking_param("mistral-large-latest", enabled=True)
         assert result is None
 
 
@@ -138,28 +148,82 @@ class TestBuildMessagesParams:
         assert len(params["tools"]) == 1
         assert params["tool_choice"] == {"type": "tool", "name": "sample_output"}
 
-    def test_no_thinking_by_default(self) -> None:
+    def test_no_thinking_by_default_is_explicit_disabled(self) -> None:
+        """Default thinking_enabled=False must still emit the explicit
+        disabled shape — omitting "thinking" entirely would run adaptive
+        thinking BY DEFAULT on these models."""
         params = build_messages_params(
             system_prompt="sys",
             user_prompt="usr",
             output_type=SampleOutput,
             model="claude-sonnet-4-5-20250929",
             max_tokens=4096,
+        )
+        assert params["thinking"] == {"type": "disabled"}
+        assert params["tool_choice"] == {"type": "tool", "name": "sample_output"}
+
+    def test_thinking_enabled_adds_adaptive_param_and_changes_tool_choice(self) -> None:
+        params = build_messages_params(
+            system_prompt="sys",
+            user_prompt="usr",
+            output_type=SampleOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=4096,
+            thinking_enabled=True,
+        )
+        assert params["thinking"] == {"type": "adaptive"}
+        assert params["tool_choice"] == {"type": "auto"}
+        assert params["max_tokens"] == 4096
+
+    def test_thinking_enabled_with_effort_sets_output_config(self) -> None:
+        params = build_messages_params(
+            system_prompt="sys",
+            user_prompt="usr",
+            output_type=SampleOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=4096,
+            thinking_enabled=True,
+            effort="high",
+        )
+        assert params["output_config"] == {"effort": "high"}
+
+    def test_thinking_enabled_without_effort_omits_output_config(self) -> None:
+        params = build_messages_params(
+            system_prompt="sys",
+            user_prompt="usr",
+            output_type=SampleOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=4096,
+            thinking_enabled=True,
+        )
+        assert "output_config" not in params
+
+    def test_thinking_disabled_with_effort_omits_output_config(self) -> None:
+        """effort is only meaningful when thinking is actually enabled."""
+        params = build_messages_params(
+            system_prompt="sys",
+            user_prompt="usr",
+            output_type=SampleOutput,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=4096,
+            thinking_enabled=False,
+            effort="high",
+        )
+        assert "output_config" not in params
+
+    def test_haiku_thinking_enabled_omits_thinking_key(self) -> None:
+        """Haiku supports neither shape — thinking is never sent to it."""
+        params = build_messages_params(
+            system_prompt="sys",
+            user_prompt="usr",
+            output_type=SampleOutput,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=4096,
+            thinking_enabled=True,
         )
         assert "thinking" not in params
-
-    def test_thinking_adds_param_and_changes_tool_choice(self) -> None:
-        params = build_messages_params(
-            system_prompt="sys",
-            user_prompt="usr",
-            output_type=SampleOutput,
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=4096,
-            thinking_budget_tokens=10_000,
-        )
-        assert params["thinking"] == {"type": "enabled", "budget_tokens": 10_000}
-        assert params["tool_choice"] == {"type": "auto"}
-        assert params["max_tokens"] >= 14096
+        assert "output_config" not in params
+        assert params["tool_choice"] == {"type": "tool", "name": "sample_output"}
 
     def test_no_cache_disables_cache_control(self) -> None:
         params = build_messages_params(
