@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-17 | Graceful worker shutdown on SIGTERM/SIGINT (drain + exit 0 + KeepAlive relaunch); `make workers-restart` / `workers-status` — operator-requested restart-without-launchctl | [#41](https://github.com/stevegsax/forge/pull/41) |
 | 2026-07-17 | Review fixes — 10 verified findings from the Phase 3 diff (workflow-backed review): thinking caps + stop_reason telemetry (migration 003), legacy-payload validator, fallback polarity, null-response guards, fail-fast API key, endpoint normalization, CLI provider validation, cached mistral resolver; judge pin deferred to T0.6 | [#40](https://github.com/stevegsax/forge/pull/40) |
 | 2026-07-17 | [T3.3 — MistralOcr in sax_platform; Mistral chat deleted from sax-llm; ocr DI seam (e2e deferred to post-merge)](tasks/T3.3-mistral-ocr-chat-deleted.md) | [#39](https://github.com/stevegsax/forge/pull/39) |
 | 2026-07-16 | [T3.2 — One tier registry + thinking migration: pins live-verified (opus-4-8/sonnet-5/haiku-4-5), budget_tokens deleted platform-wide, --effort CLI](tasks/T3.2-tier-registry-thinking-migration.md) | [#38](https://github.com/stevegsax/forge/pull/38) |
