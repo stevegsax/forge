@@ -167,7 +167,9 @@ For planned steps, it includes the step ID and description. The user prompt is i
 
 ## Structured Output: How the LLM Responds
 
-Forge uses Anthropic's **tool use** feature to get structured output. Instead of parsing free-form text, the LLM is forced to call a tool whose input schema is a Pydantic model. This guarantees the response is valid JSON matching the expected shape.
+Forge uses Anthropic's **tool use** feature to get structured output. Instead of parsing free-form text, the LLM is forced to call a tool whose input schema is a Pydantic model (`tool_choice={type: "tool", ...}`, wired in `sax_llm.anthropic`). This guarantees the response is valid JSON matching the expected shape.
+
+> **Forward pointer (D90 / T3.5):** forced tool use is still the mechanism on forge's own runtime lanes, but it is slated for retirement in favor of native **structured outputs**. `sax_platform.llm` already implements the structured-outputs client (both the sync and batch lanes, with typed refusal/truncation/mismatch failures); forge's runtime does not consume it yet.
 
 ```mermaid
 sequenceDiagram
@@ -323,10 +325,12 @@ Forge routes different LLM calls to different model tiers based on the capabilit
 
 | Capability Tier | Default Model | Used For |
 | ---------------- | --------------- | ---------- |
-| **Reasoning** | `anthropic:claude-opus-4-6` | Planning, sanity checks, conflict resolution |
-| **Generation** | `anthropic:claude-sonnet-4-5-20250929` | Code/content generation |
-| **Summarization** | `anthropic:claude-sonnet-4-5-20250929` | Knowledge extraction |
-| **Classification** | `anthropic:claude-haiku-4-5-20251001` | Exploration, transition evaluation |
+| **Reasoning** | `anthropic:claude-opus-4-8` | Planning, sanity checks, conflict resolution, eval-as-judge |
+| **Generation** | `anthropic:claude-sonnet-5` | Code/content generation |
+| **Summarization** | `anthropic:claude-sonnet-5` | Knowledge extraction |
+| **Classification** | `anthropic:claude-haiku-4-5` | Exploration |
+
+The tier registry (`CapabilityTier`, `ModelConfig`, `resolve_model`) and the `ThinkingPolicy` are single-sourced in `sax_platform.llm.tiers` and re-exported by `forge.models` (D94, T3.2). Transition evaluation is **not** in this table: it is a deterministic function (`activities/transition.py`) that makes no LLM call.
 
 The plan can override the tier for individual steps via `capability_tier`, so a particularly complex step can use the reasoning tier while simpler steps use the generation tier.
 
@@ -336,7 +340,7 @@ The plan can override the tier for individual steps via `capability_tier`, so a 
 
 Every LLM call in Forge can run in two modes:
 
-- **Batch mode** (default) — The activity submits the request to the provider's Batch API (Anthropic or Mistral); the workflow then waits for a signal. A separate batch poller workflow periodically checks batch status and delivers results back via Temporal signals.
+- **Batch mode** (default) — The activity submits the request to the Anthropic Batch API; the workflow then waits for a signal. A separate batch poller workflow, run on a Temporal Schedule, periodically checks batch status and delivers results back via Temporal signals. *(Signal-based delivery plus a shared poller is interim: Phase 4, per D88, replaces it with per-workflow timer-loop polling.)* (Mistral batch is reached only through the opaque-blob OCR SPI — `sax_platform.ocr.MistralOcr` — not forge's own LLM calls.)
 - **Sync mode** (opt-in via `--sync`) — The activity calls the provider's messages API directly and waits for the response.
 
 `ForgeTaskInput.sync_mode` defaults to `False`, so batch is the default path. The prompt construction is identical in both modes. The workflow dispatch methods (`_call_generation`, `_call_planner_llm`, `_call_exploration`, `_call_sanity_check_llm`, `_call_conflict_resolution`) check `self._sync_mode` and route accordingly. This is why every LLM call must be a self-contained document completion—batch APIs don't support multi-turn conversations.
@@ -382,74 +386,69 @@ These are the core Pydantic models that flow through the system:
 
 ```text
 src/forge/
-├── workflows.py              # Temporal workflows (main orchestration)
-├── workflow_blocks.py        # Shared workflow building blocks
-├── batch_poller_workflow.py  # Batch status polling workflow
-├── extraction_workflow.py    # Knowledge extraction workflow
-├── models.py                 # All Pydantic data models
-├── llm_client.py             # Anthropic API request construction + response parsing
-├── providers.py              # Context provider registry (12 providers)
-├── domains.py                # Domain configs (code_generation, research, etc.)
-├── cli.py                    # CLI entry point (forge run, forge worker, ...)
-├── worker.py                 # Temporal worker process
-├── git.py                    # Git operations and worktree management
-├── store.py                  # SQLite/Postgres observability store (+ playbooks)
-├── tracing.py                # OpenTelemetry instrumentation
-├── logging_config.py         # Log file paths and rotation
-├── message_log.py            # API message logging utilities
-├── subprocess_result.py      # Subprocess result models
+├── workflows.py               # Temporal workflows (main orchestration)
+├── workflow_blocks.py         # Shared workflow building blocks
+├── batch_poller_workflow.py   # Batch status polling workflow (scheduled)
+├── ingestion_workflow.py      # Transcript ingestion → pbook (cross-queue)
+├── manual_playbook_workflow.py # Manual playbook add with LLM review
+├── export_playbook_workflow.py # Playbook export
+├── models.py                  # All Pydantic data models (tiers/ThinkingPolicy re-exported from sax_platform)
+├── providers.py               # Context provider registry (12 providers)
+├── domains.py                 # Domain configs (code_generation, research, etc.)
+├── cli.py                     # CLI entry point (forge run, forge worker, ...)
+├── worker.py                  # Temporal worker process
+├── git.py                     # Git operations and worktree management
+├── store.py                   # SQLite/Postgres observability store (+ playbooks)
+├── persist_models.py          # Survivable-write request models
+├── temporal_client.py         # Temporal connect + (dormant) mTLS config
+├── path_safety.py             # Path-traversal guards
+├── subprocess_env.py          # Subprocess environment construction
+├── subprocess_result.py       # Subprocess result models
+├── tracing.py                 # OpenTelemetry instrumentation
+├── logging_config.py          # Log file paths and rotation
+├── message_log.py             # API message logging utilities
 │
 ├── activities/
-│   ├── _heartbeat.py         # Heartbeat management for long-running activities
-│   ├── context.py            # Prompt assembly (system + user prompts)
-│   ├── llm.py                # LLM call execution
-│   ├── output.py             # File writing + edit application
-│   ├── validate.py           # Deterministic validation (ruff, tests)
-│   ├── transition.py         # Outcome signal evaluation
-│   ├── planner.py            # Planning LLM call
-│   ├── exploration.py        # Exploration loop LLM calls
-│   ├── extraction.py         # Knowledge extraction + playbook generation
-│   ├── sanity_check.py       # Mid-plan sanity checks
+│   ├── _heartbeat.py          # Heartbeat management for long-running activities
+│   ├── _mistral.py            # Cached MistralOcr resolver (routes the OCR blob SPI)
+│   ├── context.py             # Prompt assembly (system + user prompts)
+│   ├── llm.py                 # LLM call execution (forced tool use via sax_llm)
+│   ├── output.py              # File writing + edit application
+│   ├── validate.py            # Deterministic validation (ruff, tests)
+│   ├── transition.py          # Outcome signal evaluation (deterministic; no LLM)
+│   ├── planner.py             # Planning LLM call
+│   ├── exploration.py         # Exploration loop LLM calls
+│   ├── extraction.py          # Knowledge extraction + playbook generation
+│   ├── sanity_check.py        # Mid-plan sanity checks
 │   ├── conflict_resolution.py # Fan-out file conflict resolution
-│   ├── git_activities.py     # Worktree create/remove/reset/commit
-│   ├── batch_submit.py       # Batch API submission
-│   ├── batch_parse.py        # Batch response parsing
-│   └── batch_poll.py         # Batch status polling
+│   ├── git_activities.py      # Worktree create/remove/reset/commit
+│   ├── ingestion.py           # Transcript ingestion activities
+│   ├── persist.py             # Survivable idempotent store writes
+│   ├── playbook_export.py     # Playbook export activity
+│   ├── playbook_review.py     # Manual-playbook LLM review activity
+│   ├── batch_submit.py        # Batch API submission (LLM lane + opaque-blob SPI)
+│   ├── batch_parse.py         # Batch response parsing
+│   └── batch_poll.py          # Batch status polling + signal delivery
 │
 ├── code_intel/
-│   ├── graph.py              # Import graph analysis (grimp + networkx)
-│   ├── parser.py             # Symbol extraction (ast-based)
-│   ├── budget.py             # Token budget packing
-│   └── repo_map.py           # Repository structure mapping
+│   ├── graph.py               # Import graph analysis (grimp + networkx)
+│   ├── parser.py              # Symbol extraction (ast-based)
+│   ├── budget.py              # Token budget packing
+│   └── repo_map.py            # Repository structure mapping
 │
 ├── eval/
 │   ├── runner.py              # Evaluation harness
 │   ├── deterministic.py       # Deterministic plan checks
-│   ├── judge.py               # LLM-as-judge scoring
+│   ├── judge.py               # LLM-as-judge scoring (reasoning tier)
 │   ├── models.py              # Evaluation data models
 │   └── corpus.py              # Test corpus management
 │
-├── llm_providers/
-│   ├── protocol.py            # Provider protocol definition
-│   ├── registry.py            # Provider registry and resolution
-│   ├── models.py              # Provider data models
-│   ├── anthropic.py           # Anthropic provider implementation
-│   └── mistral.py             # Mistral provider implementation
-│
-└── ocr/
-    ├── activities.py          # OCR pipeline activities
-    ├── models.py              # OCR data models
-    ├── s3_blobs.py            # S3 blob storage for OCR content + images
-    ├── workflow_sync.py       # Synchronous OCR workflow (direct API call)
-    ├── workflow_submit.py     # Batch OCR submission workflow
-    ├── workflow_store.py      # Batch result storage workflow
-    ├── workflow_gather.py     # Multi-chunk gathering workflow
-    ├── workflow_export.py     # Document export workflow
-    ├── workflow_list_jobs.py  # OCR job listing workflow
-    └── workflow_mark_removal.py # Mark / clear-removal workflows
+└── alembic/                   # Store migrations (env.py + versions/001–003)
 ```
 
-> The map above covers the core loop. Major shipped subsystems — batch execution (the default), the OCR pipeline, transcript ingestion, the knowledge/playbook lifecycle, planner evaluation, store externalization (Postgres + S3 with survivable writes), and mTLS remote access (infrastructure since removed, D99) — are summarized in [Subsystems Beyond the Core Loop](#subsystems-beyond-the-core-loop). Their modules (`ingestion_workflow.py`, `manual_playbook_workflow.py`, `export_playbook_workflow.py`, `temporal_client.py`, `persist_models.py`, `alembic/`, and `activities/{ingestion,persist,playbook_export,playbook_review}.py`) are not all shown above.
+The LLM provider layer (protocol, registry, Anthropic adapter) lives in the `sax-llm` workspace member (`libs/sax-llm`), and the tier registry, `ThinkingPolicy`, structured-outputs client, and the Mistral OCR capability live in `sax-platform` (`libs/sax-platform`) — neither is under `src/forge/`. The OCR pipeline is no longer in this tree either: it is the separate `apps/ocr` consumer app, which reaches the platform through forge's batch SPI.
+
+> The map above covers the core loop. Major shipped subsystems — batch execution (the default), transcript ingestion, the knowledge/playbook lifecycle, planner evaluation, store externalization (Postgres + S3 with survivable writes), the batch SPI (consumed by `apps/ocr`), and mTLS remote access (infrastructure since removed, D99) — are summarized in [Subsystems Beyond the Core Loop](#subsystems-beyond-the-core-loop).
 
 ---
 
@@ -507,15 +506,15 @@ sequenceDiagram
 
 ## Subsystems Beyond the Core Loop
 
-The universal workflow step is the spine, but several shipped subsystems run alongside it. Each is documented here at a pointer level; module paths are under `src/forge/`. Full status and known gaps: [OVERVIEW.md](OVERVIEW.md).
+The universal workflow step is the spine, but several shipped subsystems run alongside it. Each is documented here at a pointer level; module paths are under `src/forge/` unless noted. Full status and known gaps: [OVERVIEW.md](OVERVIEW.md).
 
 ### Batch execution (default path)
 
-All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to a provider Batch API by default (`sync_mode=False`); the scheduled `BatchPollerWorkflow` polls and delivers each result back to the waiting workflow via signal. Submission/parse/poll: `activities/batch_submit.py`, `activities/batch_parse.py`, `activities/batch_poll.py`; lifecycle states: `models.py::BatchJobStatus`. The wait is signal-based (D77) rather than terminate-and-restart — Temporal's [durable signals](https://docs.temporal.io/develop/python/workflows/message-passing) keep all workflow state alive across the wait (SDK [signal sample](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/hello/hello_signal.py)).
+All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to the Anthropic Batch API by default (`sync_mode=False`); the scheduled `BatchPollerWorkflow` polls and delivers each result back to the waiting workflow via signal. Submission/parse/poll: `activities/batch_submit.py`, `activities/batch_parse.py`, `activities/batch_poll.py`; lifecycle states: `models.py::BatchJobStatus`. The wait is signal-based (D77) rather than terminate-and-restart — Temporal's [durable signals](https://docs.temporal.io/develop/python/workflows/message-passing) keep all workflow state alive across the wait (SDK [signal sample](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/hello/hello_signal.py)). The shared poller and the `batch_result_received` signal are interim: Phase 4 (D88) replaces both with per-workflow timer-loop polling.
 
-### OCR pipeline
+### Batch SPI (OCR-agnostic) and the OCR consumer
 
-Mistral OCR in sync (`ocr/workflow_sync.py`) and batch (`ocr/workflow_submit.py` → `workflow_store.py` → `workflow_gather.py`) forms, with image extraction, `ocr-image://` URI rewriting, PDF chunking, and S3 blob storage (`ocr/s3_blobs.py`). Job inspection via `forge ocr-jobs` (`ocr/workflow_list_jobs.py`). Each OCR workflow is itself an instance of the universal step.
+Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the poller returns provider results verbatim to a consumer workflow cross-queue (`activities/batch_submit.py`, `batch_poller_workflow.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` (`activities/_mistral.py`) rather than sax_llm's registry (T3.3). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `forge_contracts` only (never `forge`).
 
 ### Transcript ingestion
 
@@ -523,7 +522,7 @@ Mistral OCR in sync (`ocr/workflow_sync.py`) and batch (`ocr/workflow_submit.py`
 
 ### Knowledge / playbook lifecycle
 
-Scheduled extraction (`extraction_workflow.py`) mines completed runs into playbook entries that are injected into future contexts (priority 5, D47). Manual add with LLM review (`manual_playbook_workflow.py`) and export (`export_playbook_workflow.py`). Forge's `playbooks` table is separate from pbook's `entries`.
+Playbook entries are injected into future contexts (priority 5, D47). The scheduled re-extraction loop that mined completed runs was removed in T1.8; the extraction activities remain (`activities/extraction.py`) and are now driven by manual add with LLM review (`manual_playbook_workflow.py`, which reuses the extraction save activity). Export via `export_playbook_workflow.py`. Forge's `playbooks` table is separate from pbook's `entries`.
 
 ### Planner evaluation
 

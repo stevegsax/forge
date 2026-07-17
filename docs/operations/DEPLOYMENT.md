@@ -74,7 +74,7 @@ increment 2, but the build-agent rationale keeps them on the host.)
 | Supabase Postgres | Forge store (and pbook store if used) | `FORGE_DB_URL`; direct (non-transaction-pooled) connection |
 | S3 bucket | OCR/batch blobs | Creds via `~/.aws` or the env file; lifecycle policy: [deploy/s3/](../../deploy/s3/) |
 | Anthropic API | All Forge LLM calls; pbook extraction/review | `ANTHROPIC_API_KEY` |
-| Mistral API | OCR pipeline | `MISTRAL_API_KEY` (only if OCR used) |
+| Mistral API | OCR pipeline | `MISTRAL_API_KEY` (required by the ocr worker) |
 | OpenAI API | pbook embeddings | `OPENAI_API_KEY` (only if pbook used) |
 | GitHub | Clone/push the repos Forge operates on | The operator's normal git credentials |
 
@@ -86,20 +86,22 @@ every internal package is a workspace member, so one clone and one
 
 ```toml
 [tool.uv.workspace]
-members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr"]
+members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr", "libs/sax-platform"]
 
 [tool.uv.sources]
 sax-llm = { workspace = true }
 pbook = { workspace = true }
 forge-contracts = { workspace = true }
+sax-platform = { workspace = true }
 ```
 
 ```text
-forge/                    # the workspace root — this is the whole deployment
-├── apps/pbook/           # knowledge playbook service
-├── apps/ocr/             # document OCR app (member, not a forge dependency)
-├── libs/sax-llm/         # LLM provider abstraction
-└── libs/forge-contracts/ # shared wire contracts + platform primitives
+forge/                     # the workspace root — this is the whole deployment
+├── apps/pbook/            # knowledge playbook service
+├── apps/ocr/              # document OCR app (member, not a forge dependency)
+├── libs/sax-llm/          # LLM provider abstraction
+├── libs/forge-contracts/  # shared wire contracts + platform primitives
+└── libs/sax-platform/     # model-tier registry, LLM client, Mistral OCR
 ```
 
 ```bash
@@ -139,9 +141,11 @@ wrapper parses it without shell evaluation, so URLs with `&` are safe.
 
 ### 3. Migrations
 
-The forge worker runs its own Alembic migrations at startup. pbook does
-**not**: if ingestion is in scope, run `uv run pbook migrate` once (and
-after upgrades that ship pbook migrations).
+The forge worker runs its own Alembic migrations at startup (advisory-locked
+against the shared database); the ocr worker likewise applies its own `ocr_*`
+chain at startup. pbook does **not** auto-migrate: if ingestion is in scope,
+run `uv run pbook migrate` once (and after upgrades that ship pbook
+migrations).
 
 ### 4. Install the launchd agents
 
@@ -185,14 +189,17 @@ Worker/CLI environment (the launchd agents read these from
 | `FORGE_OCR_S3_BUCKET` | S3 bucket for blobs; required for OCR work | bucket name |
 | `FORGE_OCR_S3_PREFIX` | Optional key prefix for blobs | e.g. `ocr/` |
 | `FORGE_LOG_DIR` | App log directory (empty = no file logging) | `$XDG_STATE_HOME/forge/logs` |
-| `FORGE_OTEL_EXPORTER` | `console`/`otlp_grpc`/`otlp_http`/`none` | `none` |
+| `FORGE_OTEL_EXPORTER` | `console`/`otlp_grpc`/`otlp_http`/`none` (code default `console`) | `none` |
+| `FORGE_OTEL_ENDPOINT` | OTel endpoint; only read for the `otlp_*` exporters | unset (exporter is `none`) |
 | `FORGE_WORKER_IDENTITY` | Worker identity in Temporal | set by the launchd agents (`desktop-forge-worker-1/2`) |
 | `ANTHROPIC_API_KEY` | Anthropic SDK auth | key |
-| `MISTRAL_API_KEY` | Mistral OCR auth | key (if OCR used) |
+| `MISTRAL_API_KEY` | **Required by the ocr worker.** Read at startup; the worker fails fast if unset | key (ocr worker only) |
 | `OPENAI_API_KEY` | pbook embeddings | key (if pbook used) |
 | `PBOOK_DATABASE_URL` | pbook Postgres store | Supabase URL (if pbook used) |
-| `PBOOK_TEMPORAL_ADDRESS` | pbook worker → Temporal | `127.0.0.1:7233` |
 | `AWS_*` | S3 auth if not using `~/.aws` | keys/region |
+
+The pbook worker takes no Temporal env var — it connects to its `localhost:7233`
+default (the same loopback frontend), so there is nothing to set for it here.
 
 For the **dev** stack surfaces (local `forge_dev` Postgres, MinIO), see
 [deploy/local-stack/.env.example](../../deploy/local-stack/.env.example)

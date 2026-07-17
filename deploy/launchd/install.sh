@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh [--with-pbook] [--uninstall]
+# install.sh [--with-pbook | --with-ocr] [--uninstall]
 #
 # Generate launchd agents from com.saxcapital.forge.plist.in and load them
 # into the gui domain of the current user:

@@ -223,32 +223,43 @@ When a step fails validation and retries, the retry prompt includes the validati
 
 ## Model Routing
 
-Override which models handle each capability tier:
+Override which models handle each capability tier. Only the `anthropic:`
+provider is supported; the prefix is validated when the command is parsed (a
+bare name with no prefix defaults to `anthropic:`).
 
 ```bash
 forge run \
     --task-id my-task \
     --description "..." \
     --target-file src/app.py \
-    --reasoning-model "anthropic:claude-opus-4-6" \
-    --generation-model "anthropic:claude-sonnet-4-5-20250929"
+    --reasoning-model "anthropic:claude-opus-4-8" \
+    --generation-model "anthropic:claude-sonnet-5"
 ```
 
 | Tier | Default Model | Used For |
 | ------ | --------------- | ---------- |
-| `--reasoning-model` | Claude Opus 4.6 | Planning, conflict resolution |
-| `--generation-model` | Claude Sonnet 4.5 | Code/content generation |
-| `--summarization-model` | Claude Sonnet 4.5 | Knowledge extraction |
+| `--reasoning-model` | Claude Opus 4.8 | Planning, conflict resolution |
+| `--generation-model` | Claude Sonnet 5 | Code/content generation |
+| `--summarization-model` | Claude Sonnet 5 | Knowledge extraction |
 | `--classification-model` | Claude Haiku 4.5 | Context exploration |
+
+Defaults come from the `sax_platform.llm.tiers` registry.
 
 ## Extended Thinking
 
-The planner uses extended thinking by default for higher-quality plans:
+In planning mode (`--plan`), the planner, sanity-check, and conflict-resolution
+calls use extended thinking by default. Set the effort with `--effort` (one of
+`low`, `medium`, `high` (default), `xhigh`, `max`) or turn thinking off with
+`--no-thinking`:
 
 ```bash
-forge run --task-id my-task --description "..." --plan --thinking-budget 20000
+forge run --task-id my-task --description "..." --plan --effort max
 forge run --task-id my-task --description "..." --plan --no-thinking
 ```
+
+Both flags affect planning mode only — single-step mode has no
+thinking-configurable LLM call (generation always runs thinking-disabled), and
+passing either flag without `--plan` prints a warning.
 
 ## Async Submission
 
@@ -270,28 +281,20 @@ forge status --workflow-id forge-task-background-task
 
 ## Starting Arbitrary Workflows
 
-The `forge start` command launches any registered Temporal workflow by name, without needing a Python script. The worker's `pydantic_data_converter` handles deserialization into the correct Pydantic model on the receiving end.
+The `forge start` command launches any registered Temporal workflow by name, without needing a Python script. The worker's `pydantic_data_converter` handles deserialization into the correct Pydantic model on the receiving end. It targets `forge-task-queue` by default, so it can start any workflow the forge worker registers — `BatchPollerWorkflow`, `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`. Pass `--task-queue` to reach a workflow registered on another worker's queue.
 
-### Synchronous OCR (recommended)
+### No input
 
-```bash
-forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}' --wait
-```
-
-Calls the Mistral OCR API directly and blocks until the result is stored. Returns `OcrStoreResult` (document_id, text_length, page_count) as JSON. Completes in seconds for small documents.
-
-### Batch OCR
+Some workflows take no arguments — an empty dict is passed as the workflow argument:
 
 ```bash
-forge start OcrSubmitWorkflow '{"file_path": "/data/doc.pdf"}'
+forge start BatchPollerWorkflow --wait
 ```
-
-Submits to the Mistral Batch API and returns immediately. Results arrive asynchronously via the batch poller. Use `--wait` to block until completion (may take minutes to hours).
 
 ### Start and return immediately
 
 ```bash
-forge start OcrSyncWorkflow '{"file_path": "/data/doc.pdf"}'
+forge start BatchPollerWorkflow
 ```
 
 Prints the workflow ID and exits immediately. The workflow runs to completion on the worker.
@@ -299,18 +302,20 @@ Prints the workflow ID and exits immediately. The workflow runs to completion on
 ### Input from file
 
 ```bash
-forge start OcrSyncWorkflow --input-file input.json --id my-ocr-run
+forge start ExportPlaybookWorkflow --input-file input.json --id my-export
 ```
 
-### No input
+### OCR workflows run on their own queue
 
-Some workflows take no arguments:
+OCR is a separate workspace app with its own worker on `ocr-task-queue` and its own CLI — use that rather than `forge start`:
 
 ```bash
-forge start BatchPollerWorkflow --wait
+uv run --package ocr ocr submit /data/doc.pdf   # batch OCR via the Mistral Batch API
+uv run --package ocr ocr list                   # submissions with status
+uv run --package ocr ocr export <document_id>   # write text + images to disk
 ```
 
-An empty dict is passed as the workflow argument.
+To hand-drive an OCR workflow through `forge start` anyway, add `--task-queue ocr-task-queue`.
 
 ### Options
 

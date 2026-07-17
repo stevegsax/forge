@@ -15,10 +15,10 @@ Feature: Model Routing
 
     Examples:
       | tier             | model                                   |
-      | reasoning        | anthropic:claude-opus-4-6               |
-      | generation       | anthropic:claude-sonnet-4-5-20250929    |
-      | summarization    | anthropic:claude-sonnet-4-5-20250929    |
-      | classification   | anthropic:claude-haiku-4-5-20251001     |
+      | reasoning        | anthropic:claude-opus-4-8               |
+      | generation       | anthropic:claude-sonnet-5               |
+      | summarization    | anthropic:claude-sonnet-5               |
+      | classification   | anthropic:claude-haiku-4-5              |
 
   @critical
   Scenario: Resolve model returns provider-prefixed identifier
@@ -95,4 +95,4 @@ Feature: Model Routing
   Scenario: Non-overridden tiers keep defaults when one tier is overridden
     Given the CLI flag "--reasoning-model" is set to "custom:model-v1"
     When the orchestrator resolves a model for the "generation" capability tier
-    Then the resolved model is "anthropic:claude-sonnet-4-5-20250929"
+    Then the resolved model is "anthropic:claude-sonnet-5"

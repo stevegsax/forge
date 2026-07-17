@@ -4,11 +4,11 @@ Forge is batch-first (`sync_mode=False` is the default). Instead of calling `mes
 
 ## Request construction
 
-Request parameters are built by `build_messages_params()` in `src/forge/llm_client.py` — the same function used by both the sync and batch paths:
+Request parameters are built by the provider's `build_request_params()` method — sax_llm's `AnthropicProvider` (`libs/sax-llm/src/sax_llm/anthropic.py`), called from `execute_batch_submit()` in `src/forge/activities/batch_submit.py`. The same provider method serves both the sync and batch paths:
 
 ```json
 {
-  "model": "claude-sonnet-4-5-20250929",
+  "model": "claude-sonnet-5",
   "max_tokens": 4096,
   "system": [
     {
@@ -114,10 +114,10 @@ A separate batch poller workflow (Phase 14c) periodically polls the Anthropic Ba
 
 **Forced tool invocation.** `tool_choice: {"type": "tool", "name": "llm_response"}` forces the LLM to call this tool, guaranteeing a structured response that can be validated against the Pydantic model.
 
-**Prompt caching.** Both the system prompt and tool definition include `cache_control: {"type": "ephemeral"}`. On retries or similar requests, the cached prefix avoids re-processing tokens. Cache headers are added by `build_system_param()` and `build_tool_definition()` in `src/forge/llm_client.py`.
+**Prompt caching.** Both the system prompt and tool definition include `cache_control: {"type": "ephemeral"}`. On retries or similar requests, the cached prefix avoids re-processing tokens. Cache headers are added by `build_system_param()` and `build_tool_definition()` in sax_llm (`libs/sax-llm/src/sax_llm/client.py`), which the provider's `build_request_params()` calls.
 
-**Model selection.** The default model is `claude-sonnet-4-5-20250929`, set in `src/forge/activities/batch_submit.py`. This can be overridden via `AssembledContext.model_name` or model routing (`ModelConfig`).
+**Model selection.** The model comes from `AssembledContext.model_name`, which the workflow sets from the GENERATION tier via `ModelConfig`. When it is unset, `batch_submit.py` falls back to the GENERATION tier pin resolved from the registry (`resolve_model(CapabilityTier.GENERATION, ModelConfig())` — currently `claude-sonnet-5`).
 
-**No thinking.** This simple flow uses `thinking_budget_tokens=0` (default), so no `thinking` parameter is included in the request.
+**No thinking.** This flow's generation call runs with extended thinking disabled (a `ThinkingPolicy` with `enabled=False`), so no `thinking` parameter is included in the request.
 
 **Sync fallback.** When `sync_mode=True`, the workflow calls the `call_llm` activity directly (`client.messages.create`), bypassing the batch/poller/signal path entirely.
