@@ -28,7 +28,7 @@ dependencies = [
 # apps), so a bare exact `uv sync` won't install it — use
 # `uv sync --all-packages` for setup and `uv run --package ocr` to
 # invoke it; `uv run`'s inexact sync keeps both coexisting in the venv.
-members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr"]
+members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr", "libs/sax-platform"]
 
 [tool.uv.sources]
 # Every internal package is a workspace member, so a bare checkout (or a
@@ -134,7 +134,7 @@ ignore_missing_imports = true
 # apps or each other. The sax_platform.contracts internal-layering contract
 # lands in Phase 3 when that package exists.
 [tool.importlinter]
-root_packages = ["forge", "pbook", "ocr", "sax_llm", "forge_contracts"]
+root_packages = ["forge", "pbook", "ocr", "sax_llm", "forge_contracts", "sax_platform"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -159,13 +159,15 @@ forbidden_modules = ["ocr"]
 [[tool.importlinter.contracts]]
 name = "libs never import apps or each other"
 type = "forbidden"
-source_modules = ["sax_llm", "forge_contracts"]
+source_modules = ["sax_llm", "forge_contracts", "sax_platform"]
 forbidden_modules = ["forge", "pbook", "ocr"]
 
+# sax_platform replaces both legacy libs across Phase 3; until they are
+# retired the three stay mutually independent.
 [[tool.importlinter.contracts]]
-name = "sax-llm and forge-contracts are independent of each other"
+name = "sax-llm, forge-contracts, and sax-platform are independent"
 type = "independence"
-modules = ["sax_llm", "forge_contracts"]
+modules = ["sax_llm", "forge_contracts", "sax_platform"]
 
 # Precursor of the Phase-3 sax_platform.contracts sandbox-light rule.
 # boto3/sqlalchemy stay legal here for now: they are real forge-contracts
