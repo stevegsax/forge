@@ -106,9 +106,18 @@ db-migrate:
 # instead of dying on Python's default handler — launchd's unconditional
 # KeepAlive then relaunches it from whatever code is on disk. Leading `-`
 # so an absent worker (e.g. pbook, which is opt-in) doesn't fail the target.
-workers-restart:  # signal all workers; launchd KeepAlive restarts them on current on-disk code
-	-pkill -TERM -f "uv run forge worker"
-	-pkill -TERM -f "uv run --package ocr ocr worker"
-	-pkill -TERM -f "uv run pbook worker"
+# Signal all workers; launchd KeepAlive relaunches them on current on-disk
+# code. A worker with no matching process (e.g. pbook, which is opt-in) is
+# expected and fine — the target says so instead of surfacing pkill's exit 1.
+workers-restart:
+	@pkill -TERM -f "uv run forge worker" \
+		&& echo "forge workers: SIGTERM sent — launchd relaunches on current code" \
+		|| echo "forge workers: none running — nothing to restart (expected if not installed)"
+	@pkill -TERM -f "uv run --package ocr ocr worker" \
+		&& echo "ocr worker: SIGTERM sent — launchd relaunches on current code" \
+		|| echo "ocr worker: none running — nothing to restart (expected if not installed)"
+	@pkill -TERM -f "uv run pbook worker" \
+		&& echo "pbook worker: SIGTERM sent — launchd relaunches on current code" \
+		|| echo "pbook worker: none running — nothing to restart (expected: pbook is opt-in)"
 workers-status:
 	-pgrep -fl "uv run forge worker|uv run --package ocr ocr worker|uv run pbook worker"
