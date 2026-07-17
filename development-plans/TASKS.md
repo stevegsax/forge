@@ -43,7 +43,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T2.3a — mypy strict: sax-platform contracts](tasks/T2.3a-mypy-strict-platform-contracts.md)
 - [x] [T2.3b — mypy strict: sax-platform llm + rest](tasks/T2.3b-mypy-strict-platform-llm.md)
 - [x] [T2.3c — mypy strict: ocr](tasks/T2.3c-mypy-strict-ocr.md)
-- [ ] [T2.3d — mypy strict: pbook](tasks/T2.3d-mypy-strict-pbook.md)
+- [x] [T2.3d — mypy strict: pbook](tasks/T2.3d-mypy-strict-pbook.md)
 
 ### Phase 3 — `sax_platform` consolidation + structured outputs
 
