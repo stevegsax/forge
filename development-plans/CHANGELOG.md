@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-16 | [T3.1 — Platform LLM client, both lanes: sax_platform born (98 tests, 99% cov; rec-7 + live-API pre-work recorded)](tasks/T3.1-platform-llm-client.md) | [#37](https://github.com/stevegsax/forge/pull/37) |
 | 2026-07-16 | [T2.3d — mypy strict: pbook (177 errors; 16 recorded stub-boundary ignores) — Phase 2 complete](tasks/T2.3d-mypy-strict-pbook.md) | [#36](https://github.com/stevegsax/forge/pull/36) |
 | 2026-07-16 | [T2.3c — mypy strict: ocr (zero ignores)](tasks/T2.3c-mypy-strict-ocr.md) | [#35](https://github.com/stevegsax/forge/pull/35) |
 | 2026-07-16 | [T2.3b — mypy strict: sax-llm (zero ignores; one boundary cast)](tasks/T2.3b-mypy-strict-platform-llm.md) | [#34](https://github.com/stevegsax/forge/pull/34) |
