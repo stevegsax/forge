@@ -121,7 +121,7 @@ All modes include automatic context discovery (Phase 4), LLM-guided exploration 
 ## Release Roadmap
 
 - **Release 1** (shipped): Phases 1–12 and 14 — the core orchestrator with batch processing (Phase 13 deferred). See [docs/PHASES.md](docs/PHASES.md).
-- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 56 tasks (a standalone Phase 0 plus 8 migration phases); Phases 1 and most of 2 are landed, ending with the forge monorepo tagged v1.0 (D98).
+- **Current**: the 2026-06-10 architecture migration (see "Current Project" above) — 56 tasks (a standalone Phase 0 plus 8 migration phases); Phases 1–2 are landed. The migration ends with the forge monorepo tagged v1.0 (T8.4's final sweep — not before).
 - **Release 2** (future): Phase 13 (tree-sitter multi-language support) and additional enhancements. See [docs/planning/PHASE13.md](docs/planning/PHASE13.md) and [docs/PHASES.md](docs/PHASES.md).
 
 ## Development Plans
