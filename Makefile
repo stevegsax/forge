@@ -63,7 +63,7 @@ help:
 	@echo "Gates (T2.2): what CI runs"
 	@echo "  make gates        lint + typecheck + lint-imports + test"
 	@echo "  make lint         ruff check + format --check (workspace-wide)"
-	@echo "  make typecheck    mypy: src/forge + forge-contracts (T2.3b-d widen further)"
+	@echo "  make typecheck    mypy strict across all six packages"
 	@echo "  make lint-imports import-linter DAG contracts (root pyproject)"
 	@echo "  make test         all five package suites, each from its own directory"
 	@echo ""
