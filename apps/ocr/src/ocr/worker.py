@@ -37,6 +37,7 @@ from ocr.activities import (
     store_ocr_result,
     upsert_ocr_status,
 )
+from ocr.deps import set_mistral_ocr
 from ocr.workflow_export import OcrExportWorkflow
 from ocr.workflow_gather import OcrGatherWorkflow
 from ocr.workflow_list_jobs import OcrListJobsWorkflow
@@ -79,6 +80,21 @@ def _init_store() -> None:
     )
 
 
+def _init_mistral_ocr() -> None:
+    """Construct and register the Mistral OCR capability (D88 / T3.3).
+
+    Local import: unlike the rest of this module's top-level imports,
+    ``sax_platform.ocr`` pulls in ``mistralai`` eagerly at module level (see
+    its module docstring), so it is kept out of worker.py's top-level import
+    graph rather than risk that dependency reaching workflow-sandbox-sensitive
+    paths — mirroring ``_init_store``'s local import of ``ocr.store``/
+    ``sqlalchemy`` above.
+    """
+    from sax_platform.ocr import MistralOcr, make_mistral_client
+
+    set_mistral_ocr(MistralOcr(make_mistral_client()))
+
+
 def workflows() -> list[type]:
     """The OCR workflow classes registered on the worker."""
     return [
@@ -118,6 +134,7 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
         address = os.environ.get("FORGE_TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS)
 
     _init_store()
+    _init_mistral_ocr()
     client = await connect_temporal(address, identity=identity)
     worker = Worker(
         client,

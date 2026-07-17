@@ -202,10 +202,10 @@ class AnthropicProvider:
         self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
     ) -> str:
         client = self._get_client()
-        # requests is provider-agnostic dict[str, Any] at the protocol boundary
-        # (shared with Mistral); each entry was built by build_batch_request()
-        # above as {"custom_id": ..., "params": <messages.create kwargs>}, which
-        # is exactly the shape of anthropic's Request TypedDict. The SDK wants
+        # requests is provider-agnostic dict[str, Any] at the protocol boundary;
+        # each entry was built by build_batch_request() above as
+        # {"custom_id": ..., "params": <messages.create kwargs>}, which is
+        # exactly the shape of anthropic's Request TypedDict. The SDK wants
         # that precise TypedDict rather than a generic mapping, so narrow with a
         # cast at this validated boundary instead of threading a TypedDict
         # through the whole cross-provider request-building pipeline.

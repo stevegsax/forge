@@ -12,6 +12,7 @@ from sax_llm.models import BatchPollStatus, BatchResultEntry, ExtractedImage
 
 from forge.activities.batch_poll import (
     _ensure_utc,
+    _poll_batch_for,
     execute_poll_batch_results,
 )
 from forge.models import BatchJobStatus, BatchPollerResult
@@ -475,3 +476,69 @@ class TestExecutePollBatchResults:
             BatchJobStatus.PROCESSING,
             BatchJobStatus.PROCESSING,
         ]
+
+
+# ---------------------------------------------------------------------------
+# _poll_batch_for — the per-provider poll dispatch (T3.3)
+# ---------------------------------------------------------------------------
+
+
+class TestPollBatchFor:
+    @pytest.mark.asyncio
+    async def test_anthropic_resolves_via_sax_llm_registry(self) -> None:
+        """Every non-mistral provider name still goes through sax_llm's registry,
+        unchanged by the mistral migration."""
+        expected = ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
+        provider = _make_mock_provider(poll_result=expected)
+
+        with patch("sax_llm.get_provider_by_name", return_value=provider) as mock_get_provider:
+            result = await _poll_batch_for("anthropic", "batch-1")
+
+        mock_get_provider.assert_called_once_with("anthropic")
+        provider.poll_batch.assert_awaited_once_with("batch-1")
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_mistral_normalizes_sax_platform_ocr_result(self) -> None:
+        """mistral no longer resolves through sax_llm at all (it carries no
+        provider entry for it post-T3.3) — it routes through
+        sax_platform.ocr.MistralOcr, and its poll result (a structurally
+        identical but distinct pydantic type) is normalized back into
+        sax_llm.models.BatchPollResult so every downstream branch in
+        execute_poll_batch_results stays provider-agnostic."""
+        from sax_platform.ocr import BatchPollResult as OcrBatchPollResult
+        from sax_platform.ocr import BatchPollStatus as OcrBatchPollStatus
+        from sax_platform.ocr import BatchResultEntry as OcrBatchResultEntry
+        from sax_platform.ocr import ExtractedImage as OcrExtractedImage
+
+        ocr_result = OcrBatchPollResult(
+            status=OcrBatchPollStatus.ENDED,
+            entries=[
+                OcrBatchResultEntry(
+                    custom_id="req-1",
+                    succeeded=True,
+                    raw_response_json='{"pages": []}',
+                    extracted_images=[
+                        OcrExtractedImage(
+                            original_image_id="img-0",
+                            page_index=0,
+                            image_base64="ZmFrZQ==",
+                        )
+                    ],
+                )
+            ],
+        )
+        mistral_provider = MagicMock()
+        mistral_provider.poll_batch = AsyncMock(return_value=ocr_result)
+
+        with (
+            patch("sax_platform.ocr.make_mistral_client", return_value=MagicMock()),
+            patch("sax_platform.ocr.MistralOcr", return_value=mistral_provider),
+        ):
+            result = await _poll_batch_for("mistral", "batch-mistral")
+
+        mistral_provider.poll_batch.assert_awaited_once_with("batch-mistral")
+        assert isinstance(result, ProviderBatchPollResult)
+        assert result.status == BatchPollStatus.ENDED
+        assert result.entries[0].custom_id == "req-1"
+        assert result.entries[0].extracted_images[0].original_image_id == "img-0"

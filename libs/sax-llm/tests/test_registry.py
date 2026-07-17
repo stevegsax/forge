@@ -25,12 +25,6 @@ class TestParseModelId:
             "claude-sonnet-4-5-20250929",
         )
 
-    def test_explicit_mistral(self):
-        assert parse_model_id("mistral:mistral-large-latest") == (
-            "mistral",
-            "mistral-large-latest",
-        )
-
     def test_bare_name_defaults_anthropic(self):
         assert parse_model_id("claude-sonnet-4-5-20250929") == (
             "anthropic",

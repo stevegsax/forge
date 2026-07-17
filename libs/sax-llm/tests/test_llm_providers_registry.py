@@ -29,16 +29,6 @@ class TestParseModelId:
         assert provider == "anthropic"
         assert model == "claude-sonnet-4-5-20250929"
 
-    def test_mistral_prefix(self) -> None:
-        provider, model = parse_model_id("mistral:mistral-large-latest")
-        assert provider == "mistral"
-        assert model == "mistral-large-latest"
-
-    def test_mistral_codestral(self) -> None:
-        provider, model = parse_model_id("mistral:codestral-latest")
-        assert provider == "mistral"
-        assert model == "codestral-latest"
-
     def test_unknown_provider(self) -> None:
         provider, model = parse_model_id("openai:gpt-4")
         assert provider == "openai"
@@ -79,21 +69,10 @@ class TestGetProvider:
         provider = get_provider("anthropic:claude-sonnet-4-5-20250929")
         assert isinstance(provider, AnthropicProvider)
 
-    def test_returns_mistral_provider(self) -> None:
-        from sax_llm.mistral import MistralProvider
-
-        provider = get_provider("mistral:mistral-large-latest")
-        assert isinstance(provider, MistralProvider)
-
     def test_caches_provider_instances(self) -> None:
         p1 = get_provider("anthropic:model-a")
         p2 = get_provider("anthropic:model-b")
         assert p1 is p2
-
-    def test_different_providers_cached_separately(self) -> None:
-        p1 = get_provider("anthropic:model-a")
-        p2 = get_provider("mistral:model-b")
-        assert p1 is not p2
 
     def test_raises_for_unknown_provider(self) -> None:
         with pytest.raises(ValueError, match="Unknown LLM provider"):
@@ -129,12 +108,6 @@ class TestGetProviderByName:
         provider = get_provider_by_name("anthropic")
         assert isinstance(provider, AnthropicProvider)
 
-    def test_returns_mistral_provider(self) -> None:
-        from sax_llm.mistral import MistralProvider
-
-        provider = get_provider_by_name("mistral")
-        assert isinstance(provider, MistralProvider)
-
     def test_raises_for_unknown_provider(self) -> None:
         with pytest.raises(ValueError, match="Unknown LLM provider"):
             get_provider_by_name("openai")
@@ -142,10 +115,4 @@ class TestGetProviderByName:
     def test_caches_provider_instances(self) -> None:
         p1 = get_provider_by_name("anthropic")
         p2 = get_provider_by_name("anthropic")
-        assert p1 is p2
-
-    def test_shares_cache_with_get_provider(self) -> None:
-        """Both functions use the same cache, keyed by provider name."""
-        p1 = get_provider_by_name("mistral")
-        p2 = get_provider("mistral:mistral-large-latest")
         assert p1 is p2

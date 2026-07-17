@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from forge_contracts.models import BatchSubmitSpiInput
 
-from forge.activities.batch_submit import execute_batch_submit, execute_submit_batch_blob
+from forge.activities.batch_submit import (
+    _resolve_blob_submit_provider,
+    execute_batch_submit,
+    execute_submit_batch_blob,
+)
 from forge.models import AssembledContext, BatchSubmitInput, ThinkingPolicy
 from tests.conftest import build_mock_provider
 
@@ -158,3 +162,42 @@ class TestExecuteSubmitBatchBlob:
         spi = BatchSubmitSpiInput(s3_key="k", model="m", provider="mistral", custom_id="c")
         with pytest.raises(RuntimeError, match="provider down"):
             await execute_submit_batch_blob(spi, provider, lambda _k: b"[]")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_blob_submit_provider — the SPI's per-provider dispatch (T3.3)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBlobSubmitProvider:
+    def test_anthropic_resolves_via_sax_llm_registry(self) -> None:
+        """Every non-mistral provider name still goes through sax_llm's registry,
+        unchanged by the mistral migration."""
+        sentinel_provider = object()
+        with patch(
+            "sax_llm.get_provider_by_name", return_value=sentinel_provider
+        ) as mock_get_provider:
+            result = _resolve_blob_submit_provider("anthropic")
+
+        mock_get_provider.assert_called_once_with("anthropic")
+        assert result is sentinel_provider
+
+    def test_mistral_resolves_via_sax_platform_ocr(self) -> None:
+        """mistral no longer resolves through sax_llm at all (it carries no
+        provider entry for it post-T3.3) — it routes through
+        sax_platform.ocr.MistralOcr, built from make_mistral_client()."""
+        sentinel_client = object()
+        sentinel_provider = object()
+        with (
+            patch(
+                "sax_platform.ocr.make_mistral_client", return_value=sentinel_client
+            ) as mock_make_client,
+            patch(
+                "sax_platform.ocr.MistralOcr", return_value=sentinel_provider
+            ) as mock_mistral_ocr,
+        ):
+            result = _resolve_blob_submit_provider("mistral")
+
+        mock_make_client.assert_called_once_with()
+        mock_mistral_ocr.assert_called_once_with(sentinel_client)
+        assert result is sentinel_provider
