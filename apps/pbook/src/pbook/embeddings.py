@@ -71,7 +71,8 @@ def encode_embedding(vector: Sequence[float]) -> str:
 def decode_embedding(encoded: str) -> list[float]:
     """Decode a base64 float32 byte string back into a ``list[float]``."""
     raw = base64.b64decode(encoded)
-    return np.frombuffer(raw, dtype=np.float32).tolist()
+    values: list[float] = np.frombuffer(raw, dtype=np.float32).tolist()
+    return values
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:

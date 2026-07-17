@@ -13,6 +13,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -183,7 +184,7 @@ def parse_jsonl_file(path: Path) -> ParsedTranscript:
     return ParsedTranscript(meta=meta, messages=messages)
 
 
-def _parse_line(data: dict) -> list[TranscriptMessage] | None:
+def _parse_line(data: dict[str, Any]) -> list[TranscriptMessage] | None:
     """Parse a single JSONL line into TranscriptMessages.
 
     Returns None for lines that should be skipped entirely.
@@ -285,7 +286,7 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
-def _summarize_tool_use(block: dict) -> str:
+def _summarize_tool_use(block: dict[str, Any]) -> str:
     """Summarize a tool_use block as a compact string."""
     name = block.get("name", "unknown")
     inp = block.get("input", {})
@@ -313,7 +314,7 @@ def _summarize_tool_use(block: dict) -> str:
     return f"[tool: {name}]"
 
 
-def _compact_tool_result(block: dict) -> str:
+def _compact_tool_result(block: dict[str, Any]) -> str:
     """Compact a tool_result block to a size summary."""
     content = block.get("content", "")
 

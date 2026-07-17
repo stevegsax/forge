@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING
 import click
 
 if TYPE_CHECKING:
-    from typing import NoReturn
+    from typing import Any, NoReturn
+
+    from temporalio.types import MethodAsyncSingleParam
+
+    from pbook.models import RetrievalResult
+    from pbook.transcript import SessionInfo
 
 from pbook.models import PlaybookEntry
 from pbook.tags import validate_tags
@@ -37,13 +42,13 @@ _TEMPORAL_ADDRESS = "localhost:7233"
 _PBOOK_TASK_QUEUE = "pbook-task-queue"
 
 
-def _execute_workflow(
-    workflow_fn,
-    arg,
+def _execute_workflow[ParamType, ReturnType](
+    workflow_fn: MethodAsyncSingleParam[Any, ParamType, ReturnType],
+    arg: ParamType,
     *,
     id_prefix: str = "pbook",
     temporal_address: str = _TEMPORAL_ADDRESS,
-):
+) -> ReturnType:
     """Submit a pbook workflow and wait for the result.
 
     All direct-DB commands route through here. The worker is the only
@@ -54,17 +59,18 @@ def _execute_workflow(
     from temporalio.client import Client
     from temporalio.contrib.pydantic import pydantic_data_converter
 
-    async def _submit():
+    async def _submit() -> ReturnType:
         client = await Client.connect(
             temporal_address,
             data_converter=pydantic_data_converter,
         )
-        return await client.execute_workflow(
+        result: ReturnType = await client.execute_workflow(
             workflow_fn,
             arg,
             id=f"{id_prefix}-{int(time.time())}-{uuid.uuid4().hex[:8]}",
             task_queue=_PBOOK_TASK_QUEUE,
         )
+        return result
 
     return asyncio.run(_submit())
 
@@ -84,12 +90,12 @@ def _execute_workflow(
 _BINARY_FIELDS = ("embedding", "source_context_embedding")
 
 
-def _strip_embedding(row: dict) -> dict:
+def _strip_embedding(row: dict[str, Any]) -> dict[str, Any]:
     """Drop binary embedding columns from a row dict for JSON output."""
     return {k: v for k, v in row.items() if k not in _BINARY_FIELDS}
 
 
-def _reshape_entry(row: dict) -> dict:
+def _reshape_entry(row: dict[str, Any]) -> dict[str, Any]:
     """Strip binary fields and ensure a `tags` list is present.
 
     Store read helpers already attach a `tags` list to each entry row;
@@ -102,7 +108,7 @@ def _reshape_entry(row: dict) -> dict:
     return cleaned
 
 
-def _json_default(obj):
+def _json_default(obj: object) -> str:
     """JSON encoder for datetimes (ISO 8601) and any other non-serializable type."""
     from datetime import UTC, datetime
 
@@ -113,7 +119,7 @@ def _json_default(obj):
     return str(obj)
 
 
-def _emit_json(payload, *, indent: int = 2) -> None:
+def _emit_json(payload: object, *, indent: int = 2) -> None:
     """Print JSON to stdout using the canonical encoder."""
     click.echo(json.dumps(payload, default=_json_default, indent=indent))
 
@@ -138,7 +144,7 @@ def _emit_error(
     sys.exit(exit_code)
 
 
-def _format_entry(entry: dict) -> str:
+def _format_entry(entry: dict[str, Any]) -> str:
     """Format an entry dict for human-readable terminal output."""
     tags = entry.get("tags", [])
     review = " [needs-review]" if entry.get("needs_review") else ""
@@ -511,7 +517,7 @@ def push(file_path: Path, temporal_address: str) -> None:
         click.echo("Error: expected a JSON object or array.", err=True)
         sys.exit(1)
 
-    async def _submit():
+    async def _submit() -> dict[str, Any]:
         from temporalio.client import Client
         from temporalio.contrib.pydantic import pydantic_data_converter
 
@@ -522,7 +528,7 @@ def push(file_path: Path, temporal_address: str) -> None:
             temporal_address,
             data_converter=pydantic_data_converter,
         )
-        result = await client.execute_workflow(
+        result: dict[str, Any] = await client.execute_workflow(
             ExtractionWorkflow.run,
             json.dumps({"experiences": experiences, "project": project}),
             id=f"pbook-extract-{int(time.time())}",
@@ -605,7 +611,7 @@ def search(
             json_mode=output_json,
         )
 
-    async def _submit():
+    async def _submit() -> RetrievalResult:
         from temporalio.client import Client
         from temporalio.contrib.pydantic import pydantic_data_converter
 
@@ -618,7 +624,7 @@ def search(
             data_converter=pydantic_data_converter,
         )
         retrieval_mode = RetrievalMode(mode)
-        return await client.execute_workflow(
+        result: RetrievalResult = await client.execute_workflow(
             RetrievalWorkflow.run,
             RetrievalInput(
                 tags=list(tag),
@@ -632,6 +638,7 @@ def search(
             id=f"pbook-search-{int(time.time())}",
             task_queue=PBOOK_TASK_QUEUE,
         )
+        return result
 
     try:
         result = asyncio.run(_submit())
@@ -666,8 +673,8 @@ def search(
 
 
 def _group_review_by_experience(
-    entries_with_sources: list[dict],
-) -> tuple[list[tuple[str, list[dict]]], list[dict]]:
+    entries_with_sources: list[dict[str, Any]],
+) -> tuple[list[tuple[str, list[dict[str, Any]]]], list[dict[str, Any]]]:
     """Backwards-compat thin wrapper: the canonical implementation now
     lives in ``pbook.activities.cli_ops`` (so the activity can call it
     inside the worker process). Kept here so existing tests keep
@@ -1066,7 +1073,7 @@ def ingest(
 
     from pbook.transcript import discover_sessions, parse_jsonl_file, render_transcript
 
-    def _emit(payload: dict) -> None:
+    def _emit(payload: dict[str, Any]) -> None:
         click.echo(json.dumps(payload, indent=2))
 
     if not transcript_path and not ingest_all:
@@ -1129,7 +1136,7 @@ def ingest(
 
     # Dry-run: emit session info as JSON
     if dry_run:
-        by_project: dict[str, list] = {}
+        by_project: dict[str, list[SessionInfo]] = {}
         for s in sessions:
             by_project.setdefault(s.project_name, []).append(s)
 

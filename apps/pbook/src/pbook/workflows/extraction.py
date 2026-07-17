@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 
@@ -53,7 +54,7 @@ class ExtractionWorkflow:
     """
 
     @workflow.run
-    async def run(self, input_json: str) -> dict:
+    async def run(self, input_json: str) -> dict[str, Any]:
         data = json.loads(input_json)
         experiences_raw = data.get("experiences", [])
         project = data.get("project", "")

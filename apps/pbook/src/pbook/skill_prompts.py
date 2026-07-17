@@ -12,6 +12,8 @@ entry in ``WORKFLOWS``.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES
 
 _COMMANDS: dict[str, dict[str, str]] = {
@@ -241,7 +243,7 @@ _WORKFLOWS: dict[str, str] = {
 }
 
 
-def _build_tag_section() -> dict:
+def _build_tag_section() -> dict[str, Any]:
     """Return a structured description of the tag system.
 
     Values-in-use is intentionally NOT included here — it's runtime
@@ -264,7 +266,7 @@ def _build_tag_section() -> dict:
     }
 
 
-def build_skill_prompt(operation: str = "") -> dict:
+def build_skill_prompt(operation: str = "") -> dict[str, Any]:
     """Return the structured skill-prompt payload.
 
     If ``operation`` is non-empty, return only the matching workflow's

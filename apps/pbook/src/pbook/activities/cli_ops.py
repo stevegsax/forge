@@ -14,8 +14,12 @@ activity-level wrapper around an existing ``pbook.store`` helper.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
+
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +32,7 @@ logger = logging.getLogger(__name__)
 _BINARY_FIELDS = ("embedding", "source_context_embedding")
 
 
-def _strip_binary(row: dict) -> dict:
+def _strip_binary(row: dict[str, Any]) -> dict[str, Any]:
     """Drop binary BLOB columns from a row dict before returning across
     the activity wire. Pydantic's to_json (used by Temporal's data
     converter) doesn't auto-base64 raw bytes inside arbitrary dicts —
@@ -38,7 +42,7 @@ def _strip_binary(row: dict) -> dict:
     return {k: v for k, v in row.items() if k not in _BINARY_FIELDS}
 
 
-def _engine():
+def _engine() -> Engine:
     """Return the worker's cached store engine.
 
     The worker resolves ``PBOOK_DATABASE_URL`` once and caches the engine
@@ -58,8 +62,8 @@ def _engine():
 
 
 def group_review_by_experience(
-    entries_with_sources: list[dict],
-) -> tuple[list[tuple[str, list[dict]]], list[dict]]:
+    entries_with_sources: list[dict[str, Any]],
+) -> tuple[list[tuple[str, list[dict[str, Any]]]], list[dict[str, Any]]]:
     """Pure: cluster review-queue entries by their primary experience_hash.
 
     Each entry's first source row's ``experience_hash`` is the cluster
@@ -67,8 +71,8 @@ def group_review_by_experience(
     is a singleton. Used by ``review_queue_activity`` (when
     ``by_experience=True``).
     """
-    by_hash: dict[str, list[dict]] = {}
-    no_hash: list[dict] = []
+    by_hash: dict[str, list[dict[str, Any]]] = {}
+    no_hash: list[dict[str, Any]] = []
     for entry in entries_with_sources:
         sources = entry.get("sources", [])
         primary = sources[0].get("experience_hash") if sources else None
@@ -77,8 +81,8 @@ def group_review_by_experience(
         else:
             by_hash.setdefault(primary, []).append(entry)
 
-    clusters: list[tuple[str, list[dict]]] = []
-    singletons: list[dict] = list(no_hash)
+    clusters: list[tuple[str, list[dict[str, Any]]]] = []
+    singletons: list[dict[str, Any]] = list(no_hash)
     for h, ents in sorted(by_hash.items()):
         if len(ents) >= 2:
             clusters.append((h, ents))
@@ -93,7 +97,7 @@ def group_review_by_experience(
 
 
 @activity.defn
-async def get_entry_activity(input: dict) -> dict | None:
+async def get_entry_activity(input: dict[str, Any]) -> dict[str, Any] | None:
     """Fetch a single entry by id; return None if missing."""
     from pbook.store import get_entry_by_id
 
@@ -103,7 +107,7 @@ async def get_entry_activity(input: dict) -> dict | None:
 
 
 @activity.defn
-async def list_entries_activity(input: dict) -> list[dict]:
+async def list_entries_activity(input: dict[str, Any]) -> list[dict[str, Any]]:
     """List entries with optional tag/type/project/needs-review filters."""
     from pbook.store import get_entries_by_tags, list_recent_entries
 
@@ -138,7 +142,7 @@ async def list_entries_activity(input: dict) -> list[dict]:
 
 
 @activity.defn
-async def list_sources_activity(input: dict) -> dict:
+async def list_sources_activity(input: dict[str, Any]) -> dict[str, Any]:
     """List entry_sources rows for an entry; return ``{"found": False}``
     when the entry id is not present so the workflow can surface a
     not_found error."""
@@ -153,7 +157,7 @@ async def list_sources_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def list_tags_activity(_input: dict) -> dict:
+async def list_tags_activity(_input: dict[str, Any]) -> dict[str, Any]:
     """Return canonical tag namespaces plus the values currently in use."""
     from pbook.store import list_tag_values_in_use
     from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES
@@ -169,12 +173,12 @@ async def list_tags_activity(_input: dict) -> dict:
 
 
 @activity.defn
-async def review_queue_activity(input: dict) -> dict:
+async def review_queue_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Return either a flat list (default) or a clustered view (when
     ``by_experience=True``) of the review queue."""
     from pbook.store import list_recent_entries, list_review_queue_with_sources
 
-    def _strip_entry_for_wire(e: dict) -> dict:
+    def _strip_entry_for_wire(e: dict[str, Any]) -> dict[str, Any]:
         # Drop both the sibling sources list (added by
         # list_review_queue_with_sources) and the binary embedding columns.
         return _strip_binary({k: v for k, v in e.items() if k != "sources"})
@@ -207,7 +211,7 @@ async def review_queue_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def list_sessions_activity(input: dict) -> list[dict]:
+async def list_sessions_activity(input: dict[str, Any]) -> list[dict[str, Any]]:
     """List ingested_sessions rows, optionally filtered by project."""
     from pbook.store import list_ingested_sessions
 
@@ -220,7 +224,7 @@ async def list_sessions_activity(input: dict) -> list[dict]:
 
 
 @activity.defn
-async def get_session_text_activity(input: dict) -> dict:
+async def get_session_text_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Render a session transcript by id (or explicit path); return text
     plus the resolved project name when discoverable."""
     from pathlib import Path
@@ -260,7 +264,7 @@ async def get_session_text_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def check_duplicate_activity(input: dict) -> list[dict]:
+async def check_duplicate_activity(input: dict[str, Any]) -> list[dict[str, Any]]:
     """Return entries whose title matches the input string (and tags, if given)."""
     from pbook.store import check_duplicate
 
@@ -275,7 +279,7 @@ async def check_duplicate_activity(input: dict) -> list[dict]:
 
 
 @activity.defn
-async def add_entry_activity(input: dict) -> dict:
+async def add_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Insert a new playbook entry. Returns ``{id, title, needs_review,
     rejected}`` on success, or ``{error: 'tag_invalid', messages: [...]}``
     on tag validation failure.
@@ -310,7 +314,7 @@ async def add_entry_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def approve_entry_activity(input: dict) -> dict:
+async def approve_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Clear ``needs_review`` on an entry; return the resulting status dict."""
     from pbook.store import get_entry_by_id, update_entry
 
@@ -333,7 +337,7 @@ async def approve_entry_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def reject_entry_activity(input: dict) -> dict:
+async def reject_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Soft-mark an entry as rejected with an optional reason."""
     from pbook.store import get_entry_by_id, mark_rejected
 
@@ -356,7 +360,7 @@ async def reject_entry_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def update_entry_activity(input: dict) -> dict:
+async def update_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Update arbitrary entry columns (validated against the entries table)."""
     from pbook.store import get_entry_by_id, update_entry
 
@@ -380,7 +384,7 @@ async def update_entry_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def record_feedback_activity(input: dict) -> dict:
+async def record_feedback_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Record helpful/harmful feedback. Returns the updated counters and
     a guidance flag noting whether the 3-retrieval threshold has been
     met (so the CLI can warn the user when feedback won't immediately
@@ -410,7 +414,7 @@ async def record_feedback_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def filter_already_ingested_activity(input: dict) -> dict:
+async def filter_already_ingested_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Given a list of session_ids, return the subset that has not been
     ingested yet. Used by ``pbook ingest`` to skip duplicates.
     """
@@ -426,7 +430,7 @@ async def filter_already_ingested_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def record_started_sessions_activity(input: dict) -> dict:
+async def record_started_sessions_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Seed ``ingested_sessions`` rows in 'running' state for the given
     sessions. Called after the BatchIngestionWorkflow has been submitted
     so ``pbook sessions`` shows them mid-flight."""
@@ -445,7 +449,7 @@ async def record_started_sessions_activity(input: dict) -> dict:
 
 
 @activity.defn
-async def prune_activity(input: dict) -> dict:
+async def prune_activity(input: dict[str, Any]) -> dict[str, Any]:
     """Identify (and optionally apply) prune candidates."""
     from pbook.activities.maintenance import identify_prune_candidates
     from pbook.store import add_entry_tag, list_all_entries, update_entry

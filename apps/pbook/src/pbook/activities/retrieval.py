@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from temporalio import activity
 
@@ -37,7 +38,7 @@ def _estimate_tokens(text: str) -> int:
 
 
 def score_entry(
-    entry: dict,
+    entry: dict[str, Any],
     query_tags: set[str],
     mode: RetrievalMode,
 ) -> float:
@@ -78,15 +79,15 @@ _MIN_RETRIEVALS_FOR_SIGNAL = 3
 _HELPFULNESS_WEIGHT = 2.0
 
 
-def _helpfulness_adjustment(entry: dict) -> float:
+def _helpfulness_adjustment(entry: dict[str, Any]) -> float:
     """Adjustment based on feedback counters; gated by 3-retrieval threshold,
     bounded ±_HELPFULNESS_WEIGHT.
     """
-    retrievals = entry.get("retrieval_count", 0)
+    retrievals: int = entry.get("retrieval_count", 0)
     if retrievals < _MIN_RETRIEVALS_FOR_SIGNAL:
         return 0.0
-    helpful = entry.get("helpful_count", 0)
-    harmful = entry.get("harmful_count", 0)
+    helpful: int = entry.get("helpful_count", 0)
+    harmful: int = entry.get("harmful_count", 0)
     ratio = (helpful - harmful) / retrievals
     return ratio * _HELPFULNESS_WEIGHT
 
@@ -101,7 +102,7 @@ def _tag_namespace(tag: str) -> str:
 
 
 def rank_meta(
-    meta_list: list[dict],
+    meta_list: list[dict[str, Any]],
     query_tags: list[str],
     mode: RetrievalMode,
     *,
@@ -136,11 +137,11 @@ def rank_meta(
 
 def pack_within_budget(
     scored: list[tuple[float, float, int]],
-    full_entries: dict[int, dict],
+    full_entries: dict[int, dict[str, Any]],
     token_budget: int,
     *,
     annotate_similarity: bool,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict[str, Any]], int]:
     """Pure: pack entries within a token budget in score order.
 
     ``full_entries`` maps id → full entry dict (with title, content,
@@ -154,7 +155,7 @@ def pack_within_budget(
     don't need it and including it would re-introduce the bytes-on-the-wire
     problem this layout was designed to avoid.
     """
-    packed: list[dict] = []
+    packed: list[dict[str, Any]] = []
     total_tokens = 0
     for primary, _secondary, entry_id in scored:
         if entry_id not in full_entries:
@@ -188,7 +189,7 @@ _MINIMAL_FIELDS = (
 )
 
 
-def _minimize(row: dict) -> dict:
+def _minimize(row: dict[str, Any]) -> dict[str, Any]:
     """Project a candidate row to just the fields needed for ranking.
 
     Title, content, embedding, timestamps, and other heavy fields are
@@ -198,7 +199,7 @@ def _minimize(row: dict) -> dict:
 
 
 @activity.defn
-async def fetch_candidates(input_json: str) -> list[dict]:
+async def fetch_candidates(input_json: str) -> list[dict[str, Any]]:
     """Fetch candidate entries matching the query tags or query string.
 
     Returns **minimal** dicts (id + ranking fields only). Heavy fields
@@ -280,7 +281,7 @@ async def compute_similarities_by_id(input_json: str) -> dict[str, float]:
 
 
 @activity.defn
-async def score_and_pack(input_json: str) -> dict:
+async def score_and_pack(input_json: str) -> dict[str, Any]:
     """Orchestrate ranking and packing on the activity side.
 
     1. Score the minimal candidate list with pure ``rank_meta``.
@@ -308,7 +309,7 @@ async def score_and_pack(input_json: str) -> dict:
     from pbook.store import get_entries_by_ids, get_store_engine
 
     data = json.loads(input_json)
-    meta_list: list[dict] = data["meta"]
+    meta_list: list[dict[str, Any]] = data["meta"]
     similarities_raw = data.get("similarities")
     similarities: dict[int, float] | None = (
         {int(k): float(v) for k, v in similarities_raw.items()} if similarities_raw else None

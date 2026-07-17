@@ -54,3 +54,19 @@ dev = [
     "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
 ]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["src/pbook"]
+strict = true
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_reexport = true
+
+# pgvector ships no stubs / py.typed marker; treat its imports as untyped
+# at this boundary (same pattern as ocr's fitz override).
+[[tool.mypy.overrides]]
+module = "pgvector.*"
+ignore_missing_imports = true

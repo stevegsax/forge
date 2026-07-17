@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 
@@ -51,7 +52,7 @@ class RetrievalWorkflow:
         # 2. Free-text query path: embed the query, then score similarity
         # by ID. Embedding bytes are loaded server-side and never cross
         # the wire.
-        similarities: dict | None = None
+        similarities: dict[str, Any] | None = None
         if input.query:
             query_b64 = await workflow.execute_activity(
                 "llm_embed",

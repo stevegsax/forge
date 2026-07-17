@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from temporalio import activity
 
@@ -28,13 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 def identify_prune_candidates(
-    entries: list[dict],
+    entries: list[dict[str, Any]],
     *,
     now: datetime | None = None,
     min_retrievals: int = 5,
     max_harmful_ratio: float = 0.5,
     max_stale_days: int = 180,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Identify entries that should be flagged for review.
 
     An entry is a prune candidate if:
@@ -49,7 +50,7 @@ def identify_prune_candidates(
     if now is None:
         now = datetime.now(UTC)
 
-    candidates: list[dict] = []
+    candidates: list[dict[str, Any]] = []
 
     for entry in entries:
         retrieval_count = entry.get("retrieval_count", 0)
@@ -88,10 +89,10 @@ def identify_prune_candidates(
 
 
 def group_similar_entries(
-    entries: list[dict],
+    entries: list[dict[str, Any]],
     *,
     threshold: float = 0.85,
-) -> list[list[dict]]:
+) -> list[list[dict[str, Any]]]:
     """Group entries into clusters based on semantic similarity.
 
     Returns a list of clusters, where each cluster is a list of entries.
@@ -107,7 +108,7 @@ def group_similar_entries(
     if not candidates:
         return []
 
-    clusters: list[list[dict]] = []
+    clusters: list[list[dict[str, Any]]] = []
     processed_ids = set()
 
     for i, entry in enumerate(candidates):
@@ -138,7 +139,7 @@ def group_similar_entries(
 
 
 @activity.defn
-async def fetch_all_entries_for_maintenance() -> list[dict]:
+async def fetch_all_entries_for_maintenance() -> list[dict[str, Any]]:
     """Fetch all entries for maintenance analysis (prune + prompt building).
 
     Embeddings are stripped before crossing the wire — pruning keys off

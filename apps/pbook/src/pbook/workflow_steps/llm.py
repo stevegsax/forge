@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 from pydantic import BaseModel, Field
 from sax_llm.models import text_messages
@@ -60,7 +61,7 @@ class LLMChatResult(BaseModel):
     """Telemetry-bearing result. ``tool_input`` is the raw structured-output
     dict; the workflow validates it against its own Pydantic class."""
 
-    tool_input: dict
+    tool_input: dict[str, Any]
     model_name: str
     input_tokens: int
     output_tokens: int

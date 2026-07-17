@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 
@@ -35,7 +36,7 @@ class MaintenanceWorkflow:
     """Orchestrate pruning and consolidation of playbook entries."""
 
     @workflow.run
-    async def run(self) -> dict:
+    async def run(self) -> dict[str, Any]:
         # Step 1: Fetch all entries
         all_entries = await workflow.execute_activity(
             "fetch_all_entries_for_maintenance",
