@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from forge_contracts import persist as persist_module
-from forge_contracts.persist import (
+from sax_platform.contracts import persist as persist_module
+from sax_platform.contracts.persist import (
     PersistBatchFailure,
     PersistBatchSubmission,
     PersistResult,

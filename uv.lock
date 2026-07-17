@@ -10,7 +10,6 @@ resolution-markers = [
 [manifest]
 members = [
     "forge",
-    "forge-contracts",
     "ocr",
     "pbook",
     "sax-llm",
@@ -471,7 +470,6 @@ dependencies = [
     { name = "anthropic" },
     { name = "boto3" },
     { name = "click" },
-    { name = "forge-contracts" },
     { name = "grimp" },
     { name = "networkx" },
     { name = "opentelemetry-api" },
@@ -505,7 +503,6 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.40.0" },
     { name = "boto3", specifier = ">=1.34" },
     { name = "click", specifier = ">=8.1.0" },
-    { name = "forge-contracts", editable = "libs/forge-contracts" },
     { name = "grimp", specifier = ">=3.5" },
     { name = "networkx", specifier = ">=3.0" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
@@ -531,36 +528,6 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
     { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0" },
-]
-
-[[package]]
-name = "forge-contracts"
-source = { editable = "libs/forge-contracts" }
-dependencies = [
-    { name = "boto3" },
-    { name = "pydantic" },
-    { name = "sqlalchemy" },
-    { name = "temporalio" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boto3", specifier = ">=1.34" },
-    { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "sqlalchemy", specifier = ">=2.0" },
-    { name = "temporalio", specifier = ">=1.9.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "ruff", specifier = ">=0.8.0" },
 ]
 
 [[package]]
@@ -1235,7 +1202,6 @@ source = { editable = "apps/ocr" }
 dependencies = [
     { name = "alembic" },
     { name = "click" },
-    { name = "forge-contracts" },
     { name = "mistralai" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },
@@ -1259,7 +1225,6 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "click", specifier = ">=8.1.0" },
-    { name = "forge-contracts", editable = "libs/forge-contracts" },
     { name = "mistralai", specifier = ">=1.0.0" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.10.0" },
@@ -1442,6 +1407,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "sax-llm" },
+    { name = "sax-platform" },
     { name = "sqlalchemy" },
     { name = "temporalio" },
 ]
@@ -1464,6 +1430,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "sax-llm", editable = "libs/sax-llm" },
+    { name = "sax-platform", editable = "libs/sax-platform" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.9.0" },
 ]
@@ -1713,6 +1680,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/aa/81/05e400037eaf55ad400bcd318c05bb345b57e708887f07ddb2d20e3f0e98/pydantic_core-2.41.5-graalpy312-graalpy250_312_native-macosx_11_0_arm64.whl", hash = "sha256:aabf5777b5c8ca26f7824cb4a120a740c9588ed58df9b2d196ce92fba42ff8dc", size = 1915388, upload-time = "2025-11-04T13:42:52.215Z" },
     { url = "https://files.pythonhosted.org/packages/6e/0d/e3549b2399f71d56476b77dbf3cf8937cec5cd70536bdc0e374a421d0599/pydantic_core-2.41.5-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c007fe8a43d43b3969e8469004e9845944f1a80e6acd47c150856bb87f230c56", size = 1942879, upload-time = "2025-11-04T13:42:56.483Z" },
     { url = "https://files.pythonhosted.org/packages/f7/07/34573da085946b6a313d7c42f82f16e8920bfd730665de2d11c0c37a74b5/pydantic_core-2.41.5-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:76d0819de158cd855d1cbb8fcafdf6f5cf1eb8e470abe056d5d161106e38062b", size = 2139017, upload-time = "2025-11-04T13:42:59.471Z" },
+]
+
+[[package]]
+name = "pydantic-settings"
+version = "2.14.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/b5/8f48e906c3e0205276e8bd8cb7512217a87b2685304d64be27cad5b3019f/pydantic_settings-2.14.2.tar.gz", hash = "sha256:c19dd64b19097f1de80184f0cc7b0272a13ae6e170cbf240a3e27e381ed14a5f", size = 237700, upload-time = "2026-06-19T13:44:56.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/c1/6e422f34e569cf8e18df68d1939c81c099d2b61e4f7d9621c8a77560799c/pydantic_settings-2.14.2-py3-none-any.whl", hash = "sha256:a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440", size = 61715, upload-time = "2026-06-19T13:44:55.02Z" },
 ]
 
 [[package]]
@@ -1985,9 +1966,16 @@ name = "sax-platform"
 version = "0.1.0"
 source = { editable = "libs/sax-platform" }
 dependencies = [
+    { name = "alembic" },
     { name = "anthropic" },
+    { name = "boto3" },
     { name = "mistralai" },
+    { name = "numpy" },
+    { name = "openai" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "sqlalchemy" },
+    { name = "temporalio" },
 ]
 
 [package.dev-dependencies]
@@ -1999,9 +1987,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.14" },
     { name = "anthropic", specifier = ">=0.40.0" },
+    { name = "boto3", specifier = ">=1.34" },
     { name = "mistralai", specifier = ">=1.0.0,<2" },
+    { name = "numpy", specifier = ">=2.4.4" },
+    { name = "openai", specifier = ">=2.31.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
+    { name = "pydantic-settings", specifier = ">=2.6.0" },
+    { name = "sqlalchemy", specifier = ">=2.0" },
+    { name = "temporalio", specifier = ">=1.9.0" },
 ]
 
 [package.metadata.requires-dev]

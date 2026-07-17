@@ -86,12 +86,11 @@ every internal package is a workspace member, so one clone and one
 
 ```toml
 [tool.uv.workspace]
-members = ["apps/pbook", "libs/sax-llm", "libs/forge-contracts", "apps/ocr", "libs/sax-platform"]
+members = ["apps/pbook", "libs/sax-llm", "apps/ocr", "libs/sax-platform"]
 
 [tool.uv.sources]
 sax-llm = { workspace = true }
 pbook = { workspace = true }
-forge-contracts = { workspace = true }
 sax-platform = { workspace = true }
 ```
 
@@ -100,8 +99,9 @@ forge/                     # the workspace root — this is the whole deployment
 ├── apps/pbook/            # knowledge playbook service
 ├── apps/ocr/              # document OCR app (member, not a forge dependency)
 ├── libs/sax-llm/          # LLM provider abstraction
-├── libs/forge-contracts/  # shared wire contracts + platform primitives
-└── libs/sax-platform/     # model-tier registry, LLM client, Mistral OCR
+└── libs/sax-platform/     # model-tier registry, LLM client, Mistral OCR,
+                            # shared wire contracts + platform primitives
+                            # (absorbed libs/forge-contracts at T3.4)
 ```
 
 ```bash
@@ -254,5 +254,6 @@ Terraform, SSM secret bootstrap, an nginx mutual-TLS gateway for remote
 CLIs, and Supabase-backed Temporal — survives in git history
 (`deploy/terraform`, `deploy/scripts`, `deploy/certs`, `deploy/client`,
 `docs/operations/SECURE-REMOTE-ACCESS.md` before this change). The
-client-side TLS env handling in forge-contracts remains in the code,
-dormant, should remote access return.
+client-side TLS env handling — now in `sax_platform.temporal.client`
+(absorbed from forge-contracts at T3.4) — remains in the code, dormant,
+should remote access return.

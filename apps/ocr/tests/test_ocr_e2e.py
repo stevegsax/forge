@@ -36,8 +36,8 @@ import time
 from pathlib import Path
 
 import pytest
-from forge_contracts.constants import OCR_TASK_QUEUE
-from forge_contracts.temporal import connect_temporal
+from sax_platform.contracts.constants import OCR_TASK_QUEUE
+from sax_platform.temporal.client import connect_temporal
 from temporalio.worker import Worker
 
 from ocr.models import OcrSubmitInput

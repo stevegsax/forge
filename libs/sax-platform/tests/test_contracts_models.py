@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from forge_contracts.models import (
+from sax_platform.contracts.models import (
     BatchJobStatus,
     BatchResult,
     BatchSubmitResult,
@@ -54,7 +54,7 @@ class TestResultPayloadEnvelope:
     def test_resolve_pointer_fetches_envelope(self, monkeypatch: pytest.MonkeyPatch) -> None:
         envelope = dump_batch_result_payload('{"pages": [1]}', [{"id": "a"}])
 
-        from forge_contracts import s3_blobs
+        from sax_platform.contracts import s3_blobs
 
         monkeypatch.setattr(s3_blobs, "get", lambda key: envelope.encode("utf-8"))
 

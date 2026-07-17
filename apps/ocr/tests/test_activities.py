@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from forge_contracts.models import dump_batch_result_payload
+from sax_platform.contracts.models import dump_batch_result_payload
 
 from ocr.activities import (
     CHUNK_SIZE_PAGES,
@@ -457,7 +457,7 @@ class TestStoreOcrResult:
         assert get_ocr_job_status(engine, "r1")["status"] == "stored"
 
     def test_s3_envelope_with_images(self, migrated: str) -> None:
-        from forge_contracts import s3_blobs
+        from sax_platform.contracts import s3_blobs
 
         body = json.dumps(
             {"model": "m", "pages": [{"markdown": "![x](img-0.jpeg)"}], "usage_info": {}}
@@ -526,7 +526,7 @@ class TestStoreOcrResult:
 
     def test_image_with_data_uri_prefix_is_decoded(self, migrated: str) -> None:
         """image_base64 delivered as a data: URI has its header stripped before decode."""
-        from forge_contracts import s3_blobs
+        from sax_platform.contracts import s3_blobs
 
         engine = get_store_engine()
         body = json.dumps(
@@ -585,7 +585,7 @@ class TestStoreOcrResult:
 
 class TestBuildRequestBlob:
     def test_mints_id_and_stashes_blob(self, migrated: str) -> None:
-        from forge_contracts import s3_blobs
+        from sax_platform.contracts import s3_blobs
 
         engine = get_store_engine()
         save_file_content(
@@ -794,8 +794,8 @@ class TestExecuteCheckOcrDuplicate:
 
 class TestListOcrJobs:
     def test_status_join(self, migrated: str) -> None:
-        from forge_contracts.batch_jobs import batch_jobs
-        from forge_contracts.batch_jobs import metadata as bj_metadata
+        from sax_platform.contracts.batch_jobs import batch_jobs
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
         engine = get_store_engine()
         # Platform owns batch_jobs — create it for the join (OCR migration doesn't).
@@ -829,7 +829,7 @@ class TestListOcrJobs:
         assert by_doc["d-bad"] == OcrJobDerivedStatus.ERRORED.value
 
     def test_status_filter_narrows_results(self, migrated: str) -> None:
-        from forge_contracts.batch_jobs import metadata as bj_metadata
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
         engine = get_store_engine()
         bj_metadata.create_all(engine)
@@ -1004,7 +1004,7 @@ class TestActivityWrappers:
         assert get_ocr_result(engine, "wmark")["marked_for_removal"] is False
 
     async def test_list_ocr_jobs(self, migrated: str) -> None:
-        from forge_contracts.batch_jobs import metadata as bj_metadata
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
         engine = get_store_engine()
         bj_metadata.create_all(engine)

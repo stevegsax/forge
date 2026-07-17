@@ -37,6 +37,7 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
     is exactly what triggers the Temporal retry that makes the write survivable.
     """
     from forge.store import (
+        InteractionRow,
         build_playbook_dict,
         get_store_engine,
         record_batch_failure,
@@ -53,22 +54,24 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
         case PersistInteraction():
             applied = save_interaction(
                 engine,
-                idempotency_key=req.idempotency_key,
-                task_id=req.task_id,
-                step_id=req.step_id,
-                sub_task_id=req.sub_task_id,
-                role=req.role,
-                system_prompt=req.system_prompt,
-                user_prompt=req.user_prompt,
-                model_name=req.model_name,
-                input_tokens=req.input_tokens,
-                output_tokens=req.output_tokens,
-                latency_ms=req.latency_ms,
-                explanation=req.explanation,
-                context_stats_json=req.context_stats_json,
-                cache_creation_input_tokens=req.cache_creation_input_tokens,
-                cache_read_input_tokens=req.cache_read_input_tokens,
-                stop_reason=req.stop_reason,
+                InteractionRow(
+                    idempotency_key=req.idempotency_key,
+                    task_id=req.task_id,
+                    step_id=req.step_id,
+                    sub_task_id=req.sub_task_id,
+                    role=req.role,
+                    system_prompt=req.system_prompt,
+                    user_prompt=req.user_prompt,
+                    model_name=req.model_name,
+                    input_tokens=req.input_tokens,
+                    output_tokens=req.output_tokens,
+                    latency_ms=req.latency_ms,
+                    explanation=req.explanation,
+                    context_stats_json=req.context_stats_json,
+                    cache_creation_input_tokens=req.cache_creation_input_tokens,
+                    cache_read_input_tokens=req.cache_read_input_tokens,
+                    stop_reason=req.stop_reason,
+                ),
             )
         case PersistRun():
             applied = save_run(engine, req.task_result, req.workflow_id, req.run_id)

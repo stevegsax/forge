@@ -14,9 +14,10 @@ import json
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
+    from sax_platform.temporal.retries import IO_RETRY
+
     from forge.models import (
         AssembledContext,
         BatchResult,
@@ -31,8 +32,6 @@ PBOOK_TASK_QUEUE = "pbook-task-queue"
 
 _PREPARE_TIMEOUT = timedelta(seconds=120)
 _SAVE_TIMEOUT = timedelta(seconds=30)
-
-_RETRY = RetryPolicy(maximum_attempts=2)
 
 
 def _as_int(value: object) -> int:
@@ -75,7 +74,7 @@ class TranscriptIngestionWorkflow:
             "prepare_transcript",
             input_json,
             start_to_close_timeout=_PREPARE_TIMEOUT,
-            retry_policy=_RETRY,
+            retry_policy=IO_RETRY,
             result_type=str,
         )
 

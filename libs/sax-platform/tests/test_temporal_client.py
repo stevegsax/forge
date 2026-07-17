@@ -1,7 +1,9 @@
 """Tests for the centralized Temporal connection / TLS helper.
 
-``Client.connect`` is mocked throughout — no real Temporal frontend
-connection is ever attempted from these tests.
+Ported from ``libs/forge-contracts/tests/test_temporal.py`` (T3.4, ST2) with
+imports rewritten to ``sax_platform.temporal.client``. ``Client.connect`` is
+mocked throughout — no real Temporal frontend connection is ever attempted
+from these tests.
 """
 
 from __future__ import annotations
@@ -10,8 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from forge_contracts.constants import TEMPORAL_NAMESPACE
-from forge_contracts.temporal import (
+from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
+from sax_platform.temporal.client import (
     TemporalTLSConfigError,
     build_tls_config,
     connect_temporal,

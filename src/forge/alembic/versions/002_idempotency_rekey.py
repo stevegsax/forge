@@ -67,7 +67,7 @@ def _runs_table(*, with_run_id: bool, with_composite_uq: bool) -> sa.Table:
     columns += [
         sa.Column("status", sa.String, nullable=False),
         sa.Column("result_json", sa.Text, nullable=False),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, server_default=sa.func.now(), nullable=False),
     ]
     args: list[SchemaItem] = [sa.Index("ix_runs_task_id", "task_id")]
     if with_composite_uq:

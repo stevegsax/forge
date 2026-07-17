@@ -198,7 +198,7 @@ async def submit_batch_blob(input: BatchSubmitSpiInput) -> BatchSubmitResult:
     consumer apps (e.g. OCR) cross-queue; the generic in-platform path keeps its
     own ``submit_batch_request`` builder.
     """
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     from forge.tracing import get_tracer
 

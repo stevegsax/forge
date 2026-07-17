@@ -14,12 +14,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from forge_contracts.constants import BATCH_RESULT_SIGNAL
-from forge_contracts.models import dump_batch_result_payload
 from sax_llm.models import BatchPollResult, BatchPollStatus, BatchResultEntry, ExtractedImage
+from sax_platform.contracts.constants import BATCH_RESULT_SIGNAL
+from sax_platform.contracts.models import dump_batch_result_payload
+from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
-from forge.activities._heartbeat import heartbeat_during
 from forge.models import (
     BatchJobStatus,
     BatchPollerInput,
@@ -389,7 +389,7 @@ async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
         # Stash large/image-bearing results to S3 for pointer delivery. The key
         # lands in a reapable namespace (bucket TTL GC); the platform never opens
         # the blob — the consumer fetches and parses it.
-        from forge_contracts import s3_blobs
+        from sax_platform.contracts import s3_blobs
 
         def put_result_blob(custom_id: str, data: bytes) -> str:
             key: str = s3_blobs.build_key(f"batch-result-{custom_id}")

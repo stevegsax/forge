@@ -13,14 +13,14 @@ from __future__ import annotations
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    from forge_contracts.persist import (
+    from sax_platform.contracts.persist import (
         PersistBatchSubmission,
         persist_block,
     )
+    from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
     from forge.models import (
         AssembledContext,
@@ -90,16 +90,9 @@ _CONFLICT_RESOLUTION_TIMEOUT = timedelta(minutes=5)
 
 _LLM_HEARTBEAT = timedelta(seconds=60)
 
-_LLM_RETRY = RetryPolicy(
-    maximum_attempts=3,
-    non_retryable_error_types=[
-        "BadRequestError",
-        "AuthenticationError",
-        "PermissionDeniedError",
-        "NotFoundError",
-    ],
-)
-_LOCAL_RETRY = RetryPolicy(maximum_attempts=2)
+# LLM_RETRY and IO_RETRY are the shared presets from sax_platform.temporal.retries
+# (T3.4, ST7) — forge's former per-module _LLM_RETRY/_LOCAL_RETRY copies are
+# retired in favor of the single platform source.
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +129,7 @@ async def batch_submit_and_wait(
             max_tokens=max_tokens,
         ),
         start_to_close_timeout=submit_timeout,
-        retry_policy=_LLM_RETRY,
+        retry_policy=LLM_RETRY,
         result_type=BatchSubmitResult,
     )
     # Survivably record the submission before waiting, so the poller can find the
@@ -177,7 +170,7 @@ async def batch_submit_and_wait(
             max_tokens=max_tokens,
         ),
         start_to_close_timeout=parse_timeout,
-        retry_policy=_LOCAL_RETRY,
+        retry_policy=IO_RETRY,
         result_type=ParsedLLMResponse,
     )
     return parsed
@@ -200,7 +193,7 @@ async def generation_dispatch(
             context,
             start_to_close_timeout=_LLM_TIMEOUT,
             heartbeat_timeout=_LLM_HEARTBEAT,
-            retry_policy=_LLM_RETRY,
+            retry_policy=LLM_RETRY,
             result_type=LLMCallResult,
         )
         return sync_result
@@ -237,7 +230,7 @@ async def conflict_resolution_dispatch(
             call_input,
             start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
             heartbeat_timeout=_LLM_HEARTBEAT,
-            retry_policy=_LLM_RETRY,
+            retry_policy=LLM_RETRY,
             result_type=ConflictResolutionCallResult,
         )
         return sync_result
@@ -286,7 +279,7 @@ async def remove_worktree(repo_root: str, task_id: str) -> None:
             force=True,
         ),
         start_to_close_timeout=_GIT_TIMEOUT,
-        retry_policy=_LOCAL_RETRY,
+        retry_policy=IO_RETRY,
         result_type=type(None),
     )
 

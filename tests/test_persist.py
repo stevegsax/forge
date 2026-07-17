@@ -38,7 +38,7 @@ from forge.store import get_run, get_store_engine, run_migrations
 from forge.workflows import FORGE_TASK_QUEUE
 
 with workflow.unsafe.imports_passed_through():
-    from forge_contracts.persist import persist_block
+    from sax_platform.contracts.persist import persist_block
 
 if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment

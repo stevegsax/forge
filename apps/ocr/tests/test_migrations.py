@@ -39,7 +39,7 @@ def test_chain_creates_ocr_tables_with_own_version_table(forge_db_url: str) -> N
 
 def test_coexists_with_platform_batch_jobs(forge_db_url: str) -> None:
     """The OCR chain coexists with a pre-existing platform batch_jobs + version table."""
-    from forge_contracts.batch_jobs import metadata as bj_metadata
+    from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
     engine = sa.create_engine(forge_db_url)
     # Simulate the platform side already present in the shared DB.
@@ -74,7 +74,7 @@ def postgres_url() -> Iterator[str]:
 
 @pytest.mark.postgres
 def test_coexists_on_postgres(postgres_url: str) -> None:
-    from forge_contracts.batch_jobs import metadata as bj_metadata
+    from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
     engine = sa.create_engine(postgres_url)
     bj_metadata.create_all(engine)

@@ -1,9 +1,9 @@
 """OCR activities — file IO, request-blob build, result parse/store, status, listing.
 
-Consumes the Forge platform purely through ``forge_contracts`` + Temporal string-name
-cross-queue calls. The provider submit itself is the platform's job (the opaque-blob
-submit SPI); OCR builds the request body, hands the platform a pointer, and owns all
-image storage / markdown rewriting / status projection.
+Consumes the Forge platform purely through ``sax_platform.contracts`` + Temporal
+string-name cross-queue calls. The provider submit itself is the platform's job (the
+opaque-blob submit SPI); OCR builds the request body, hands the platform a pointer,
+and owns all image storage / markdown rewriting / status projection.
 
 Function Core / Imperative Shell: pure helpers (body build, markdown rewrite, page
 parse) are separated from the Temporal activities that do IO.
@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from forge_contracts.models import resolve_batch_result
+from sax_platform.contracts.models import resolve_batch_result
 from temporalio import activity
 
 from ocr.models import (
@@ -295,7 +295,7 @@ def execute_build_request_blob(
     batch_jobs PK) and returns it with the blob key so the submit workflow can
     hand the platform a pointer.
     """
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     from ocr.store import get_file_content
 
@@ -328,7 +328,7 @@ def execute_store_ocr_result(
     engine: Engine,
 ) -> OcrStoreResult:
     """Resolve the delivered result, store images, save text + status (idempotent)."""
-    from forge_contracts.models import BatchResult
+    from sax_platform.contracts.models import BatchResult
 
     from ocr.store import ocr_image_id, save_ocr_image, save_ocr_result, upsert_ocr_job_status
 
@@ -537,7 +537,7 @@ def execute_list_ocr_jobs(
     for the provider-batch detail. No ``forge`` import — only the contracts read model.
     """
     import sqlalchemy as sa
-    from forge_contracts.batch_jobs import batch_jobs as bj
+    from sax_platform.contracts.batch_jobs import batch_jobs as bj
 
     from ocr.store import OcrJobStatus
 

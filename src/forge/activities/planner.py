@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sax_llm.models import text_messages
+from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
-from forge.activities._heartbeat import heartbeat_during
 from forge.activities.context import (
     _detect_package_name,
     _read_context_files,

@@ -30,15 +30,15 @@ from temporalio.common import RetryPolicy
 # 20-minute schedule_to_close governor, after which the activity fails loudly.
 # ValueError is validation (never succeeds on retry); idempotency-key collisions
 # are absorbed by insert_or_ignore and never raise.
-_PERSIST_RETRY = RetryPolicy(
+PERSIST_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=1),
     backoff_coefficient=2.0,
     maximum_interval=timedelta(seconds=60),
     maximum_attempts=20,
     non_retryable_error_types=["ValueError"],
 )
-_PERSIST_START_TO_CLOSE = timedelta(seconds=30)
-_PERSIST_SCHEDULE_TO_CLOSE = timedelta(minutes=20)
+PERSIST_START_TO_CLOSE = timedelta(seconds=30)
+PERSIST_SCHEDULE_TO_CLOSE = timedelta(minutes=20)
 
 
 class PersistResult(BaseModel):
@@ -81,9 +81,9 @@ async def persist_block(req: BaseModel, *, task_queue: str | None = None) -> Per
     expensive call that produced ``req`` already returned and is never re-run.
     """
     kwargs: dict[str, Any] = {
-        "start_to_close_timeout": _PERSIST_START_TO_CLOSE,
-        "schedule_to_close_timeout": _PERSIST_SCHEDULE_TO_CLOSE,
-        "retry_policy": _PERSIST_RETRY,
+        "start_to_close_timeout": PERSIST_START_TO_CLOSE,
+        "schedule_to_close_timeout": PERSIST_SCHEDULE_TO_CLOSE,
+        "retry_policy": PERSIST_RETRY,
         "result_type": PersistResult,
     }
     if task_queue is not None:

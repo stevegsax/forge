@@ -16,24 +16,26 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
-from forge_contracts.db import (
+from pydantic import BaseModel, ConfigDict
+from sax_platform.contracts.types import UTCDateTime
+from sax_platform.db import (
     StoreConfigError as StoreConfigError,
 )
-from forge_contracts.db import (
-    ensure_sqlite_parent,
-    insert_or_ignore,
-)
-from forge_contracts.db import (
+from sax_platform.db import (
     get_store_engine as get_store_engine,
 )
-from forge_contracts.db import (
+from sax_platform.db import (
     get_store_url as get_store_url,
 )
-from forge_contracts.types import UTCDateTime
-from sqlalchemy.engine import make_url
+from sax_platform.db import (
+    insert_or_ignore,
+)
+from sax_platform.db import (
+    run_migrations as _run_migrations,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from forge.models import BatchJobStatus
@@ -89,14 +91,26 @@ class Interaction(Base):
     input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     output_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     latency_ms: Mapped[float] = mapped_column(sa.Float, nullable=False)
-    explanation: Mapped[str] = mapped_column(sa.Text, default="")
+    # server_default is sa.text("''") rather than the plain string "" -- Alembic's
+    # SQLite server_default comparator strips matching quotes with a regex that
+    # requires >=1 char of content (`'(.+)'`), so it never matches a genuinely
+    # empty quoted literal and falls back to comparing the raw (unquoted) "" against
+    # the reflected, still-quoted "''" -- a guaranteed false positive on every
+    # autogenerate. Wrapping in text() makes both sides compile to the identical
+    # quoted-empty-string form the regex expects.
+    explanation: Mapped[str] = mapped_column(sa.Text, default="", server_default=sa.text("''"))
     context_stats_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
-    cache_creation_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
-    cache_read_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    cache_creation_input_tokens: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default="0"
+    )
+    cache_read_input_tokens: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default="0"
+    )
     stop_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
@@ -118,6 +132,7 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
@@ -133,10 +148,12 @@ class BatchJob(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
@@ -154,16 +171,48 @@ class Playbook(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
 # Typed Table handles. ``Model.__table__`` is typed ``FromClause`` by SQLAlchemy's
 # declarative stubs, but ``metadata.tables`` is typed ``Table`` — which is what the
-# forge_contracts DB helpers (e.g. ``insert_or_ignore``) require.
+# sax_platform.db helpers (e.g. ``insert_or_ignore``) require.
 _INTERACTIONS_TABLE: sa.Table = Base.metadata.tables[Interaction.__tablename__]
 _RUNS_TABLE: sa.Table = Base.metadata.tables[Run.__tablename__]
 _BATCH_JOBS_TABLE: sa.Table = Base.metadata.tables[BatchJob.__tablename__]
 _PLAYBOOKS_TABLE: sa.Table = Base.metadata.tables[Playbook.__tablename__]
+
+
+class InteractionRow(BaseModel):
+    """Typed payload for ``save_interaction`` — one row of the interactions table.
+
+    Every field is a real column of ``Interaction``. The sole caller,
+    ``persist_to_store`` (``forge/activities/persist.py``), spells out each one
+    explicitly by keyword; a frozen model in place of ``save_interaction(engine,
+    **kwargs: object)`` turns a misspelled or dropped column into a type error at
+    the call site instead of a runtime failure inside the 20-attempt persist retry
+    loop (T3.4, ST7). Optional fields mirror the column nullability.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    idempotency_key: str | None = None
+    task_id: str
+    step_id: str | None = None
+    sub_task_id: str | None = None
+    role: str
+    system_prompt: str
+    user_prompt: str
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+    explanation: str = ""
+    context_stats_json: str | None = None
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    stop_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -243,65 +292,24 @@ def build_playbook_dict(
 # ---------------------------------------------------------------------------
 
 
-# Serializes concurrent migrators on Postgres. Every worker runs migrations at
-# startup and Alembic takes no lock of its own, so two simultaneous boots race
-# the DDL (the loser dies on e.g. DuplicateColumn). Any stable bigint works;
-# this one spells the ASCII bytes "forge-mg".
-_MIGRATION_LOCK_KEY: Final[int] = int.from_bytes(b"forge-mg", "big")
-
-
 def run_migrations(url: str) -> None:
     """Run Alembic migrations against the store URL (SQLite or Postgres).
 
-    On Postgres, a session-level ``pg_advisory_lock`` serializes concurrent
-    callers: the second migrator blocks until the first finishes, then finds
-    the schema at head and no-ops. SQLite callers are single-process dev/test
-    paths; no lock is taken.
+    Delegates to the shared platform runner, which serializes concurrent
+    Postgres migrators with a ``pg_advisory_lock`` keyed on the version table
+    (no-op on SQLite), so simultaneous worker boots don't race the DDL.
     """
-    from alembic import command
-    from alembic.config import Config
-
-    alembic_dir = Path(__file__).parent / "alembic"
-    ini_path = alembic_dir / "alembic.ini"
-
-    cfg = Config(str(ini_path))
-    cfg.set_main_option("script_location", str(alembic_dir))
-
-    backend = make_url(url).get_backend_name()
-    if backend == "sqlite":
-        ensure_sqlite_parent(url)
-    # Alembic's Config is backed by configparser with interpolation enabled, so a
-    # bare '%' (e.g. URL-encoded password chars %23, %21, %40) is parsed as an
-    # interpolation token and raises. Escape as '%%'; get_main_option() in env.py
-    # reverses this on read, so the engine still receives the original URL.
-    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
-
-    if backend != "postgresql":
-        command.upgrade(cfg, "head")
-        return
-
-    # The lock lives on its own connection and is held across Alembic's whole
-    # run (Alembic builds its own engine from cfg). Closing the connection
-    # releases a session-level advisory lock, so the explicit unlock is belt
-    # and braces for the happy path.
-    lock_engine = sa.create_engine(url, poolclass=sa.pool.NullPool)
-    try:
-        with lock_engine.connect() as conn:
-            conn.execute(sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
-            try:
-                command.upgrade(cfg, "head")
-            finally:
-                conn.execute(
-                    sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-                )
-    finally:
-        lock_engine.dispose()
+    _run_migrations(
+        url,
+        version_table="alembic_version_forge",
+        script_location=str(Path(__file__).parent / "alembic"),
+    )
 
 
-def save_interaction(engine: Engine, **kwargs: object) -> bool:
+def save_interaction(engine: Engine, row: InteractionRow) -> bool:
     """Insert a row into the interactions table (idempotent on idempotency_key)."""
     inserted: bool = insert_or_ignore(
-        engine, _INTERACTIONS_TABLE, dict(kwargs), index_elements=["idempotency_key"]
+        engine, _INTERACTIONS_TABLE, row.model_dump(), index_elements=["idempotency_key"]
     )
     return inserted
 

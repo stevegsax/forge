@@ -5,6 +5,7 @@ Work completed before this file was introduced is recorded in `git log` — incl
 
 | Date | Task | PR |
 | ------ | ------ | ---- |
+| 2026-07-17 | [T3.4 — Platform plumbing modules: `sax_platform.{contracts,temporal,db,embeddings,config,logging}`; forge-contracts retired and forge/ocr/pbook migrated onto the platform; Alembic hardened (render_as_batch, advisory lock, clean autogenerate); worker drain 30s→5min; workspace is now five packages; `make gates` green (forge 1289 / pbook 354 / ocr 115 / sax-llm 96 / sax-platform 371 tests; import-linter 7 contracts kept); sax-llm's package-identity retirement deferred to T3.5](tasks/T3.4-platform-plumbing-modules.md) | — |
 | 2026-07-17 | Graceful worker shutdown on SIGTERM/SIGINT (drain + exit 0 + KeepAlive relaunch); `make workers-restart` / `workers-status` — operator-requested restart-without-launchctl | [#41](https://github.com/stevegsax/forge/pull/41) |
 | 2026-07-17 | Review fixes — 10 verified findings from the Phase 3 diff (workflow-backed review): thinking caps + stop_reason telemetry (migration 003), legacy-payload validator, fallback polarity, null-response guards, fail-fast API key, endpoint normalization, CLI provider validation, cached mistral resolver; judge pin deferred to T0.6 | [#40](https://github.com/stevegsax/forge/pull/40) |
 | 2026-07-17 | [T3.3 — MistralOcr in sax_platform; Mistral chat deleted from sax-llm; ocr DI seam (e2e deferred to post-merge)](tasks/T3.3-mistral-ocr-chat-deleted.md) | [#39](https://github.com/stevegsax/forge/pull/39) |

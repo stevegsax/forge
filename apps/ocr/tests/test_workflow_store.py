@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from forge_contracts.constants import OCR_TASK_QUEUE
-from forge_contracts.models import BatchResult
+from sax_platform.contracts.constants import OCR_TASK_QUEUE
+from sax_platform.contracts.models import BatchResult
 from temporalio import activity
 from temporalio.client import WorkflowFailureError
 from temporalio.worker import Worker

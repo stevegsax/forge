@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from forge_contracts.models import BatchSubmitSpiInput
+from sax_platform.contracts.models import BatchSubmitSpiInput
 
 from forge.activities.batch_submit import (
     _resolve_blob_submit_provider,

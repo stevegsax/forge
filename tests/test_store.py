@@ -18,6 +18,7 @@ from forge.models import (
     TransitionSignal,
 )
 from forge.store import (
+    InteractionRow,
     StoreConfigError,
     build_interaction_dict,
     build_playbook_dict,
@@ -283,7 +284,7 @@ class TestInteractionRoundtrip:
             context=context,
             llm_result=result,
         )
-        save_interaction(engine, **data)
+        save_interaction(engine, InteractionRow(**data))
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -306,7 +307,7 @@ class TestInteractionRoundtrip:
                 context=context,
                 llm_result=result,
             )
-            save_interaction(engine, **data)
+            save_interaction(engine, InteractionRow(**data))
 
         rows = get_interactions(engine, "test-task", step_id="step-1")
         assert len(rows) == 1
@@ -400,7 +401,7 @@ class TestRunMigrations:
             context=context,
             llm_result=result,
         )
-        save_interaction(engine, **data)
+        save_interaction(engine, InteractionRow(**data))
         rows = get_interactions(engine, "t")
         assert len(rows) == 1
 
@@ -705,7 +706,7 @@ class TestMigration003:
             context=context,
             llm_result=result,
         )
-        save_interaction(engine, **data)
+        save_interaction(engine, InteractionRow(**data))
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -726,7 +727,7 @@ class TestMigration003:
             context=context,
             llm_result=result,
         )
-        save_interaction(engine, **data)
+        save_interaction(engine, InteractionRow(**data))
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -754,7 +755,7 @@ class TestStopReasonColumn:
             context=context,
             llm_result=result,
         )
-        save_interaction(engine, **data)
+        save_interaction(engine, InteractionRow(**data))
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -775,7 +776,7 @@ class TestStopReasonColumn:
             llm_result=result,
         )
         data["stop_reason"] = "max_tokens"
-        save_interaction(engine, **data)
+        save_interaction(engine, InteractionRow(**data))
 
         rows = get_interactions(engine, "test-task")
         assert rows[0]["stop_reason"] == "max_tokens"

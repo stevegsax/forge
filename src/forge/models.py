@@ -6,22 +6,23 @@ import json
 from enum import StrEnum
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 # BatchResult and BatchJobStatus are the cross-queue wire contract; they now live
-# in forge-contracts and are re-exported here so existing `from forge.models
-# import ...` call sites keep working.
-from forge_contracts.models import (
+# in sax-platform (T3.4, ST7) and are re-exported here so existing `from
+# forge.models import ...` call sites keep working.
+from sax_platform.contracts.models import (
     BatchJobStatus as BatchJobStatus,
 )
-from forge_contracts.models import (
+from sax_platform.contracts.models import (
     BatchResult as BatchResult,
 )
-from forge_contracts.models import (
+from sax_platform.contracts.models import (
     BatchSubmitResult as BatchSubmitResult,
 )
-from forge_contracts.models import (
+from sax_platform.contracts.models import (
     BatchSubmitSpiInput as BatchSubmitSpiInput,
 )
-from pydantic import BaseModel, Field
 
 # The model-tier registry and thinking policy are single-sourced on the platform
 # (D94, T3.2): forge's former CapabilityTier/ModelConfig/resolve_model/

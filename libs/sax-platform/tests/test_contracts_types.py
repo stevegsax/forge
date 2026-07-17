@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import sqlalchemy as sa
 
-from forge_contracts.types import UTCDateTime
+from sax_platform.contracts.types import UTCDateTime
 
 _metadata = sa.MetaData()
 _events = sa.Table(

@@ -514,7 +514,7 @@ All five LLM call sites (generation, planner, exploration, sanity check, conflic
 
 ### Batch SPI (OCR-agnostic) and the OCR consumer
 
-Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the poller returns provider results verbatim to a consumer workflow cross-queue (`activities/batch_submit.py`, `batch_poller_workflow.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` (`activities/_mistral.py`) rather than sax_llm's registry (T3.3). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `forge_contracts` only (never `forge`).
+Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the poller returns provider results verbatim to a consumer workflow cross-queue (`activities/batch_submit.py`, `batch_poller_workflow.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` (`activities/_mistral.py`) rather than sax_llm's registry (T3.3). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `sax_platform` only (never `forge`; the former `forge_contracts` package it used to import was absorbed into `sax_platform.contracts` at T3.4).
 
 ### Transcript ingestion
 

@@ -7,7 +7,7 @@ an accidental rename would silently break cross-queue signaling.
 
 from __future__ import annotations
 
-from forge_contracts.constants import (
+from sax_platform.contracts.constants import (
     BATCH_RESULT_SIGNAL,
     FORGE_TASK_QUEUE,
     OCR_TASK_QUEUE,

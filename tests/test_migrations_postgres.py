@@ -211,7 +211,7 @@ def test_interactions_stop_reason_column_on_postgres(postgres_url: str) -> None:
     """
     import sqlalchemy as sa
 
-    from forge.store import get_interactions, run_migrations, save_interaction
+    from forge.store import InteractionRow, get_interactions, run_migrations, save_interaction
 
     run_migrations(postgres_url)
     engine = sa.create_engine(postgres_url)
@@ -232,16 +232,20 @@ def test_interactions_stop_reason_column_on_postgres(postgres_url: str) -> None:
         }
         save_interaction(
             engine,
-            idempotency_key="stop-reason-1",
-            stop_reason="max_tokens",
-            **base_row,
+            InteractionRow(
+                idempotency_key="stop-reason-1",
+                stop_reason="max_tokens",
+                **base_row,
+            ),
         )
         # Omitting stop_reason entirely (pre-migration-shaped caller) must not
         # fail the insert — the column is nullable with no backfill.
         save_interaction(
             engine,
-            idempotency_key="stop-reason-2",
-            **{**base_row, "task_id": "stop-reason-task-2"},
+            InteractionRow(
+                idempotency_key="stop-reason-2",
+                **{**base_row, "task_id": "stop-reason-task-2"},
+            ),
         )
 
         rows = {r["idempotency_key"]: r for r in get_interactions(engine, "stop-reason-task")}

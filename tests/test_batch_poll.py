@@ -6,9 +6,9 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from forge_contracts.models import parse_batch_result_payload
 from sax_llm.models import BatchPollResult as ProviderBatchPollResult
 from sax_llm.models import BatchPollStatus, BatchResultEntry, ExtractedImage
+from sax_platform.contracts.models import parse_batch_result_payload
 
 from forge.activities.batch_poll import (
     _ensure_utc,

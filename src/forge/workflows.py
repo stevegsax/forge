@@ -18,7 +18,8 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from forge_contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
     from forge.models import (
         AssembleContextInput,
@@ -114,16 +115,10 @@ _VALIDATE_HEARTBEAT = timedelta(seconds=60)
 # Activity retry policies
 # ---------------------------------------------------------------------------
 
-_LLM_RETRY = RetryPolicy(
-    maximum_attempts=3,
-    non_retryable_error_types=[
-        "BadRequestError",
-        "AuthenticationError",
-        "PermissionDeniedError",
-        "NotFoundError",
-    ],
-)
-_LOCAL_RETRY = RetryPolicy(maximum_attempts=2)
+# LLM_RETRY and IO_RETRY are the shared presets from sax_platform.temporal.retries
+# (T3.4, ST7) — forge's former per-module _LLM_RETRY/_LOCAL_RETRY copies are
+# retired in favor of the single platform source. _GIT_RETRY/_WRITE_RETRY stay
+# forge-unique (not duplicated elsewhere).
 _GIT_RETRY = RetryPolicy(
     maximum_attempts=2,
     non_retryable_error_types=["CommitError", "RepoDiscoveryError"],
@@ -182,7 +177,7 @@ async def _assemble_conflict_resolution(
         "assemble_conflict_resolution_context",
         resolution_input,
         start_to_close_timeout=_CONTEXT_TIMEOUT,
-        retry_policy=_LOCAL_RETRY,
+        retry_policy=IO_RETRY,
         result_type=ConflictResolutionCallInput,
     )
     return call_input.model_copy(
@@ -380,7 +375,7 @@ class ForgeTaskWorkflow:
                 planner_input,
                 start_to_close_timeout=_LLM_TIMEOUT,
                 heartbeat_timeout=_LLM_HEARTBEAT,
-                retry_policy=_LLM_RETRY,
+                retry_policy=LLM_RETRY,
                 result_type=PlanCallResult,
             )
         else:
@@ -426,7 +421,7 @@ class ForgeTaskWorkflow:
                 exploration_input,
                 start_to_close_timeout=_EXPLORATION_LLM_TIMEOUT,
                 heartbeat_timeout=_LLM_HEARTBEAT,
-                retry_policy=_LLM_RETRY,
+                retry_policy=LLM_RETRY,
                 result_type=ExplorationResponse,
             )
             return response
@@ -434,7 +429,7 @@ class ForgeTaskWorkflow:
             "assemble_exploration_context",
             exploration_input,
             start_to_close_timeout=_CONTEXT_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
+            retry_policy=IO_RETRY,
             result_type=AssembledContext,
         )
         # Exploration stays thinking-disabled, as today. Omitting `thinking`
@@ -450,7 +445,7 @@ class ForgeTaskWorkflow:
                 sanity_input,
                 start_to_close_timeout=_SANITY_CHECK_TIMEOUT,
                 heartbeat_timeout=_LLM_HEARTBEAT,
-                retry_policy=_LLM_RETRY,
+                retry_policy=LLM_RETRY,
                 result_type=SanityCheckCallResult,
             )
         else:
@@ -561,7 +556,7 @@ class ForgeTaskWorkflow:
                     worktree_path=worktree_path,
                 ),
                 start_to_close_timeout=_EXPLORATION_FULFILL_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=list[ContextResult],
             )
             accumulated.extend(context_results)
@@ -638,7 +633,7 @@ class ForgeTaskWorkflow:
                     max_attempts=max_attempts,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=AssembledContext,
             )
 
@@ -705,7 +700,7 @@ class ForgeTaskWorkflow:
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
                 heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -718,7 +713,7 @@ class ForgeTaskWorkflow:
                     max_attempts=max_attempts,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -818,7 +813,7 @@ class ForgeTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_CONTEXT_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
+            retry_policy=IO_RETRY,
             result_type=PlannerInput,
         )
 
@@ -1045,7 +1040,7 @@ class ForgeTaskWorkflow:
                     max_attempts=max_step_attempts,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=AssembledContext,
             )
 
@@ -1084,7 +1079,7 @@ class ForgeTaskWorkflow:
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
                 heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -1097,7 +1092,7 @@ class ForgeTaskWorkflow:
                     max_attempts=max_step_attempts,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -1192,7 +1187,7 @@ class ForgeTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_CONTEXT_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
+            retry_policy=IO_RETRY,
             result_type=SanityCheckInput,
         )
 
@@ -1306,7 +1301,7 @@ class ForgeTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
+            retry_policy=IO_RETRY,
             result_type=DetectFileConflictsOutput,
         )
         non_conflicting = detect_result.non_conflicting_files
@@ -1388,7 +1383,7 @@ class ForgeTaskWorkflow:
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
                 heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -1401,7 +1396,7 @@ class ForgeTaskWorkflow:
                     max_attempts=1,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -1632,7 +1627,7 @@ class ForgeSubTaskWorkflow:
                     domain=input.domain,
                 ),
                 start_to_close_timeout=_CONTEXT_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=AssembledContext,
             )
 
@@ -1671,7 +1666,7 @@ class ForgeSubTaskWorkflow:
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
                 heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -1684,7 +1679,7 @@ class ForgeSubTaskWorkflow:
                     max_attempts=input.max_attempts,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)
@@ -1817,7 +1812,7 @@ class ForgeSubTaskWorkflow:
                 worktree_path=wt_output.worktree_path,
             ),
             start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=_LOCAL_RETRY,
+            retry_policy=IO_RETRY,
             result_type=DetectFileConflictsOutput,
         )
         non_conflicting = detect_result.non_conflicting_files
@@ -1897,7 +1892,7 @@ class ForgeSubTaskWorkflow:
                 ),
                 start_to_close_timeout=_VALIDATE_TIMEOUT,
                 heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=list[ValidationResult],
             )
 
@@ -1909,7 +1904,7 @@ class ForgeSubTaskWorkflow:
                     max_attempts=1,
                 ),
                 start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=_LOCAL_RETRY,
+                retry_policy=IO_RETRY,
                 result_type=str,
             )
             signal = TransitionSignal(signal_value)

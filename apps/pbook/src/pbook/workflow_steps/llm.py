@@ -24,12 +24,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 from sax_llm.models import text_messages
+from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from pbook.llm import get_provider
 from pbook.workflow_steps._errors import is_nonretryable_auth_error
-from pbook.workflow_steps._heartbeat import heartbeat_during
 from pbook.workflow_steps.output_types import resolve_output_type
 
 logger = logging.getLogger(__name__)

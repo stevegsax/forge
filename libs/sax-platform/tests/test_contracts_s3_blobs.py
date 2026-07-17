@@ -13,8 +13,8 @@ from unittest import mock
 
 import pytest
 
-from forge_contracts import s3_blobs
-from forge_contracts.s3_blobs import S3ConfigError
+from sax_platform.contracts import s3_blobs
+from sax_platform.contracts.s3_blobs import S3ConfigError
 
 
 def test_build_key_no_prefix(monkeypatch: pytest.MonkeyPatch) -> None:

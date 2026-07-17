@@ -17,9 +17,9 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from forge_contracts.constants import FORGE_TASK_QUEUE
-    from forge_contracts.models import BatchSubmitResult, BatchSubmitSpiInput
-    from forge_contracts.persist import PersistBatchSubmission, persist_block
+    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.contracts.models import BatchSubmitResult, BatchSubmitSpiInput
+    from sax_platform.contracts.persist import PersistBatchSubmission, persist_block
 
     from ocr.models import (
         FileContentRef,

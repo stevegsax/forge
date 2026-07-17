@@ -9,6 +9,7 @@ only the tables in its own ``Base.metadata``.
 from __future__ import annotations
 
 from alembic import context
+from sax_platform.db import configure_migration_context
 
 from forge.store import Base
 
@@ -27,13 +28,12 @@ def _include_object(
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
     url = context.config.get_main_option("sqlalchemy.url")
-    context.configure(
-        url=url,
+    configure_migration_context(
+        context,
         target_metadata=target_metadata,
-        literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
         version_table=VERSION_TABLE,
         include_object=_include_object,
+        url=url,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -49,11 +49,12 @@ def run_migrations_online() -> None:
     connectable = create_engine(url)
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
+        configure_migration_context(
+            context,
             target_metadata=target_metadata,
             version_table=VERSION_TABLE,
             include_object=_include_object,
+            connection=connection,
         )
         with context.begin_transaction():
             context.run_migrations()

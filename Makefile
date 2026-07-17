@@ -27,7 +27,6 @@ lint:
 # theirs as each strictness flip lands).
 typecheck:
 	uv run mypy
-	cd libs/forge-contracts && uv run mypy
 	cd libs/sax-llm && uv run mypy
 	cd apps/ocr && uv run mypy
 	cd apps/pbook && uv run mypy
@@ -41,7 +40,6 @@ test:
 	cd apps/pbook && uv run pytest
 	cd apps/ocr && uv run pytest
 	cd libs/sax-llm && uv run pytest
-	cd libs/forge-contracts && uv run pytest
 	cd libs/sax-platform && uv run pytest
 
 gates: lint typecheck lint-imports test

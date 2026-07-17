@@ -14,9 +14,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from forge_contracts.constants import FORGE_TASK_QUEUE, OCR_TASK_QUEUE
-from forge_contracts.models import BatchSubmitResult, BatchSubmitSpiInput
-from forge_contracts.persist import PersistResult
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE, OCR_TASK_QUEUE
+from sax_platform.contracts.models import BatchSubmitResult, BatchSubmitSpiInput
+from sax_platform.contracts.persist import PersistResult
 from temporalio import activity, workflow
 from temporalio.worker import Worker
 

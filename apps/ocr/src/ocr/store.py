@@ -3,9 +3,9 @@
 Owns the ``ocr_``-prefixed tables in the shared database (``FORGE_DB_URL``) via its
 own SQLAlchemy ``Base`` and its own Alembic chain (added in the migrations
 increment). Connection config and the idempotent-insert primitive are shared from
-``forge_contracts.db``; blob I/O from ``forge_contracts.s3_blobs``; the column type
-from ``forge_contracts.types``. This module imports only ``forge_contracts`` —
-never ``forge``.
+``sax_platform.db``; blob I/O from ``sax_platform.contracts.s3_blobs``; the column
+type from ``sax_platform.contracts.types``. This module imports only
+``sax_platform`` — never ``forge``.
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ import sqlalchemy as sa
 
 # Shared connection + insert primitives (re-exported so callers can do
 # `from ocr.store import get_store_engine, save_ocr_result, ...`).
-from forge_contracts.db import (
+from sax_platform.contracts.types import UTCDateTime
+from sax_platform.db import (
     get_store_engine as get_store_engine,
 )
-from forge_contracts.db import (
+from sax_platform.db import (
     get_store_url as get_store_url,
 )
-from forge_contracts.db import (
+from sax_platform.db import (
     insert_or_ignore,
 )
-from forge_contracts.types import UTCDateTime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 if TYPE_CHECKING:
@@ -50,7 +50,9 @@ class OcrResult(Base):
     document_id: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True, index=True)
     file_path: Mapped[str] = mapped_column(sa.String, nullable=False)
     text: Mapped[str] = mapped_column(sa.Text, nullable=False)
-    page_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    page_count: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default="0"
+    )
     model_name: Mapped[str] = mapped_column(sa.String, nullable=False)
     input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     output_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False)
@@ -66,6 +68,7 @@ class OcrResult(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
@@ -79,6 +82,7 @@ class FileContentBlob(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
@@ -86,7 +90,9 @@ class OcrImage(Base):
     __tablename__ = "ocr_images"
 
     id: Mapped[str] = mapped_column(sa.String, primary_key=True)
-    document_id: Mapped[str] = mapped_column(sa.String, nullable=False, default="", index=True)
+    document_id: Mapped[str] = mapped_column(
+        sa.String, nullable=False, default="", server_default=sa.text("''"), index=True
+    )
     page_index: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     original_image_id: Mapped[str] = mapped_column(sa.String, nullable=False)
     s3_key: Mapped[str] = mapped_column(sa.String, nullable=False)
@@ -99,6 +105,7 @@ class OcrImage(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
@@ -128,22 +135,26 @@ class OcrJobStatus(Base):
 
     request_id: Mapped[str] = mapped_column(sa.String, primary_key=True)
     document_id: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
-    file_path: Mapped[str] = mapped_column(sa.String, nullable=False, default="")
+    file_path: Mapped[str] = mapped_column(
+        sa.String, nullable=False, default="", server_default=sa.text("''")
+    )
     status: Mapped[str] = mapped_column(sa.String, nullable=False)
     error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
     )
 
 
 # Typed Table handles. ``Model.__table__`` is typed ``FromClause`` by SQLAlchemy's
 # declarative stubs, but ``metadata.tables`` is typed ``Table`` — which is what the
-# forge_contracts DB helpers (e.g. ``insert_or_ignore``) and ``sa.insert``/``update``/
+# sax_platform DB helpers (e.g. ``insert_or_ignore``) and ``sa.insert``/``update``/
 # ``delete`` require.
 _OCR_RESULTS_TABLE: sa.Table = Base.metadata.tables[OcrResult.__tablename__]
 _FILE_CONTENT_BLOBS_TABLE: sa.Table = Base.metadata.tables[FileContentBlob.__tablename__]
@@ -310,7 +321,7 @@ def save_file_content(
     file_size_bytes: int,
 ) -> None:
     """Upload file bytes to S3 and record the reference in file_content_blobs."""
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     s3_key = s3_blobs.build_key(content_id)
     s3_blobs.put(s3_key, data, mime_type)
@@ -329,7 +340,7 @@ def save_file_content(
 
 def get_file_content(engine: Engine, content_id: str) -> dict[str, Any] | None:
     """Look up file content by ID, fetching the bytes from S3 under ``data``."""
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     t = _FILE_CONTENT_BLOBS_TABLE
     stmt = t.select().where(t.c.id == content_id)
@@ -344,7 +355,7 @@ def get_file_content(engine: Engine, content_id: str) -> dict[str, Any] | None:
 
 def delete_file_content(engine: Engine, content_id: str) -> None:
     """Delete file content by ID, removing both the DB row and the S3 object."""
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     t = _FILE_CONTENT_BLOBS_TABLE
     with engine.begin() as conn:
@@ -375,7 +386,7 @@ def save_ocr_image(
     bottom_right_y: int | None = None,
 ) -> None:
     """Upload image bytes to S3 and record the reference in ocr_images."""
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     s3_key = s3_blobs.build_key(image_id)
     s3_blobs.put(s3_key, data, mime_type)
@@ -453,7 +464,7 @@ def get_ocr_images(engine: Engine, document_id: str) -> list[dict[str, Any]]:
 
 def get_ocr_image(engine: Engine, image_id: str) -> dict[str, Any] | None:
     """Get a single image, fetching its bytes from S3 under the ``data`` key."""
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     t = _OCR_IMAGES_TABLE
     stmt = t.select().where(t.c.id == image_id)
@@ -470,7 +481,7 @@ def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> No
     """Delete OCR images by document IDs, removing both rows and S3 objects."""
     if not document_ids:
         return
-    from forge_contracts import s3_blobs
+    from sax_platform.contracts import s3_blobs
 
     t = _OCR_IMAGES_TABLE
     with engine.begin() as conn:
@@ -544,22 +555,13 @@ def run_migrations(url: str) -> None:
 
     The OCR chain uses ``version_table=alembic_version_ocr`` and an
     ``include_object`` filter, so it coexists with the platform's chain in the
-    same database without either dropping the other's tables.
+    same database without either dropping the other's tables. Delegates to the
+    shared runner (``sax_platform.db.run_migrations``), which adds a per-chain
+    Postgres advisory lock this chain previously ran without.
     """
     from pathlib import Path
 
-    from alembic import command
-    from alembic.config import Config
-    from forge_contracts.db import ensure_sqlite_parent
-    from sqlalchemy.engine import make_url
+    from sax_platform.db import run_migrations as _run_migrations
 
     alembic_dir = Path(__file__).parent / "alembic"
-    cfg = Config(str(alembic_dir / "alembic.ini"))
-    cfg.set_main_option("script_location", str(alembic_dir))
-
-    if make_url(url).get_backend_name() == "sqlite":
-        ensure_sqlite_parent(url)
-    # Escape '%' for configparser interpolation (URL-encoded password chars);
-    # env.py reverses it on read so the engine receives the original URL.
-    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
-    command.upgrade(cfg, "head")
+    _run_migrations(url, version_table="alembic_version_ocr", script_location=str(alembic_dir))

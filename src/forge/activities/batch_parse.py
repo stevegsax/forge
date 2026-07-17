@@ -81,7 +81,7 @@ async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
         # The body arrives inline or via an S3 pointer (a result envelope); fetch
         # and unwrap when only s3_key is set. The generic path ignores any images.
         if input.s3_key is not None:
-            from forge_contracts.models import BatchResult, resolve_batch_result
+            from sax_platform.contracts.models import BatchResult, resolve_batch_result
 
             raw_json, _images = resolve_batch_result(
                 BatchResult(request_id="", batch_id="", s3_key=input.s3_key, result_type="")

@@ -6,14 +6,13 @@ and runs the worker until interrupted.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
 import os
-import signal
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE
+from sax_platform.temporal.worker import run_worker as _run_platform_worker
 from temporalio.client import (
     Client,
     Schedule,
@@ -26,11 +25,6 @@ from temporalio.client import (
     ScheduleState,
     ScheduleUpdate,
     ScheduleUpdateInput,
-)
-from temporalio.worker import Worker
-from temporalio.worker.workflow_sandbox import (
-    SandboxedWorkflowRunner,
-    SandboxRestrictions,
 )
 
 from forge.activities import (
@@ -84,7 +78,6 @@ except ImportError:
     prepare_transcript = None  # type: ignore[assignment]
     BatchIngestionWorkflow = None  # type: ignore[assignment,misc]
     TranscriptIngestionWorkflow = None  # type: ignore[assignment,misc]
-from forge_contracts.constants import FORGE_TASK_QUEUE
 
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
 from forge.models import BatchPollerInput
@@ -104,19 +97,6 @@ DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 _POLLER_EXECUTION_TIMEOUT = timedelta(minutes=10)
 
 logger = logging.getLogger(__name__)
-
-# Pass the pydantic native modules through the workflow sandbox. The shared
-# pydantic data converter serializes workflow args/results, so pydantic_core (the
-# Rust extension) gets imported lazily the first time a model is (de)serialized
-# inside a workflow run — after the sandbox has snapshotted its modules, which
-# triggers a "imported after initial workflow load" UserWarning. Reusing the
-# host's already-loaded modules is safe (they're deterministic) and silences it.
-_SANDBOX_RUNNER = SandboxedWorkflowRunner(
-    restrictions=SandboxRestrictions.default.with_passthrough_modules(
-        "pydantic",
-        "pydantic_core",
-    )
-)
 
 
 def _init_store() -> None:
@@ -229,36 +209,6 @@ async def _ensure_schedule(
         logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
 
 
-async def _run_until_shutdown(worker: Worker, stop: asyncio.Event) -> None:
-    """Run ``worker`` until it exits on its own or ``stop`` requests a drain.
-
-    Races ``worker.run()`` against ``stop.wait()``. If ``stop`` fires first (a
-    signal handler set it), this requests a graceful shutdown and then waits
-    for ``run()`` to return — ``Worker.shutdown()`` and ``Worker.run()`` both
-    block until the same underlying drain completes, so the second await
-    resolves right away. If ``run()`` finishes first — clean exit or a crash —
-    the stop waiter is cancelled and ``run_task`` is awaited so any exception
-    propagates to the caller unchanged.
-    """
-    run_task: asyncio.Task[None] = asyncio.create_task(worker.run())
-    stop_task: asyncio.Task[bool] = asyncio.create_task(stop.wait())
-    done, _pending = await asyncio.wait({run_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-    if run_task in done:
-        stop_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await stop_task
-        await run_task  # re-raise a crash, if any
-        return
-    await worker.shutdown()
-    await run_task
-
-
-def _request_shutdown(sig: signal.Signals, stop: asyncio.Event) -> None:
-    """Signal handler: log receipt and flag the run loop to begin a graceful drain."""
-    logger.info("received %s — draining (graceful_shutdown_timeout=30s)", sig.name)
-    stop.set()
-
-
 async def run_worker(
     address: str | None = None,
     *,
@@ -348,25 +298,19 @@ async def run_worker(
         assert prepare_transcript is not None
         activities.append(prepare_transcript)
 
-    worker = Worker(
-        client,
-        task_queue=FORGE_TASK_QUEUE,
-        workflows=workflows,
-        activities=activities,
-        workflow_runner=_SANDBOX_RUNNER,
-        graceful_shutdown_timeout=timedelta(seconds=30),
-    )
-
-    loop = asyncio.get_running_loop()
-    stop = asyncio.Event()
-    handled_signals = (signal.SIGTERM, signal.SIGINT)
-    for sig in handled_signals:
-        loop.add_signal_handler(sig, _request_shutdown, sig, stop)
-
+    # Worker construction and the signal-handled graceful-drain loop now live in
+    # sax_platform.temporal.worker.run_worker (T3.4, ST7) — forge keeps only its
+    # own setup (store, output types, tracing, schedules) and the activity/workflow
+    # registration lists. graceful_shutdown_timeout is explicit here (it matches
+    # the platform default) so the 5-minute drain — long enough to never cancel an
+    # in-flight LLM call, unlike the prior hardcoded 30s — stays visible in forge.
     try:
-        await _run_until_shutdown(worker, stop)
-        logger.info("worker exited cleanly")
+        await _run_platform_worker(
+            client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=workflows,
+            activities=activities,
+            graceful_shutdown_timeout=timedelta(minutes=5),
+        )
     finally:
-        for sig in handled_signals:
-            loop.remove_signal_handler(sig)
         shutdown_tracing()

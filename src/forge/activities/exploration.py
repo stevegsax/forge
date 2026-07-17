@@ -19,9 +19,9 @@ import time
 from typing import TYPE_CHECKING
 
 from sax_llm.models import text_messages
+from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
-from forge.activities._heartbeat import heartbeat_during
 from forge.domains import get_domain_config
 from forge.message_log import write_message_log
 from forge.models import (

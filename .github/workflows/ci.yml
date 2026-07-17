@@ -26,9 +26,6 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - name: mypy forge-contracts (strict, T2.3a)
-        working-directory: libs/forge-contracts
-        run: uv run mypy
       - name: mypy sax-llm (strict, T2.3b)
         working-directory: libs/sax-llm
         run: uv run mypy
@@ -109,19 +106,6 @@ jobs:
       - run: uv sync --locked --all-packages
       - name: Run sax-llm tests
         working-directory: libs/sax-llm
-        run: uv run pytest
-
-  test-forge-contracts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.2
-        with:
-          enable-cache: true
-      - run: uv python install
-      - run: uv sync --locked --all-packages
-      - name: Run forge-contracts tests
-        working-directory: libs/forge-contracts
         run: uv run pytest
 
   test-sax-platform:

@@ -14,8 +14,8 @@ import sys
 import uuid
 
 import click
-from forge_contracts.constants import OCR_TASK_QUEUE
-from forge_contracts.temporal import connect_temporal
+from sax_platform.contracts.constants import OCR_TASK_QUEUE
+from sax_platform.temporal.client import connect_temporal
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 EXIT_INFRASTRUCTURE_ERROR = 2

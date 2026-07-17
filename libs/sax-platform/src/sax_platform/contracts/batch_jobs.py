@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from forge_contracts.types import UTCDateTime
+from .types import UTCDateTime
 
 metadata = sa.MetaData()
 

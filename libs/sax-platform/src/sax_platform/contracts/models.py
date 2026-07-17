@@ -142,7 +142,7 @@ def resolve_batch_result(result: BatchResult) -> tuple[str | None, list[dict[str
     an activity, never inside a workflow.
     """
     if result.s3_key:
-        from forge_contracts import s3_blobs
+        from . import s3_blobs
 
         return parse_batch_result_payload(s3_blobs.get(result.s3_key).decode("utf-8"))
     return result.raw_response_json, []

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
-from forge_contracts.constants import OCR_TASK_QUEUE
+from sax_platform.contracts.constants import OCR_TASK_QUEUE
 
 from ocr.cli import EXIT_INFRASTRUCTURE_ERROR, _auto_id, _echo, _start_and_wait, main
 from ocr.models import (

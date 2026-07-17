@@ -41,7 +41,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.false(),
         ),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
     op.create_table(
@@ -50,7 +50,7 @@ def upgrade() -> None:
         sa.Column("s3_key", sa.String, nullable=False),
         sa.Column("mime_type", sa.String, nullable=False),
         sa.Column("file_size_bytes", sa.Integer, nullable=False),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
     op.create_table(
@@ -66,7 +66,7 @@ def upgrade() -> None:
         sa.Column("top_left_y", sa.Integer, nullable=True),
         sa.Column("bottom_right_x", sa.Integer, nullable=True),
         sa.Column("bottom_right_y", sa.Integer, nullable=True),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
     op.create_table(
@@ -76,8 +76,8 @@ def upgrade() -> None:
         sa.Column("file_path", sa.String, nullable=False, server_default=""),
         sa.Column("status", sa.String, nullable=False),
         sa.Column("error_message", sa.Text, nullable=True),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
 

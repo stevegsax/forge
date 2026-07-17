@@ -1,10 +1,11 @@
-"""Generic store engine + idempotent-insert helpers (no table/ORM knowledge).
+"""Store-URL resolution and idempotent-insert helpers (no table/ORM knowledge).
 
-Shared by the platform and consumer apps: both connect to the same database via
-``FORGE_DB_URL`` with identical pooling / SQLite-WAL config, and use the same
-idempotent ``insert_or_ignore``. Each repo keeps its OWN ``run_migrations``
-(pointing at its own Alembic chain) — only the connection + insert primitives are
-shared here.
+Ported verbatim from ``forge_contracts.db`` (T3.4, ST3): both the platform and
+its consumer apps connect to the same database via ``FORGE_DB_URL`` and use the
+same idempotent ``insert_or_ignore``. Engine construction (with pooler
+detection and SQLite hygiene) lives in :mod:`sax_platform.db.engine`; each
+consumer keeps its OWN ``run_migrations`` call site (pointing at its own
+Alembic chain) via :mod:`sax_platform.db.migrations`.
 
 NOTE: the ``FORGE_DB_URL`` env name is retained from the pre-split layout.
 """
@@ -15,7 +16,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
 if TYPE_CHECKING:
@@ -24,8 +24,6 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine, Table
     from sqlalchemy.dialects.postgresql import Insert as PostgresInsert
     from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert
-    from sqlalchemy.engine.interfaces import DBAPIConnection
-    from sqlalchemy.pool import ConnectionPoolEntry
 
 
 class StoreConfigError(RuntimeError):
@@ -54,32 +52,6 @@ def ensure_sqlite_parent(url: str) -> None:
     database = make_url(url).database
     if database and database != ":memory:":
         Path(database).parent.mkdir(parents=True, exist_ok=True)
-
-
-def get_store_engine() -> Engine:
-    """Build the store engine from ``FORGE_DB_URL``.
-
-    SQLite URLs get WAL journaling (and the parent directory is created);
-    Postgres URLs get connection pre-ping and a small bounded pool to respect
-    the managed-database connection caps. Connection errors are not caught here
-    — they propagate (no runtime failover).
-    """
-    url = get_store_url()
-    if make_url(url).get_backend_name() == "sqlite":
-        ensure_sqlite_parent(url)
-        engine = sa.create_engine(url)
-
-        @sa.event.listens_for(engine, "connect")
-        def _set_sqlite_pragma(
-            dbapi_connection: DBAPIConnection, _connection_record: ConnectionPoolEntry
-        ) -> None:
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.close()
-
-        return engine
-
-    return sa.create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
 
 
 def insert_or_ignore(

@@ -17,10 +17,10 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    from forge_contracts.models import BatchResult
+    from sax_platform.contracts.models import BatchResult
+    from sax_platform.contracts.persist import PERSIST_RETRY, PERSIST_SCHEDULE_TO_CLOSE
 
     from ocr.models import OcrStoreInput, OcrStoreResult
-    from ocr.persist import _PERSIST_RETRY, _PERSIST_SCHEDULE_TO_CLOSE
 
 _STORE_TIMEOUT = timedelta(seconds=60)
 _BATCH_WAIT_TIMEOUT = timedelta(hours=25)
@@ -87,8 +87,8 @@ class OcrStoreWorkflow:
                     }
                 ),
                 start_to_close_timeout=_STORE_TIMEOUT,
-                schedule_to_close_timeout=_PERSIST_SCHEDULE_TO_CLOSE,
-                retry_policy=_PERSIST_RETRY,
+                schedule_to_close_timeout=PERSIST_SCHEDULE_TO_CLOSE,
+                retry_policy=PERSIST_RETRY,
                 result_type=OcrStoreResult,
             )
         except Exception as exc:

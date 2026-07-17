@@ -15,16 +15,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from forge_contracts.persist import (
+from pydantic import BaseModel, Field
+from sax_platform.contracts.persist import (
     PersistBatchFailure as PersistBatchFailure,
 )
-from forge_contracts.persist import (
+from sax_platform.contracts.persist import (
     PersistBatchSubmission as PersistBatchSubmission,
 )
-from forge_contracts.persist import (
+from sax_platform.contracts.persist import (
     PersistResult as PersistResult,
 )
-from pydantic import BaseModel, Field
 
 from forge.models import (
     ConflictResolutionCallResult,

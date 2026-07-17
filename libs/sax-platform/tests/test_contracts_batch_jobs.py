@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from forge_contracts.batch_jobs import batch_jobs, metadata
+from sax_platform.contracts.batch_jobs import batch_jobs, metadata
 
 
 class TestSchemaShape:

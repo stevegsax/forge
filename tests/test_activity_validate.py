@@ -6,10 +6,10 @@ import functools
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio.testing import ActivityEnvironment
 
 from forge.activities import validate as validate_module
-from forge.activities._heartbeat import heartbeat_during
 from forge.activities.validate import (
     _run_command,
     _run_ruff_format_check,

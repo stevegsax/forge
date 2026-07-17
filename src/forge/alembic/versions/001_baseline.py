@@ -35,11 +35,11 @@ def upgrade() -> None:
         sa.Column("input_tokens", sa.Integer, nullable=False),
         sa.Column("output_tokens", sa.Integer, nullable=False),
         sa.Column("latency_ms", sa.Float, nullable=False),
-        sa.Column("explanation", sa.Text, server_default=""),
+        sa.Column("explanation", sa.Text, nullable=False, server_default=""),
         sa.Column("context_stats_json", sa.Text, nullable=True),
         sa.Column("cache_creation_input_tokens", sa.Integer, nullable=False, server_default="0"),
         sa.Column("cache_read_input_tokens", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
     op.create_table(
@@ -49,7 +49,7 @@ def upgrade() -> None:
         sa.Column("workflow_id", sa.String, nullable=False, unique=True),
         sa.Column("status", sa.String, nullable=False),
         sa.Column("result_json", sa.Text, nullable=False),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
     op.create_table(
@@ -60,8 +60,8 @@ def upgrade() -> None:
         sa.Column("status", sa.String, nullable=False),
         sa.Column("provider", sa.String, nullable=False, server_default="anthropic"),
         sa.Column("error_message", sa.Text, nullable=True),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
     op.create_table(
@@ -74,7 +74,7 @@ def upgrade() -> None:
         sa.Column("source_task_id", sa.String, nullable=False, index=True),
         sa.Column("source_workflow_id", sa.String, nullable=False),
         sa.Column("extraction_workflow_id", sa.String, nullable=False),
-        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
 
 

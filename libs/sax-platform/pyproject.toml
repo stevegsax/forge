@@ -10,6 +10,15 @@ dependencies = [
     # mistralai 2.x is an incompatible SDK rewrite, and the 2.3.1 wheel installs
     # without a top-level package (no __init__.py), so it is unimportable.
     "mistralai>=1.0.0,<2",
+    # Plumbing absorbed from forge-contracts (T3.4): contracts, temporal, db.
+    "sqlalchemy>=2.0",
+    "temporalio>=1.9.0",
+    "boto3>=1.34",
+    "alembic>=1.14",
+    # New in T3.4: config groups + embeddings.
+    "pydantic-settings>=2.6.0",
+    "openai>=2.31.0",
+    "numpy>=2.4.4",
 ]
 
 [build-system]
@@ -43,6 +52,13 @@ warn_return_any = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_reexport = true
+
+# boto3 ships no py.typed marker / stubs; treat its imports as untyped at this
+# boundary (same pattern as the root pyproject's networkx override). Ported
+# from forge-contracts with sax_platform.contracts.s3_blobs (T3.4).
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore.*"]
+ignore_missing_imports = true
 
 [dependency-groups]
 dev = [

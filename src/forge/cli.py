@@ -368,7 +368,7 @@ async def _submit_and_wait(
 ) -> TaskResult:
     """Submit a task to Temporal and wait for completion."""
 
-    from forge_contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 
     from forge.workflows import ForgeTaskWorkflow
 
@@ -419,7 +419,7 @@ async def _submit_no_wait(
 ) -> str:
     """Submit a task to Temporal and return the workflow ID without waiting."""
 
-    from forge_contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 
     from forge.workflows import ForgeTaskWorkflow
 
@@ -1046,7 +1046,7 @@ async def _submit_ingestion(
     """Submit BatchIngestionWorkflow to Temporal and wait for completion."""
     import time
 
-    from forge_contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 
     client = await connect_temporal(temporal_address)
 
@@ -1304,7 +1304,7 @@ async def _submit_manual_playbook(
     """Submit manual playbook workflow to Temporal and wait for completion."""
     from uuid import uuid4
 
-    from forge_contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 
     from forge.manual_playbook_workflow import ManualPlaybookWorkflow
     from forge.models import ManualPlaybookInput
@@ -1390,7 +1390,7 @@ async def _submit_export_playbooks(
     """Submit export playbook workflow to Temporal and wait for completion."""
     from uuid import uuid4
 
-    from forge_contracts.constants import FORGE_TASK_QUEUE
+    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 
     from forge.export_playbook_workflow import ExportPlaybookWorkflow
     from forge.models import ExportPlaybookInput

@@ -17,9 +17,9 @@ import os
 import subprocess
 from pathlib import Path
 
+from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
-from forge.activities._heartbeat import heartbeat_during
 from forge.models import ValidateOutputInput, ValidationResult
 from forge.subprocess_env import allowlist_env
 from forge.subprocess_result import SubprocessResult

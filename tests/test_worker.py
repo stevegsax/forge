@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import signal
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -116,74 +114,20 @@ class TestEnsureSchedule:
         assert update.schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
 
 
-class TestRequestShutdown:
-    def test_sets_stop_event(self) -> None:
-        stop = asyncio.Event()
-
-        worker_mod._request_shutdown(signal.SIGTERM, stop)
-
-        assert stop.is_set()
-
-
-class TestRunUntilShutdown:
-    @pytest.mark.asyncio
-    async def test_stop_triggers_shutdown_then_waits_for_run(self) -> None:
-        """Setting ``stop`` drains gracefully: shutdown() is awaited, then run()."""
-        stop = asyncio.Event()
-        worker = MagicMock()
-        run_gate = asyncio.Event()
-
-        async def _run() -> None:
-            await run_gate.wait()
-
-        async def _shutdown() -> None:
-            # Mirrors real temporalio behavior: shutdown() and run() both
-            # unblock once the same underlying drain completes.
-            run_gate.set()
-
-        worker.run = AsyncMock(side_effect=_run)
-        worker.shutdown = AsyncMock(side_effect=_shutdown)
-
-        task = asyncio.create_task(worker_mod._run_until_shutdown(worker, stop))
-        await asyncio.sleep(0)  # let run_task start awaiting run_gate
-        stop.set()
-        await asyncio.wait_for(task, timeout=1)
-
-        worker.shutdown.assert_awaited_once_with()
-        worker.run.assert_awaited_once_with()
-
-    @pytest.mark.asyncio
-    async def test_run_completing_first_skips_shutdown(self) -> None:
-        stop = asyncio.Event()
-        worker = MagicMock()
-        worker.run = AsyncMock()
-        worker.shutdown = AsyncMock()
-
-        await worker_mod._run_until_shutdown(worker, stop)
-
-        worker.shutdown.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_run_crash_propagates_without_shutdown(self) -> None:
-        stop = asyncio.Event()
-        worker = MagicMock()
-        worker.run = AsyncMock(side_effect=RuntimeError("worker boom"))
-        worker.shutdown = AsyncMock()
-
-        with pytest.raises(RuntimeError, match="worker boom"):
-            await worker_mod._run_until_shutdown(worker, stop)
-
-        worker.shutdown.assert_not_awaited()
-
-
 class TestRunWorker:
+    """forge.worker.run_worker delegates Worker construction and the signal-handled
+    graceful-drain loop to sax_platform.temporal.worker.run_worker (T3.4, ST7,
+    aliased ``_run_platform_worker``); that delegate's own drain/signal behavior is
+    covered in libs/sax-platform. These tests cover what stays forge's job: setup
+    ordering, schedule registration, and the workflow/activity lists passed through.
+    """
+
     @pytest.mark.asyncio
     async def test_bootstraps_worker_and_registers_schedules(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_client = MagicMock()
-        mock_worker_instance = MagicMock()
-        mock_worker_instance.run = AsyncMock()
+        mock_run_platform_worker = AsyncMock()
         mock_ensure_schedule = AsyncMock()
         mock_set_temporal_client = MagicMock()
         mock_init_store = MagicMock()
@@ -200,7 +144,7 @@ class TestRunWorker:
             patch.object(
                 worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)
             ) as mock_connect,
-            patch.object(worker_mod, "Worker", return_value=mock_worker_instance) as mock_worker,
+            patch.object(worker_mod, "_run_platform_worker", mock_run_platform_worker),
             patch("forge.tracing.init_tracing", mock_init_tracing),
             patch("forge.tracing.shutdown_tracing", mock_shutdown_tracing),
             patch("forge.logging_config.silence_noisy_loggers", mock_silence_noisy_loggers),
@@ -226,36 +170,40 @@ class TestRunWorker:
         assert first_call.kwargs["workflow_name"] == "BatchPollerWorkflow"
         assert first_call.kwargs["interval"] == timedelta(seconds=300)
 
-        mock_worker.assert_called_once()
-        worker_kwargs = mock_worker.call_args.kwargs
-        assert worker_kwargs["task_queue"] == worker_mod.FORGE_TASK_QUEUE
-        assert worker_mod.BatchPollerWorkflow in worker_kwargs["workflows"]
-        assert worker_mod.poll_batch_results in worker_kwargs["activities"]
-        assert worker_mod.submit_batch_blob in worker_kwargs["activities"]
-        assert worker_kwargs["graceful_shutdown_timeout"] == timedelta(seconds=30)
+        mock_run_platform_worker.assert_awaited_once()
+        call = mock_run_platform_worker.await_args
+        assert call.args[0] is mock_client
+        assert call.kwargs["task_queue"] == worker_mod.FORGE_TASK_QUEUE
+        assert worker_mod.BatchPollerWorkflow in call.kwargs["workflows"]
+        assert worker_mod.poll_batch_results in call.kwargs["activities"]
+        assert worker_mod.submit_batch_blob in call.kwargs["activities"]
+        # AC fix: the 5-minute drain never cancels an in-flight LLM call, unlike
+        # the prior hardcoded 30s (see sax_platform.temporal.worker module docstring).
+        assert call.kwargs["graceful_shutdown_timeout"] == timedelta(minutes=5)
 
         # Ingestion workflows and activity should be registered when pbook
         # is installed (which it is in the test environment).
         if worker_mod._INGESTION_AVAILABLE:
-            assert worker_mod.TranscriptIngestionWorkflow in worker_kwargs["workflows"]
-            assert worker_mod.BatchIngestionWorkflow in worker_kwargs["workflows"]
-            assert worker_mod.prepare_transcript in worker_kwargs["activities"]
+            assert worker_mod.TranscriptIngestionWorkflow in call.kwargs["workflows"]
+            assert worker_mod.BatchIngestionWorkflow in call.kwargs["workflows"]
+            assert worker_mod.prepare_transcript in call.kwargs["activities"]
 
-        mock_worker_instance.run.assert_awaited_once_with()
         mock_shutdown_tracing.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_shutdown_tracing_runs_when_worker_fails(self) -> None:
         mock_client = MagicMock()
-        mock_worker_instance = MagicMock()
-        mock_worker_instance.run = AsyncMock(side_effect=RuntimeError("worker boom"))
 
         with (
             patch.object(worker_mod, "_init_store", MagicMock()),
             patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
             patch.object(worker_mod, "set_temporal_client", MagicMock()),
-            patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
-            patch.object(worker_mod, "Worker", return_value=mock_worker_instance),
+            patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)),
+            patch.object(
+                worker_mod,
+                "_run_platform_worker",
+                AsyncMock(side_effect=RuntimeError("worker boom")),
+            ),
             patch("forge.tracing.init_tracing", MagicMock()),
             patch("forge.tracing.shutdown_tracing", MagicMock()) as mock_shutdown_tracing,
             patch("forge.logging_config.silence_noisy_loggers", MagicMock()),
@@ -264,40 +212,3 @@ class TestRunWorker:
             await worker_mod.run_worker(address="localhost:7233")
 
         mock_shutdown_tracing.assert_called_once_with()
-
-    @pytest.mark.asyncio
-    async def test_registers_and_removes_sigterm_sigint_handlers(self) -> None:
-        mock_client = MagicMock()
-        mock_worker_instance = MagicMock()
-        mock_worker_instance.run = AsyncMock()
-
-        loop = asyncio.get_running_loop()
-        add_calls: list[tuple[int, tuple[object, ...]]] = []
-        remove_calls: list[int] = []
-
-        def _fake_add_signal_handler(sig: int, callback: object, *args: object) -> None:
-            add_calls.append((sig, args))
-
-        def _fake_remove_signal_handler(sig: int) -> bool:
-            remove_calls.append(sig)
-            return True
-
-        with (
-            patch.object(worker_mod, "_init_store", MagicMock()),
-            patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
-            patch.object(worker_mod, "set_temporal_client", MagicMock()),
-            patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)),
-            patch.object(worker_mod, "Worker", return_value=mock_worker_instance),
-            patch("forge.tracing.init_tracing", MagicMock()),
-            patch("forge.tracing.shutdown_tracing", MagicMock()),
-            patch("forge.logging_config.silence_noisy_loggers", MagicMock()),
-            patch.object(loop, "add_signal_handler", _fake_add_signal_handler),
-            patch.object(loop, "remove_signal_handler", _fake_remove_signal_handler),
-        ):
-            await worker_mod.run_worker(address="localhost:7233")
-
-        registered = {sig for sig, _args in add_calls}
-        assert registered == {signal.SIGTERM, signal.SIGINT}
-        for sig, args in add_calls:
-            assert args[0] == sig  # sig is threaded through to the handler
-        assert set(remove_calls) == {signal.SIGTERM, signal.SIGINT}

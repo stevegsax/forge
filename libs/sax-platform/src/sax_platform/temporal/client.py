@@ -23,6 +23,10 @@ Environment variables
 
 NOTE: the ``FORGE_TEMPORAL_TLS_*`` env names are retained from the pre-split
 layout; generalizing them is a tracked follow-up.
+
+Ported verbatim from ``forge_contracts.temporal`` (T3.4, ST2) — same env
+reads, same behavior. Not yet routed through ``sax_platform.config``; that
+wiring is a later task.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from forge_contracts.constants import TEMPORAL_NAMESPACE
+from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
 
 if TYPE_CHECKING:
     from temporalio.client import Client
