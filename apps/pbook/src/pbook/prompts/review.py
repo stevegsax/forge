@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pbook.llm import ReviewResult
     from pbook.models import PlaybookEntry
 
 
-def build_review_system_prompt(existing_entries: list[dict]) -> str:
+def build_review_system_prompt(existing_entries: list[dict[str, Any]]) -> str:
     """Build the system prompt for reviewing a proposed playbook entry.
 
     Instructs the LLM to check clarity, correctness, completeness, and

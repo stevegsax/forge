@@ -9,6 +9,7 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -81,7 +82,7 @@ class RetrievalInput(BaseModel):
 class RetrievalResult(BaseModel):
     """Output from the retrieval workflow."""
 
-    entries: list[dict] = Field(default_factory=list)
+    entries: list[dict[str, Any]] = Field(default_factory=list)
     token_count: int = 0
     total_candidates: int = 0
 
@@ -115,7 +116,7 @@ class PushExperienceInput(BaseModel):
     problem: str = Field(description="What unexpected situation occurred")
     resolution: str = Field(description="How it was resolved")
     context: str = Field(default="", description="Relevant context (code, errors, etc.)")
-    metadata: dict = Field(default_factory=dict, description="Arbitrary key-value pairs")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary key-value pairs")
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +216,9 @@ class ReviewQueueResult(BaseModel):
     ``by_experience=True``: clusters/singletons populated, entries empty.
     """
 
-    entries: list[dict] = Field(default_factory=list)
-    clusters: list[dict] = Field(default_factory=list)
-    singletons: list[dict] = Field(default_factory=list)
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    clusters: list[dict[str, Any]] = Field(default_factory=list)
+    singletons: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ListSessionsInput(BaseModel):
@@ -285,7 +286,7 @@ class UpdateEntryInput(BaseModel):
     """
 
     entry_id: int
-    updates: dict = Field(default_factory=dict)
+    updates: dict[str, Any] = Field(default_factory=dict)
 
 
 class RecordFeedbackInput(BaseModel):
@@ -320,7 +321,7 @@ class PruneInput(BaseModel):
 class PruneResult(BaseModel):
     """Output from ``PruneWorkflow``."""
 
-    candidates: list[dict] = Field(default_factory=list)
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
     applied_count: int = 0
 
 

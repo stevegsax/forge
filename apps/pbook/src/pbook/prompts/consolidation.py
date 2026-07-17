@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 def build_consolidation_system_prompt() -> str:
     """System prompt instructing the LLM how to merge similar entries."""
@@ -19,7 +21,7 @@ def build_consolidation_system_prompt() -> str:
     )
 
 
-def build_consolidation_user_prompt(entries: list[dict]) -> str:
+def build_consolidation_user_prompt(entries: list[dict[str, Any]]) -> str:
     """User prompt containing the cluster of entries to merge."""
     parts = ["## Source Entries to Merge\n"]
     for e in entries:

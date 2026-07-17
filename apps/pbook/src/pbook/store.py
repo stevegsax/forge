@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from sqlalchemy import Connection, Engine
+    from sqlalchemy import Connection, Engine, RowMapping
+    from sqlalchemy.sql import Select
 
     from pbook.models import PlaybookEntry
 
@@ -246,6 +247,22 @@ class IngestedSession(Base):
 
 
 # ---------------------------------------------------------------------------
+# Typed Table handles. ``Model.__table__`` is typed ``FromClause`` by
+# SQLAlchemy's stubs, which lacks ``insert``/``update``/``delete``; look the
+# concrete ``sa.Table`` up from metadata once so query helpers below get a
+# properly typed handle (schema-qualified, since ``Base.metadata`` sets
+# ``schema=SCHEMA``).
+# ---------------------------------------------------------------------------
+
+_ENTRIES_TABLE: sa.Table = Base.metadata.tables[f"{SCHEMA}.{Entry.__tablename__}"]
+_ENTRY_TAGS_TABLE: sa.Table = Base.metadata.tables[f"{SCHEMA}.{EntryTag.__tablename__}"]
+_ENTRY_SOURCES_TABLE: sa.Table = Base.metadata.tables[f"{SCHEMA}.{EntrySource.__tablename__}"]
+_INGESTED_SESSIONS_TABLE: sa.Table = Base.metadata.tables[
+    f"{SCHEMA}.{IngestedSession.__tablename__}"
+]
+
+
+# ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
 
@@ -277,7 +294,7 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def build_entry_dict(entry: PlaybookEntry) -> dict:
+def build_entry_dict(entry: PlaybookEntry) -> dict[str, Any]:
     """Convert a PlaybookEntry to an insertion dict for the entries table.
 
     The ``tags`` list is carried alongside the entry columns; the write
@@ -338,7 +355,7 @@ def get_engine(url: str) -> Engine:
     norm = normalize_url(url)
     engine = _engines.get(norm)
     if engine is None:
-        connect_args: dict = {}
+        connect_args: dict[str, Any] = {}
         if _is_pooler(norm):
             # Disable prepared statements for PgBouncer transaction mode.
             connect_args["prepare_threshold"] = None
@@ -392,7 +409,7 @@ def run_migrations(url: str | None = None) -> None:
 _VECTOR_FIELDS = ("embedding", "source_context_embedding")
 
 
-def _row_to_dict(mapping) -> dict:
+def _row_to_dict(mapping: RowMapping) -> dict[str, Any]:
     """Materialize a result mapping, coercing pgvector arrays to plain lists.
 
     pgvector returns ``numpy.ndarray`` for vector columns; converting to a
@@ -410,7 +427,7 @@ def _load_tags(conn: Connection, entry_ids: Sequence[int]) -> dict[int, list[str
     """Fetch tag lists for the given entry ids, keyed by entry id."""
     if not entry_ids:
         return {}
-    tg = EntryTag.__table__
+    tg = _ENTRY_TAGS_TABLE
     stmt = (
         sa.select(tg.c.entry_id, tg.c.tag)
         .where(tg.c.entry_id.in_(entry_ids))
@@ -422,7 +439,7 @@ def _load_tags(conn: Connection, entry_ids: Sequence[int]) -> dict[int, list[str
     return grouped
 
 
-def _attach_tags(conn: Connection, rows: list[dict]) -> list[dict]:
+def _attach_tags(conn: Connection, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Annotate each entry row dict with its ``tags`` list (possibly empty)."""
     tag_map = _load_tags(conn, [r["id"] for r in rows])
     for row in rows:
@@ -435,7 +452,7 @@ def _attach_tags(conn: Connection, rows: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def insert_entry(engine: Engine, entry: dict, tags: Sequence[str] | None = None) -> int:
+def insert_entry(engine: Engine, entry: dict[str, Any], tags: Sequence[str] | None = None) -> int:
     """Insert one entry plus its tag rows; return the new entry id.
 
     The single insert primitive — used by the CLI add path, the
@@ -444,8 +461,8 @@ def insert_entry(engine: Engine, entry: dict, tags: Sequence[str] | None = None)
     carries is split into the child table. An explicit ``tags`` argument
     overrides the dict's.
     """
-    e = Entry.__table__
-    tg = EntryTag.__table__
+    e = _ENTRIES_TABLE
+    tg = _ENTRY_TAGS_TABLE
     columns = dict(entry)
     embedded_tags = columns.pop("tags", None)
     effective_tags = tags if tags is not None else (embedded_tags or [])
@@ -461,7 +478,7 @@ def insert_entry(engine: Engine, entry: dict, tags: Sequence[str] | None = None)
     return int(new_id)
 
 
-def save_entries(engine: Engine, entries: list[dict]) -> None:
+def save_entries(engine: Engine, entries: list[dict[str, Any]]) -> None:
     """Bulk-insert entry dicts (each may carry a ``tags`` list)."""
     for entry in entries:
         insert_entry(engine, entry)
@@ -469,7 +486,7 @@ def save_entries(engine: Engine, entries: list[dict]) -> None:
 
 def set_entry_tags(engine: Engine, entry_id: int, tags: Sequence[str]) -> None:
     """Replace all tag rows for an entry with the given set."""
-    tg = EntryTag.__table__
+    tg = _ENTRY_TAGS_TABLE
     unique_tags = _dedup_preserving_order(tags)
     with engine.begin() as conn:
         conn.execute(tg.delete().where(tg.c.entry_id == entry_id))
@@ -482,7 +499,7 @@ def set_entry_tags(engine: Engine, entry_id: int, tags: Sequence[str]) -> None:
 
 def add_entry_tag(engine: Engine, entry_id: int, tag: str) -> None:
     """Add a single tag to an entry, ignoring duplicates."""
-    tg = EntryTag.__table__
+    tg = _ENTRY_TAGS_TABLE
     stmt = (
         pg_insert(tg)
         .values(entry_id=entry_id, tag=tag)
@@ -494,7 +511,7 @@ def add_entry_tag(engine: Engine, entry_id: int, tag: str) -> None:
         conn.execute(stmt)
 
 
-def update_entry(engine: Engine, entry_id: int, updates: dict) -> None:
+def update_entry(engine: Engine, entry_id: int, updates: dict[str, Any]) -> None:
     """Update an entry by primary key.
 
     A ``tags`` key (list[str]) in ``updates`` is special-cased: it
@@ -508,8 +525,8 @@ def update_entry(engine: Engine, entry_id: int, updates: dict) -> None:
         len(updates),
         tags is not None,
     )
-    e = Entry.__table__
-    tg = EntryTag.__table__
+    e = _ENTRIES_TABLE
+    tg = _ENTRY_TAGS_TABLE
     with engine.begin() as conn:
         if updates:
             conn.execute(e.update().where(e.c.id == entry_id).values(**updates))
@@ -526,7 +543,7 @@ def update_entry(engine: Engine, entry_id: int, updates: dict) -> None:
 def delete_entry(engine: Engine, entry_id: int) -> None:
     """Delete an entry by primary key (tags/sources cascade)."""
     logger.info("Deleting entry %d", entry_id)
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     with engine.begin() as conn:
         conn.execute(e.delete().where(e.c.id == entry_id))
 
@@ -538,7 +555,7 @@ def mark_rejected(engine: Engine, entry_id: int, *, reason: str | None = None) -
     for audit; default queries hide rejected rows.
     """
     logger.info("Marking entry %d as rejected (reason=%r)", entry_id, reason or "<none>")
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     with engine.begin() as conn:
         conn.execute(
             e.update().where(e.c.id == entry_id).values(rejected=True, rejection_reason=reason),
@@ -550,7 +567,7 @@ def record_retrieval(engine: Engine, entry_ids: list[int]) -> None:
     if not entry_ids:
         return
     logger.info("Recording retrieval for %d entries", len(entry_ids))
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     with engine.begin() as conn:
         conn.execute(
             e.update()
@@ -563,7 +580,7 @@ def record_retrieval(engine: Engine, entry_ids: list[int]) -> None:
 
 def record_feedback(engine: Engine, entry_id: int, *, helpful: bool) -> None:
     """Increment helpful_count or harmful_count for a single entry."""
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     col = e.c.helpful_count if helpful else e.c.harmful_count
     logger.info("Recording %s feedback for entry %d", "helpful" if helpful else "harmful", entry_id)
     with engine.begin() as conn:
@@ -575,9 +592,9 @@ def record_feedback(engine: Engine, entry_id: int, *, helpful: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_entry_by_id(engine: Engine, entry_id: int) -> dict | None:
+def get_entry_by_id(engine: Engine, entry_id: int) -> dict[str, Any] | None:
     """Fetch a single entry row (with tags) by primary key."""
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     with engine.connect() as conn:
         mapping = conn.execute(e.select().where(e.c.id == entry_id)).mappings().first()
         if mapping is None:
@@ -585,11 +602,11 @@ def get_entry_by_id(engine: Engine, entry_id: int) -> dict | None:
         return _attach_tags(conn, [_row_to_dict(mapping)])[0]
 
 
-def get_entries_by_ids(engine: Engine, ids: list[int]) -> list[dict]:
+def get_entries_by_ids(engine: Engine, ids: list[int]) -> list[dict[str, Any]]:
     """Bulk-fetch entries (with tags) by primary key, arbitrary order."""
     if not ids:
         return []
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     with engine.connect() as conn:
         rows = [_row_to_dict(m) for m in conn.execute(e.select().where(e.c.id.in_(ids))).mappings()]
         return _attach_tags(conn, rows)
@@ -602,7 +619,7 @@ def get_entries_by_tags(
     limit: int = 10,
     approved_only: bool = False,
     include_rejected: bool = False,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Query entries carrying any of the given tags, newest first.
 
     Joins ``pbk_entry_tags`` instead of unnesting a JSON column. Rejected
@@ -617,8 +634,8 @@ def get_entries_by_tags(
         approved_only,
         include_rejected,
     )
-    e = Entry.__table__
-    tg = EntryTag.__table__
+    e = _ENTRIES_TABLE
+    tg = _ENTRY_TAGS_TABLE
     stmt = (
         sa.select(e)
         .distinct()
@@ -641,9 +658,9 @@ def list_recent_entries(
     *,
     limit: int = 20,
     include_rejected: bool = False,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Query recent entries (with tags) ordered by creation time descending."""
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     stmt = e.select()
     if not include_rejected:
         stmt = stmt.where(e.c.rejected == sa.false())
@@ -659,14 +676,14 @@ def list_embedded_entries(
     approved_only: bool = False,
     include_rejected: bool = False,
     limit: int = 200,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Fetch recent entries that have an embedding, newest first.
 
     Backs the free-text retrieval path: a broad candidate pool the
     semantic step can rank. Tags are attached so tag-overlap can serve
     as the ranking tiebreaker.
     """
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     stmt = e.select().where(e.c.embedding.is_not(None))
     if approved_only:
         stmt = stmt.where(e.c.needs_review == sa.false())
@@ -678,23 +695,23 @@ def list_embedded_entries(
         return _attach_tags(conn, rows)
 
 
-def list_all_entries(engine: Engine) -> list[dict]:
+def list_all_entries(engine: Engine) -> list[dict[str, Any]]:
     """Fetch all entries (with tags and embeddings) for maintenance analysis."""
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     stmt = e.select().order_by(e.c.created_at.desc())
     with engine.connect() as conn:
         rows = [_row_to_dict(m) for m in conn.execute(stmt).mappings()]
         return _attach_tags(conn, rows)
 
 
-def list_review_queue_with_sources(engine: Engine) -> list[dict]:
+def list_review_queue_with_sources(engine: Engine) -> list[dict[str, Any]]:
     """Fetch needs_review entries each annotated with their source rows.
 
     Each returned dict is an entry (with ``tags``) plus a ``sources`` key
     holding its ``entry_sources`` rows in created_at order. Rejected
     entries are excluded.
     """
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     stmt = (
         e.select()
         .where(e.c.needs_review == sa.true())
@@ -707,7 +724,7 @@ def list_review_queue_with_sources(engine: Engine) -> list[dict]:
             return []
         _attach_tags(conn, entries)
 
-        s = EntrySource.__table__
+        s = _ENTRY_SOURCES_TABLE
         src_stmt = (
             s.select()
             .where(s.c.entry_id.in_([e_["id"] for e_ in entries]))
@@ -715,7 +732,7 @@ def list_review_queue_with_sources(engine: Engine) -> list[dict]:
         )
         source_rows = [_row_to_dict(m) for m in conn.execute(src_stmt).mappings()]
 
-    by_entry: dict[int, list[dict]] = {}
+    by_entry: dict[int, list[dict[str, Any]]] = {}
     for src in source_rows:
         by_entry.setdefault(src["entry_id"], []).append(src)
     for entry in entries:
@@ -727,8 +744,8 @@ def list_tag_values_in_use(engine: Engine) -> dict[str, list[str]]:
     """Group distinct in-use tag values by namespace across non-rejected entries."""
     from pbook.tags import VALID_NAMESPACES
 
-    e = Entry.__table__
-    tg = EntryTag.__table__
+    e = _ENTRIES_TABLE
+    tg = _ENTRY_TAGS_TABLE
     stmt = (
         sa.select(tg.c.tag)
         .distinct()
@@ -750,13 +767,13 @@ def check_duplicate(
     engine: Engine,
     title: str,
     tags: list[str] | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Find entries with similar titles for duplicate detection.
 
     Case-insensitive LIKE on title. If tags are provided, results are
     sorted by tag overlap (descending).
     """
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     stmt = e.select().where(e.c.title.ilike(f"%{title}%")).order_by(e.c.created_at.desc()).limit(10)
     with engine.connect() as conn:
         rows = [_row_to_dict(m) for m in conn.execute(stmt).mappings()]
@@ -780,13 +797,13 @@ def find_semantic_duplicates(
     threshold: float = 0.85,
     limit: int = 5,
     include_rejected: bool = False,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Find entries within ``threshold`` cosine similarity of the embedding.
 
     Cosine distance (``<=>``) is computed in PostgreSQL; similarity is
     ``1 - distance``. Rejected entries are excluded by default.
     """
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     distance = e.c.embedding.cosine_distance(query_embedding)
     stmt = (
         sa.select(e, distance.label("_distance"))
@@ -804,9 +821,9 @@ def semantic_search(
     query_embedding: list[float],
     *,
     limit: int = 10,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Rank all embedded entries by cosine similarity to the query."""
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     distance = e.c.embedding.cosine_distance(query_embedding)
     stmt = (
         sa.select(e, distance.label("_distance"))
@@ -817,11 +834,11 @@ def semantic_search(
     return _scored_rows(engine, stmt)
 
 
-def _scored_rows(engine: Engine, stmt) -> list[dict]:
+def _scored_rows(engine: Engine, stmt: Select[Any]) -> list[dict[str, Any]]:
     """Execute a select that includes a ``_distance`` column and attach
     ``similarity`` (1 - distance) plus tags to each row."""
     with engine.connect() as conn:
-        rows: list[dict] = []
+        rows: list[dict[str, Any]] = []
         for mapping in conn.execute(stmt).mappings():
             row = _row_to_dict(mapping)
             distance = row.pop("_distance")
@@ -842,7 +859,7 @@ def cosine_similarities_for_ids(
     """
     if not ids:
         return {}
-    e = Entry.__table__
+    e = _ENTRIES_TABLE
     distance = e.c.embedding.cosine_distance(query_embedding)
     stmt = sa.select(e.c.id, distance).where(
         e.c.id.in_(ids),
@@ -873,7 +890,7 @@ def add_entry_source(
     because an identical (entry_id, session_id, experience_hash) row
     already exists.
     """
-    s = EntrySource.__table__
+    s = _ENTRY_SOURCES_TABLE
     stmt = (
         pg_insert(s)
         .values(
@@ -892,9 +909,9 @@ def add_entry_source(
         return int(row[0]) if row else None
 
 
-def list_entry_sources_for_entry(engine: Engine, entry_id: int) -> list[dict]:
+def list_entry_sources_for_entry(engine: Engine, entry_id: int) -> list[dict[str, Any]]:
     """Return all entry_sources rows for an entry, oldest first."""
-    s = EntrySource.__table__
+    s = _ENTRY_SOURCES_TABLE
     stmt = s.select().where(s.c.entry_id == entry_id).order_by(s.c.created_at)
     with engine.connect() as conn:
         return [_row_to_dict(m) for m in conn.execute(stmt).mappings()]
@@ -906,12 +923,12 @@ def find_similar_source_contexts(
     query_embedding: list[float],
     *,
     threshold: float = SOURCE_DEDUP_THRESHOLD,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Find this entry's source rows within ``threshold`` similarity.
 
     Used to skip writing a duplicate justification for an entry.
     """
-    s = EntrySource.__table__
+    s = _ENTRY_SOURCES_TABLE
     distance = s.c.source_context_embedding.cosine_distance(query_embedding)
     stmt = (
         sa.select(s, distance.label("_distance"))
@@ -921,7 +938,7 @@ def find_similar_source_contexts(
         .order_by(distance.asc())
     )
     with engine.connect() as conn:
-        out: list[dict] = []
+        out: list[dict[str, Any]] = []
         for mapping in conn.execute(stmt).mappings():
             row = _row_to_dict(mapping)
             row["similarity"] = 1.0 - float(row.pop("_distance"))
@@ -943,7 +960,7 @@ def reparent_entry_sources(
     """
     if not from_entry_ids:
         return 0
-    s = EntrySource.__table__
+    s = _ENTRY_SOURCES_TABLE
     with engine.begin() as conn:
         existing = conn.execute(
             sa.select(s.c.session_id, s.c.experience_hash).where(s.c.entry_id == to_entry_id),
@@ -974,7 +991,7 @@ def reparent_entry_sources(
 
 def get_ingested_session_ids(engine: Engine) -> set[str]:
     """Session IDs to skip on the next ingest run (completed or running)."""
-    t = IngestedSession.__table__
+    t = _INGESTED_SESSIONS_TABLE
     stmt = sa.select(t.c.session_id).where(
         t.c.status.in_([SESSION_STATUS_COMPLETED, SESSION_STATUS_RUNNING]),
     )
@@ -987,9 +1004,9 @@ def list_ingested_sessions(
     *,
     project: str | None = None,
     limit: int = 20,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """List ingested sessions, newest known activity first."""
-    t = IngestedSession.__table__
+    t = _INGESTED_SESSIONS_TABLE
     order_key = sa.func.coalesce(t.c.started_at, t.c.ingested_at)
     stmt = t.select()
     if project:
@@ -999,9 +1016,9 @@ def list_ingested_sessions(
         return [dict(m) for m in conn.execute(stmt).mappings()]
 
 
-def _upsert_session(engine: Engine, values: dict, set_: dict) -> None:
+def _upsert_session(engine: Engine, values: dict[str, Any], set_: dict[str, Any]) -> None:
     """Upsert an ingested_sessions row on the session_id primary key."""
-    t = IngestedSession.__table__
+    t = _INGESTED_SESSIONS_TABLE
     stmt = (
         pg_insert(t)
         .values(**values)

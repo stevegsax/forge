@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from temporalio import activity
 
@@ -53,7 +54,7 @@ async def validate_entry(raw_json: str) -> str:
 
 
 @activity.defn
-async def fetch_existing_entries(limit: int = 50) -> list[dict]:
+async def fetch_existing_entries(limit: int = 50) -> list[dict[str, Any]]:
     """Query recent entries for duplication context.
 
     Embeddings are stripped before crossing the wire — the review prompt
@@ -70,7 +71,7 @@ async def fetch_existing_entries(limit: int = 50) -> list[dict]:
 
 
 @activity.defn
-async def find_duplicates(input_json: str) -> list[dict]:
+async def find_duplicates(input_json: str) -> list[dict[str, Any]]:
     """Find semantic duplicates for a proposed entry.
 
     Accepts JSON with keys: embedding (base64 float32 string), threshold (float).

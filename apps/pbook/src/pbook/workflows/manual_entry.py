@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 
@@ -41,7 +42,7 @@ class ManualEntryWorkflow:
     """Validate, review, and save a manually submitted playbook entry."""
 
     @workflow.run
-    async def run(self, raw_json: str) -> dict:
+    async def run(self, raw_json: str) -> dict[str, Any]:
         # Step 1: Validate raw JSON
         validation_json = await workflow.execute_activity(
             "validate_entry",

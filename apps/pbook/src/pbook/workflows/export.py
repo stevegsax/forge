@@ -7,6 +7,7 @@ then gathers results.
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 
@@ -19,9 +20,9 @@ class ExportWorkflow:
     """Fetch matching entry IDs, fan-out export per row, gather results."""
 
     @workflow.run
-    async def run(self, input_json: str) -> dict:
+    async def run(self, input_json: str) -> dict[str, Any]:
         # Step 1: Fetch matching IDs
-        ids = await workflow.execute_activity(
+        ids: list[int] = await workflow.execute_activity(
             "fetch_entry_ids",
             input_json,
             start_to_close_timeout=_FETCH_TIMEOUT,
@@ -43,9 +44,9 @@ class ExportWorkflow:
             handles.append(handle)
 
         # Step 3: Gather
-        entries = []
+        entries: list[dict[str, Any]] = []
         for handle in handles:
-            entry = await handle
+            entry: dict[str, Any] = await handle
             entries.append(entry)
 
         return {"entries": entries, "count": len(entries)}

@@ -9,6 +9,7 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from temporalio import activity
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def db_row_to_entry_dict(row: dict) -> dict:
+def db_row_to_entry_dict(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a DB row dict to a PlaybookEntry-compatible dict.
 
     Reads the ``tags`` list attached by the store read helpers and drops
@@ -67,7 +68,7 @@ async def fetch_entry_ids(input_json: str) -> list[int]:
 
 
 @activity.defn
-async def export_single_entry(entry_id: int) -> dict:
+async def export_single_entry(entry_id: int) -> dict[str, Any]:
     """Fetch one entry by ID and convert to PlaybookEntry dict."""
     from pbook.store import get_entry_by_id, get_store_engine
 
