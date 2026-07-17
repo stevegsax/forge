@@ -16,6 +16,9 @@
 	stack-up stack-down stack-logs stack-psql db-migrate \
 	workers-restart workers-status
 
+# Bare `make` prints the target list instead of running the first target.
+.DEFAULT_GOAL := help
+
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
