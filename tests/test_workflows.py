@@ -61,6 +61,7 @@ from forge.models import (
     WriteResult,
 )
 from forge.persist_models import PersistRequest, PersistResult
+from forge.workflow_blocks import THINKING_MAX_TOKENS
 from forge.workflows import (
     FORGE_TASK_QUEUE,
     ForgeSubTaskWorkflow,
@@ -104,6 +105,11 @@ _LLM_RESPONSE = LLMResponse(
 
 _test_client: Client | None = None
 _parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
+# Captured submit_batch_request inputs, keyed by output_type_name — opt-in
+# regression coverage for the shared thinking fallback and the
+# thinking-enabled max_tokens bump (workflow_blocks.THINKING_MAX_TOKENS).
+# Additive only: tests that don't read this incur no behavior change.
+_SELF_SIGNAL_SUBMIT_LOG: dict[str, BatchSubmitInput] = {}
 
 
 @activity.defn(name="submit_batch_request")
@@ -116,6 +122,7 @@ async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResu
     call's result now that the buffer is keyed by request_id.
     """
     assert _test_client is not None
+    _SELF_SIGNAL_SUBMIT_LOG[input.output_type_name] = input
     request_id = uuid.uuid4().hex
     handle = _test_client.get_workflow_handle(input.workflow_id)
     await handle.signal(
@@ -2638,6 +2645,7 @@ def _reset_recursive_mock_state(
     _RECURSIVE_CONFLICT_RESPONSES.clear()
     _RECURSIVE_PARSE_LLM_COUNT = 0
     _parse_handler = _recursive_parse_handler
+    _SELF_SIGNAL_SUBMIT_LOG.clear()
     if transitions:
         _RECURSIVE_TRANSITION_SEQUENCE.extend(transitions)
     if llm_responses:
@@ -3297,11 +3305,17 @@ class TestRecursiveFanOutPropagatesThinkingAndRouting:
         ) -> ConflictResolutionCallInput:
             captured.append(input)
             _RECURSIVE_CALL_LOG.append("assemble_conflict_resolution_context")
+            # Mirror the real assemble_conflict_resolution_context activity
+            # (activities/conflict_resolution.py), which threads model_name and
+            # thinking through from the input — a mock that dropped them would
+            # silently mask propagation bugs downstream of this activity.
             return ConflictResolutionCallInput(
                 task_id=input.task_id,
                 step_id=input.step_id,
                 system_prompt="conflict resolution system prompt",
                 user_prompt="conflict resolution user prompt",
+                model_name=input.model_name,
+                thinking=input.thinking,
             )
 
         activities = [
@@ -3321,6 +3335,12 @@ class TestRecursiveFanOutPropagatesThinkingAndRouting:
         # model_routing propagated: REASONING tier resolved from the parent's
         # ModelConfig, not the pre-T1.5 ModelConfig()/model_name override.
         assert cr_input.model_name == "anthropic:custom-reasoning-model"
+        # Conflict resolution is thinking-enabled here, so its batch submit
+        # must carry the explicit adaptive-thinking cap, not the generic
+        # batch_submit_and_wait default (4096).
+        submitted = _SELF_SIGNAL_SUBMIT_LOG["ConflictResolutionResponse"]
+        assert submitted.thinking == ThinkingPolicy(enabled=True, effort="max")
+        assert submitted.max_tokens == THINKING_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -3436,6 +3456,7 @@ def _reset_sc_mock_state(
     _SC_LLM_CALL_COUNT = 0
     _SC_SANITY_RESPONSES.clear()
     _parse_handler = _sc_parse_handler
+    _SELF_SIGNAL_SUBMIT_LOG.clear()
     if transitions:
         _SC_TRANSITION_SEQUENCE.extend(transitions)
     if sanity_responses:
@@ -3658,6 +3679,10 @@ class TestSanityCheckContinue:
         await _run_sc_workflow(env)
         assert "assemble_sanity_check_context" in _SC_CALL_LOG
         assert "call_sanity_check" in _SC_CALL_LOG
+        # Sanity-check is thinking-enabled, so its batch submit must carry the
+        # explicit adaptive-thinking cap, not the generic
+        # batch_submit_and_wait default (4096).
+        assert _SELF_SIGNAL_SUBMIT_LOG["SanityCheckResponse"].max_tokens == THINKING_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -3919,6 +3944,10 @@ _BATCH_CALL_LOG: list[str] = []
 _BATCH_TRANSITION_SEQUENCE: list[str] = []
 _BATCH_PARSE_RESPONSES: list[ParsedLLMResponse] = []
 _BATCH_PERSISTED: list[PersistRequest] = []
+# Captured per submit_batch_request call — regression coverage for the shared
+# thinking fallback (workflow_blocks.py) and the thinking-enabled max_tokens
+# bump (both owner-adjudicated per the 2026-07 Phase 3 code review).
+_BATCH_SUBMIT_INPUTS: list[BatchSubmitInput] = []
 
 
 def _reset_batch_mock_state(
@@ -3929,6 +3958,7 @@ def _reset_batch_mock_state(
     _BATCH_TRANSITION_SEQUENCE.clear()
     _BATCH_PARSE_RESPONSES.clear()
     _BATCH_PERSISTED.clear()
+    _BATCH_SUBMIT_INPUTS.clear()
     if transitions:
         _BATCH_TRANSITION_SEQUENCE.extend(transitions)
     if parse_responses:
@@ -3976,6 +4006,7 @@ async def mock_batch_assemble_context(input: AssembleContextInput) -> AssembledC
 @activity.defn(name="submit_batch_request")
 async def mock_batch_submit(input: BatchSubmitInput) -> BatchSubmitResult:
     _BATCH_CALL_LOG.append("submit_batch_request")
+    _BATCH_SUBMIT_INPUTS.append(input)
     return BatchSubmitResult(
         request_id="req-test-123",
         batch_id="msgbatch_test123",
@@ -4094,6 +4125,84 @@ class TestBatchSingleStep:
         # Verify sync path was NOT called
         assert "call_llm" not in _BATCH_CALL_LOG
         assert result.output_files == {"hello.py": "print('hello')\n"}
+        # generation_dispatch omits `thinking`; the shared fallback in
+        # batch_submit_and_wait must resolve it to disabled — not to
+        # ThinkingPolicy()'s own enabled=True default (D94) and not to the
+        # task-level ForgeTaskInput.thinking (enabled=True here).
+        assert len(_BATCH_SUBMIT_INPUTS) == 1
+        assert _BATCH_SUBMIT_INPUTS[0].thinking == ThinkingPolicy(enabled=False)
+        # Generation is thinking-disabled, so its cap stays the untouched
+        # batch_submit_and_wait default — not the thinking-enabled bump.
+        assert _BATCH_SUBMIT_INPUTS[0].max_tokens == 4096
+
+    @pytest.mark.asyncio
+    async def test_batch_generation_persists_tokens_and_stop_reason(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """The interactions row built for a batch result carries the parsed
+        response's token counts and stop_reason through end to end (2026-07
+        Phase 3 code review, item 3a/3b) — not silently dropped or zeroed
+        anywhere between parse_llm_response and the persisted row."""
+        distinctive_parsed = ParsedLLMResponse(
+            parsed_json=LLMResponse(
+                files=[FileOutput(file_path="hello.py", content="print('hello')\n")],
+                explanation="Created hello module.",
+            ).model_dump_json(),
+            model_name="mock-batch-model",
+            input_tokens=777,
+            output_tokens=888,
+            cache_creation_input_tokens=13,
+            cache_read_input_tokens=17,
+            stop_reason="end_turn",
+        )
+        _reset_batch_mock_state(
+            transitions=[TransitionSignal.SUCCESS.value],
+            parse_responses=[distinctive_parsed],
+        )
+
+        task = TaskDefinition(
+            task_id="batch-token-test",
+            description="Write a hello module.",
+            target_files=["hello.py"],
+        )
+        input = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            max_attempts=2,
+            max_exploration_rounds=0,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_BATCH_MOCK_ACTIVITIES,
+        ):
+            handle = await env.client.start_workflow(
+                ForgeTaskWorkflow.run,
+                input,
+                id="test-batch-token-check",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+            batch_result = BatchResult(
+                request_id="req-test-123",
+                batch_id="msgbatch_test123",
+                raw_response_json='{"dummy": "json"}',
+                result_type="LLMResponse",
+            )
+            await handle.signal(ForgeTaskWorkflow.batch_result_received, batch_result)
+            result = await handle.result()
+
+        assert result.status == TransitionSignal.SUCCESS
+        interactions = [r for r in _BATCH_PERSISTED if r.kind == "interaction" and r.role == "llm"]
+        assert len(interactions) == 1
+        row = interactions[0]
+        assert row.input_tokens == 777
+        assert row.output_tokens == 888
+        assert row.cache_creation_input_tokens == 13
+        assert row.cache_read_input_tokens == 17
+        assert row.stop_reason == "end_turn"
 
     @pytest.mark.asyncio
     async def test_batch_error_in_signal_records_failure(self, env: WorkflowEnvironment) -> None:
@@ -4348,6 +4457,15 @@ class TestBatchWaitFailure:
 _BATCH_PLAN_CALL_LOG: list[str] = []
 _BATCH_PLAN_TRANSITION_SEQUENCE: list[str] = []
 _BATCH_PLAN_PARSE_QUEUE: list[ParsedLLMResponse] = []
+# Captured submit_batch_request inputs keyed by output_type_name — regression
+# coverage for the shared thinking fallback: the planner call passes an
+# explicit (non-None) thinking policy through unchanged, while the generation
+# call omits it and must land disabled.
+_BATCH_PLAN_SUBMIT_INPUTS: dict[str, BatchSubmitInput] = {}
+
+# Distinctive planner thinking policy — proves passthrough rather than
+# coincidentally matching some other default.
+_PLANNER_THINKING = ThinkingPolicy(enabled=True, effort="high")
 
 
 def _reset_batch_plan_mock_state(
@@ -4357,6 +4475,7 @@ def _reset_batch_plan_mock_state(
     _BATCH_PLAN_CALL_LOG.clear()
     _BATCH_PLAN_TRANSITION_SEQUENCE.clear()
     _BATCH_PLAN_PARSE_QUEUE.clear()
+    _BATCH_PLAN_SUBMIT_INPUTS.clear()
     if transitions:
         _BATCH_PLAN_TRANSITION_SEQUENCE.extend(transitions)
     if parse_queue:
@@ -4379,12 +4498,14 @@ async def mock_bp_assemble_planner(input: AssembleContextInput) -> PlannerInput:
         task_id=input.task_id,
         system_prompt="planner system",
         user_prompt="planner user",
+        thinking=_PLANNER_THINKING,
     )
 
 
 @activity.defn(name="submit_batch_request")
 async def mock_bp_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
     _BATCH_PLAN_CALL_LOG.append(f"submit_batch:{input.output_type_name}")
+    _BATCH_PLAN_SUBMIT_INPUTS[input.output_type_name] = input
     # A fresh request_id per submission (keyed off the output type so the two
     # calls — planner then generation — get distinct correlation ids that the
     # test's signals match).
@@ -4548,6 +4669,17 @@ class TestBatchPlanned:
         assert "parse:LLMResponse" in _BATCH_PLAN_CALL_LOG
         assert result.plan is not None
         assert len(result.step_results) == 1
+        # Shared thinking fallback (workflow_blocks.py): the planner call
+        # passes an explicit thinking policy through unchanged...
+        assert _BATCH_PLAN_SUBMIT_INPUTS["Plan"].thinking == _PLANNER_THINKING
+        # ...while the generation call omits `thinking` entirely and must
+        # land disabled via the shared fallback, not enabled-by-default.
+        assert _BATCH_PLAN_SUBMIT_INPUTS["LLMResponse"].thinking == ThinkingPolicy(enabled=False)
+        # Planner is thinking-enabled, so it carries the explicit
+        # adaptive-thinking cap; generation stays thinking-disabled and keeps
+        # the untouched default.
+        assert _BATCH_PLAN_SUBMIT_INPUTS["Plan"].max_tokens == THINKING_MAX_TOKENS
+        assert _BATCH_PLAN_SUBMIT_INPUTS["LLMResponse"].max_tokens == 4096
 
 
 # ---------------------------------------------------------------------------

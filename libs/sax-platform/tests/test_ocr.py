@@ -98,12 +98,29 @@ class TestMakeMistralClient:
         client = make_mistral_client()
         assert client.sdk_configuration.security.api_key == "env-key"  # type: ignore[union-attr]
 
-    def test_none_with_no_env_var_defaults_to_empty_string(
+    def test_none_with_no_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression test: a missing MISTRAL_API_KEY used to resolve
+        silently to "" and construct a client that would only fail hours
+        later with 401s. It must now fail loudly at construction — the ocr
+        worker calls this at startup, exactly where an operator should
+        learn of the misconfiguration."""
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+
+        with pytest.raises(ValueError, match="MISTRAL_API_KEY"):
+            make_mistral_client()
+
+    def test_explicit_empty_string_raises(self) -> None:
+        with pytest.raises(ValueError, match="MISTRAL_API_KEY"):
+            make_mistral_client(api_key="")
+
+    def test_explicit_arg_path_still_used_verbatim_when_env_var_also_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
-        client = make_mistral_client()
-        assert client.sdk_configuration.security.api_key == ""  # type: ignore[union-attr]
+        """The explicit-arg path is unaffected by the raise: a non-empty
+        explicit api_key is used verbatim regardless of the env var."""
+        monkeypatch.setenv("MISTRAL_API_KEY", "env-key")
+        client = make_mistral_client(api_key="explicit-key")
+        assert client.sdk_configuration.security.api_key == "explicit-key"  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +253,30 @@ class TestParseErrorFileEntries:
         )
         entries = _parse_error_file_entries(lines)
         assert [e.custom_id for e in entries] == ["r1", "r2"]
+
+    def test_null_response_falls_back_to_top_level_error(self) -> None:
+        """Regression test: an error-file line can carry an explicit
+        `"response": null` (key present, value None) rather than omitting
+        the key entirely. `data.get("response", {})` does NOT apply its {}
+        default in that case — it returns the actual value, None — so a
+        naive `.get("body", {})` chained off it crashes with
+        AttributeError. This must parse into a failed BatchResultEntry
+        using the top-level `"error"` instead."""
+        line = json.dumps(
+            {
+                "custom_id": "req-null-response",
+                "response": None,
+                "error": {"message": "request failed before a response was produced"},
+            }
+        )
+
+        entries = _parse_error_file_entries(line)
+
+        assert len(entries) == 1
+        assert entries[0].custom_id == "req-null-response"
+        assert entries[0].succeeded is False
+        assert entries[0].error is not None
+        assert "request failed before a response was produced" in entries[0].error
 
 
 class TestExtractImages:
@@ -440,6 +481,21 @@ class TestSubmitBatch:
 
         assert str(client.batch.jobs.create_async.call_args.kwargs["endpoint"]) == "/v1/ocr"
 
+    async def test_empty_string_endpoint_normalizes_to_default(self) -> None:
+        """Regression test: forge's SPI shell always forwards an `endpoint`
+        argument, and `BatchSubmitSpiInput.endpoint` itself defaults to ""
+        rather than being absent — so a caller commonly passes
+        endpoint="" rather than omitting it, which the keyword default
+        alone can't catch."""
+        client = MagicMock()
+        client.files.upload_async = AsyncMock(return_value=MagicMock(id="file-upload-5"))
+        client.batch.jobs.create_async = AsyncMock(return_value=MagicMock(id="batch-5"))
+
+        ocr = MistralOcr(client)
+        await ocr.submit_batch([{"custom_id": "r1", "body": {}}], "mistral-ocr-latest", endpoint="")
+
+        assert str(client.batch.jobs.create_async.call_args.kwargs["endpoint"]) == "/v1/ocr"
+
 
 # ---------------------------------------------------------------------------
 # MistralOcr.poll_batch
@@ -514,6 +570,29 @@ class TestPollBatchSuccess:
         assert [e.custom_id for e in result.entries] == ["req-1", "req-2"]
         assert all(e.succeeded for e in result.entries)
         assert all(e.raw_response_json is not None for e in result.entries)
+
+    async def test_null_response_entry_in_output_file_does_not_crash(self) -> None:
+        # Same defect class as the error-file path: "response": null is a
+        # present key, so .get's default never applies — must not AttributeError.
+        client = MagicMock()
+        client.batch.jobs.get_async = AsyncMock(
+            return_value=_make_mock_batch_job("SUCCESS", output_file="file-output-null")
+        )
+        jsonl = "\n".join(
+            [
+                json.dumps({"custom_id": "req-null", "response": None}),
+                json.dumps({"custom_id": "req-ok", "response": {"body": _ocr_body()}}),
+            ]
+        )
+        client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
+        ocr = MistralOcr(client)
+
+        result = await ocr.poll_batch("batch-1")
+
+        assert result.status == BatchPollStatus.ENDED
+        by_id = {e.custom_id: e for e in result.entries}
+        assert by_id["req-null"].succeeded is False
+        assert by_id["req-ok"].succeeded is True
 
     async def test_downloads_from_output_file(self) -> None:
         client = MagicMock()

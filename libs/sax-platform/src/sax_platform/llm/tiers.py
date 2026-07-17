@@ -6,10 +6,11 @@ Forge's copy of this registry (`forge.models.CapabilityTier` / `ModelConfig` /
 that turn a resolved model name and a `ThinkingPolicy` into an actual request.
 """
 
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "CapabilityTier",
@@ -92,6 +93,40 @@ class ThinkingPolicy(BaseModel):
 
     enabled: bool = True
     effort: Effort = "high"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_budget_tokens(cls, data: Any) -> Any:
+        """T3.2 in-flight-payload compatibility shim.
+
+        Pre-T3.2 serialized payloads carried forge's old
+        `ThinkingConfig` shape — `{"budget_tokens": N, "effort": ...}` — with
+        no `enabled` key. Left alone, that shape would deserialize here with
+        `budget_tokens` silently dropped (unknown field) and `enabled`
+        defaulting to `True`, which flips thinking back ON for an in-flight
+        workflow that had explicitly disabled it via `budget_tokens: 0`.
+
+        When the input mapping carries `budget_tokens` and does NOT also
+        carry `enabled`, derive `enabled` from whether the legacy budget was
+        positive. An explicit `enabled` in the payload always wins over the
+        legacy field. `budget_tokens` itself is always dropped from what
+        reaches the model — this type has no such field.
+
+        Delete this shim once no pre-T3.2 workflow history can still be in
+        flight.
+        """
+        if not isinstance(data, Mapping):
+            return data
+        if "budget_tokens" not in data:
+            return data
+        migrated = dict(data)
+        budget_tokens = migrated.pop("budget_tokens")
+        if "enabled" not in migrated:
+            is_numeric = isinstance(budget_tokens, int | float) and not isinstance(
+                budget_tokens, bool
+            )
+            migrated["enabled"] = is_numeric and budget_tokens > 0
+        return migrated
 
 
 def split_provider(qualified: str) -> tuple[str, str]:

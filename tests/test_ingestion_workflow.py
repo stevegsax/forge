@@ -29,6 +29,7 @@ from forge.models import (
     BatchSubmitResult,
     ParsedLLMResponse,
     ParseResponseInput,
+    ThinkingPolicy,
 )
 from forge.persist_models import PersistRequest, PersistResult
 from forge.workflows import FORGE_TASK_QUEUE
@@ -55,6 +56,11 @@ _RECORDED_SESSIONS: list[dict] = []
 # Canned extraction result returned from mock pbook ExtractionWorkflow.
 _EXTRACTION_RESULT: dict = {"entries_created": 0}
 
+# Captured submit_batch_request inputs — regression coverage for the shared
+# thinking fallback: transcript analysis omits `thinking` entirely and must
+# land disabled via workflow_blocks.batch_submit_and_wait's shared fallback.
+_SUBMIT_BATCH_INPUTS: list[BatchSubmitInput] = []
+
 
 def _reset_state(
     *,
@@ -66,6 +72,7 @@ def _reset_state(
     global _PREPARED_JSON, _ANALYSIS_JSON, _EXTRACTION_RESULT
     _CALL_LOG.clear()
     _RECORDED_SESSIONS.clear()
+    _SUBMIT_BATCH_INPUTS.clear()
     # Empty string activates the echo-input fallback in mock_prepare_transcript.
     _PREPARED_JSON = json.dumps(prepared) if prepared is not None else ""
     _ANALYSIS_JSON = json.dumps(analysis or {"experiences": []})
@@ -101,6 +108,7 @@ async def mock_prepare_transcript(input_json: str) -> str:
 @activity.defn(name="submit_batch_request")
 async def mock_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
     _CALL_LOG.append(f"submit_batch:{input.output_type_name}")
+    _SUBMIT_BATCH_INPUTS.append(input)
     return BatchSubmitResult(request_id="req-ingest-1", batch_id="msgbatch_ingest1")
 
 
@@ -327,6 +335,10 @@ class TestTranscriptIngestionNoExperiences:
         assert "parse:TranscriptAnalysisResult" in _CALL_LOG
         # Session should be recorded with 0 counts
         assert "record_ingested_session" in _CALL_LOG
+        # Transcript analysis omits `thinking`; the shared fallback in
+        # batch_submit_and_wait must resolve it to disabled.
+        assert len(_SUBMIT_BATCH_INPUTS) == 1
+        assert _SUBMIT_BATCH_INPUTS[0].thinking == ThinkingPolicy(enabled=False)
         assert len(_RECORDED_SESSIONS) == 1
         recorded = _RECORDED_SESSIONS[0]
         assert recorded["session_id"] == "s-empty"

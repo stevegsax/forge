@@ -9,6 +9,7 @@ import pytest
 from sax_llm.client import build_thinking_param
 
 from forge.activities.planner import (
+    DEFAULT_PLANNER_MAX_TOKENS,
     assemble_planner_context,
     build_planner_system_prompt,
     build_planner_user_prompt,
@@ -139,6 +140,20 @@ class TestExecutePlannerCall:
 
         provider.build_request_params.assert_called_once()
         provider.call.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_uses_thinking_enabled_max_tokens(self) -> None:
+        """Planning is thinking-enabled (D94): adaptive thinking now competes for
+        tokens inside max_tokens, so the cap must be the explicit
+        owner-adjudicated 16384, not the old 8192 default."""
+        provider = build_mock_provider(tool_input=_TEST_PLAN.model_dump())
+        planner_input = PlannerInput(task_id="t1", system_prompt="sys", user_prompt="usr")
+
+        await execute_planner_call(planner_input, provider)
+
+        assert DEFAULT_PLANNER_MAX_TOKENS == 16384
+        call_kwargs = provider.build_request_params.call_args.kwargs
+        assert call_kwargs["max_tokens"] == DEFAULT_PLANNER_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +502,66 @@ class TestCallPlannerThinkingThreading:
             call_kwargs = provider.build_request_params.call_args
             assert call_kwargs[1].get("thinking_enabled") is True
             assert call_kwargs[1].get("effort") == "high"
+
+
+# ---------------------------------------------------------------------------
+# max_tokens truncation warning (owner-mandated token record-keeping caveat)
+# ---------------------------------------------------------------------------
+
+
+class TestCallPlannerMaxTokensWarning:
+    @pytest.mark.asyncio
+    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
+        from forge.activities.planner import call_planner
+
+        provider = build_mock_provider(
+            tool_input=_TEST_PLAN.model_dump(),
+            output_tokens=16384,
+            raw_response_json='{"stop_reason": "max_tokens"}',
+        )
+
+        with (
+            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            caplog.at_level("WARNING", logger="forge.activities.planner"),
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            planner_input = PlannerInput(task_id="t-trunc", system_prompt="sys", user_prompt="usr")
+            await call_planner(planner_input)
+
+        assert any("truncated at max_tokens" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
+        from forge.activities.planner import call_planner
+
+        provider = build_mock_provider(
+            tool_input=_TEST_PLAN.model_dump(),
+            raw_response_json='{"stop_reason": "end_turn"}',
+        )
+
+        with (
+            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            caplog.at_level("WARNING", logger="forge.activities.planner"),
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            planner_input = PlannerInput(task_id="t-ok", system_prompt="sys", user_prompt="usr")
+            await call_planner(planner_input)
+
+        assert not any("truncated at max_tokens" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,6 @@ with workflow.unsafe.imports_passed_through():
         CapabilityTier,
         ModelConfig,
         ParsedLLMResponse,
-        ThinkingPolicy,
         resolve_model,
     )
     from forge.workflow_blocks import batch_submit_and_wait
@@ -101,14 +100,13 @@ class TranscriptIngestionWorkflow:
             model_name=model_name,
         )
 
+        # Transcript analysis has no need for extended thinking; omitting
+        # `thinking` relies on the shared batch dispatch fallback (disabled
+        # by default).
         parsed: ParsedLLMResponse = await batch_submit_and_wait(
             self._batch_results,
             context,
             "TranscriptAnalysisResult",
-            # Explicit disable: ThinkingPolicy()'s bare default is enabled=True
-            # (D94), unlike the old ThinkingConfig() default — transcript
-            # analysis has no need for extended thinking.
-            thinking=ThinkingPolicy(enabled=False),
             max_tokens=4096,
         )
 

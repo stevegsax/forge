@@ -168,6 +168,23 @@ def _s3_backend():
 
 
 @pytest.fixture(autouse=True)
+def _reset_mistral_ocr_cache():
+    """Clear the shared lazily-cached MistralOcr between tests.
+
+    forge.activities._mistral caches one MistralOcr/client pair at module
+    scope (2026-07 Phase 3 code review, item 5a) so real workers reuse it
+    across poll cycles. Tests that patch ``sax_platform.ocr.MistralOcr`` /
+    ``make_mistral_client`` need a clean cache each time, or a stale instance
+    from an earlier test would shadow the freshly patched constructor.
+    """
+    from forge.activities._mistral import reset_mistral_ocr_cache
+
+    reset_mistral_ocr_cache()
+    yield
+    reset_mistral_ocr_cache()
+
+
+@pytest.fixture(autouse=True)
 def forge_ocr_s3(monkeypatch: pytest.MonkeyPatch, _s3_backend: str) -> str:
     """Point every test at the mocked OCR blob bucket via ``FORGE_OCR_S3_BUCKET``.
 

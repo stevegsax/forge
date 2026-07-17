@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum
 from typing import Any
 
@@ -294,6 +295,13 @@ class LLMStats(BaseModel):
     latency_ms: float
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    stop_reason: str | None = Field(
+        default=None,
+        description=(
+            "Provider stop_reason for the response (e.g. end_turn, max_tokens, "
+            "tool_use). None if unavailable or unparseable."
+        ),
+    )
 
 
 def build_llm_stats(result: LLMStats) -> LLMStats:
@@ -305,7 +313,31 @@ def build_llm_stats(result: LLMStats) -> LLMStats:
         latency_ms=result.latency_ms,
         cache_creation_input_tokens=result.cache_creation_input_tokens,
         cache_read_input_tokens=result.cache_read_input_tokens,
+        stop_reason=result.stop_reason,
     )
+
+
+def extract_stop_reason(raw_response_json: str | None) -> str | None:
+    """Pull ``stop_reason`` out of a raw Anthropic Message JSON string.
+
+    Both the sync and batch response bodies are a serialized
+    ``anthropic.types.Message`` (sax-llm's ``ProviderResponse.raw_response_json``
+    on every path — batch entries wrap ``entry.result.message.model_dump_json()``,
+    sync wraps ``message.model_dump_json()``), so this covers both without any
+    dependency on a provider-specific typed field. Pure: returns None rather than
+    raising on missing/malformed input, since a stop_reason miss should never
+    fail an LLM call whose structured output already parsed successfully.
+    """
+    if not raw_response_json:
+        return None
+    try:
+        data = json.loads(raw_response_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    stop_reason = data.get("stop_reason")
+    return stop_reason if isinstance(stop_reason, str) else None
 
 
 # ---------------------------------------------------------------------------
@@ -1061,6 +1093,13 @@ class ParseResponseInput(BaseModel):
     provider: str = Field(default="anthropic", description="LLM provider name for parsing.")
     log_messages: bool = False
     worktree_path: str = ""
+    max_tokens: int = Field(
+        default=4096,
+        description=(
+            "The max_tokens cap the originating submit requested — carried through "
+            "so the parse activity can name it in the max_tokens truncation warning."
+        ),
+    )
 
 
 class ParsedLLMResponse(LLMStats):

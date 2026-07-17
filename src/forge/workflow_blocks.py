@@ -41,6 +41,7 @@ with workflow.unsafe.imports_passed_through():
 
 __all__ = [
     "BATCH_WAIT_FAILURES",
+    "THINKING_MAX_TOKENS",
     "batch_submit_and_wait",
     "cleanup_worktree_after_failure",
     "conflict_resolution_dispatch",
@@ -48,6 +49,16 @@ __all__ = [
     "persist_block",
     "remove_worktree",
 ]
+
+# Explicit cap for the three thinking-enabled batch call paths (planner,
+# sanity-check, conflict-resolution): adaptive thinking now competes for
+# tokens inside max_tokens instead of riding on top of it, so the old 4096
+# default batch-lane cap left too little room for both the thinking budget
+# and the structured output it must still emit. Sized for adaptive thinking +
+# structured output on the batch lane; tokens-vs-cap telemetry decides future
+# tuning (owner-adjudicated, 2026-07 Phase 3 code review). The generation
+# path stays thinking-disabled and keeps its own (lower) cap untouched.
+THINKING_MAX_TOKENS = 16384
 
 # A batch wait fails in exactly two shapes, and both must leave a terminal run
 # row and no orphaned worktree instead of crashing out of the workflow (T1.6b):
@@ -117,7 +128,11 @@ async def batch_submit_and_wait(
             context=context,
             output_type_name=output_type_name or "",
             workflow_id=workflow.info().workflow_id,
-            thinking=thinking or ThinkingPolicy(),
+            # Invariant: batch calls think only when a caller explicitly opts in.
+            # ThinkingPolicy()'s bare default is enabled=True (D94), unlike the
+            # old ThinkingConfig() default, so a missing ``thinking`` argument
+            # must resolve to disabled here, not to the type's own default.
+            thinking=thinking if thinking is not None else ThinkingPolicy(enabled=False),
             max_tokens=max_tokens,
         ),
         start_to_close_timeout=submit_timeout,
@@ -159,6 +174,7 @@ async def batch_submit_and_wait(
             task_id=context.task_id,
             log_messages=context.log_messages,
             worktree_path=context.worktree_path,
+            max_tokens=max_tokens,
         ),
         start_to_close_timeout=parse_timeout,
         retry_policy=_LOCAL_RETRY,
@@ -188,13 +204,9 @@ async def generation_dispatch(
             result_type=LLMCallResult,
         )
         return sync_result
-    # Generation stays thinking-disabled, as today — but explicit now: unlike
-    # the old ThinkingConfig(), ThinkingPolicy()'s bare default is
-    # enabled=True (D94), so omitting `thinking` here would silently turn
-    # generation-path thinking on.
-    parsed = await batch_submit_and_wait(
-        batch_results, context, "LLMResponse", thinking=ThinkingPolicy(enabled=False)
-    )
+    # Generation stays thinking-disabled, as today. Omitting `thinking` relies
+    # on batch_submit_and_wait's shared fallback (disabled by default).
+    parsed = await batch_submit_and_wait(batch_results, context, "LLMResponse")
     return LLMCallResult(
         task_id=context.task_id,
         response=LLMResponse.model_validate_json(parsed.parsed_json),
@@ -204,6 +216,7 @@ async def generation_dispatch(
         latency_ms=parsed.latency_ms,
         cache_creation_input_tokens=parsed.cache_creation_input_tokens,
         cache_read_input_tokens=parsed.cache_read_input_tokens,
+        stop_reason=parsed.stop_reason,
     )
 
 
@@ -241,6 +254,7 @@ async def conflict_resolution_dispatch(
         context,
         "ConflictResolutionResponse",
         thinking=call_input.thinking,
+        max_tokens=THINKING_MAX_TOKENS,
     )
     response = ConflictResolutionResponse.model_validate_json(parsed.parsed_json)
     return ConflictResolutionCallResult(
@@ -253,6 +267,7 @@ async def conflict_resolution_dispatch(
         latency_ms=parsed.latency_ms,
         cache_creation_input_tokens=parsed.cache_creation_input_tokens,
         cache_read_input_tokens=parsed.cache_read_input_tokens,
+        stop_reason=parsed.stop_reason,
     )
 
 

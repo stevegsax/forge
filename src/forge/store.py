@@ -93,6 +93,7 @@ class Interaction(Base):
     context_stats_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     cache_creation_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     cache_read_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    stop_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         default=lambda: datetime.now(UTC),

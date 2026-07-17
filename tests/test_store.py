@@ -732,3 +732,50 @@ class TestMigration003:
         assert len(rows) == 1
         assert rows[0]["cache_creation_input_tokens"] == 0
         assert rows[0]["cache_read_input_tokens"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Alembic revision 003 — nullable stop_reason column
+# ---------------------------------------------------------------------------
+
+
+class TestStopReasonColumn:
+    def test_column_exists_and_nullable_by_default(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        engine = _migrate(db_path)
+
+        context = _make_context()
+        result = _make_llm_result()
+        data = build_interaction_dict(
+            task_id="test-task",
+            step_id=None,
+            sub_task_id=None,
+            role="llm",
+            context=context,
+            llm_result=result,
+        )
+        save_interaction(engine, **data)
+
+        rows = get_interactions(engine, "test-task")
+        assert len(rows) == 1
+        assert rows[0]["stop_reason"] is None
+
+    def test_stop_reason_round_trips(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        engine = _migrate(db_path)
+
+        context = _make_context()
+        result = _make_llm_result()
+        data = build_interaction_dict(
+            task_id="test-task",
+            step_id=None,
+            sub_task_id=None,
+            role="llm",
+            context=context,
+            llm_result=result,
+        )
+        data["stop_reason"] = "max_tokens"
+        save_interaction(engine, **data)
+
+        rows = get_interactions(engine, "test-task")
+        assert rows[0]["stop_reason"] == "max_tokens"

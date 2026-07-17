@@ -202,6 +202,56 @@ def test_runs_rekey_records_reruns_on_postgres(
         engine.dispose()
 
 
+def test_interactions_stop_reason_column_on_postgres(postgres_url: str) -> None:
+    """Migration 003 adds a nullable ``stop_reason`` TEXT column to interactions.
+
+    Exercises the real Postgres column (not SQLite) and the round-trip through
+    ``save_interaction``/``get_interactions`` — the value both a truncated
+    (``max_tokens``) and a normal (``end_turn``) response would carry.
+    """
+    import sqlalchemy as sa
+
+    from forge.store import get_interactions, run_migrations, save_interaction
+
+    run_migrations(postgres_url)
+    engine = sa.create_engine(postgres_url)
+    try:
+        cols = {c["name"]: c for c in sa.inspect(engine).get_columns("interactions")}
+        assert "stop_reason" in cols
+        assert cols["stop_reason"]["nullable"] is True
+
+        base_row = {
+            "task_id": "stop-reason-task",
+            "role": "llm",
+            "system_prompt": "sys",
+            "user_prompt": "usr",
+            "model_name": "claude-sonnet-4-5-20250929",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "latency_ms": 12.0,
+        }
+        save_interaction(
+            engine,
+            idempotency_key="stop-reason-1",
+            stop_reason="max_tokens",
+            **base_row,
+        )
+        # Omitting stop_reason entirely (pre-migration-shaped caller) must not
+        # fail the insert — the column is nullable with no backfill.
+        save_interaction(
+            engine,
+            idempotency_key="stop-reason-2",
+            **{**base_row, "task_id": "stop-reason-task-2"},
+        )
+
+        rows = {r["idempotency_key"]: r for r in get_interactions(engine, "stop-reason-task")}
+        assert rows["stop-reason-1"]["stop_reason"] == "max_tokens"
+        rows2 = {r["idempotency_key"]: r for r in get_interactions(engine, "stop-reason-task-2")}
+        assert rows2["stop-reason-2"]["stop_reason"] is None
+    finally:
+        engine.dispose()
+
+
 def test_get_playbooks_by_tags_on_postgres(postgres_url: str) -> None:
     """Tag-filtered playbook queries must run on Postgres (context assembly path).
 

@@ -26,6 +26,7 @@ from forge.models import (
     ExtractionResult,
     FetchExtractionInput,
     SaveExtractionInput,
+    extract_stop_reason,
 )
 
 if TYPE_CHECKING:
@@ -225,6 +226,7 @@ async def execute_extraction_call(
         latency_ms=elapsed_ms,
         cache_creation_input_tokens=result.cache_creation_input_tokens,
         cache_read_input_tokens=result.cache_read_input_tokens,
+        stop_reason=extract_stop_reason(result.raw_response_json),
     )
 
 
@@ -282,6 +284,13 @@ async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
         provider = get_provider(input.model_name or DEFAULT_MODEL)
         async with heartbeat_during():
             result = await execute_extraction_call(input, provider)
+        if result.stop_reason == "max_tokens":
+            logger.warning(
+                "Extraction call truncated at max_tokens: model=%s max_tokens=%d output_tokens=%d",
+                result.model_name,
+                DEFAULT_EXTRACTION_MAX_TOKENS,
+                result.output_tokens,
+            )
 
         span.set_attributes(
             llm_call_attributes(

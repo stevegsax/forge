@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from forge_contracts.constants import BATCH_RESULT_SIGNAL
 from forge_contracts.models import dump_batch_result_payload
-from sax_llm.models import BatchPollResult, BatchPollStatus
+from sax_llm.models import BatchPollResult, BatchPollStatus, BatchResultEntry, ExtractedImage
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
@@ -30,6 +30,7 @@ from forge.models import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sax_platform.ocr import BatchPollResult as _SaxPlatformBatchPollResult
     from temporalio.client import Client
 
 logger = logging.getLogger(__name__)
@@ -215,25 +216,68 @@ async def execute_poll_batch_results(
 async def _poll_batch_for(provider_name: str, batch_id: str) -> BatchPollResult:
     """Poll ``batch_id`` through the provider for ``provider_name``.
 
-    Mistral routes through ``sax_platform.ocr.MistralOcr`` instead of sax_llm's
-    registry (T3.3: mistral's OCR capability moved to the platform library;
-    sax_llm carries no provider entry for it anymore). MistralOcr's poll-result
-    types are field-for-field identical to sax_llm.models' (see the
-    sax_platform.ocr module docstring), so round-tripping status/entries/images
-    through model_dump()/model_validate() is lossless and keeps every branch in
+    Mistral routes through the shared lazily-cached ``MistralOcr`` resolver
+    (``forge.activities._mistral``) instead of sax_llm's registry (T3.3:
+    mistral's OCR capability moved to the platform library; sax_llm carries no
+    provider entry for it anymore) — one client is built once per worker
+    process and reused across poll cycles, not rebuilt every cycle.
+    MistralOcr's poll-result types are field-for-field identical to
+    sax_llm.models' (see the sax_platform.ocr module docstring), so
+    constructing sax_llm's BatchPollResult/entries directly from the
+    sax_platform objects' attributes is lossless and keeps every branch in
     execute_poll_batch_results provider-agnostic — it only ever sees
     sax_llm.models.BatchPollResult, regardless of which provider answered.
     """
     if provider_name == "mistral":
-        from sax_platform.ocr import MistralOcr, make_mistral_client
+        from forge.activities._mistral import get_mistral_ocr
 
-        raw_result = await MistralOcr(make_mistral_client()).poll_batch(batch_id)
-        return BatchPollResult.model_validate(raw_result.model_dump(mode="json"))
+        raw_result = await get_mistral_ocr().poll_batch(batch_id)
+        return _sax_platform_poll_result_to_sax_llm(raw_result)
 
     from sax_llm import get_provider_by_name
 
     provider = get_provider_by_name(provider_name)
     return await provider.poll_batch(batch_id)
+
+
+def _sax_platform_poll_result_to_sax_llm(
+    raw_result: _SaxPlatformBatchPollResult,
+) -> BatchPollResult:
+    """Build sax_llm's ``BatchPollResult`` directly from a sax_platform.ocr one.
+
+    Replaces a ``model_dump(mode="json")``/``model_validate`` round-trip, which
+    serialized and reparsed every base64 image payload twice per poll cycle
+    (2026-07 Phase 3 code review, item 5b). The two schemas are field-for-field
+    identical (see the sax_platform.ocr module docstring and ``_poll_batch_for``'s
+    own docstring), so this constructs sax_llm's models directly from the
+    sax_platform objects' already-validated attributes — behavior identical,
+    one copy of each payload instead of two.
+    """
+    return BatchPollResult(
+        status=BatchPollStatus(raw_result.status.value),
+        entries=[
+            BatchResultEntry(
+                custom_id=entry.custom_id,
+                succeeded=entry.succeeded,
+                raw_response_json=entry.raw_response_json,
+                error=entry.error,
+                extracted_images=[
+                    ExtractedImage(
+                        original_image_id=img.original_image_id,
+                        page_index=img.page_index,
+                        image_base64=img.image_base64,
+                        mime_type=img.mime_type,
+                        top_left_x=img.top_left_x,
+                        top_left_y=img.top_left_y,
+                        bottom_right_x=img.bottom_right_x,
+                        bottom_right_y=img.bottom_right_y,
+                    )
+                    for img in entry.extracted_images
+                ],
+            )
+            for entry in raw_result.entries
+        ],
+    )
 
 
 async def _deliver_signal(

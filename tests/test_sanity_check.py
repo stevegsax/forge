@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from forge.activities.sanity_check import (
+    DEFAULT_SANITY_CHECK_MAX_TOKENS,
     build_sanity_check_system_prompt,
     build_sanity_check_user_prompt,
     build_step_digest,
@@ -222,3 +223,109 @@ class TestExecuteSanityCheckCall:
         assert result.response.revised_steps is not None
         assert len(result.response.revised_steps) == 1
         assert result.response.revised_steps[0].step_id == "new-1"
+
+    @pytest.mark.asyncio
+    async def test_uses_thinking_enabled_max_tokens(self) -> None:
+        """Sanity-check is thinking-enabled (D94): adaptive thinking now competes
+        for tokens inside max_tokens, so the cap must be the explicit
+        owner-adjudicated 16384, not the old 4096 default."""
+        mock_response = SanityCheckResponse(
+            verdict=SanityCheckVerdict.CONTINUE,
+            explanation="Plan looks good.",
+        )
+        provider = build_mock_provider(tool_input=mock_response.model_dump())
+        input_data = SanityCheckInput(
+            task_id="test-task",
+            system_prompt="system",
+            user_prompt="user",
+        )
+
+        await execute_sanity_check_call(input_data, provider)
+
+        assert DEFAULT_SANITY_CHECK_MAX_TOKENS == 16384
+        call_kwargs = provider.build_request_params.call_args.kwargs
+        assert call_kwargs["max_tokens"] == DEFAULT_SANITY_CHECK_MAX_TOKENS
+
+    @pytest.mark.asyncio
+    async def test_extracts_stop_reason(self) -> None:
+        mock_response = SanityCheckResponse(
+            verdict=SanityCheckVerdict.CONTINUE,
+            explanation="Plan looks good.",
+        )
+        provider = build_mock_provider(
+            tool_input=mock_response.model_dump(),
+            raw_response_json='{"stop_reason": "end_turn"}',
+        )
+        input_data = SanityCheckInput(task_id="t", system_prompt="s", user_prompt="u")
+
+        result = await execute_sanity_check_call(input_data, provider)
+
+        assert result.stop_reason == "end_turn"
+
+
+# ---------------------------------------------------------------------------
+# max_tokens truncation warning (owner-mandated token record-keeping caveat)
+# ---------------------------------------------------------------------------
+
+
+class TestCallSanityCheckMaxTokensWarning:
+    @pytest.mark.asyncio
+    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from forge.activities.sanity_check import call_sanity_check
+
+        mock_response = SanityCheckResponse(
+            verdict=SanityCheckVerdict.CONTINUE, explanation="partial"
+        )
+        provider = build_mock_provider(
+            tool_input=mock_response.model_dump(),
+            output_tokens=16384,
+            raw_response_json='{"stop_reason": "max_tokens"}',
+        )
+
+        with (
+            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            caplog.at_level("WARNING", logger="forge.activities.sanity_check"),
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            sanity_input = SanityCheckInput(task_id="t-trunc", system_prompt="s", user_prompt="u")
+            await call_sanity_check(sanity_input)
+
+        assert any("truncated at max_tokens" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from forge.activities.sanity_check import call_sanity_check
+
+        mock_response = SanityCheckResponse(verdict=SanityCheckVerdict.CONTINUE, explanation="ok")
+        provider = build_mock_provider(
+            tool_input=mock_response.model_dump(),
+            raw_response_json='{"stop_reason": "end_turn"}',
+        )
+
+        with (
+            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            caplog.at_level("WARNING", logger="forge.activities.sanity_check"),
+        ):
+            mock_span = MagicMock()
+            mock_span.__enter__ = MagicMock(return_value=mock_span)
+            mock_span.__exit__ = MagicMock(return_value=False)
+            mock_tracer = MagicMock()
+            mock_tracer.start_as_current_span.return_value = mock_span
+            mock_get_tracer.return_value = mock_tracer
+
+            sanity_input = SanityCheckInput(task_id="t-ok", system_prompt="s", user_prompt="u")
+            await call_sanity_check(sanity_input)
+
+        assert not any("truncated at max_tokens" in r.message for r in caplog.records)

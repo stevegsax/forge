@@ -52,7 +52,7 @@ class TestModelConfigFrozen:
     def test_assigning_a_field_raises(self) -> None:
         config = ModelConfig()
         with pytest.raises(ValidationError, match="frozen"):
-            config.reasoning = "anthropic:claude-other"  # type: ignore[misc]
+            config.reasoning = "anthropic:claude-other"
 
 
 class TestThinkingPolicy:
@@ -69,7 +69,7 @@ class TestThinkingPolicy:
     def test_frozen(self) -> None:
         policy = ThinkingPolicy()
         with pytest.raises(ValidationError, match="frozen"):
-            policy.enabled = False  # type: ignore[misc]
+            policy.enabled = False
 
     @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
     def test_accepts_every_valid_effort(self, effort: str) -> None:
@@ -79,6 +79,63 @@ class TestThinkingPolicy:
     def test_rejects_invalid_effort(self) -> None:
         with pytest.raises(ValidationError):
             ThinkingPolicy(effort="ultra")  # type: ignore[arg-type]
+
+
+class TestThinkingPolicyLegacyBudgetTokensCompat:
+    """Regression tests for the T3.2 in-flight-payload compatibility shim.
+
+    Pre-T3.2 serialized payloads carried forge's old `ThinkingConfig` shape
+    — `{"budget_tokens": N, "effort": ...}` — with no `enabled` key. Without
+    the shim, that shape deserializes with `budget_tokens` silently dropped
+    (unknown field to this model) and `enabled` defaulting to True — flipping
+    thinking back ON for an in-flight workflow that had disabled it via
+    `budget_tokens: 0`.
+    """
+
+    def test_zero_budget_tokens_disables(self) -> None:
+        policy = ThinkingPolicy.model_validate({"budget_tokens": 0})
+        assert policy.enabled is False
+
+    def test_positive_budget_tokens_enables(self) -> None:
+        policy = ThinkingPolicy.model_validate({"budget_tokens": 10000})
+        assert policy.enabled is True
+        # effort default is preserved — the legacy payload said nothing
+        # about it.
+        assert policy.effort == "high"
+
+    def test_explicit_enabled_wins_over_budget_tokens(self) -> None:
+        """An explicit `enabled` in the payload always wins over whatever
+        the legacy `budget_tokens` value would have implied."""
+        disabled_but_positive_budget = ThinkingPolicy.model_validate(
+            {"budget_tokens": 10000, "enabled": False}
+        )
+        assert disabled_but_positive_budget.enabled is False
+
+        enabled_but_zero_budget = ThinkingPolicy.model_validate(
+            {"budget_tokens": 0, "enabled": True}
+        )
+        assert enabled_but_zero_budget.enabled is True
+
+    def test_budget_tokens_key_does_not_reach_the_model(self) -> None:
+        policy = ThinkingPolicy.model_validate({"budget_tokens": 5000})
+        assert "budget_tokens" not in policy.model_dump()
+
+    def test_normal_new_shape_payload_unaffected(self) -> None:
+        """A payload with no `budget_tokens` at all — the current shape —
+        is unaffected by the shim."""
+        policy = ThinkingPolicy.model_validate({"enabled": False, "effort": "low"})
+        assert policy.enabled is False
+        assert policy.effort == "low"
+
+    def test_defaults_still_apply_with_no_budget_tokens_and_no_enabled(self) -> None:
+        policy = ThinkingPolicy.model_validate({})
+        assert policy.enabled is True
+        assert policy.effort == "high"
+
+    def test_migrated_instance_is_still_frozen(self) -> None:
+        policy = ThinkingPolicy.model_validate({"budget_tokens": 0})
+        with pytest.raises(ValidationError, match="frozen"):
+            policy.enabled = True
 
 
 class TestSplitProvider:

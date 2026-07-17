@@ -5,14 +5,19 @@ get_anthropic_client provides client management.
 
 Design follows Function Core / Imperative Shell:
 
-- Pure functions: build_tool_definition, build_system_param, build_thinking_param,
+- Pure functions: build_tool_definition, build_system_param,
   build_messages_params, extract_tool_result, extract_usage
 - Imperative shell: get_anthropic_client
+- build_thinking_param is pure in its return value (same inputs always
+  produce the same output) but does a shell-style side effect on the side:
+  a one-time logger.warning per pre-adaptive model name it's asked to
+  build a shape for. See its docstring.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +25,22 @@ if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
     from anthropic.types import Message
     from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+# Name fragments identifying pre-adaptive-thinking model generations. Not a
+# model-generation database — a short, deliberately incomplete list of
+# fragments seen in pins that predate D94's adaptive/disabled thinking
+# shapes: Claude 4.5/4.6 point releases and the Claude 3 family. Extend only
+# when a new pre-adaptive generation is actually seen in a pin; the current
+# and future adaptive generations (e.g. "claude-sonnet-5", "claude-opus-4-8")
+# must never match.
+PRE_ADAPTIVE_HINTS: tuple[str, ...] = ("-4-5", "-4-6", "claude-3")
+
+# Models we've already warned about, so a hot path calling build_thinking_param
+# repeatedly for the same pin doesn't spam logs. Shell-side cache, deliberately
+# module-level and mutable — mirrors the `_client` cache below.
+_warned_pre_adaptive_models: set[str] = set()
 
 
 def _snake_case(name: str) -> str:
@@ -73,11 +94,26 @@ def build_thinking_param(
 ) -> dict[str, Any] | None:
     """Build the thinking parameter for messages.create.
 
-    Post-D94, the model registry pins adaptive-generation Anthropic models
-    only; the pre-4.6 ``budget_tokens``-style thinking param those models
-    used is unsupported by the API (a 400) and is never emitted here.
-    Returns None for Haiku and non-Anthropic models, which support neither
-    the adaptive nor the disabled shape.
+    Supported-generation contract: this function only knows how to speak
+    for adaptive-thinking-generation Anthropic models (D94) — it emits
+    either ``{"type": "adaptive"}`` or the explicit ``{"type": "disabled"}``
+    shape, and nothing else. Those are the *only* two thinking shapes it
+    knows how to build. It returns None for Haiku and for non-Anthropic
+    models, which support neither shape.
+
+    For every other name containing "opus", "sonnet", or "claude", the
+    function assumes the adaptive/disabled contract applies and returns one
+    of those two shapes unconditionally — it does not maintain a database of
+    model generations to verify that assumption. Pre-adaptive Anthropic
+    pins (Claude 3.x; the "-4-5"/"-4-6" point releases) reject both shapes
+    with a 400: D94 declared those pins unsupported, but a stale pin can
+    still reach this function (e.g. a config that wasn't updated). For any
+    model name matching a fragment in `PRE_ADAPTIVE_HINTS`, this function
+    logs a one-time `logger.warning` (per distinct model name, across the
+    process lifetime) flagging that the generation may reject these shapes
+    and that pre-T3.2 pins are unsupported — then returns the shape
+    unchanged. Behavior is otherwise identical to before this warning was
+    added; this is a diagnostic, not a compatibility layer.
 
     For every other (adaptive-generation Anthropic) model, the "thinking"
     key is always populated in the result — never omitted. Omitting the key
@@ -89,6 +125,16 @@ def build_thinking_param(
         return None
 
     if "opus" in model_name or "sonnet" in model_name or "claude" in model_name:
+        if model_name not in _warned_pre_adaptive_models and any(
+            hint in model_name for hint in PRE_ADAPTIVE_HINTS
+        ):
+            _warned_pre_adaptive_models.add(model_name)
+            logger.warning(
+                "build_thinking_param: model %r matches a pre-adaptive-generation "
+                "name fragment and may reject the adaptive/disabled thinking shapes "
+                "this function builds (D94). Pre-T3.2 model pins are unsupported.",
+                model_name,
+            )
         return {"type": "adaptive"} if enabled else {"type": "disabled"}
 
     return None
