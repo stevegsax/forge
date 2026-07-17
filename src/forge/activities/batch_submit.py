@@ -34,8 +34,23 @@ from forge.models import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Any, Protocol
 
     from sax_llm.protocol import LLMProvider
+
+    class _BlobSubmitProvider(Protocol):
+        """Structural contract for the opaque-blob submit SPI.
+
+        Narrower than sax_llm.protocol.LLMProvider (the sync-mode / chat
+        members are omitted) so sax_platform.ocr.MistralOcr — which
+        implements OCR-only methods, not the full LLMProvider protocol —
+        satisfies it too (T3.3: mistral moved out of sax_llm's registry).
+        """
+
+        async def submit_batch(
+            self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
+        ) -> str: ...
+
 
 # Shadow fallback for a missing context.model_name (see forge.activities.llm).
 DEFAULT_MODEL = resolve_model(CapabilityTier.GENERATION, ModelConfig())
@@ -133,7 +148,7 @@ async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
 
 async def execute_submit_batch_blob(
     input: BatchSubmitSpiInput,
-    provider: LLMProvider,
+    provider: _BlobSubmitProvider,
     fetch_blob: Callable[[str], bytes],
 ) -> BatchSubmitResult:
     """Fetch the pre-built request blob and submit it verbatim.
@@ -156,6 +171,24 @@ async def execute_submit_batch_blob(
     )
 
 
+def _resolve_blob_submit_provider(provider_name: str) -> _BlobSubmitProvider:
+    """Resolve the batch-submit provider for the opaque-blob SPI.
+
+    Mistral routes through ``sax_platform.ocr.MistralOcr`` — sax_llm carries no
+    Mistral provider (T3.3 moved OCR's Mistral capability to the platform
+    library and deleted ``sax_llm.mistral`` entirely). Every other provider
+    name still resolves through sax_llm's registry, unchanged.
+    """
+    if provider_name == "mistral":
+        from sax_platform.ocr import MistralOcr, make_mistral_client
+
+        return MistralOcr(make_mistral_client())
+
+    from sax_llm import get_provider_by_name
+
+    return get_provider_by_name(provider_name)
+
+
 @activity.defn
 async def submit_batch_blob(input: BatchSubmitSpiInput) -> BatchSubmitResult:
     """Activity: submit an opaque pre-built request blob to the provider.
@@ -165,13 +198,12 @@ async def submit_batch_blob(input: BatchSubmitSpiInput) -> BatchSubmitResult:
     own ``submit_batch_request`` builder.
     """
     from forge_contracts import s3_blobs
-    from sax_llm import get_provider_by_name
 
     from forge.tracing import get_tracer
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.submit_batch_blob") as span:
-        provider = get_provider_by_name(input.provider)
+        provider = _resolve_blob_submit_provider(input.provider)
         result = await execute_submit_batch_blob(input, provider, s3_blobs.get)
         span.set_attributes(
             {

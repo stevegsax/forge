@@ -62,8 +62,8 @@ def parse_model_id(model_id: str) -> tuple[str, str]:
     Examples:
         >>> parse_model_id("anthropic:claude-sonnet-4-5-20250929")
         ('anthropic', 'claude-sonnet-4-5-20250929')
-        >>> parse_model_id("mistral:mistral-large-latest")
-        ('mistral', 'mistral-large-latest')
+        >>> parse_model_id("openai:gpt-4o")
+        ('openai', 'gpt-4o')
         >>> parse_model_id("claude-sonnet-4-5-20250929")
         ('anthropic', 'claude-sonnet-4-5-20250929')
     """
@@ -87,10 +87,6 @@ def get_provider_by_name(provider_name: str) -> LLMProvider:
         from sax_llm.anthropic import AnthropicProvider
 
         instance: LLMProvider = AnthropicProvider()
-    elif provider_name == "mistral":
-        from sax_llm.mistral import MistralProvider
-
-        instance = MistralProvider()
     else:
         msg = f"Unknown LLM provider: {provider_name!r}"
         raise ValueError(msg)

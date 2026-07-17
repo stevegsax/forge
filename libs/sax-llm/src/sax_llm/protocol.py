@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 class LLMProvider(Protocol):
     """Protocol for LLM provider implementations.
 
-    Each provider wraps a specific LLM API (Anthropic, Mistral, etc.)
-    behind a common interface for both sync and batch modes.
+    Each provider wraps a specific LLM API (currently Anthropic) behind a
+    common interface for both sync and batch modes.
     """
 
     # --- Sync mode ---

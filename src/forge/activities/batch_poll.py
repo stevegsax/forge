@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from forge_contracts.constants import BATCH_RESULT_SIGNAL
 from forge_contracts.models import dump_batch_result_payload
-from sax_llm.models import BatchPollStatus
+from sax_llm.models import BatchPollResult, BatchPollStatus
 from temporalio import activity
 
 from forge.activities._heartbeat import heartbeat_during
@@ -97,8 +97,6 @@ async def execute_poll_batch_results(
         put_result_blob: Uploads ``(custom_id, bytes) -> s3_key`` for pointer delivery.
         inline_threshold: Max inline payload size (bytes) before switching to a pointer.
     """
-    from sax_llm import get_provider_by_name
-
     batches_checked = 0
     signals_sent = 0
     errors_found = 0
@@ -112,10 +110,8 @@ async def execute_poll_batch_results(
 
         batches_checked += 1
 
-        provider = get_provider_by_name(provider_name)
-
         try:
-            poll_result = await provider.poll_batch(batch_id)
+            poll_result = await _poll_batch_for(provider_name, batch_id)
         except Exception:
             logger.warning("Failed to poll batch %s", batch_id, exc_info=True)
             errors_found += 1
@@ -214,6 +210,30 @@ async def execute_poll_batch_results(
         signals_sent=signals_sent,
         errors_found=errors_found,
     )
+
+
+async def _poll_batch_for(provider_name: str, batch_id: str) -> BatchPollResult:
+    """Poll ``batch_id`` through the provider for ``provider_name``.
+
+    Mistral routes through ``sax_platform.ocr.MistralOcr`` instead of sax_llm's
+    registry (T3.3: mistral's OCR capability moved to the platform library;
+    sax_llm carries no provider entry for it anymore). MistralOcr's poll-result
+    types are field-for-field identical to sax_llm.models' (see the
+    sax_platform.ocr module docstring), so round-tripping status/entries/images
+    through model_dump()/model_validate() is lossless and keeps every branch in
+    execute_poll_batch_results provider-agnostic — it only ever sees
+    sax_llm.models.BatchPollResult, regardless of which provider answered.
+    """
+    if provider_name == "mistral":
+        from sax_platform.ocr import MistralOcr, make_mistral_client
+
+        raw_result = await MistralOcr(make_mistral_client()).poll_batch(batch_id)
+        return BatchPollResult.model_validate(raw_result.model_dump(mode="json"))
+
+    from sax_llm import get_provider_by_name
+
+    provider = get_provider_by_name(provider_name)
+    return await provider.poll_batch(batch_id)
 
 
 async def _deliver_signal(

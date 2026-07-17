@@ -1240,6 +1240,7 @@ dependencies = [
     { name = "psycopg2-binary" },
     { name = "pydantic" },
     { name = "pymupdf" },
+    { name = "sax-platform" },
     { name = "sqlalchemy" },
     { name = "temporalio" },
 ]
@@ -1263,6 +1264,7 @@ requires-dist = [
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pymupdf", specifier = ">=1.27.2" },
+    { name = "sax-platform", editable = "libs/sax-platform" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.9.0" },
 ]
@@ -1953,7 +1955,6 @@ version = "0.1.2"
 source = { editable = "libs/sax-llm" }
 dependencies = [
     { name = "anthropic" },
-    { name = "mistralai" },
     { name = "pydantic" },
 ]
 
@@ -1968,7 +1969,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40.0" },
-    { name = "mistralai", specifier = ">=1.0.0,<2" },
     { name = "pydantic", specifier = ">=2.10.0" },
 ]
 
@@ -1986,6 +1986,7 @@ version = "0.1.0"
 source = { editable = "libs/sax-platform" }
 dependencies = [
     { name = "anthropic" },
+    { name = "mistralai" },
     { name = "pydantic" },
 ]
 
@@ -1999,6 +2000,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40.0" },
+    { name = "mistralai", specifier = ">=1.0.0,<2" },
     { name = "pydantic", specifier = ">=2.10.0" },
 ]
 
