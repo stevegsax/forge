@@ -13,7 +13,8 @@
 # applies (workspace command discipline — see CLAUDE.md).
 
 .PHONY: help lint typecheck lint-imports test gates \
-	stack-up stack-down stack-logs stack-psql db-migrate
+	stack-up stack-down stack-logs stack-psql db-migrate \
+	workers-restart workers-status
 
 lint:
 	uv run ruff check .
@@ -72,6 +73,10 @@ help:
 	@echo "  make db-migrate   apply Forge's Alembic migrations (needs FORGE_DB_URL)"
 	@echo "  Temporal UI: http://localhost:$${FORGE_TEMPORAL_UI_PORT:-8233}"
 	@echo "  MinIO console: http://localhost:$${FORGE_MINIO_CONSOLE_PORT:-9003} (user/pass: forge / forge-minio-secret)"
+	@echo ""
+	@echo "Workers (launchd-supervised; SIGTERM drains gracefully, KeepAlive restarts)"
+	@echo "  make workers-restart   signal forge/ocr/pbook workers; launchd relaunches from disk"
+	@echo "  make workers-status    list running worker processes"
 
 stack-up:
 	@podman machine inspect --format '{{.State}}' 2>/dev/null | grep -q running \
@@ -93,3 +98,14 @@ stack-psql:
 # entry point the worker uses (forge.store.run_migrations against FORGE_DB_URL).
 db-migrate:
 	uv run python -c "from forge.store import run_migrations, get_store_url; run_migrations(get_store_url())"
+
+# Every launchd-supervised worker now drains gracefully on SIGTERM (exit 0)
+# instead of dying on Python's default handler — launchd's unconditional
+# KeepAlive then relaunches it from whatever code is on disk. Leading `-`
+# so an absent worker (e.g. pbook, which is opt-in) doesn't fail the target.
+workers-restart:  # signal all workers; launchd KeepAlive restarts them on current on-disk code
+	-pkill -TERM -f "uv run forge worker"
+	-pkill -TERM -f "uv run --package ocr ocr worker"
+	-pkill -TERM -f "uv run pbook worker"
+workers-status:
+	-pgrep -fl "uv run forge worker|uv run --package ocr ocr worker|uv run pbook worker"
