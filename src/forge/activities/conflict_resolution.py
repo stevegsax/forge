@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sax_llm.models import text_messages
 from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
@@ -42,12 +41,11 @@ from forge.models import (
     ModelConfig,
     SubTaskResult,
     TransitionSignal,
-    extract_stop_reason,
     resolve_model,
 )
 
 if TYPE_CHECKING:
-    from sax_llm.protocol import LLMProvider
+    from sax_platform.llm import AnthropicLLM
 
 logger = logging.getLogger(__name__)
 
@@ -233,51 +231,60 @@ def build_conflict_resolution_user_prompt(conflict_count: int) -> str:
 
 async def execute_conflict_resolution_call(
     input: ConflictResolutionCallInput,
-    provider: LLMProvider,
+    llm: AnthropicLLM,
 ) -> ConflictResolutionCallResult:
-    """Call the LLM provider for conflict resolution and extract structured results.
+    """Call the LLM for conflict resolution and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock provider.
+    Separated from the imperative shell so tests can inject a stub client.
     """
-    from sax_llm import parse_model_id
+    from sax_platform.llm.tiers import split_provider
 
     full_model = input.model_name or _DEFAULT_CONFLICT_RESOLUTION_MODEL
-    _, model = parse_model_id(full_model)
+    _, model = split_provider(full_model)
     start = time.monotonic()
 
-    params = provider.build_request_params(
-        messages=text_messages(input.system_prompt, input.user_prompt),
+    completion = await llm.complete(
+        [{"role": "user", "content": input.user_prompt}],
         output_type=ConflictResolutionResponse,
         model=model,
         max_tokens=DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
-        thinking_enabled=input.thinking.enabled,
-        effort=input.thinking.effort,
+        system=input.system_prompt,
+        thinking=input.thinking,
     )
-    result = await provider.call(params)
 
     if input.log_messages and input.worktree_path:
-        request_json = json.dumps(params, indent=2, default=str)
+        request_json = json.dumps(
+            {
+                "model": model,
+                "max_tokens": DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
+                "system": input.system_prompt,
+                "user_prompt": input.user_prompt,
+                "thinking": input.thinking.model_dump(),
+            },
+            indent=2,
+            default=str,
+        )
         write_message_log(input.worktree_path, "conflict-request", request_json)
         write_message_log(
             input.worktree_path,
             "conflict-response",
-            result.raw_response_json,
+            completion.model_dump_json(indent=2),
         )
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    response = ConflictResolutionResponse.model_validate(result.tool_input)
+    response = completion.output
 
     return ConflictResolutionCallResult(
         task_id=input.task_id,
         resolved_files={f.file_path: f.content for f in response.resolved_files},
         explanation=response.explanation,
-        model_name=result.model_name,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
+        model_name=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=result.cache_creation_input_tokens,
-        cache_read_input_tokens=result.cache_read_input_tokens,
-        stop_reason=extract_stop_reason(result.raw_response_json),
+        cache_creation_input_tokens=completion.cache_creation_input_tokens,
+        cache_read_input_tokens=completion.cache_read_input_tokens,
+        stop_reason=completion.stop_reason,
     )
 
 
@@ -317,26 +324,22 @@ async def assemble_conflict_resolution_context(
 async def call_conflict_resolution(
     input: ConflictResolutionCallInput,
 ) -> ConflictResolutionCallResult:
-    """Activity wrapper -- creates a provider and delegates to execute_conflict_resolution_call."""
-    from sax_llm import get_provider
+    """Activity wrapper -- obtains the LLM client and delegates to the call.
 
+    The former ``stop_reason == "max_tokens"`` warning branch is gone: on the
+    structured-outputs path a truncated response raises `LLMTruncated` from
+    inside `AnthropicLLM.complete` (non-retryable via LLM_RETRY), so this shell
+    never sees a truncated `ConflictResolutionCallResult` to warn about.
+    """
+    from forge.llm_client import get_llm
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_conflict_resolution") as span:
         logger.info("Conflict resolution call: task_id=%s", input.task_id)
-        provider = get_provider(input.model_name or _DEFAULT_CONFLICT_RESOLUTION_MODEL)
+        llm = get_llm()
         async with heartbeat_during():
-            result = await execute_conflict_resolution_call(input, provider)
-        if result.stop_reason == "max_tokens":
-            logger.warning(
-                "Conflict resolution call truncated at max_tokens: task_id=%s model=%s "
-                "max_tokens=%d output_tokens=%d",
-                input.task_id,
-                result.model_name,
-                DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
-                result.output_tokens,
-            )
+            result = await execute_conflict_resolution_call(input, llm)
 
         span.set_attributes(
             llm_call_attributes(

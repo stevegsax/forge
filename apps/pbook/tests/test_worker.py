@@ -7,8 +7,27 @@ import signal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sax_platform.llm import AnthropicLLM
 
 import pbook.worker as worker_mod
+
+
+class TestRegisterLLMProvider:
+    def test_builds_platform_client_and_registers_it(self) -> None:
+        """The provider is the platform AnthropicLLM built from make_client();
+        there is no hardcoded model pin (the model comes per call from
+        LLMChatInput.model). make_client is patched so no API key is needed."""
+        with (
+            patch("sax_platform.llm.make_client", return_value=MagicMock()) as mock_make,
+            patch("pbook.llm.set_provider") as mock_set,
+        ):
+            worker_mod._register_llm_provider()
+
+        # Client built with no explicit key — make_client reads the env lazily.
+        mock_make.assert_called_once_with()
+        mock_set.assert_called_once()
+        (provider,) = mock_set.call_args.args
+        assert isinstance(provider, AnthropicLLM)
 
 
 class TestRequestShutdown:
@@ -80,7 +99,6 @@ class TestRunWorker:
 
         with (
             patch.object(worker_mod, "_register_llm_provider", MagicMock()),
-            patch.object(worker_mod, "_register_output_types", MagicMock()),
             patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
             patch("pbook.log_config.setup_logging", MagicMock()),
             patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
@@ -102,7 +120,6 @@ class TestRunWorker:
 
         with (
             patch.object(worker_mod, "_register_llm_provider", MagicMock()),
-            patch.object(worker_mod, "_register_output_types", MagicMock()),
             patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
             patch("pbook.log_config.setup_logging", MagicMock()),
             patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
@@ -130,7 +147,6 @@ class TestRunWorker:
 
         with (
             patch.object(worker_mod, "_register_llm_provider", MagicMock()),
-            patch.object(worker_mod, "_register_output_types", MagicMock()),
             patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
             patch("pbook.log_config.setup_logging", MagicMock()),
             patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),

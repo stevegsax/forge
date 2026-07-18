@@ -25,6 +25,8 @@ from sax_platform.llm.batch import (
     BatchRequestFailed,
     BatchStatus,
     build_batch_request,
+    classify_result_json,
+    fetch_batch_result_lines,
     fetch_batch_results,
     get_batch_status,
     submit_batch,
@@ -32,6 +34,7 @@ from sax_platform.llm.batch import (
 from sax_platform.llm.cache import CacheSpec
 from sax_platform.llm.models import Completion, MismatchOutcome, RefusedOutcome, TruncatedOutcome
 from sax_platform.llm.schema import to_json_schema
+from sax_platform.llm.tiers import ThinkingPolicy
 
 OPUS = "claude-opus-4-8"  # MIN_CACHEABLE_TOKENS["claude-opus-4"] == 4096
 
@@ -179,6 +182,65 @@ class TestBuildBatchRequest:
         )
 
         assert result["params"]["system"] == [{"type": "text", "text": big_text}]
+
+
+class TestBuildBatchRequestThinking:
+    def test_adaptive_policy_adds_thinking_and_effort_alongside_format(self) -> None:
+        result = build_batch_request(
+            "req-t1",
+            model=OPUS,
+            max_tokens=256,
+            messages=[{"role": "user", "content": "hi"}],
+            output_type=Widget,
+            thinking=ThinkingPolicy(enabled=True, effort="high"),
+        )
+
+        params = result["params"]
+        assert params["thinking"] == {"type": "adaptive"}
+        assert params["output_config"] == {
+            "format": {"type": "json_schema", "schema": to_json_schema(Widget)},
+            "effort": "high",
+        }
+
+    def test_disabled_policy_adds_disabled_shape_and_no_effort(self) -> None:
+        result = build_batch_request(
+            "req-t2",
+            model=OPUS,
+            max_tokens=256,
+            messages=[],
+            output_type=Widget,
+            thinking=ThinkingPolicy(enabled=False),
+        )
+
+        params = result["params"]
+        assert params["thinking"] == {"type": "disabled"}
+        assert "effort" not in params["output_config"]
+
+    def test_none_policy_leaves_params_unchanged(self) -> None:
+        result = build_batch_request(
+            "req-t3",
+            model=OPUS,
+            max_tokens=256,
+            messages=[],
+            output_type=Widget,
+        )
+
+        params = result["params"]
+        assert "thinking" not in params
+        assert "effort" not in params["output_config"]
+
+    def test_text_lane_with_effort_creates_effort_only_output_config(self) -> None:
+        result = build_batch_request(
+            "req-t4",
+            model=OPUS,
+            max_tokens=256,
+            messages=[],
+            thinking=ThinkingPolicy(enabled=True, effort="low"),
+        )
+
+        params = result["params"]
+        assert params["thinking"] == {"type": "adaptive"}
+        assert params["output_config"] == {"effort": "low"}
 
 
 def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> AsyncAnthropic:
@@ -504,3 +566,144 @@ class TestBatchItemResultShape:
 
         with pytest.raises(ValidationError):
             item.custom_id = "y"  # type: ignore[misc]
+
+
+class TestClassifyResultJson:
+    def test_typed_success_returns_validated_instance(self) -> None:
+        raw = json.dumps(
+            _message_json(
+                stop_reason="end_turn",
+                content=[{"type": "text", "text": json.dumps({"name": "gadget", "count": 3})}],
+                cache_read_input_tokens=11,
+            )
+        )
+
+        outcome = classify_result_json(raw, output_type=Widget)
+
+        assert isinstance(outcome, Completion)
+        assert outcome.output == Widget(name="gadget", count=3)
+        assert outcome.cache_read_input_tokens == 11
+
+    def test_refusal_returns_refused_outcome(self) -> None:
+        raw = json.dumps(
+            _message_json(stop_reason="refusal", content=[])
+            | {"stop_details": {"type": "refusal", "category": "cyber"}}
+        )
+
+        outcome = classify_result_json(raw, output_type=Widget)
+
+        assert isinstance(outcome, RefusedOutcome)
+        assert outcome.category == "cyber"
+
+    def test_max_tokens_returns_truncated_outcome(self) -> None:
+        raw = json.dumps(
+            _message_json(
+                stop_reason="max_tokens",
+                content=[{"type": "text", "text": "partial out"}],
+                output_tokens=50,
+            )
+        )
+
+        outcome = classify_result_json(raw, output_type=Widget)
+
+        assert isinstance(outcome, TruncatedOutcome)
+        assert outcome.partial_text == "partial out"
+        # cap is taken from usage.output_tokens on the stored message.
+        assert outcome.max_tokens == 50
+
+    def test_prose_with_output_type_returns_mismatch(self) -> None:
+        raw = json.dumps(
+            _message_json(
+                stop_reason="end_turn",
+                content=[{"type": "text", "text": "This is prose, not JSON."}],
+            )
+        )
+
+        outcome = classify_result_json(raw, output_type=Widget)
+
+        assert isinstance(outcome, MismatchOutcome)
+        assert outcome.raw_text == "This is prose, not JSON."
+
+    def test_no_output_type_returns_text_completion(self) -> None:
+        raw = json.dumps(
+            _message_json(
+                stop_reason="end_turn",
+                content=[{"type": "text", "text": "plain text answer"}],
+            )
+        )
+
+        outcome = classify_result_json(raw)
+
+        assert isinstance(outcome, Completion)
+        assert outcome.output == "plain text answer"
+
+    def test_garbage_bytes_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="could not parse stored batch result"):
+            classify_result_json("this is not a serialized message", output_type=Widget)
+
+
+class TestFetchBatchResultLines:
+    async def test_mixed_batch_returns_raw_lines_that_compose_with_classify(self) -> None:
+        batch_id = "msgbatch_05"
+        results_url = "https://api.anthropic.com/mock-results/msgbatch_05.jsonl"
+
+        lines = [
+            # succeeded: returned as a verbatim serialized Message string.
+            {
+                "custom_id": "ok",
+                "result": {
+                    "type": "succeeded",
+                    "message": _message_json(
+                        stop_reason="end_turn",
+                        content=[
+                            {"type": "text", "text": json.dumps({"name": "gadget", "count": 7})}
+                        ],
+                    ),
+                },
+            },
+            # errored: returned as a BatchRequestFailed value, not raw bytes.
+            {
+                "custom_id": "boom",
+                "result": {
+                    "type": "errored",
+                    "error": {
+                        "type": "error",
+                        "error": {"type": "invalid_request_error", "message": "bad input"},
+                    },
+                },
+            },
+        ]
+        jsonl_body = "\n".join(json.dumps(line) for line in lines).encode() + b"\n"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == f"/v1/messages/batches/{batch_id}":
+                return httpx.Response(
+                    200,
+                    json=_batch_json(
+                        batch_id=batch_id, processing_status="ended", results_url=results_url
+                    ),
+                )
+            if request.method == "GET" and str(request.url) == results_url:
+                return httpx.Response(200, content=jsonl_body)
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+        client = _make_client(handler)
+
+        raw_lines = await fetch_batch_result_lines(client, batch_id)
+
+        by_custom_id = dict(raw_lines)
+        assert set(by_custom_id) == {"ok", "boom"}
+
+        # The succeeded line is a parseable Message JSON string; feeding it back
+        # through classify_result_json proves the store-then-classify pair composes.
+        ok_line = by_custom_id["ok"]
+        assert isinstance(ok_line, str)
+        completion = classify_result_json(ok_line, output_type=Widget)
+        assert isinstance(completion, Completion)
+        assert completion.output == Widget(name="gadget", count=7)
+
+        # The errored line short-circuits to a value, with no raw bytes to classify.
+        boom_line = by_custom_id["boom"]
+        assert isinstance(boom_line, BatchRequestFailed)
+        assert boom_line.kind == "errored"
+        assert "bad input" in boom_line.detail

@@ -72,8 +72,8 @@ flowchart TD
 | # | Phase | Activity | What it does |
 | --- | ------- | ---------- | ------------- |
 | 1 | **Construct** | `assemble_context` | Builds the system prompt and user prompt. Discovers relevant files via import graph analysis and PageRank ranking. Reads target file contents from the worktree. Injects project instructions, playbooks, repo maps, and—on retries—previous error output with AST-derived context. |
-| 2 | **Send** | `call_llm` | Packages the assembled prompt into an Anthropic API `messages.create` call with a forced tool-use response schema. Sends it. Records latency and token usage. |
-| 3 | **Receive + Serialize** | `write_output` | Extracts the Pydantic-validated response from the tool-use block. Writes new files to the worktree. Applies search/replace edits to existing files using a four-level matching fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy). |
+| 2 | **Send** | `call_llm` | Packages the assembled prompt into an Anthropic API structured-outputs call (`sax_platform.llm.AnthropicLLM.complete`; `messages.parse` on the sync lane, `output_config.format` on the batch lane — D90/T3.5). Sends it. Records latency and token usage. |
+| 3 | **Receive + Serialize** | `write_output` | Extracts the Pydantic-validated response returned by the structured-outputs call. Writes new files to the worktree. Applies search/replace edits to existing files using a four-level matching fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy). |
 | 4 | **Validate** | `validate_output` | Runs deterministic checks: `ruff` lint, `ruff` format, and optionally a test suite. Produces a list of pass/fail results with error details. |
 | 5 | **Transition** | `evaluate_transition` | Maps validation results to a signal: `SUCCESS` (all checks pass), `FAILURE_RETRYABLE` (checks failed but attempts remain), or `FAILURE_TERMINAL` (no retries left or unrecoverable). |
 
@@ -167,18 +167,16 @@ For planned steps, it includes the step ID and description. The user prompt is i
 
 ## Structured Output: How the LLM Responds
 
-Forge uses Anthropic's **tool use** feature to get structured output. Instead of parsing free-form text, the LLM is forced to call a tool whose input schema is a Pydantic model (`tool_choice={type: "tool", ...}`, wired in `sax_llm.anthropic`). This guarantees the response is valid JSON matching the expected shape.
-
-> **Forward pointer (D90 / T3.5):** forced tool use is still the mechanism on forge's own runtime lanes, but it is slated for retirement in favor of native **structured outputs**. `sax_platform.llm` already implements the structured-outputs client (both the sync and batch lanes, with typed refusal/truncation/mismatch failures); forge's runtime does not consume it yet.
+Forge gets structured output through Anthropic's native **structured outputs** (D90/T3.5). Each call passes the target Pydantic model's JSON schema as `output_config.format`, and the provider guarantees the response conforms. The client is `sax_platform.llm.AnthropicLLM` — `complete[T]` (`messages.parse`) on the sync lane and the batch request builder (`output_config.format`) on the batch lane — returning a validated model or a typed refusal/truncation/mismatch outcome. Forced tool use as the structured-output mechanism (`tool_choice={type: "tool", ...}`) is retired.
 
 ```mermaid
 sequenceDiagram
     participant F as Forge
     participant A as Anthropic API
 
-    F->>A: messages.create(<br/>  tools=[{name: "llm_response", schema: ...}],<br/>  tool_choice={type: "tool", name: "llm_response"}<br/>)
-    A->>F: tool_use block with structured JSON
-    F->>F: Pydantic validates response
+    F->>A: messages.parse(<br/>  output_config={format: {schema: ...}}<br/>)
+    A->>F: message conforming to the schema
+    F->>F: Pydantic model returned (or typed refusal / truncation / mismatch)
 ```
 
 The `LLMResponse` schema has three fields:
@@ -412,7 +410,7 @@ src/forge/
 │   ├── _heartbeat.py          # Heartbeat management for long-running activities
 │   ├── _mistral.py            # Cached MistralOcr resolver (routes the OCR blob SPI)
 │   ├── context.py             # Prompt assembly (system + user prompts)
-│   ├── llm.py                 # LLM call execution (forced tool use via sax_llm)
+│   ├── llm.py                 # LLM call execution (structured outputs via sax_platform.llm)
 │   ├── output.py              # File writing + edit application
 │   ├── validate.py            # Deterministic validation (ruff, tests)
 │   ├── transition.py          # Outcome signal evaluation (deterministic; no LLM)
@@ -446,7 +444,7 @@ src/forge/
 └── alembic/                   # Store migrations (env.py + versions/001–003)
 ```
 
-The LLM provider layer (protocol, registry, Anthropic adapter) lives in the `sax-llm` workspace member (`libs/sax-llm`), and the tier registry, `ThinkingPolicy`, structured-outputs client, and the Mistral OCR capability live in `sax-platform` (`libs/sax-platform`) — neither is under `src/forge/`. The OCR pipeline is no longer in this tree either: it is the separate `apps/ocr` consumer app, which reaches the platform through forge's batch SPI.
+The LLM client — `AnthropicLLM` (structured outputs, both lanes), the tier registry, `ThinkingPolicy`, and the Mistral OCR capability — lives in the `sax-platform` workspace member (`libs/sax-platform`), not under `src/forge/` (the former `sax-llm` provider layer was deleted at T3.5). The OCR pipeline is no longer in this tree either: it is the separate `apps/ocr` consumer app, which reaches the platform through forge's batch SPI.
 
 > The map above covers the core loop. Major shipped subsystems — batch execution (the default), transcript ingestion, the knowledge/playbook lifecycle, planner evaluation, store externalization (Postgres + S3 with survivable writes), the batch SPI (consumed by `apps/ocr`), and mTLS remote access (infrastructure since removed, D99) — are summarized in [Subsystems Beyond the Core Loop](#subsystems-beyond-the-core-loop).
 
@@ -514,7 +512,7 @@ All five LLM call sites (generation, planner, exploration, sanity check, conflic
 
 ### Batch SPI (OCR-agnostic) and the OCR consumer
 
-Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the poller returns provider results verbatim to a consumer workflow cross-queue (`activities/batch_submit.py`, `batch_poller_workflow.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` (`activities/_mistral.py`) rather than sax_llm's registry (T3.3). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `sax_platform` only (never `forge`; the former `forge_contracts` package it used to import was absorbed into `sax_platform.contracts` at T3.4).
+Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the poller returns provider results verbatim to a consumer workflow cross-queue (`activities/batch_submit.py`, `batch_poller_workflow.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` (`activities/_mistral.py`) rather than the retired sax-llm registry (rerouted at T3.3; sax-llm deleted at T3.5). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `sax_platform` only (never `forge`; the former `forge_contracts` package it used to import was absorbed into `sax_platform.contracts` at T3.4).
 
 ### Transcript ingestion
 

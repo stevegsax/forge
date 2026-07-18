@@ -32,13 +32,14 @@ uv run pbook worker                   # start the Temporal worker on pbook-task-
 
 The store is PostgreSQL only (Supabase-hosted). Set `PBOOK_DATABASE_URL` to a `postgresql://` (or `postgresql+psycopg://`) connection string before running `migrate`, the worker, or the CLI; bare `postgresql://` URLs are normalized to the psycopg v3 driver. The worker runs migrations once at startup.
 
-The worker requires **both** LLM API keys in its environment: `ANTHROPIC_API_KEY` (the `sax-llm` provider used for extraction, review, and consolidation) and `OPENAI_API_KEY` (embeddings via `text-embedding-3-small`). A missing key no longer hangs — the LLM activities fail fast and non-retryably (see `src/pbook/workflow_steps/retry.py` and `_errors.py`), so an unset key surfaces as a failed workflow / `error` ingestion session rather than one stuck at `running`.
+The worker requires **both** LLM API keys in its environment: `ANTHROPIC_API_KEY` (the `sax_platform.llm` client used for extraction, review, and consolidation) and `OPENAI_API_KEY` (embeddings via `text-embedding-3-small`). A missing key no longer hangs — the LLM activities fail fast and non-retryably (see `src/pbook/workflow_steps/retry.py` and `_errors.py`), so an unset key surfaces as a failed workflow / `error` ingestion session rather than one stuck at `running`.
 
 `pytest` runs with `asyncio_mode = "auto"` and a session-scoped event loop. `tests/conftest.py` provisions a real Postgres for the session: it uses `PBOOK_TEST_DATABASE_URL` if set, otherwise starts a `pgvector/pgvector:pg17` container via **podman** (so the test run needs a running podman machine, or that env var). Per-test isolation is a `TRUNCATE ... RESTART IDENTITY` of the `pbk_` tables, so entry ids restart at 1 each test — tests never touch the developer's real database.
 
-`sax-llm` resolves through the workspace root's `[tool.uv.sources]` as a fellow
-workspace member (`libs/sax-llm` — absorbed in T2.1 increment 2, D98). Local
-edits to it are picked up directly; no tag pin, no re-lock for source changes.
+`sax_platform` resolves through the workspace root's `[tool.uv.sources]` as a
+fellow workspace member (`libs/sax-platform`). Local edits to it are picked up
+directly; no tag pin, no re-lock for source changes. (`libs/sax-llm`, pbook's
+former LLM provider source, was deleted at T3.5.)
 
 ## Architecture
 
@@ -48,9 +49,9 @@ pbook is a knowledge playbook service: it stores curated advice and LLM-extracte
 
 **Function Core / Imperative Shell, enforced.** Every module separates pure logic from I/O. Examples: `store.build_entry_dict` (pure) vs `store.save_entries` (I/O); `activities/retrieval.rank_and_pack` (pure) vs `activities/retrieval.fetch_candidates` (I/O). Tests exercise the pure functions directly — they don't mock the database. Keep this split when adding code: a pure function the test can import and call beats a method that requires fixture setup.
 
-**Pluggable LLM provider via `pbook.llm`.** `pbook/llm.py` holds a global `_provider` registered via `set_provider()`; the generic chat activity calls `get_provider()`. The worker registers a `sax-llm` provider at startup. Tests inject mock providers. Activities that don't need an LLM (list, get, approve, prune candidate detection) must not call `get_provider()` so they stay testable without a mock.
+**Pluggable LLM provider via `pbook.llm`.** `pbook/llm.py` holds a global `_provider` registered via `set_provider()`; the generic chat activity calls `get_provider()`. The provider is typed by the local `SupportsComplete` Protocol (the one `complete` method `llm_chat` needs). The worker registers a `sax_platform.llm.AnthropicLLM` provider at startup. Tests inject mock providers. Activities that don't need an LLM (list, get, approve, prune candidate detection) must not call `get_provider()` so they stay testable without a mock.
 
-**Generic LLM/embedding workflow steps via `pbook.workflow_steps`.** Every LLM call goes through `llm_chat` (structured-output chat) or `llm_embed` (text-to-vector) — see `src/pbook/workflow_steps/`. Workflows resolve their model via `pbook.models.resolve_model()` in workflow body, build prompts (pure functions in `src/pbook/prompts/`) via `workflow.unsafe.imports_passed_through()`, call `llm_chat` with an `output_type_name` registered at worker startup (`_register_output_types()`), and validate the returned `tool_input` against their own Pydantic class. When adding a new structured output type, register it in `pbook/worker.py::_register_output_types()` or `llm_chat` raises `KeyError`.
+**Generic LLM/embedding workflow steps via `pbook.workflow_steps`.** Every LLM call goes through `llm_chat` (structured-output chat) or `llm_embed` (text-to-vector) — see `src/pbook/workflow_steps/`. Workflows resolve their model via `pbook.models.resolve_model()` in workflow body, build prompts (pure functions in `src/pbook/prompts/`) via `workflow.unsafe.imports_passed_through()`, call `llm_chat` with an `output_type_name` that keys into the frozen `OUTPUT_TYPES` mapping in `pbook/workflow_steps/output_types.py`, and receive the provider-validated structured output. When adding a new structured output type, add it to that `OUTPUT_TYPES` mapping (or `resolve_output_type` raises `KeyError`) — there is no worker-startup registration step anymore.
 
 ### Data model essentials
 

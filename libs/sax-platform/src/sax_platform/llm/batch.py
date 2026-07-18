@@ -16,6 +16,15 @@ resolves N independent request outcomes at once; one bad item raising would
 abort classification of the other N-1, which is worse than a mixed-outcome
 list. This is the opposite tradeoff from the sync lane, where a single
 in-flight call has nothing else to preserve and can afford to raise.
+
+`fetch_batch_result_lines` and `classify_result_json` are the raw-bytes,
+store-then-parse split of that same pipeline, for the pre-T4.1 signal
+transport: the poller stores each succeeded line's verbatim serialized
+`Message` (never classifying at poll time), and the workflow classifies it
+later via `classify_result_json` — reusing the exact same classification core
+as `fetch_batch_results`, so a stored line and a freshly fetched one resolve
+identically. This whole raw-bytes path exists only until the T4.1 timer-loop
+transport lands.
 """
 
 from collections.abc import Mapping, Sequence
@@ -27,6 +36,7 @@ from anthropic.types.messages import MessageBatchSucceededResult
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from sax_platform.llm.cache import CacheSpec, apply_cache_control
+from sax_platform.llm.client import thinking_request_parts
 from sax_platform.llm.models import (
     Completion,
     LLMOutcomeError,
@@ -37,6 +47,7 @@ from sax_platform.llm.models import (
     outcome_from_error,
 )
 from sax_platform.llm.schema import to_json_schema, to_output_format
+from sax_platform.llm.tiers import ThinkingPolicy
 
 __all__ = [
     "BatchHandle",
@@ -44,6 +55,8 @@ __all__ = [
     "BatchRequestFailed",
     "BatchStatus",
     "build_batch_request",
+    "classify_result_json",
+    "fetch_batch_result_lines",
     "fetch_batch_results",
     "get_batch_status",
     "submit_batch",
@@ -64,6 +77,7 @@ def build_batch_request(
     output_type: type[BaseModel] | None = None,
     output_schema: dict[str, Any] | None = None,
     cache: CacheSpec | None = None,
+    thinking: ThinkingPolicy | None = None,
 ) -> dict[str, Any]:
     """Build one Message Batches API request entry: `{"custom_id", "params"}`.
 
@@ -88,6 +102,13 @@ def build_batch_request(
     text lane). `max_tokens` has no default: batch requests are billed and
     replay-executed up to 24 hours later, so a caller must state its cap
     explicitly rather than inherit one.
+
+    `thinking` is translated by `thinking_request_parts` (shared with the sync
+    lane) into the ``thinking`` param and an `effort` merged into
+    ``output_config``: `None` (the default) adds neither, so the request is
+    wire-identical to one built without a thinking argument; an enabled policy
+    adds ``{"type": "adaptive"}`` and its `effort` alongside any ``format``; a
+    disabled policy adds ``{"type": "disabled"}`` and no `effort`.
     """
     if output_type is not None and output_schema is not None:
         raise ValueError("pass at most one of output_type or output_schema, not both")
@@ -106,6 +127,13 @@ def build_batch_request(
         params["output_config"] = {"format": to_output_format(to_json_schema(output_type))}
     elif output_schema is not None:
         params["output_config"] = {"format": to_output_format(output_schema)}
+
+    thinking_param, effort = thinking_request_parts(thinking)
+    if thinking_param is not None:
+        params["thinking"] = thinking_param
+    if effort is not None:
+        existing_config: dict[str, Any] = params.get("output_config", {})
+        params["output_config"] = {**existing_config, "effort": effort}
 
     return {"custom_id": custom_id, "params": params}
 
@@ -169,26 +197,30 @@ class BatchItemResult(BaseModel):
     outcome: _ItemOutcome
 
 
-def _classify_succeeded_message(
+def _classify_message(
     message: anthropic.types.Message,
     *,
-    custom_id: str,
-    output_types: Mapping[str, type[BaseModel]] | None,
+    output_type: type[BaseModel] | None,
 ) -> Completion[Any] | RefusedOutcome | TruncatedOutcome | MismatchOutcome:
-    """Classify one succeeded batch item's `Message`. Pure: no I/O.
+    """Classify one completed `Message` into a value outcome. Pure: no I/O.
 
-    Shares `classify_message`/`outcome_from_error` with the sync lane's
-    classification core. `max_tokens` is passed as
-    `message.usage.output_tokens` — the batch result envelope does not carry
-    back the caller's originally-requested cap, only what the model actually
-    produced — so a `TruncatedOutcome.max_tokens` here reports the tokens
-    produced, which by construction equals the cap that was hit.
+    The shared core of both the live-fetch path (`_classify_succeeded_message`,
+    keyed off a `custom_id` → type mapping) and the store-then-parse path
+    (`classify_result_json`, given a single `output_type`). Uses the same
+    `classify_message`/`outcome_from_error` pair as the sync lane, so refusal
+    and truncation are detected exactly once, platform-wide.
 
-    When `custom_id` has an entry in `output_types`, the classified text is
-    validated against that model (`MismatchOutcome` on a `ValidationError`,
-    covering both malformed JSON and well-formed-but-wrong-shape JSON,
-    including prose where JSON was expected). Otherwise the text is returned
-    as-is as a `Completion[Any]` with a plain `str` output — the text lane.
+    `max_tokens` is passed as `message.usage.output_tokens` — a completed
+    `Message` (fetched or replayed from storage) does not carry back the
+    caller's originally-requested cap, only what the model actually produced —
+    so a `TruncatedOutcome.max_tokens` reports the tokens produced, which by
+    construction equals the cap that was hit.
+
+    When `output_type` is given, the classified text is validated against it
+    (`MismatchOutcome` on a `ValidationError`, covering both malformed JSON
+    and well-formed-but-wrong-shape JSON, including prose where JSON was
+    expected). Otherwise the text is returned as-is as a `Completion[Any]`
+    with a plain `str` output — the text lane.
     """
     try:
         classified = classify_message(message, max_tokens=message.usage.output_tokens)
@@ -196,11 +228,10 @@ def _classify_succeeded_message(
         return outcome_from_error(err)
 
     telemetry = classified.telemetry
-    expected_type = output_types.get(custom_id) if output_types is not None else None
     output: Any = classified.text
-    if expected_type is not None:
+    if output_type is not None:
         try:
-            output = expected_type.model_validate_json(classified.text)
+            output = output_type.model_validate_json(classified.text)
         except ValidationError as exc:
             return MismatchOutcome(raw_text=classified.text, error=str(exc), telemetry=telemetry)
 
@@ -214,6 +245,51 @@ def _classify_succeeded_message(
         cache_read_input_tokens=telemetry.cache_read_input_tokens,
         request_id=telemetry.request_id,
     )
+
+
+def _classify_succeeded_message(
+    message: anthropic.types.Message,
+    *,
+    custom_id: str,
+    output_types: Mapping[str, type[BaseModel]] | None,
+) -> Completion[Any] | RefusedOutcome | TruncatedOutcome | MismatchOutcome:
+    """Classify one succeeded batch item's `Message`, resolving its expected
+    type from the `custom_id` → type mapping. Thin wrapper over
+    `_classify_message`."""
+    expected_type = output_types.get(custom_id) if output_types is not None else None
+    return _classify_message(message, output_type=expected_type)
+
+
+def classify_result_json(
+    raw: str,
+    *,
+    output_type: type[BaseModel] | None = None,
+) -> Completion[Any] | RefusedOutcome | TruncatedOutcome | MismatchOutcome:
+    """Classify a stored, verbatim `Message` JSON string (see
+    `fetch_batch_result_lines`). Pure: no I/O.
+
+    The store-then-parse counterpart to a live `fetch_batch_results` item:
+    the pre-T4.1 signal transport stores a succeeded line's raw serialized
+    `Message` at poll time and classifies it later, here, via the exact same
+    `_classify_message` core — so a stored line and a freshly fetched one
+    yield identical outcomes (refusal/truncation as value outcomes, a
+    validated instance when `output_type` is given, a text `Completion[Any]`
+    otherwise).
+
+    `raw` must be a serialized `anthropic.types.Message` (as produced by
+    `Message.model_dump_json()`). A `raw` that cannot be parsed into a
+    `Message` raises `ValueError`: stored-bytes corruption is a deterministic,
+    non-retryable failure of the transport, distinct from the in-band
+    refusal/truncation/mismatch outcomes that presuppose a well-formed
+    `Message`.
+    """
+    try:
+        message = anthropic.types.Message.model_validate_json(raw)
+    except ValidationError as exc:
+        raise ValueError(
+            f"could not parse stored batch result as an Anthropic Message: {exc}"
+        ) from exc
+    return _classify_message(message, output_type=output_type)
 
 
 async def submit_batch(client: AsyncAnthropic, requests: Sequence[dict[str, Any]]) -> BatchHandle:
@@ -276,3 +352,37 @@ async def fetch_batch_results(
             outcome = BatchRequestFailed(kind=result.type, detail=str(result))
         item_results.append(BatchItemResult(custom_id=item.custom_id, outcome=outcome))
     return item_results
+
+
+async def fetch_batch_result_lines(
+    client: AsyncAnthropic, batch_id: str
+) -> list[tuple[str, str | BatchRequestFailed]]:
+    """Fetch every result line of a finished batch as raw bytes, without
+    classifying.
+
+    The raw-bytes sibling of `fetch_batch_results`: it streams the same
+    `.jsonl` result lines, but for each *succeeded* line returns
+    `(custom_id, message.model_dump_json())` — the verbatim serialized
+    `Message`, ready to store — and for each non-succeeded envelope returns
+    `(custom_id, BatchRequestFailed(...))`, exactly as `fetch_batch_results`
+    maps them. No `stop_reason` classification, no schema validation happens
+    here.
+
+    This exists so the pre-T4.1 signal transport can persist raw result bytes
+    at poll time and defer classification to `classify_result_json` when the
+    workflow reconciles them — keeping poll-time work to plain I/O and out of
+    the classification core. Results are not guaranteed to arrive in request
+    order; callers must key off `custom_id`, not list position. Retired with
+    the raw-bytes path when T4.1's timer-loop transport lands.
+    """
+    lines: list[tuple[str, str | BatchRequestFailed]] = []
+    decoder = await client.messages.batches.results(batch_id)
+    async for item in decoder:
+        result = item.result
+        line: str | BatchRequestFailed
+        if isinstance(result, MessageBatchSucceededResult):
+            line = result.message.model_dump_json()
+        else:
+            line = BatchRequestFailed(kind=result.type, detail=str(result))
+        lines.append((item.custom_id, line))
+    return lines

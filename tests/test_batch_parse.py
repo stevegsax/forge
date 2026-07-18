@@ -3,41 +3,43 @@
 from __future__ import annotations
 
 import json
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
+from temporalio.exceptions import ApplicationError
 
 from forge.activities.batch_parse import execute_parse_llm_response
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — real wire-shaped anthropic.types.Message JSON (see
+# sax_platform tests' _message_json). Structured output rides in a *text*
+# block (output_config.format), NOT a tool_use block.
 # ---------------------------------------------------------------------------
 
 
-def _build_message_json(
-    tool_name: str,
-    tool_input: dict,
+def _text_block(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
+
+
+def _message_json(
     *,
-    model: str = "claude-sonnet-4-5-20250929",
+    content: list[dict[str, Any]],
+    stop_reason: str = "end_turn",
+    model: str = "claude-sonnet-5",
     input_tokens: int = 100,
     output_tokens: int = 200,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
-    stop_reason: str = "tool_use",
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """Build a minimal valid Anthropic Message JSON string for testing."""
-    message = {
+    message: dict[str, Any] = {
         "id": "msg_test123",
         "type": "message",
         "role": "assistant",
         "model": model,
-        "content": [
-            {
-                "type": "tool_use",
-                "id": "toolu_test123",
-                "name": tool_name,
-                "input": tool_input,
-            }
-        ],
+        "content": content,
         "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {
@@ -47,20 +49,24 @@ def _build_message_json(
             "cache_read_input_tokens": cache_read_input_tokens,
         },
     }
+    if extra:
+        message.update(extra)
     return json.dumps(message)
 
 
+def _typed_message(payload: dict[str, Any], **kwargs: Any) -> str:
+    """A Message whose single text block carries the structured-output JSON."""
+    return _message_json(content=[_text_block(json.dumps(payload))], **kwargs)
+
+
 # ---------------------------------------------------------------------------
-# execute_parse_llm_response
+# execute_parse_llm_response — success (typed + text lanes)
 # ---------------------------------------------------------------------------
 
 
 class TestExecuteParseLLMResponse:
     def test_parses_llm_response(self) -> None:
-        raw = _build_message_json(
-            "llm_response",
-            {"files": [], "edits": [], "explanation": "Done."},
-        )
+        raw = _typed_message({"files": [], "edits": [], "explanation": "Done."})
 
         result = execute_parse_llm_response(raw, "LLMResponse")
 
@@ -68,11 +74,11 @@ class TestExecuteParseLLMResponse:
 
         parsed = LLMResponse.model_validate_json(result.parsed_json)
         assert parsed.explanation == "Done."
-        assert result.model_name == "claude-sonnet-4-5-20250929"
+        assert result.model_name == "claude-sonnet-5"
+        assert result.stop_reason == "end_turn"
 
     def test_parses_plan(self) -> None:
-        raw = _build_message_json(
-            "plan",
+        raw = _typed_message(
             {
                 "task_id": "t1",
                 "steps": [
@@ -83,7 +89,7 @@ class TestExecuteParseLLMResponse:
                     }
                 ],
                 "explanation": "Single step.",
-            },
+            }
         )
 
         result = execute_parse_llm_response(raw, "Plan")
@@ -95,8 +101,7 @@ class TestExecuteParseLLMResponse:
         assert len(parsed.steps) == 1
 
     def test_returns_correct_usage_stats(self) -> None:
-        raw = _build_message_json(
-            "llm_response",
+        raw = _typed_message(
             {"files": [], "edits": [], "explanation": "x"},
             input_tokens=500,
             output_tokens=300,
@@ -111,61 +116,100 @@ class TestExecuteParseLLMResponse:
         assert result.cache_creation_input_tokens == 50
         assert result.cache_read_input_tokens == 75
 
-    def test_raises_key_error_for_unknown_type(self) -> None:
-        with pytest.raises(KeyError, match="Unknown output type"):
-            execute_parse_llm_response("{}", "NonExistentType")
+    def test_text_lane_serializes_text(self) -> None:
+        raw = _message_json(content=[_text_block("plain answer")], stop_reason="end_turn")
 
-    def test_raises_value_error_for_no_tool_use(self) -> None:
-        raw_dict = json.loads(
-            _build_message_json("llm_response", {"files": [], "edits": [], "explanation": "x"})
-        )
-        raw_dict["content"] = [{"type": "text", "text": "hello"}]
-        raw = json.dumps(raw_dict)
+        result = execute_parse_llm_response(raw, None)
 
-        with pytest.raises(ValueError, match="No tool_use block found"):
-            execute_parse_llm_response(raw, "LLMResponse")
+        assert result.parsed_json == json.dumps("plain answer")
+        assert result.stop_reason == "end_turn"
+        assert result.model_name == "claude-sonnet-5"
 
     def test_latency_defaults_to_zero(self) -> None:
-        raw = _build_message_json(
-            "llm_response",
-            {"files": [], "edits": [], "explanation": "x"},
-        )
+        raw = _typed_message({"files": [], "edits": [], "explanation": "x"})
 
         result = execute_parse_llm_response(raw, "LLMResponse")
 
         assert result.latency_ms == 0.0
 
-    def test_extracts_stop_reason(self) -> None:
-        raw = _build_message_json(
-            "llm_response",
-            {"files": [], "edits": [], "explanation": "x"},
-            stop_reason="max_tokens",
+    def test_records_stop_reason(self) -> None:
+        raw = _typed_message(
+            {"files": [], "edits": [], "explanation": "x"}, stop_reason="stop_sequence"
         )
 
         result = execute_parse_llm_response(raw, "LLMResponse")
 
-        assert result.stop_reason == "max_tokens"
+        assert result.stop_reason == "stop_sequence"
+
+    def test_raises_key_error_for_unknown_type(self) -> None:
+        raw = _typed_message({"files": [], "edits": [], "explanation": "x"})
+
+        with pytest.raises(KeyError, match="Unknown output type"):
+            execute_parse_llm_response(raw, "NonExistentType")
 
 
 # ---------------------------------------------------------------------------
-# parse_llm_response activity wrapper — max_tokens truncation warning
+# execute_parse_llm_response — failure outcomes raise non-retryable errors
+#
+# The stored bytes are deterministic, so a refusal / truncation / mismatch can
+# never resolve differently on a retry — each raises a non_retryable
+# ApplicationError with a stable `type` so the workflow fails fast without
+# burning attempts.
 # ---------------------------------------------------------------------------
 
 
-class TestParseLlmResponseMaxTokensWarning:
+class TestParseFailureOutcomes:
+    def test_refusal_raises_non_retryable(self) -> None:
+        raw = _message_json(
+            content=[],
+            stop_reason="refusal",
+            extra={"stop_details": {"type": "refusal", "category": "cyber"}},
+        )
+
+        with pytest.raises(ApplicationError) as exc_info:
+            execute_parse_llm_response(raw, "LLMResponse")
+
+        err = exc_info.value
+        assert err.type == "LLMRefused"
+        assert err.non_retryable is True
+        assert "refusal" in str(err)
+
+    def test_truncation_raises_non_retryable(self) -> None:
+        raw = _message_json(content=[_text_block("partial")], stop_reason="max_tokens")
+
+        with pytest.raises(ApplicationError) as exc_info:
+            execute_parse_llm_response(raw, "LLMResponse")
+
+        err = exc_info.value
+        assert err.type == "LLMTruncated"
+        assert err.non_retryable is True
+        assert "max_tokens" in str(err)
+
+    def test_schema_mismatch_raises_non_retryable(self) -> None:
+        # stop_reason is a normal terminal one, but the text is not valid JSON for
+        # the expected schema -> MismatchOutcome -> LLMSchemaMismatch.
+        raw = _message_json(content=[_text_block("not json at all")], stop_reason="end_turn")
+
+        with pytest.raises(ApplicationError) as exc_info:
+            execute_parse_llm_response(raw, "LLMResponse")
+
+        err = exc_info.value
+        assert err.type == "LLMSchemaMismatch"
+        assert err.non_retryable is True
+
+
+# ---------------------------------------------------------------------------
+# parse_llm_response activity wrapper
+# ---------------------------------------------------------------------------
+
+
+class TestParseLlmResponseActivity:
     @pytest.mark.asyncio
-    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
-        from unittest.mock import MagicMock, patch
-
+    async def test_activity_delegates_and_records_model(self) -> None:
         from forge.activities.batch_parse import parse_llm_response
         from forge.models import ParseResponseInput
 
-        raw = _build_message_json(
-            "llm_response",
-            {"files": [], "edits": [], "explanation": "partial"},
-            output_tokens=16384,
-            stop_reason="max_tokens",
-        )
+        raw = _typed_message({"files": [], "edits": [], "explanation": "done"})
 
         mock_span = MagicMock()
         mock_span.__enter__ = MagicMock(return_value=mock_span)
@@ -173,46 +217,8 @@ class TestParseLlmResponseMaxTokensWarning:
         mock_tracer = MagicMock()
         mock_tracer.start_as_current_span.return_value = mock_span
 
-        with (
-            patch("forge.tracing.get_tracer", return_value=mock_tracer),
-            caplog.at_level("WARNING", logger="forge.activities.batch_parse"),
-        ):
-            await parse_llm_response(
-                ParseResponseInput(
-                    raw_response_json=raw,
-                    output_type_name="LLMResponse",
-                    task_id="t-trunc",
-                    max_tokens=16384,
-                )
-            )
-
-        assert any("truncated at max_tokens" in r.message for r in caplog.records)
-        assert any("t-trunc" in r.message for r in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from forge.activities.batch_parse import parse_llm_response
-        from forge.models import ParseResponseInput
-
-        raw = _build_message_json(
-            "llm_response",
-            {"files": [], "edits": [], "explanation": "done"},
-            stop_reason="tool_use",
-        )
-
-        mock_span = MagicMock()
-        mock_span.__enter__ = MagicMock(return_value=mock_span)
-        mock_span.__exit__ = MagicMock(return_value=False)
-        mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value = mock_span
-
-        with (
-            patch("forge.tracing.get_tracer", return_value=mock_tracer),
-            caplog.at_level("WARNING", logger="forge.activities.batch_parse"),
-        ):
-            await parse_llm_response(
+        with patch("forge.tracing.get_tracer", return_value=mock_tracer):
+            result = await parse_llm_response(
                 ParseResponseInput(
                     raw_response_json=raw,
                     output_type_name="LLMResponse",
@@ -220,4 +226,5 @@ class TestParseLlmResponseMaxTokensWarning:
                 )
             )
 
-        assert not any("truncated at max_tokens" in r.message for r in caplog.records)
+        assert result.model_name == "claude-sonnet-5"
+        assert result.stop_reason == "end_turn"

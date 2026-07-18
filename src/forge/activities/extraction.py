@@ -16,7 +16,6 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from sax_llm.models import text_messages
 from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
@@ -26,11 +25,10 @@ from forge.models import (
     ExtractionResult,
     FetchExtractionInput,
     SaveExtractionInput,
-    extract_stop_reason,
 )
 
 if TYPE_CHECKING:
-    from sax_llm.protocol import LLMProvider
+    from sax_platform.llm import AnthropicLLM
 
 logger = logging.getLogger(__name__)
 
@@ -186,30 +184,30 @@ def infer_tags_from_task(
 
 async def execute_extraction_call(
     input: ExtractionInput,
-    provider: LLMProvider,
+    llm: AnthropicLLM,
 ) -> ExtractionCallResult:
-    """Call the LLM provider for extraction and return structured results.
+    """Call the LLM for extraction and return structured results.
 
-    Separated from the imperative shell so tests can inject a mock provider.
+    Separated from the imperative shell so tests can inject a stub client.
     """
-    from sax_llm import parse_model_id
+    from sax_platform.llm.tiers import split_provider
 
     from forge.activities.llm import DEFAULT_MODEL
 
     full_model = input.model_name or DEFAULT_MODEL
-    _, model = parse_model_id(full_model)
+    _, model = split_provider(full_model)
     start = time.monotonic()
 
-    params = provider.build_request_params(
-        messages=text_messages(input.system_prompt, input.user_prompt),
+    completion = await llm.complete(
+        [{"role": "user", "content": input.user_prompt}],
         output_type=ExtractionResult,
         model=model,
         max_tokens=DEFAULT_EXTRACTION_MAX_TOKENS,
+        system=input.system_prompt,
     )
-    result = await provider.call(params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    extraction_result = ExtractionResult.model_validate(result.tool_input)
+    extraction_result = completion.output
 
     for entry in extraction_result.entries:
         if not entry.source_workflow_id:
@@ -220,13 +218,13 @@ async def execute_extraction_call(
     return ExtractionCallResult(
         result=extraction_result,
         source_workflow_ids=input.source_workflow_ids,
-        model_name=result.model_name,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
+        model_name=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=result.cache_creation_input_tokens,
-        cache_read_input_tokens=result.cache_read_input_tokens,
-        stop_reason=extract_stop_reason(result.raw_response_json),
+        cache_creation_input_tokens=completion.cache_creation_input_tokens,
+        cache_read_input_tokens=completion.cache_read_input_tokens,
+        stop_reason=completion.stop_reason,
     )
 
 
@@ -273,24 +271,21 @@ async def fetch_extraction_input(input: FetchExtractionInput) -> ExtractionInput
 
 @activity.defn
 async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
-    """Activity wrapper — creates provider and delegates to execute_extraction_call."""
-    from sax_llm import get_provider
+    """Activity wrapper — obtains the LLM client and delegates to execute_extraction_call.
 
-    from forge.activities.llm import DEFAULT_MODEL
+    The former ``stop_reason == "max_tokens"`` warning branch is gone: on the
+    structured-outputs path a truncated response raises `LLMTruncated` from
+    inside `AnthropicLLM.complete` (non-retryable via LLM_RETRY), so this shell
+    never sees a truncated `ExtractionCallResult` to warn about.
+    """
+    from forge.llm_client import get_llm
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_extraction_llm") as span:
-        provider = get_provider(input.model_name or DEFAULT_MODEL)
+        llm = get_llm()
         async with heartbeat_during():
-            result = await execute_extraction_call(input, provider)
-        if result.stop_reason == "max_tokens":
-            logger.warning(
-                "Extraction call truncated at max_tokens: model=%s max_tokens=%d output_tokens=%d",
-                result.model_name,
-                DEFAULT_EXTRACTION_MAX_TOKENS,
-                result.output_tokens,
-            )
+            result = await execute_extraction_call(input, llm)
 
         span.set_attributes(
             llm_call_attributes(

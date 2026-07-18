@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sax_platform.llm import LLMRefused, LLMTruncated, Telemetry
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -24,11 +25,32 @@ from forge.models import (
     TaskDefinition,
     TaskDomain,
 )
-from tests.conftest import build_mock_provider
+from tests.conftest import build_mock_llm
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _telemetry(stop_reason: str = "end_turn") -> Telemetry:
+    return Telemetry(
+        model="test-model",
+        stop_reason=stop_reason,
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        request_id=None,
+    )
+
+
+def _mock_tracer() -> MagicMock:
+    mock_span = MagicMock()
+    mock_span.__enter__ = MagicMock(return_value=mock_span)
+    mock_span.__exit__ = MagicMock(return_value=False)
+    mock_tracer = MagicMock()
+    mock_tracer.start_as_current_span.return_value = mock_span
+    return mock_tracer
 
 
 def _make_task() -> TaskDefinition:
@@ -169,6 +191,18 @@ class TestBuildExplorationPrompt:
 
 
 class TestExecuteExplorationCall:
+    def _make_input(self) -> ExplorationInput:
+        return ExplorationInput(
+            task_id=_make_task().task_id,
+            task_description=_make_task().description,
+            target_files=_make_task().target_files,
+            context_files=_make_task().context_files,
+            context_config=_make_task().context,
+            available_providers=_make_providers(),
+            round_number=1,
+            max_rounds=5,
+        )
+
     @pytest.mark.asyncio
     async def test_returns_exploration_response(self) -> None:
         response = ExplorationResponse(
@@ -180,20 +214,9 @@ class TestExecuteExplorationCall:
                 ),
             ]
         )
-        provider = build_mock_provider(tool_input=response.model_dump())
+        llm = build_mock_llm(output=response)
 
-        input = ExplorationInput(
-            task_id=_make_task().task_id,
-            task_description=_make_task().description,
-            target_files=_make_task().target_files,
-            context_files=_make_task().context_files,
-            context_config=_make_task().context,
-            available_providers=_make_providers(),
-            round_number=1,
-            max_rounds=5,
-        )
-
-        result = await execute_exploration_call(input, provider)
+        result = await execute_exploration_call(self._make_input(), llm)
 
         assert len(result.requests) == 1
         assert result.requests[0].provider == "read_file"
@@ -201,22 +224,49 @@ class TestExecuteExplorationCall:
     @pytest.mark.asyncio
     async def test_empty_requests_signals_ready(self) -> None:
         response = ExplorationResponse(requests=[])
-        provider = build_mock_provider(tool_input=response.model_dump())
+        llm = build_mock_llm(output=response)
 
-        input = ExplorationInput(
-            task_id=_make_task().task_id,
-            task_description=_make_task().description,
-            target_files=_make_task().target_files,
-            context_files=_make_task().context_files,
-            context_config=_make_task().context,
-            available_providers=_make_providers(),
-            round_number=1,
-            max_rounds=5,
-        )
-
-        result = await execute_exploration_call(input, provider)
+        result = await execute_exploration_call(self._make_input(), llm)
 
         assert result.requests == []
+
+    @pytest.mark.asyncio
+    async def test_calls_llm_complete_with_expected_kwargs(self) -> None:
+        llm = build_mock_llm(output=ExplorationResponse(requests=[]))
+
+        await execute_exploration_call(self._make_input(), llm)
+
+        llm.complete.assert_awaited_once()
+        call = llm.complete.await_args
+        assert call.kwargs["output_type"] is ExplorationResponse
+        # No model_name -> the CLASSIFICATION-tier default, provider stripped.
+        assert call.kwargs["model"] == "claude-haiku-4-5"
+        assert call.kwargs["max_tokens"] == 4096
+        assert isinstance(call.kwargs["system"], str)
+        # Exploration attaches no thinking policy (matches pre-migration behavior).
+        assert call.kwargs.get("thinking") is None
+
+    @pytest.mark.asyncio
+    async def test_refusal_propagates(self) -> None:
+        llm = build_mock_llm(
+            error=LLMRefused(category=None, telemetry=_telemetry(stop_reason="refusal"))
+        )
+
+        with pytest.raises(LLMRefused):
+            await execute_exploration_call(self._make_input(), llm)
+
+    @pytest.mark.asyncio
+    async def test_truncation_propagates(self) -> None:
+        llm = build_mock_llm(
+            error=LLMTruncated(
+                partial_text="partial",
+                max_tokens=4096,
+                telemetry=_telemetry(stop_reason="max_tokens"),
+            )
+        )
+
+        with pytest.raises(LLMTruncated):
+            await execute_exploration_call(self._make_input(), llm)
 
 
 # ---------------------------------------------------------------------------
@@ -357,23 +407,15 @@ class TestCallExplorationLlmModelNameThreading:
     async def test_threads_model_name_to_client(self) -> None:
         from forge.activities.exploration import call_exploration_llm
 
-        response = ExplorationResponse(requests=[])
-        provider = build_mock_provider(
-            tool_input=response.model_dump(),
-            model_name="custom-explore",
+        llm = build_mock_llm(
+            output=ExplorationResponse(requests=[]),
+            model="custom-explore",
         )
 
         with (
-            patch("sax_llm.get_provider", return_value=provider) as mock_get,
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            patch("forge.llm_client.get_llm", return_value=llm),
+            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
         ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
             input_data = ExplorationInput(
                 task_id=_make_task().task_id,
                 task_description=_make_task().description,
@@ -387,7 +429,7 @@ class TestCallExplorationLlmModelNameThreading:
             )
             await call_exploration_llm(input_data)
 
-            mock_get.assert_called_once_with("custom-explore")
+        assert llm.complete.await_args.kwargs["model"] == "custom-explore"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
@@ -396,23 +438,12 @@ class TestCallExplorationLlmModelNameThreading:
             call_exploration_llm,
         )
 
-        response = ExplorationResponse(requests=[])
-        provider = build_mock_provider(
-            tool_input=response.model_dump(),
-            model_name=DEFAULT_EXPLORATION_MODEL,
-        )
+        llm = build_mock_llm(output=ExplorationResponse(requests=[]))
 
         with (
-            patch("sax_llm.get_provider", return_value=provider) as mock_get,
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            patch("forge.llm_client.get_llm", return_value=llm),
+            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
         ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
             input_data = ExplorationInput(
                 task_id=_make_task().task_id,
                 task_description=_make_task().description,
@@ -425,7 +456,8 @@ class TestCallExplorationLlmModelNameThreading:
             )
             await call_exploration_llm(input_data)
 
-            mock_get.assert_called_once_with(DEFAULT_EXPLORATION_MODEL)
+        _, default_model = DEFAULT_EXPLORATION_MODEL.split(":", 1)
+        assert llm.complete.await_args.kwargs["model"] == default_model
 
 
 # ---------------------------------------------------------------------------

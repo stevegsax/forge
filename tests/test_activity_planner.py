@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sax_llm.client import build_thinking_param
+from sax_platform.llm import LLMRefused, LLMTruncated, Telemetry
 
 from forge.activities.planner import (
     DEFAULT_PLANNER_MAX_TOKENS,
@@ -25,10 +25,31 @@ from forge.models import (
     TaskDomain,
     ThinkingPolicy,
 )
-from tests.conftest import build_mock_provider
+from tests.conftest import build_mock_llm
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _telemetry(stop_reason: str = "end_turn") -> Telemetry:
+    return Telemetry(
+        model="test-model",
+        stop_reason=stop_reason,
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        request_id=None,
+    )
+
+
+def _mock_tracer() -> MagicMock:
+    mock_span = MagicMock()
+    mock_span.__enter__ = MagicMock(return_value=mock_span)
+    mock_span.__exit__ = MagicMock(return_value=False)
+    mock_tracer = MagicMock()
+    mock_tracer.start_as_current_span.return_value = mock_span
+    return mock_tracer
 
 
 # ---------------------------------------------------------------------------
@@ -105,9 +126,9 @@ _TEST_PLAN = Plan(
 class TestExecutePlannerCall:
     @pytest.mark.asyncio
     async def test_returns_plan_call_result(self) -> None:
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
-            model_name="claude-sonnet-4-5-20250929",
+        llm = build_mock_llm(
+            output=_TEST_PLAN,
+            model="claude-sonnet-4-5-20250929",
             input_tokens=200,
             output_tokens=100,
         )
@@ -117,43 +138,72 @@ class TestExecutePlannerCall:
             system_prompt="sys",
             user_prompt="usr",
         )
-        result = await execute_planner_call(planner_input, provider)
+        result = await execute_planner_call(planner_input, llm)
 
         assert result.task_id == "t1"
         assert result.plan == _TEST_PLAN
+        assert result.model_name == "claude-sonnet-4-5-20250929"
         assert result.input_tokens == 200
         assert result.output_tokens == 100
         assert result.latency_ms >= 0
 
     @pytest.mark.asyncio
-    async def test_calls_provider_build_and_call(self) -> None:
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
-        )
+    async def test_calls_llm_complete_with_expected_kwargs(self) -> None:
+        llm = build_mock_llm(output=_TEST_PLAN)
 
         planner_input = PlannerInput(
             task_id="t1",
             system_prompt="my system prompt",
             user_prompt="my user prompt",
         )
-        await execute_planner_call(planner_input, provider)
+        await execute_planner_call(planner_input, llm)
 
-        provider.build_request_params.assert_called_once()
-        provider.call.assert_called_once()
+        llm.complete.assert_awaited_once()
+        call = llm.complete.await_args
+        assert call.args[0] == [{"role": "user", "content": "my user prompt"}]
+        assert call.kwargs["output_type"] is Plan
+        # No model_name -> the REASONING-tier default, provider stripped.
+        assert call.kwargs["model"] == "claude-opus-4-8"
+        assert call.kwargs["system"] == "my system prompt"
+        # Default PlannerInput.thinking is the platform ThinkingPolicy, passed through.
+        assert call.kwargs["thinking"] == ThinkingPolicy()
 
     @pytest.mark.asyncio
     async def test_uses_thinking_enabled_max_tokens(self) -> None:
         """Planning is thinking-enabled (D94): adaptive thinking now competes for
         tokens inside max_tokens, so the cap must be the explicit
         owner-adjudicated 16384, not the old 8192 default."""
-        provider = build_mock_provider(tool_input=_TEST_PLAN.model_dump())
+        llm = build_mock_llm(output=_TEST_PLAN)
         planner_input = PlannerInput(task_id="t1", system_prompt="sys", user_prompt="usr")
 
-        await execute_planner_call(planner_input, provider)
+        await execute_planner_call(planner_input, llm)
 
         assert DEFAULT_PLANNER_MAX_TOKENS == 16384
-        call_kwargs = provider.build_request_params.call_args.kwargs
-        assert call_kwargs["max_tokens"] == DEFAULT_PLANNER_MAX_TOKENS
+        assert llm.complete.await_args.kwargs["max_tokens"] == DEFAULT_PLANNER_MAX_TOKENS
+
+    @pytest.mark.asyncio
+    async def test_refusal_propagates(self) -> None:
+        llm = build_mock_llm(
+            error=LLMRefused(category=None, telemetry=_telemetry(stop_reason="refusal"))
+        )
+        planner_input = PlannerInput(task_id="t1", system_prompt="sys", user_prompt="usr")
+
+        with pytest.raises(LLMRefused):
+            await execute_planner_call(planner_input, llm)
+
+    @pytest.mark.asyncio
+    async def test_truncation_propagates(self) -> None:
+        llm = build_mock_llm(
+            error=LLMTruncated(
+                partial_text="partial",
+                max_tokens=DEFAULT_PLANNER_MAX_TOKENS,
+                telemetry=_telemetry(stop_reason="max_tokens"),
+            )
+        )
+        planner_input = PlannerInput(task_id="t1", system_prompt="sys", user_prompt="usr")
+
+        with pytest.raises(LLMTruncated):
+            await execute_planner_call(planner_input, llm)
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +310,8 @@ class TestAssemblePlannerContextAutoDiscover:
 class TestPlannerCacheStats:
     @pytest.mark.asyncio
     async def test_extracts_cache_tokens(self) -> None:
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
+        llm = build_mock_llm(
+            output=_TEST_PLAN,
             input_tokens=200,
             output_tokens=100,
             cache_creation_input_tokens=500,
@@ -273,7 +323,7 @@ class TestPlannerCacheStats:
             system_prompt="sys",
             user_prompt="usr",
         )
-        result = await execute_planner_call(planner_input, provider)
+        result = await execute_planner_call(planner_input, llm)
         assert result.cache_creation_input_tokens == 500
         assert result.cache_read_input_tokens == 1000
 
@@ -380,27 +430,20 @@ class TestBuildPlannerSystemPromptCapabilityTier:
 
 class TestCallPlannerModelNameThreading:
     @pytest.mark.asyncio
-    async def test_threads_model_name_to_provider(self) -> None:
+    async def test_threads_model_name_to_client(self) -> None:
         from forge.activities.planner import call_planner
 
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
-            model_name="custom-planner",
+        llm = build_mock_llm(
+            output=_TEST_PLAN,
+            model="custom-planner",
             input_tokens=100,
             output_tokens=50,
         )
 
         with (
-            patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            patch("forge.llm_client.get_llm", return_value=llm),
+            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
         ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
             planner_input = PlannerInput(
                 task_id="t1",
                 system_prompt="sys",
@@ -409,38 +452,32 @@ class TestCallPlannerModelNameThreading:
             )
             result = await call_planner(planner_input)
 
-            assert result.model_name == "custom-planner"
+        assert result.model_name == "custom-planner"
+        assert llm.complete.await_args.kwargs["model"] == "custom-planner"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
         from forge.activities.planner import call_planner
 
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
-            model_name="claude-sonnet-4-5-20250929",
+        llm = build_mock_llm(
+            output=_TEST_PLAN,
+            model="whatever-the-server-returns",
             input_tokens=100,
             output_tokens=50,
         )
 
         with (
-            patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            patch("forge.llm_client.get_llm", return_value=llm),
+            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
         ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
             planner_input = PlannerInput(
                 task_id="t1",
                 system_prompt="sys",
                 user_prompt="usr",
             )
-            result = await call_planner(planner_input)
+            await call_planner(planner_input)
 
-            assert result.model_name == "claude-sonnet-4-5-20250929"
+        assert llm.complete.await_args.kwargs["model"] == "claude-opus-4-8"
 
 
 # ---------------------------------------------------------------------------
@@ -448,120 +485,34 @@ class TestCallPlannerModelNameThreading:
 # ---------------------------------------------------------------------------
 
 
-class TestBuildThinkingParam:
-    def test_opus_gets_adaptive_when_enabled(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", enabled=True)
-        assert result == {"type": "adaptive"}
-
-    def test_sonnet_gets_adaptive_when_enabled(self) -> None:
-        result = build_thinking_param("claude-sonnet-4-5-20250929", enabled=True)
-        assert result == {"type": "adaptive"}
-
-    def test_haiku_returns_none(self) -> None:
-        result = build_thinking_param("claude-haiku-4-5-20251001", enabled=True)
-        assert result is None
-
-    def test_disabled_returns_explicit_disabled_shape(self) -> None:
-        result = build_thinking_param("claude-opus-4-6", enabled=False)
-        assert result == {"type": "disabled"}
-
-
 class TestCallPlannerThinkingThreading:
     @pytest.mark.asyncio
-    async def test_threads_thinking_policy_to_params(self) -> None:
+    async def test_threads_thinking_policy_to_complete(self) -> None:
         from forge.activities.planner import call_planner
 
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
-            model_name="claude-opus-4-6",
+        llm = build_mock_llm(
+            output=_TEST_PLAN,
+            model="claude-opus-4-6",
             input_tokens=100,
             output_tokens=50,
         )
 
+        policy = ThinkingPolicy(enabled=True, effort="high")
         with (
-            patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
+            patch("forge.llm_client.get_llm", return_value=llm),
+            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
         ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
             planner_input = PlannerInput(
                 task_id="t1",
                 system_prompt="sys",
                 user_prompt="usr",
                 model_name="claude-opus-4-6",
-                thinking=ThinkingPolicy(enabled=True, effort="high"),
+                thinking=policy,
             )
             await call_planner(planner_input)
 
-            provider.build_request_params.assert_called_once()
-            call_kwargs = provider.build_request_params.call_args
-            assert call_kwargs[1].get("thinking_enabled") is True
-            assert call_kwargs[1].get("effort") == "high"
-
-
-# ---------------------------------------------------------------------------
-# max_tokens truncation warning (owner-mandated token record-keeping caveat)
-# ---------------------------------------------------------------------------
-
-
-class TestCallPlannerMaxTokensWarning:
-    @pytest.mark.asyncio
-    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
-        from forge.activities.planner import call_planner
-
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
-            output_tokens=16384,
-            raw_response_json='{"stop_reason": "max_tokens"}',
-        )
-
-        with (
-            patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-            caplog.at_level("WARNING", logger="forge.activities.planner"),
-        ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
-            planner_input = PlannerInput(task_id="t-trunc", system_prompt="sys", user_prompt="usr")
-            await call_planner(planner_input)
-
-        assert any("truncated at max_tokens" in r.message for r in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
-        from forge.activities.planner import call_planner
-
-        provider = build_mock_provider(
-            tool_input=_TEST_PLAN.model_dump(),
-            raw_response_json='{"stop_reason": "end_turn"}',
-        )
-
-        with (
-            patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-            caplog.at_level("WARNING", logger="forge.activities.planner"),
-        ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
-            planner_input = PlannerInput(task_id="t-ok", system_prompt="sys", user_prompt="usr")
-            await call_planner(planner_input)
-
-        assert not any("truncated at max_tokens" in r.message for r in caplog.records)
+        llm.complete.assert_awaited_once()
+        assert llm.complete.await_args.kwargs["thinking"] == policy
 
 
 # ---------------------------------------------------------------------------

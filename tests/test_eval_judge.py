@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from forge.eval.judge import (
+    DEFAULT_JUDGE_MAX_TOKENS,
     build_judge_system_prompt,
     build_judge_user_prompt,
     execute_judge_call,
@@ -16,7 +17,7 @@ from forge.eval.models import (
     JudgeVerdict,
 )
 from forge.models import Plan, PlanStep, SubTask, TaskDefinition
-from tests.conftest import build_mock_provider
+from tests.conftest import build_mock_llm
 
 _TASK = TaskDefinition(
     task_id="t1",
@@ -127,35 +128,49 @@ class TestExecuteJudgeCall:
             overall_assessment="Solid plan.",
         )
 
-        provider = build_mock_provider(
-            tool_input=verdict.model_dump(),
-            input_tokens=500,
-            output_tokens=200,
-        )
+        llm = build_mock_llm(verdict, input_tokens=500, output_tokens=200)
 
-        result = await execute_judge_call("system prompt", "user prompt", provider)
+        result = await execute_judge_call("system prompt", "user prompt", llm)
 
         assert result == verdict
 
     @pytest.mark.asyncio
-    async def test_passes_prompts_to_provider(self) -> None:
+    async def test_passes_prompts_to_llm(self) -> None:
         verdict = JudgeVerdict(
             scores=[],
             overall_assessment="OK.",
         )
 
-        provider = build_mock_provider(
-            tool_input=verdict.model_dump(),
+        llm = build_mock_llm(verdict, input_tokens=0, output_tokens=0)
+
+        await execute_judge_call("sys", "usr", llm)
+
+        llm.complete.assert_called_once()
+        messages = llm.complete.call_args.args[0]
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "usr"
+        call_kwargs = llm.complete.call_args.kwargs
+        assert call_kwargs["system"] == "sys"
+        assert call_kwargs["output_type"] is JudgeVerdict
+        assert call_kwargs["max_tokens"] == DEFAULT_JUDGE_MAX_TOKENS
+
+    @pytest.mark.asyncio
+    async def test_propagates_typed_failure(self) -> None:
+        from sax_platform.llm import LLMTruncated, Telemetry
+
+        telemetry = Telemetry(
+            model="test-model",
+            stop_reason="max_tokens",
             input_tokens=0,
             output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            request_id=None,
         )
+        error = LLMTruncated(
+            partial_text="", max_tokens=DEFAULT_JUDGE_MAX_TOKENS, telemetry=telemetry
+        )
+        llm = build_mock_llm(error=error)
 
-        await execute_judge_call("sys", "usr", provider)
-
-        provider.build_request_params.assert_called_once()
-        call_kwargs = provider.build_request_params.call_args[1]
-        messages = call_kwargs["messages"]
-        assert messages[0].role == "system"
-        assert messages[0].content == "sys"
-        assert messages[1].role == "user"
-        assert messages[1].content == "usr"
+        with pytest.raises(LLMTruncated):
+            await execute_judge_call("sys", "usr", llm)

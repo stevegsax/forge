@@ -14,9 +14,9 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sax_llm.models import BatchPollResult, BatchPollStatus, BatchResultEntry, ExtractedImage
 from sax_platform.contracts.constants import BATCH_RESULT_SIGNAL
 from sax_platform.contracts.models import dump_batch_result_payload
+from sax_platform.ocr import BatchPollResult, BatchPollStatus, BatchResultEntry
 from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
@@ -30,7 +30,8 @@ from forge.models import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from sax_platform.ocr import BatchPollResult as _SaxPlatformBatchPollResult
+    from anthropic import AsyncAnthropic
+    from sax_platform.llm.batch import BatchRequestFailed
     from temporalio.client import Client
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,28 @@ def get_temporal_client() -> Client:
 
 
 # ---------------------------------------------------------------------------
+# Module-global AsyncAnthropic client for anthropic batch polling
+# ---------------------------------------------------------------------------
+#
+# The batch lane needs the raw ``AsyncAnthropic`` SDK client (get_batch_status /
+# fetch_batch_result_lines take it as their first argument). This small cache
+# mirrors the identical helper in ``batch_submit.py`` — each batch activity module
+# owns its own client edge, built once per worker process and reused across cycles.
+
+_batch_client: AsyncAnthropic | None = None
+
+
+def _get_batch_client() -> AsyncAnthropic:
+    """Return the process-wide AsyncAnthropic client, building it on first use."""
+    global _batch_client
+    if _batch_client is None:
+        from sax_platform.llm import make_client
+
+        _batch_client = make_client()
+    return _batch_client
+
+
+# ---------------------------------------------------------------------------
 # Testable function
 # ---------------------------------------------------------------------------
 
@@ -87,9 +110,10 @@ async def execute_poll_batch_results(
     """Poll LLM providers for batch results and signal waiting workflows.
 
     Domain-agnostic: the poller forwards the verbatim provider result (the body
-    plus any images sax-llm extracted) to the waiting consumer and never stores or
-    decodes images itself. Small image-free results travel inline in the signal;
-    large or image-bearing results are stashed to a blob and delivered by pointer.
+    plus any images the provider extracted) to the waiting consumer and never
+    stores or decodes images itself. Small image-free results travel inline in the
+    signal; large or image-bearing results are stashed to a blob and delivered by
+    pointer.
 
     Args:
         pending_jobs: Rows from get_pending_batch_jobs() (dicts with batch job fields).
@@ -217,67 +241,79 @@ async def _poll_batch_for(provider_name: str, batch_id: str) -> BatchPollResult:
     """Poll ``batch_id`` through the provider for ``provider_name``.
 
     Mistral routes through the shared lazily-cached ``MistralOcr`` resolver
-    (``forge.activities._mistral``) instead of sax_llm's registry (T3.3:
-    mistral's OCR capability moved to the platform library; sax_llm carries no
-    provider entry for it anymore) — one client is built once per worker
-    process and reused across poll cycles, not rebuilt every cycle.
-    MistralOcr's poll-result types are field-for-field identical to
-    sax_llm.models' (see the sax_platform.ocr module docstring), so
-    constructing sax_llm's BatchPollResult/entries directly from the
-    sax_platform objects' attributes is lossless and keeps every branch in
-    execute_poll_batch_results provider-agnostic — it only ever sees
-    sax_llm.models.BatchPollResult, regardless of which provider answered.
+    (``forge.activities._mistral``) and returns its native ``sax_platform.ocr``
+    poll result directly. Every other provider is Anthropic's Message Batches API,
+    adapted to the same ``sax_platform.ocr`` poll shape by ``_poll_anthropic_batch``
+    — so every branch in ``execute_poll_batch_results`` stays provider-agnostic,
+    seeing one poll-result type regardless of which provider answered.
     """
     if provider_name == "mistral":
         from forge.activities._mistral import get_mistral_ocr
 
-        raw_result = await get_mistral_ocr().poll_batch(batch_id)
-        return _sax_platform_poll_result_to_sax_llm(raw_result)
+        return await get_mistral_ocr().poll_batch(batch_id)
 
-    from sax_llm import get_provider_by_name
-
-    provider = get_provider_by_name(provider_name)
-    return await provider.poll_batch(batch_id)
+    return await _poll_anthropic_batch(_get_batch_client(), batch_id)
 
 
-def _sax_platform_poll_result_to_sax_llm(
-    raw_result: _SaxPlatformBatchPollResult,
-) -> BatchPollResult:
-    """Build sax_llm's ``BatchPollResult`` directly from a sax_platform.ocr one.
+async def _poll_anthropic_batch(client: AsyncAnthropic, batch_id: str) -> BatchPollResult:
+    """Poll an Anthropic Message Batch, normalized to the ``sax_platform.ocr`` shape.
 
-    Replaces a ``model_dump(mode="json")``/``model_validate`` round-trip, which
-    serialized and reparsed every base64 image payload twice per poll cycle
-    (2026-07 Phase 3 code review, item 5b). The two schemas are field-for-field
-    identical (see the sax_platform.ocr module docstring and ``_poll_batch_for``'s
-    own docstring), so this constructs sax_llm's models directly from the
-    sax_platform objects' already-validated attributes — behavior identical,
-    one copy of each payload instead of two.
+    Faithful port of the retired Anthropic provider's ``poll_batch``: the batch is
+    either still running (any ``processing_status`` other than ``"ended"`` →
+    IN_PROGRESS) or finished (``"ended"`` → ENDED), in which case every result
+    line is fetched as raw bytes and turned into a ``BatchResultEntry``.
+
+    Anthropic's batch-level ``processing_status`` is only ever
+    in_progress/canceling/ended — per-request errored/expired/canceled outcomes
+    surface as failed *lines*, not a batch-level failure — so this adapter never
+    emits FAILED/EXPIRED/CANCELED, exactly as the retired provider never did, and
+    the terminal-failure branch downstream stays unreachable for anthropic.
     """
-    return BatchPollResult(
-        status=BatchPollStatus(raw_result.status.value),
-        entries=[
-            BatchResultEntry(
-                custom_id=entry.custom_id,
-                succeeded=entry.succeeded,
-                raw_response_json=entry.raw_response_json,
-                error=entry.error,
-                extracted_images=[
-                    ExtractedImage(
-                        original_image_id=img.original_image_id,
-                        page_index=img.page_index,
-                        image_base64=img.image_base64,
-                        mime_type=img.mime_type,
-                        top_left_x=img.top_left_x,
-                        top_left_y=img.top_left_y,
-                        bottom_right_x=img.bottom_right_x,
-                        bottom_right_y=img.bottom_right_y,
-                    )
-                    for img in entry.extracted_images
-                ],
-            )
-            for entry in raw_result.entries
-        ],
+    # Imported here, not at module level: sax_platform.llm.batch loads the
+    # anthropic SDK, and forge.activities is chain-imported inside the Temporal
+    # workflow sandbox (via workflow-bearing modules importing activity fns).
+    from sax_platform.llm.batch import (
+        BatchRequestFailed,
+        fetch_batch_result_lines,
+        get_batch_status,
     )
+
+    status = await get_batch_status(client, batch_id)
+    if status.processing_status != "ended":
+        return BatchPollResult(status=BatchPollStatus.IN_PROGRESS)
+
+    entries: list[BatchResultEntry] = []
+    for custom_id, line in await fetch_batch_result_lines(client, batch_id):
+        if isinstance(line, BatchRequestFailed):
+            entries.append(
+                BatchResultEntry(
+                    custom_id=custom_id,
+                    succeeded=False,
+                    error=_format_request_failure(line),
+                )
+            )
+        else:
+            entries.append(
+                BatchResultEntry(
+                    custom_id=custom_id,
+                    succeeded=True,
+                    raw_response_json=line,
+                )
+            )
+    return BatchPollResult(status=BatchPollStatus.ENDED, entries=entries)
+
+
+def _format_request_failure(failure: BatchRequestFailed) -> str:
+    """Human-readable error string for a failed batch line.
+
+    Mirrors the message strings from the retired Anthropic provider's ``_format_batch_error``
+    so the error signals waiters receive are unchanged across the migration.
+    """
+    if failure.kind == "errored":
+        return f"Batch error: {failure.detail}"
+    if failure.kind == "expired":
+        return "Batch request expired (24h limit)"
+    return "Batch request was canceled"
 
 
 async def _deliver_signal(
@@ -315,7 +351,7 @@ def _build_success_signal(
     """Build a succeeded BatchResult, choosing inline vs pointer delivery.
 
     Images (or a large body) force pointer delivery: the verbatim body plus any
-    sax-llm-extracted images are wrapped in the result envelope and stashed; the
+    provider-extracted images are wrapped in the result envelope and stashed; the
     platform never decodes or stores the images itself.
     """
     body = entry.raw_response_json

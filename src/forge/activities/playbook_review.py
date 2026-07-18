@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
 
+from forge.llm_client import get_llm
 from forge.models import (  # noqa: TC001 — Temporal needs these at runtime for activity deserialization
     FetchExistingPlaybooksInput,
     ReviewManualPlaybookInput,
@@ -22,6 +23,8 @@ from forge.models import (  # noqa: TC001 — Temporal needs these at runtime fo
 )
 
 if TYPE_CHECKING:
+    from sax_platform.llm import AnthropicLLM
+
     from forge.models import PlaybookEntry, PlaybookReviewResult
 
 
@@ -108,6 +111,7 @@ def apply_suggestions(entry: PlaybookEntry, review: PlaybookReviewResult) -> Pla
 async def review_playbook_entry(
     entry: PlaybookEntry,
     existing_playbooks: list[dict[str, Any]],
+    llm: AnthropicLLM,
     model_name: str = "",
 ) -> PlaybookReviewResult:
     """Send a proposed playbook entry to the LLM for review.
@@ -115,29 +119,26 @@ async def review_playbook_entry(
     Uses the CLASSIFICATION tier model (Haiku) since this is a
     straightforward accept/reject with light suggestions.
     """
-    from sax_llm.models import text_messages
-    from sax_llm.registry import get_provider, parse_model_id
+    from sax_platform.llm.tiers import split_provider
 
     from forge.models import CapabilityTier, ModelConfig, PlaybookReviewResult, resolve_model
 
     if not model_name:
         model_name = resolve_model(CapabilityTier.CLASSIFICATION, ModelConfig())
-    _, parsed_model = parse_model_id(model_name)
-    provider = get_provider(model_name)
+    _, model = split_provider(model_name)
 
     system_prompt = build_review_system_prompt(existing_playbooks)
     user_prompt = build_review_user_prompt(entry)
-    messages = text_messages(system_prompt, user_prompt)
 
-    params = provider.build_request_params(
-        messages=messages,
+    completion = await llm.complete(
+        [{"role": "user", "content": user_prompt}],
         output_type=PlaybookReviewResult,
-        model=parsed_model,
+        model=model,
         max_tokens=1024,
+        system=system_prompt,
     )
-    response = await provider.call(params)
 
-    return PlaybookReviewResult.model_validate(response.tool_input)
+    return completion.output
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +175,7 @@ async def review_manual_playbook(input: ReviewManualPlaybookInput) -> ReviewManu
     from forge.models import ReviewManualPlaybookResult
 
     review = await review_playbook_entry(
-        input.entry, input.existing_playbooks, model_name=input.model_name
+        input.entry, input.existing_playbooks, get_llm(), model_name=input.model_name
     )
     if not review.approved:
         return ReviewManualPlaybookResult(

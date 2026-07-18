@@ -9,7 +9,6 @@ dependencies = [
     "alembic>=1.14",
     "click>=8.1.0",
     "temporalio>=1.9.0",
-    "sax-llm>=0.1.1",
     "sax-platform",
     "openai>=2.31.0",
     "numpy>=2.4.4",

@@ -98,8 +98,8 @@ class TestPollBatchForUsesSharedResolver:
         (batch_submit.py) are the two former hand-rolled dispatch sites —
         after the dedup they must resolve through the identical cached
         MistralOcr, not two independently-constructed ones."""
-        from sax_llm.models import BatchPollStatus as SaxLlmBatchPollStatus
         from sax_platform.ocr import BatchPollResult as PlatformBatchPollResult
+        from sax_platform.ocr import BatchPollStatus
 
         mistral_provider = MagicMock()
         mistral_provider.poll_batch = AsyncMock(
@@ -115,5 +115,5 @@ class TestPollBatchForUsesSharedResolver:
 
         mock_mistral_ocr.assert_called_once()
         assert submit_resolved is mistral_provider
-        assert poll_result.status == SaxLlmBatchPollStatus.ENDED
+        assert poll_result.status == BatchPollStatus.ENDED
         mistral_provider.poll_batch.assert_awaited_once_with("batch-mistral")

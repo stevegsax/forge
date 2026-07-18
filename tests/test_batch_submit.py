@@ -2,31 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sax_platform.contracts.models import BatchSubmitSpiInput
+from sax_platform.llm.batch import BatchHandle
 
 from forge.activities.batch_submit import (
+    _AnthropicBlobSubmit,
     _resolve_blob_submit_provider,
     execute_batch_submit,
     execute_submit_batch_blob,
 )
 from forge.models import AssembledContext, BatchSubmitInput, ThinkingPolicy
-from tests.conftest import build_mock_provider
-
-
-def _make_mock_provider(batch_id: str = "msgbatch_test123") -> MagicMock:
-    """Build a mock LLMProvider with batch methods."""
-    provider = build_mock_provider(
-        tool_input={},
-        model_name="test-model",
-    )
-    provider.build_batch_request = MagicMock(
-        return_value={"custom_id": "mock-id", "params": {"model": "test"}}
-    )
-    provider.submit_batch = AsyncMock(return_value=batch_id)
-    return provider
 
 
 def _make_input(
@@ -52,6 +41,18 @@ def _make_input(
     )
 
 
+def _submit_mock(batch_id: str = "msgbatch_test123") -> AsyncMock:
+    """AsyncMock standing in for the platform ``submit_batch`` helper."""
+    return AsyncMock(return_value=BatchHandle(batch_id=batch_id, processing_status="in_progress"))
+
+
+def _submitted_params(submit: AsyncMock) -> dict:
+    """Return the ``params`` of the single request handed to ``submit_batch``."""
+    _client, requests = submit.await_args.args
+    assert len(requests) == 1
+    return requests[0]["params"]
+
+
 # ---------------------------------------------------------------------------
 # execute_batch_submit
 # ---------------------------------------------------------------------------
@@ -60,60 +61,92 @@ def _make_input(
 class TestExecuteBatchSubmit:
     @pytest.mark.asyncio
     async def test_returns_batch_submit_result(self) -> None:
-        provider = _make_mock_provider()
-        input_data = _make_input()
-
-        result = await execute_batch_submit(input_data, provider)
+        client = MagicMock()
+        submit = _submit_mock()
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            result = await execute_batch_submit(_make_input(), client)
 
         assert result.batch_id == "msgbatch_test123"
         assert result.request_id  # non-empty UUID
-
-    @pytest.mark.asyncio
-    async def test_calls_provider_submit_batch(self) -> None:
-        provider = _make_mock_provider()
-        input_data = _make_input()
-
-        await execute_batch_submit(input_data, provider)
-
-        provider.build_request_params.assert_called_once()
-        provider.build_batch_request.assert_called_once()
-        provider.submit_batch.assert_called_once()
+        called_client, requests = submit.await_args.args
+        assert called_client is client
+        assert requests[0]["custom_id"] == result.request_id
 
     @pytest.mark.asyncio
     async def test_request_id_is_uuid_format(self) -> None:
-        provider = _make_mock_provider()
-        input_data = _make_input()
+        client = MagicMock()
+        with patch("sax_platform.llm.batch.submit_batch", _submit_mock()):
+            result = await execute_batch_submit(_make_input(), client)
 
-        result = await execute_batch_submit(input_data, provider)
-
-        # UUID format: 8-4-4-4-12 hex digits
         parts = result.request_id.split("-")
-        assert len(parts) == 5
         assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
 
     @pytest.mark.asyncio
-    async def test_passes_thinking_policy_through(self) -> None:
-        provider = _make_mock_provider()
-        input_data = _make_input(
-            model_name="claude-sonnet-4-5-20250929",
-            thinking=ThinkingPolicy(enabled=True, effort="high"),
-        )
+    async def test_resolves_output_type_into_structured_format(self) -> None:
+        client = MagicMock()
+        submit = _submit_mock()
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            await execute_batch_submit(_make_input(output_type_name="LLMResponse"), client)
 
-        await execute_batch_submit(input_data, provider)
-
-        call_kwargs = provider.build_request_params.call_args
-        assert call_kwargs[1].get("thinking_enabled") is True
-        assert call_kwargs[1].get("effort") == "high"
+        params = _submitted_params(submit)
+        assert params["output_config"]["format"]["type"] == "json_schema"
 
     @pytest.mark.asyncio
-    async def test_passes_max_tokens_through(self) -> None:
-        provider = _make_mock_provider()
-        input_data = _make_input(max_tokens=8192)
+    async def test_text_mode_omits_structured_format(self) -> None:
+        client = MagicMock()
+        submit = _submit_mock()
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            # Empty output_type_name -> text lane, no structured-output format.
+            await execute_batch_submit(_make_input(output_type_name=""), client)
 
-        await execute_batch_submit(input_data, provider)
+        params = _submitted_params(submit)
+        assert "format" not in params.get("output_config", {})
 
-        call_kwargs = provider.build_request_params.call_args
-        assert call_kwargs[1].get("max_tokens") == 8192
+    @pytest.mark.asyncio
+    async def test_passes_thinking_through_for_non_haiku(self) -> None:
+        client = MagicMock()
+        submit = _submit_mock()
+        input_data = _make_input(
+            model_name="anthropic:claude-sonnet-5",
+            thinking=ThinkingPolicy(enabled=True, effort="high"),
+        )
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            await execute_batch_submit(input_data, client)
+
+        params = _submitted_params(submit)
+        assert params["model"] == "claude-sonnet-5"
+        assert params["thinking"] == {"type": "adaptive"}
+        assert params["output_config"]["effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_haiku_guard_drops_thinking(self) -> None:
+        # Old sax_llm silently dropped thinking for haiku; the platform builder
+        # would otherwise emit a shape haiku 400s on, so batch_submit passes None.
+        client = MagicMock()
+        submit = _submit_mock()
+        input_data = _make_input(
+            model_name="anthropic:claude-haiku-4-5",
+            thinking=ThinkingPolicy(enabled=True, effort="high"),
+        )
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            await execute_batch_submit(input_data, client)
+
+        params = _submitted_params(submit)
+        assert "thinking" not in params
+        assert "effort" not in params.get("output_config", {})
+
+    @pytest.mark.asyncio
+    async def test_passes_max_tokens_and_prompts_through(self) -> None:
+        client = MagicMock()
+        submit = _submit_mock()
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            await execute_batch_submit(_make_input(max_tokens=8192), client)
+
+        params = _submitted_params(submit)
+        assert params["max_tokens"] == 8192
+        assert params["messages"] == [{"role": "user", "content": "Do something."}]
+        # system is normalized to a text block by the builder.
+        assert params["system"][0]["text"] == "You are a helpful assistant."
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +160,6 @@ class TestExecuteSubmitBatchBlob:
         provider = MagicMock()
         provider.submit_batch = AsyncMock(return_value="batch_abc")
         requests = [{"custom_id": "req-1", "body": {"document": "x"}}]
-        import json
-
         blob = json.dumps(requests).encode("utf-8")
 
         def fetch(key: str) -> bytes:
@@ -165,27 +196,37 @@ class TestExecuteSubmitBatchBlob:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_blob_submit_provider — the SPI's per-provider dispatch (T3.3)
+# _resolve_blob_submit_provider — the SPI's per-provider dispatch
 # ---------------------------------------------------------------------------
 
 
 class TestResolveBlobSubmitProvider:
-    def test_anthropic_resolves_via_sax_llm_registry(self) -> None:
-        """Every non-mistral provider name still goes through sax_llm's registry,
-        unchanged by the mistral migration."""
-        sentinel_provider = object()
-        with patch(
-            "sax_llm.get_provider_by_name", return_value=sentinel_provider
-        ) as mock_get_provider:
+    def test_anthropic_resolves_to_platform_adapter(self) -> None:
+        """The anthropic route no longer goes through sax_llm — it wraps the shared
+        AsyncAnthropic client in the platform-batch adapter."""
+        sentinel_client = object()
+        with patch("forge.activities.batch_submit._get_batch_client", return_value=sentinel_client):
             result = _resolve_blob_submit_provider("anthropic")
 
-        mock_get_provider.assert_called_once_with("anthropic")
-        assert result is sentinel_provider
+        assert isinstance(result, _AnthropicBlobSubmit)
+        assert result._client is sentinel_client
+
+    @pytest.mark.asyncio
+    async def test_anthropic_adapter_submits_via_platform(self) -> None:
+        client = MagicMock()
+        submit = _submit_mock("batch_via_adapter")
+        adapter = _AnthropicBlobSubmit(client)
+        requests = [{"custom_id": "c", "params": {"model": "m"}}]
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            # model / endpoint are accepted but ignored (they ride inside params).
+            batch_id = await adapter.submit_batch(requests, "ignored-model", endpoint="/v1/x")
+
+        assert batch_id == "batch_via_adapter"
+        submit.assert_awaited_once_with(client, requests)
 
     def test_mistral_resolves_via_sax_platform_ocr(self) -> None:
-        """mistral no longer resolves through sax_llm at all (it carries no
-        provider entry for it post-T3.3) — it routes through
-        sax_platform.ocr.MistralOcr, built from make_mistral_client()."""
+        """mistral routes through sax_platform.ocr.MistralOcr, built from
+        make_mistral_client()."""
         sentinel_client = object()
         sentinel_provider = object()
         with (

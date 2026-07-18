@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from sax_platform.llm import LLMRefused, LLMTruncated, Telemetry
 
 from forge.activities.conflict_resolution import (
     DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS,
@@ -25,7 +26,7 @@ from forge.models import (
     SubTaskResult,
     TransitionSignal,
 )
-from tests.conftest import build_mock_provider
+from tests.conftest import build_mock_llm
 
 # ---------------------------------------------------------------------------
 # TestDetectFileConflicts
@@ -314,8 +315,21 @@ class TestBuildConflictResolutionUserPrompt:
 # ---------------------------------------------------------------------------
 
 
+def _telemetry(stop_reason: str) -> Telemetry:
+    """Minimal Telemetry for constructing typed LLM failures in tests."""
+    return Telemetry(
+        model="test-model",
+        stop_reason=stop_reason,
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        request_id=None,
+    )
+
+
 class TestExecuteConflictResolutionCall:
-    """execute_conflict_resolution_call calls provider and extracts structured results."""
+    """execute_conflict_resolution_call calls the client and extracts structured results."""
 
     @pytest.mark.asyncio
     async def test_returns_result_with_correct_fields(self) -> None:
@@ -328,8 +342,10 @@ class TestExecuteConflictResolutionCall:
             ],
             explanation="Combined both functions.",
         )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
+        llm = build_mock_llm(
+            output=mock_response,
+            model="claude-opus-4-8",
+            stop_reason="end_turn",
             input_tokens=200,
             output_tokens=100,
             cache_creation_input_tokens=10,
@@ -343,17 +359,46 @@ class TestExecuteConflictResolutionCall:
             user_prompt="user",
         )
 
-        result = await execute_conflict_resolution_call(input_data, provider)
+        result = await execute_conflict_resolution_call(input_data, llm)
 
         assert isinstance(result, ConflictResolutionCallResult)
         assert result.task_id == "test-task"
         assert result.resolved_files == {"shared.py": "# merged\ndef foo(): pass\ndef bar(): pass"}
         assert result.explanation == "Combined both functions."
+        assert result.model_name == "claude-opus-4-8"
         assert result.input_tokens == 200
         assert result.output_tokens == 100
         assert result.cache_creation_input_tokens == 10
         assert result.cache_read_input_tokens == 5
+        assert result.stop_reason == "end_turn"
         assert result.latency_ms > 0
+
+    @pytest.mark.asyncio
+    async def test_complete_called_with_expected_kwargs(self) -> None:
+        mock_response = ConflictResolutionResponse(
+            resolved_files=[FileOutput(file_path="shared.py", content="# merged")],
+            explanation="Combined both.",
+        )
+        llm = build_mock_llm(output=mock_response)
+        input_data = ConflictResolutionCallInput(
+            task_id="test-task",
+            step_id="step-1",
+            system_prompt="system",
+            user_prompt="user",
+            model_name="anthropic:claude-sonnet-5",
+        )
+
+        await execute_conflict_resolution_call(input_data, llm)
+
+        llm.complete.assert_awaited_once()
+        call = llm.complete.await_args
+        assert call.args[0] == [{"role": "user", "content": "user"}]
+        assert call.kwargs["output_type"] is ConflictResolutionResponse
+        # split_provider strips the provider prefix before the model reaches complete.
+        assert call.kwargs["model"] == "claude-sonnet-5"
+        assert call.kwargs["max_tokens"] == DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS
+        assert call.kwargs["system"] == "system"
+        assert call.kwargs["thinking"] == input_data.thinking
 
     @pytest.mark.asyncio
     async def test_multiple_resolved_files(self) -> None:
@@ -364,11 +409,7 @@ class TestExecuteConflictResolutionCall:
             ],
             explanation="Merged both files.",
         )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            input_tokens=300,
-            output_tokens=150,
-        )
+        llm = build_mock_llm(output=mock_response, input_tokens=300, output_tokens=150)
 
         input_data = ConflictResolutionCallInput(
             task_id="test-task",
@@ -377,7 +418,7 @@ class TestExecuteConflictResolutionCall:
             user_prompt="user",
         )
 
-        result = await execute_conflict_resolution_call(input_data, provider)
+        result = await execute_conflict_resolution_call(input_data, llm)
 
         assert len(result.resolved_files) == 2
         assert result.resolved_files["a.py"] == "# merged a"
@@ -392,7 +433,7 @@ class TestExecuteConflictResolutionCall:
             resolved_files=[FileOutput(file_path="shared.py", content="# merged")],
             explanation="Combined both.",
         )
-        provider = build_mock_provider(tool_input=mock_response.model_dump())
+        llm = build_mock_llm(output=mock_response)
         input_data = ConflictResolutionCallInput(
             task_id="test-task",
             step_id="step-1",
@@ -400,74 +441,45 @@ class TestExecuteConflictResolutionCall:
             user_prompt="user",
         )
 
-        await execute_conflict_resolution_call(input_data, provider)
+        await execute_conflict_resolution_call(input_data, llm)
 
         assert DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS == 16384
-        call_kwargs = provider.build_request_params.call_args.kwargs
+        call_kwargs = llm.complete.await_args.kwargs
         assert call_kwargs["max_tokens"] == DEFAULT_CONFLICT_RESOLUTION_MAX_TOKENS
 
     @pytest.mark.asyncio
-    async def test_extracts_stop_reason(self) -> None:
-        mock_response = ConflictResolutionResponse(
-            resolved_files=[FileOutput(file_path="shared.py", content="# merged")],
-            explanation="Combined both.",
+    async def test_refusal_propagates(self) -> None:
+        llm = build_mock_llm(error=LLMRefused(category="policy", telemetry=_telemetry("refusal")))
+        input_data = ConflictResolutionCallInput(
+            task_id="t", step_id="s", system_prompt="sys", user_prompt="usr"
         )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            raw_response_json='{"stop_reason": "end_turn"}',
+
+        with pytest.raises(LLMRefused):
+            await execute_conflict_resolution_call(input_data, llm)
+
+    @pytest.mark.asyncio
+    async def test_truncation_propagates(self) -> None:
+        llm = build_mock_llm(
+            error=LLMTruncated(
+                partial_text="partial", max_tokens=16384, telemetry=_telemetry("max_tokens")
+            )
         )
         input_data = ConflictResolutionCallInput(
             task_id="t", step_id="s", system_prompt="sys", user_prompt="usr"
         )
 
-        result = await execute_conflict_resolution_call(input_data, provider)
-
-        assert result.stop_reason == "end_turn"
+        with pytest.raises(LLMTruncated):
+            await execute_conflict_resolution_call(input_data, llm)
 
 
 # ---------------------------------------------------------------------------
-# max_tokens truncation warning (owner-mandated token record-keeping caveat)
+# call_conflict_resolution shell
 # ---------------------------------------------------------------------------
 
 
-class TestCallConflictResolutionMaxTokensWarning:
+class TestCallConflictResolution:
     @pytest.mark.asyncio
-    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from forge.activities.conflict_resolution import call_conflict_resolution
-
-        mock_response = ConflictResolutionResponse(
-            resolved_files=[FileOutput(file_path="shared.py", content="# partial")],
-            explanation="partial",
-        )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            output_tokens=16384,
-            raw_response_json='{"stop_reason": "max_tokens"}',
-        )
-
-        with (
-            patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-            caplog.at_level("WARNING", logger="forge.activities.conflict_resolution"),
-        ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
-            call_input = ConflictResolutionCallInput(
-                task_id="t-trunc", step_id="s", system_prompt="sys", user_prompt="usr"
-            )
-            await call_conflict_resolution(call_input)
-
-        assert any("truncated at max_tokens" in r.message for r in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_delegates_to_client_and_returns_result(self) -> None:
         from unittest.mock import MagicMock, patch
 
         from forge.activities.conflict_resolution import call_conflict_resolution
@@ -476,15 +488,11 @@ class TestCallConflictResolutionMaxTokensWarning:
             resolved_files=[FileOutput(file_path="shared.py", content="# merged")],
             explanation="ok",
         )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            raw_response_json='{"stop_reason": "end_turn"}',
-        )
+        llm = build_mock_llm(output=mock_response, model="claude-opus-4-8")
 
         with (
-            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.llm_client.get_llm", return_value=llm),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
-            caplog.at_level("WARNING", logger="forge.activities.conflict_resolution"),
         ):
             mock_span = MagicMock()
             mock_span.__enter__ = MagicMock(return_value=mock_span)
@@ -496,9 +504,11 @@ class TestCallConflictResolutionMaxTokensWarning:
             call_input = ConflictResolutionCallInput(
                 task_id="t-ok", step_id="s", system_prompt="sys", user_prompt="usr"
             )
-            await call_conflict_resolution(call_input)
+            result = await call_conflict_resolution(call_input)
 
-        assert not any("truncated at max_tokens" in r.message for r in caplog.records)
+        assert result.task_id == "t-ok"
+        assert result.resolved_files == {"shared.py": "# merged"}
+        llm.complete.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

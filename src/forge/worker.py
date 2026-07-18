@@ -118,43 +118,6 @@ def _init_store() -> None:
     )
 
 
-def _register_output_types() -> None:
-    """Register Forge's Pydantic models with the shared LLM output type registry.
-
-    Required for batch response parsing — the shared sax-llm package uses a
-    plugin pattern instead of hardcoded imports.
-    """
-    from sax_llm import register_output_type
-
-    from forge.eval.models import JudgeVerdict
-    from forge.models import (
-        ConflictResolutionResponse,
-        ExplorationResponse,
-        ExtractionResult,
-        LLMResponse,
-        Plan,
-        SanityCheckResponse,
-    )
-
-    register_output_type("LLMResponse", LLMResponse)
-    register_output_type("Plan", Plan)
-    register_output_type("ExplorationResponse", ExplorationResponse)
-    register_output_type("SanityCheckResponse", SanityCheckResponse)
-    register_output_type("ConflictResolutionResponse", ConflictResolutionResponse)
-    register_output_type("ExtractionResult", ExtractionResult)
-    register_output_type("JudgeVerdict", JudgeVerdict)
-
-    try:
-        from pbook.ingestion_prompts import TranscriptAnalysisResult
-
-        register_output_type("TranscriptAnalysisResult", TranscriptAnalysisResult)
-    except ImportError:
-        logger.warning(
-            "pbook not installed — TranscriptAnalysisResult output type not registered. "
-            "Ingestion workflows will not be available."
-        )
-
-
 async def _ensure_schedule(
     client: Client,
     schedule_id: str,
@@ -224,7 +187,6 @@ async def run_worker(
     from forge.logging_config import silence_noisy_loggers
 
     _init_store()
-    _register_output_types()
     init_tracing()
     silence_noisy_loggers()
 

@@ -27,7 +27,6 @@ lint:
 # theirs as each strictness flip lands).
 typecheck:
 	uv run mypy
-	cd libs/sax-llm && uv run mypy
 	cd apps/ocr && uv run mypy
 	cd apps/pbook && uv run mypy
 	cd libs/sax-platform && uv run mypy
@@ -39,7 +38,6 @@ test:
 	uv run pytest
 	cd apps/pbook && uv run pytest
 	cd apps/ocr && uv run pytest
-	cd libs/sax-llm && uv run pytest
 	cd libs/sax-platform && uv run pytest
 
 gates: lint typecheck lint-imports test
@@ -61,9 +59,9 @@ help:
 	@echo "Gates (T2.2): what CI runs"
 	@echo "  make gates        lint + typecheck + lint-imports + test"
 	@echo "  make lint         ruff check + format --check (workspace-wide)"
-	@echo "  make typecheck    mypy strict across all six packages"
+	@echo "  make typecheck    mypy strict across all four packages"
 	@echo "  make lint-imports import-linter DAG contracts (root pyproject)"
-	@echo "  make test         all six package suites, each from its own directory"
+	@echo "  make test         all four package suites, each from its own directory"
 	@echo ""
 	@echo "Local stack (deploy/local-stack): Postgres + MinIO + Temporal"
 	@echo "  data dirs: $(PG_DATA_DIR) | $(MINIO_DATA_DIR)"

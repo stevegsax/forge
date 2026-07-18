@@ -15,35 +15,6 @@ if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _register_output_types():
-    """Register Forge's output types with the shared sax-llm registry.
-
-    Required for any test that uses batch parsing or the output type registry.
-    """
-    from sax_llm import register_output_type
-    from sax_llm.registry import reset_output_type_registry
-
-    from forge.eval.models import JudgeVerdict
-    from forge.models import (
-        ConflictResolutionResponse,
-        ExplorationResponse,
-        ExtractionResult,
-        LLMResponse,
-        Plan,
-        SanityCheckResponse,
-    )
-
-    reset_output_type_registry()
-    register_output_type("LLMResponse", LLMResponse)
-    register_output_type("Plan", Plan)
-    register_output_type("ExplorationResponse", ExplorationResponse)
-    register_output_type("SanityCheckResponse", SanityCheckResponse)
-    register_output_type("ConflictResolutionResponse", ConflictResolutionResponse)
-    register_output_type("ExtractionResult", ExtractionResult)
-    register_output_type("JudgeVerdict", JudgeVerdict)
-
-
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def env() -> WorkflowEnvironment:
     from temporalio.contrib.pydantic import pydantic_data_converter
@@ -55,73 +26,48 @@ async def env() -> WorkflowEnvironment:
         yield env
 
 
-def build_mock_message(
-    tool_name: str,
-    tool_input: dict,
+def build_mock_llm(
+    output=None,
     *,
+    error: Exception | None = None,
+    model: str = "test-model",
+    stop_reason: str = "end_turn",
     input_tokens: int = 100,
     output_tokens: int = 200,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
 ) -> MagicMock:
-    """Build a mock Anthropic Message with a tool_use content block.
+    """Build a stub AnthropicLLM whose ``complete`` returns a canned Completion.
 
-    Returns a MagicMock that mimics anthropic.types.Message structure:
-    - message.content = [tool_use_block]
-    - message.usage.input_tokens, .output_tokens, etc.
+    Pass ``output`` (a pydantic instance) for the success path, or ``error``
+    (an LLMRefused/LLMTruncated/LLMSchemaMismatch instance) to make ``complete``
+    raise it instead. Call args are recorded on the AsyncMock for assertions.
     """
-    tool_block = MagicMock()
-    tool_block.type = "tool_use"
-    tool_block.name = tool_name
-    tool_block.input = tool_input
+    from unittest.mock import AsyncMock
 
-    usage = MagicMock()
-    usage.input_tokens = input_tokens
-    usage.output_tokens = output_tokens
-    usage.cache_creation_input_tokens = cache_creation_input_tokens
-    usage.cache_read_input_tokens = cache_read_input_tokens
+    from sax_platform.llm import Completion
 
-    message = MagicMock()
-    message.content = [tool_block]
-    message.usage = usage
-    return message
+    llm = MagicMock()
+    if error is not None:
+        llm.complete = AsyncMock(side_effect=error)
+        llm.complete_schema = AsyncMock(side_effect=error)
+        llm.complete_text = AsyncMock(side_effect=error)
+        return llm
 
-
-def build_mock_provider(
-    tool_input: dict | None = None,
-    *,
-    text_content: str | None = None,
-    model_name: str = "test-model",
-    input_tokens: int = 100,
-    output_tokens: int = 200,
-    cache_creation_input_tokens: int = 0,
-    cache_read_input_tokens: int = 0,
-    raw_response_json: str = "{}",
-) -> MagicMock:
-    """Build a mock LLMProvider that returns a ProviderResponse.
-
-    Returns a MagicMock implementing the LLMProvider protocol with
-    build_request_params and call methods pre-configured.
-    """
-    from sax_llm.models import ProviderResponse
-
-    response = ProviderResponse(
-        tool_input=tool_input or {},
-        text_content=text_content,
-        model_name=model_name,
+    completion = Completion(
+        output=output,
+        model=model,
+        stop_reason=stop_reason,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_creation_input_tokens=cache_creation_input_tokens,
         cache_read_input_tokens=cache_read_input_tokens,
-        raw_response_json=raw_response_json,
+        request_id=None,
     )
-
-    from unittest.mock import AsyncMock
-
-    provider = MagicMock()
-    provider.build_request_params = MagicMock(return_value={"model": model_name})
-    provider.call = AsyncMock(return_value=response)
-    return provider
+    llm.complete = AsyncMock(return_value=completion)
+    llm.complete_schema = AsyncMock(return_value=completion)
+    llm.complete_text = AsyncMock(return_value=completion)
+    return llm
 
 
 @pytest.fixture(autouse=True)

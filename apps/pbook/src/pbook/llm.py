@@ -1,40 +1,43 @@
 """LLM integration layer for the playbook service.
 
-Re-exports the LLMProvider protocol and ProviderResponse from sax-llm.
-Defines pbook-specific structured output models (ExtractionResult, ReviewResult)
-and a simple provider registry for runtime injection.
+Defines pbook-specific structured output models (ExtractionResult,
+ReviewResult, ConsolidationResult) and a minimal provider seam for runtime
+injection of a ``sax_platform.llm`` structured-outputs client.
+
+The seam is a module-global registered via :func:`set_provider`; the
+generic chat activity calls :func:`get_provider`. Only the one method
+``llm_chat`` actually needs — ``complete`` — is captured in the local
+:class:`SupportsComplete` Protocol, so tests can inject a stub without
+constructing the SDK-backed client (and mypy-strict still checks the shape).
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
-from sax_llm.models import ProviderResponse, text_messages
-from sax_llm.protocol import LLMProvider
+from typing import TYPE_CHECKING, Protocol
 
-# Re-export for backward compatibility with existing pbook code
+from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from typing import Any
+
+    from anthropic.types import MessageParam
+    from sax_platform.llm import CacheSpec, Completion, ThinkingPolicy
+
 __all__ = [
+    "ConsolidationResult",
     "ExtractionEntry",
     "ExtractionResult",
-    "LLMProvider",
-    "LLMResponse",
-    "ProviderResponse",
     "ReviewResult",
+    "SupportsComplete",
     "get_provider",
     "reset_provider",
     "set_provider",
-    "text_messages",
 ]
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatible alias
-# ---------------------------------------------------------------------------
-
-LLMResponse = ProviderResponse
-
-
-# ---------------------------------------------------------------------------
-# Structured output models for extraction and review
+# Structured output models for extraction, review, and consolidation
 # ---------------------------------------------------------------------------
 
 
@@ -72,19 +75,44 @@ class ConsolidationResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Provider registry — simple global for runtime injection
+# Provider seam — minimal Protocol + module global for runtime injection
 # ---------------------------------------------------------------------------
 
-_provider: LLMProvider | None = None
+
+class SupportsComplete(Protocol):
+    """The single method ``llm_chat`` needs from a structured-outputs client.
+
+    Matches the signature shape of ``sax_platform.llm.AnthropicLLM.complete``
+    (the platform client satisfies this structurally). Keeping it a narrow
+    local Protocol lets tests inject a stub client under mypy-strict without
+    dragging in the SDK-backed implementation.
+    """
+
+    async def complete(
+        self,
+        messages: Iterable[MessageParam],
+        *,
+        output_type: type[BaseModel],
+        model: str,
+        max_tokens: int,
+        system: str | list[dict[str, Any]] | None = None,
+        cache: CacheSpec | None = None,
+        thinking: ThinkingPolicy | None = None,
+    ) -> Completion[Any]: ...
 
 
-def set_provider(provider: LLMProvider) -> None:
+# T3.6 deletes this global in favor of explicit dependency passing; until
+# then the worker registers a provider at startup and activities read it here.
+_provider: SupportsComplete | None = None
+
+
+def set_provider(provider: SupportsComplete) -> None:
     """Register the LLM provider for pbook activities."""
     global _provider
     _provider = provider
 
 
-def get_provider() -> LLMProvider:
+def get_provider() -> SupportsComplete:
     """Get the registered LLM provider.
 
     Raises ``RuntimeError`` if no provider has been registered.

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sax_platform.llm.cache import CacheSpec
 from sax_platform.llm.client import AnthropicLLM, make_client
 from sax_platform.llm.models import LLMRefused, LLMSchemaMismatch, LLMTruncated
+from sax_platform.llm.tiers import ThinkingPolicy
 
 MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
 
@@ -342,6 +343,76 @@ class TestRepeatedPrefixTelemetry:
         completion = await llm.complete_text(MESSAGES, model="claude-sonnet-4-5", max_tokens=100)
 
         assert completion.cache_read_input_tokens == 777
+
+
+class TestThinking:
+    async def test_adaptive_policy_sends_thinking_and_effort_alongside_format(self) -> None:
+        body = _wire_message(text=json.dumps({"name": "Ada", "age": 36}))
+        llm, _client, captured = _make_llm(_handler_for(body))
+
+        await llm.complete(
+            MESSAGES,
+            output_type=_Person,
+            model="claude-sonnet-4-5",
+            max_tokens=100,
+            thinking=ThinkingPolicy(enabled=True, effort="high"),
+        )
+
+        [request] = captured
+        payload = _body_of(request)
+        assert payload["thinking"] == {"type": "adaptive"}
+        output_config = payload["output_config"]
+        # effort rides ALONGSIDE the structured-output format, not instead of it.
+        assert output_config["effort"] == "high"
+        assert output_config["format"]["type"] == "json_schema"
+
+    async def test_disabled_policy_sends_explicit_disabled_shape_and_no_effort(self) -> None:
+        body = _wire_message(text=json.dumps({"name": "Ada", "age": 36}))
+        llm, _client, captured = _make_llm(_handler_for(body))
+
+        await llm.complete(
+            MESSAGES,
+            output_type=_Person,
+            model="claude-sonnet-4-5",
+            max_tokens=100,
+            thinking=ThinkingPolicy(enabled=False),
+        )
+
+        [request] = captured
+        payload = _body_of(request)
+        # Omitting the field runs adaptive-by-default, so OFF is an explicit shape.
+        assert payload["thinking"] == {"type": "disabled"}
+        output_config = payload["output_config"]
+        assert "effort" not in output_config
+        assert output_config["format"]["type"] == "json_schema"
+
+    async def test_none_policy_leaves_wire_unchanged(self) -> None:
+        body = _wire_message(text=json.dumps({"name": "Ada", "age": 36}))
+        llm, _client, captured = _make_llm(_handler_for(body))
+
+        await llm.complete(MESSAGES, output_type=_Person, model="claude-sonnet-4-5", max_tokens=100)
+
+        [request] = captured
+        payload = _body_of(request)
+        assert "thinking" not in payload
+        assert "effort" not in payload["output_config"]
+
+    async def test_complete_text_effort_gives_effort_only_output_config(self) -> None:
+        body = _wire_message(text="hello there")
+        llm, _client, captured = _make_llm(_handler_for(body))
+
+        await llm.complete_text(
+            MESSAGES,
+            model="claude-sonnet-4-5",
+            max_tokens=100,
+            thinking=ThinkingPolicy(enabled=True, effort="medium"),
+        )
+
+        [request] = captured
+        payload = _body_of(request)
+        assert payload["thinking"] == {"type": "adaptive"}
+        # No format on the text lane: output_config carries effort only.
+        assert payload["output_config"] == {"effort": "medium"}
 
 
 class TestMakeClient:

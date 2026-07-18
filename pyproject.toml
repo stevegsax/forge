@@ -18,7 +18,6 @@ dependencies = [
     "alembic>=1.14",
     "psycopg2-binary>=2.9",
     "boto3>=1.34",
-    "sax-llm",
     "pbook",
     "sax-platform",
 ]
@@ -28,13 +27,12 @@ dependencies = [
 # apps), so a bare exact `uv sync` won't install it — use
 # `uv sync --all-packages` for setup and `uv run --package ocr` to
 # invoke it; `uv run`'s inexact sync keeps both coexisting in the venv.
-members = ["apps/pbook", "libs/sax-llm", "apps/ocr", "libs/sax-platform"]
+members = ["apps/pbook", "apps/ocr", "libs/sax-platform"]
 
 [tool.uv.sources]
 # Every internal package is a workspace member, so a bare checkout (or a
 # uvx clone of a tag) is self-contained — Finding A closed (D98). Members
 # declare no [tool.uv.sources] of their own.
-sax-llm = { workspace = true }
 pbook = { workspace = true }
 sax-platform = { workspace = true }
 
@@ -120,7 +118,7 @@ warn_redundant_casts = true
 no_implicit_reexport = true
 
 # networkx ships no type information; treat its imports as untyped at this
-# boundary. The internal sibling packages (sax_llm, pbook, sax_platform) now
+# boundary. The internal sibling packages (pbook, sax_platform) now
 # ship py.typed, so they are type-checked against their real signatures.
 [[tool.mypy.overrides]]
 module = [
@@ -134,7 +132,7 @@ ignore_missing_imports = true
 # apps or each other. The sax_platform.contracts internal-layering contract
 # lands in Phase 3 when that package exists.
 [tool.importlinter]
-root_packages = ["forge", "pbook", "ocr", "sax_llm", "sax_platform"]
+root_packages = ["forge", "pbook", "ocr", "sax_platform"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -159,15 +157,8 @@ forbidden_modules = ["ocr"]
 [[tool.importlinter.contracts]]
 name = "libs never import apps or each other"
 type = "forbidden"
-source_modules = ["sax_llm", "sax_platform"]
+source_modules = ["sax_platform"]
 forbidden_modules = ["forge", "pbook", "ocr"]
-
-# sax_platform replaces sax-llm across Phase 3; until sax-llm is retired the
-# two stay mutually independent.
-[[tool.importlinter.contracts]]
-name = "sax-llm and sax-platform are independent"
-type = "independence"
-modules = ["sax_llm", "sax_platform"]
 
 # Realizes the D89 sax_platform.contracts sandbox-light rule: the absorbed
 # forge-contracts wire surface stays free of LLM SDKs and of its own

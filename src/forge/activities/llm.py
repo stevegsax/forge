@@ -14,7 +14,6 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from sax_llm.models import text_messages
 from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
@@ -25,12 +24,11 @@ from forge.models import (
     LLMCallResult,
     LLMResponse,
     ModelConfig,
-    extract_stop_reason,
     resolve_model,
 )
 
 if TYPE_CHECKING:
-    from sax_llm.protocol import LLMProvider
+    from sax_platform.llm import AnthropicLLM
 
 # Shadow fallback for a missing context.model_name — the workflow always sets
 # it from CapabilityTier.GENERATION via ModelConfig, so this only fires if a
@@ -49,44 +47,54 @@ logger = logging.getLogger(__name__)
 
 async def execute_llm_call(
     context: AssembledContext,
-    provider: LLMProvider,
+    llm: AnthropicLLM,
 ) -> LLMCallResult:
-    """Call the LLM provider and extract structured results.
+    """Call the LLM and extract structured results.
 
-    Separated from the imperative shell so tests can inject a mock provider.
+    Separated from the imperative shell so tests can inject a mock client.
     """
-    from sax_llm import parse_model_id
+    from sax_platform.llm.tiers import split_provider
 
     full_model = context.model_name or DEFAULT_MODEL
-    _, model = parse_model_id(full_model)
+    _, model = split_provider(full_model)
     start = time.monotonic()
 
-    params = provider.build_request_params(
-        messages=text_messages(context.system_prompt, context.user_prompt),
+    completion = await llm.complete(
+        [{"role": "user", "content": context.user_prompt}],
         output_type=LLMResponse,
         model=model,
         max_tokens=DEFAULT_MAX_TOKENS,
+        system=context.system_prompt,
     )
-    result = await provider.call(params)
 
     if context.log_messages and context.worktree_path:
-        request_json = json.dumps(params, indent=2, default=str)
+        request_json = json.dumps(
+            {
+                "model": model,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "system": context.system_prompt,
+                "messages": [{"role": "user", "content": context.user_prompt}],
+            },
+            indent=2,
+            default=str,
+        )
         write_message_log(context.worktree_path, "request", request_json)
-        write_message_log(context.worktree_path, "response", result.raw_response_json)
+        write_message_log(
+            context.worktree_path, "response", completion.output.model_dump_json(indent=2)
+        )
 
     elapsed_ms = (time.monotonic() - start) * 1000
-    response = LLMResponse.model_validate(result.tool_input)
 
     return LLMCallResult(
         task_id=context.task_id,
-        response=response,
-        model_name=result.model_name,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
+        response=completion.output,
+        model_name=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
         latency_ms=elapsed_ms,
-        cache_creation_input_tokens=result.cache_creation_input_tokens,
-        cache_read_input_tokens=result.cache_read_input_tokens,
-        stop_reason=extract_stop_reason(result.raw_response_json),
+        cache_creation_input_tokens=completion.cache_creation_input_tokens,
+        cache_read_input_tokens=completion.cache_read_input_tokens,
+        stop_reason=completion.stop_reason,
     )
 
 
@@ -97,17 +105,16 @@ async def execute_llm_call(
 
 @activity.defn
 async def call_llm(context: AssembledContext) -> LLMCallResult:
-    """Activity wrapper — creates a provider and delegates to execute_llm_call."""
-    from sax_llm import get_provider
-
+    """Activity wrapper — obtains the LLM client and delegates to execute_llm_call."""
+    from forge.llm_client import get_llm
     from forge.tracing import get_tracer, llm_call_attributes
 
     tracer = get_tracer()
     with tracer.start_as_current_span("forge.call_llm") as span:
         logger.info("LLM call start: task_id=%s model=%s", context.task_id, context.model_name)
-        provider = get_provider(context.model_name or DEFAULT_MODEL)
+        llm = get_llm()
         async with heartbeat_during():
-            result = await execute_llm_call(context, provider)
+            result = await execute_llm_call(context, llm)
         logger.info(
             "LLM call done: task_id=%s tokens=%din/%dout latency=%.0fms",
             context.task_id,
@@ -115,15 +122,9 @@ async def call_llm(context: AssembledContext) -> LLMCallResult:
             result.output_tokens,
             result.latency_ms,
         )
-        if result.stop_reason == "max_tokens":
-            logger.warning(
-                "LLM call truncated at max_tokens: task_id=%s model=%s max_tokens=%d "
-                "output_tokens=%d",
-                context.task_id,
-                result.model_name,
-                DEFAULT_MAX_TOKENS,
-                result.output_tokens,
-            )
+        # A max_tokens truncation now raises LLMTruncated inside llm.complete
+        # before this wrapper is built, so result.stop_reason can never be
+        # "max_tokens" here — the former truncation warning branch was dropped.
 
         span.set_attributes(
             llm_call_attributes(

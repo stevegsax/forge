@@ -24,14 +24,24 @@ from sax_platform.temporal.retries import (
 
 
 class TestPresetShapes:
-    def test_llm_retry_matches_forge_workflows_shape(self) -> None:
+    def test_llm_retry_shape_includes_raised_classification_outcomes(self) -> None:
         assert LLM_RETRY.maximum_attempts == 3
         assert LLM_RETRY.non_retryable_error_types == [
             "BadRequestError",
             "AuthenticationError",
             "PermissionDeniedError",
             "NotFoundError",
+            # T3.5: a refusal and a truncation are deterministic, non-retryable
+            # (Temporal types the ApplicationError by the raising class name).
+            "LLMRefused",
+            "LLMTruncated",
         ]
+
+    def test_llm_retry_keeps_schema_mismatch_retryable(self) -> None:
+        # A schema mismatch is a sampling accident a fresh call can fix, so it
+        # must NOT be listed as non-retryable.
+        assert LLM_RETRY.non_retryable_error_types is not None
+        assert "LLMSchemaMismatch" not in LLM_RETRY.non_retryable_error_types
 
     def test_io_retry_matches_local_retry_shape(self) -> None:
         assert IO_RETRY.maximum_attempts == 2

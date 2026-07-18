@@ -11,7 +11,17 @@ import either the OpenAI or Anthropic SDK.
 Preset provenance
 ------------------
 ``LLM_RETRY``
-    Ported verbatim from ``forge.workflows._LLM_RETRY`` (``src/forge/workflows.py``).
+    Seeded from ``forge.workflows._LLM_RETRY`` (``src/forge/workflows.py``) —
+    the four SDK HTTP-status names — then extended (T3.5) with the platform
+    LLM client's two raised classification outcomes, ``LLMRefused`` and
+    ``LLMTruncated``. Temporal surfaces a raised exception as an
+    ``ApplicationError`` typed by the raising class's name, so listing the
+    class names here makes a refusal or a truncation non-retryable. A refusal
+    is a deterministic policy decision and a truncation means the output cap
+    was hit — neither clears by re-running the identical request, so retrying
+    only burns the attempt budget. ``LLMSchemaMismatch`` is deliberately NOT
+    listed: an off-schema completion is a sampling accident, and a fresh
+    (differently-sampled) call can land on-schema, so it stays retryable.
 ``IO_RETRY``
     Ported from the shape used by forge's three ``_LOCAL_RETRY`` copies
     (``RetryPolicy(maximum_attempts=2)``), consolidated into one shared name.
@@ -48,6 +58,13 @@ __all__ = [
 # Retry presets
 # ---------------------------------------------------------------------------
 
+# The first four names are the anthropic SDK's HTTP-status exception classes;
+# the last two are the platform LLM client's raised classification outcomes
+# (`sax_platform.llm.models.LLMRefused` / `LLMTruncated`), matched by class
+# name because Temporal reports a raised exception as an ApplicationError typed
+# by that name. `LLMSchemaMismatch` is intentionally absent — it is retryable
+# (a fresh, differently-sampled call can satisfy the schema). See the module
+# docstring's provenance note.
 LLM_RETRY: Final = RetryPolicy(
     maximum_attempts=3,
     non_retryable_error_types=[
@@ -55,6 +72,8 @@ LLM_RETRY: Final = RetryPolicy(
         "AuthenticationError",
         "PermissionDeniedError",
         "NotFoundError",
+        "LLMRefused",
+        "LLMTruncated",
     ],
 )
 

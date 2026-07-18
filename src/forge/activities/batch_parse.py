@@ -1,7 +1,9 @@
 """Batch parse activity for Forge.
 
-Deserializes a raw LLM response JSON from a batch response into
-a typed ParsedLLMResponse. Routes to the correct provider for parsing.
+Classifies a stored batch result line (a serialized ``anthropic.types.Message``)
+into a typed ``ParsedLLMResponse`` via the platform batch lane's
+``classify_result_json``. Refusal, truncation, and schema-mismatch outcomes are
+raised as non-retryable ``ApplicationError``s.
 
 Design follows Function Core / Imperative Shell:
 - Testable function: execute_parse_llm_response
@@ -10,12 +12,16 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
+import json
 import logging
 
+from sax_platform.llm.models import Completion, MismatchOutcome, RefusedOutcome, TruncatedOutcome
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from forge.message_log import write_message_log
-from forge.models import ParsedLLMResponse, ParseResponseInput, extract_stop_reason
+from forge.models import ParsedLLMResponse, ParseResponseInput
+from forge.output_types import resolve_output_type
 
 logger = logging.getLogger(__name__)
 
@@ -27,39 +33,79 @@ logger = logging.getLogger(__name__)
 def execute_parse_llm_response(
     raw_json: str,
     output_type_name: str | None,
-    provider_name: str = "anthropic",
 ) -> ParsedLLMResponse:
-    """Parse raw LLM response JSON into a ParsedLLMResponse.
+    """Classify a stored batch result line into a ``ParsedLLMResponse``.
 
-    Routes to the correct provider for parsing.
-    When output_type_name is None, returns text_content as parsed_json.
+    Anthropic-only: ``raw_json`` is a serialized ``anthropic.types.Message`` (as
+    stored by ``fetch_batch_result_lines``), classified by ``classify_result_json``
+    into exactly one value outcome.
+
+    On a ``Completion`` the parsed output is serialized into ``parsed_json``:
+    ``completion.output.model_dump_json()`` for a typed result (``output`` is the
+    validated Pydantic instance), or ``json.dumps(output)`` for the text lane
+    (``output_type_name is None``; ``output`` is the response text). ``stop_reason``
+    comes straight off the classified completion.
+
+    A refusal, truncation, or schema mismatch is raised as a **non-retryable**
+    ``ApplicationError``. These outcomes are a deterministic property of the stored
+    bytes — re-running the parse on the same line can never change the outcome — so
+    retrying would only burn attempts. ``LLM_RETRY`` already lists these types as
+    non-retryable; ``non_retryable=True`` on the error itself is the guarantee.
     Separated from the imperative shell so tests can call directly.
     """
-    import json
+    output_type = resolve_output_type(output_type_name) if output_type_name else None
+    # Imported here, not at module level: sax_platform.llm.batch loads the
+    # anthropic SDK, and forge.activities is chain-imported inside the Temporal
+    # workflow sandbox (via workflow-bearing modules importing activity fns).
+    from sax_platform.llm.batch import classify_result_json
 
-    from sax_llm import get_provider_by_name
+    outcome = classify_result_json(raw_json, output_type=output_type)
 
-    provider = get_provider_by_name(provider_name)
-    result = provider.parse_batch_result(raw_json, output_type_name)
+    if isinstance(outcome, Completion):
+        parsed_json = (
+            json.dumps(outcome.output) if output_type is None else outcome.output.model_dump_json()
+        )
+        return ParsedLLMResponse(
+            parsed_json=parsed_json,
+            model_name=outcome.model,
+            input_tokens=outcome.input_tokens,
+            output_tokens=outcome.output_tokens,
+            cache_creation_input_tokens=outcome.cache_creation_input_tokens,
+            cache_read_input_tokens=outcome.cache_read_input_tokens,
+            stop_reason=outcome.stop_reason,
+        )
 
-    if output_type_name is None:
-        parsed_json = json.dumps(result.text_content)
-    else:
-        parsed_json = json.dumps(result.tool_input)
+    # Refusal / truncation / schema mismatch: deterministic, non-retryable.
+    raise _outcome_error(outcome)
 
-    return ParsedLLMResponse(
-        parsed_json=parsed_json,
-        model_name=result.model_name,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-        cache_creation_input_tokens=result.cache_creation_input_tokens,
-        cache_read_input_tokens=result.cache_read_input_tokens,
-        # raw_json is the serialized anthropic.types.Message either way (sax_llm
-        # echoes it back verbatim on result.raw_response_json too); sax_llm's
-        # ProviderResponse has no typed stop_reason field, so pull it from the
-        # wire JSON directly rather than depend on a libs/ change (owner note:
-        # 2026-07 Phase 3 code review, item 3).
-        stop_reason=extract_stop_reason(raw_json),
+
+def _outcome_error(
+    outcome: RefusedOutcome | TruncatedOutcome | MismatchOutcome,
+) -> ApplicationError:
+    """Build the non-retryable ApplicationError for a failed classification outcome.
+
+    The message names the ``stop_reason`` plus a short outcome-specific detail
+    (refusal category / truncation cap + partial length / validation error); the
+    ``type`` is ``LLMRefused`` / ``LLMTruncated`` / ``LLMSchemaMismatch``.
+    """
+    stop_reason = outcome.telemetry.stop_reason
+    if isinstance(outcome, RefusedOutcome):
+        return ApplicationError(
+            f"LLM call refused (stop_reason={stop_reason!r}, category={outcome.category!r})",
+            type="LLMRefused",
+            non_retryable=True,
+        )
+    if isinstance(outcome, TruncatedOutcome):
+        return ApplicationError(
+            f"LLM output truncated (stop_reason={stop_reason!r}, "
+            f"max_tokens={outcome.max_tokens}, {len(outcome.partial_text)} chars produced)",
+            type="LLMTruncated",
+            non_retryable=True,
+        )
+    return ApplicationError(
+        f"LLM output did not match schema (stop_reason={stop_reason!r}): {outcome.error}",
+        type="LLMSchemaMismatch",
+        non_retryable=True,
     )
 
 
@@ -95,21 +141,7 @@ async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
         if input.log_messages and input.worktree_path:
             write_message_log(input.worktree_path, "response", raw_json)
 
-        result = execute_parse_llm_response(
-            raw_json,
-            input.output_type_name,
-            provider_name=input.provider,
-        )
-
-        if result.stop_reason == "max_tokens":
-            logger.warning(
-                "Batch LLM call truncated at max_tokens: task_id=%s model=%s "
-                "max_tokens=%d output_tokens=%d",
-                input.task_id,
-                result.model_name,
-                input.max_tokens,
-                result.output_tokens,
-            )
+        result = execute_parse_llm_response(raw_json, input.output_type_name)
 
         span.set_attributes(
             {

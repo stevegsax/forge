@@ -18,7 +18,6 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from sax_llm.models import text_messages
 from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
@@ -36,7 +35,7 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
-    from sax_llm.protocol import LLMProvider
+    from sax_platform.llm import AnthropicLLM
 
 logger = logging.getLogger(__name__)
 
@@ -179,33 +178,44 @@ def fulfill_requests(
 
 async def execute_exploration_call(
     input: ExplorationInput,
-    provider: LLMProvider,
+    llm: AnthropicLLM,
     project_instructions: str = "",
 ) -> ExplorationResponse:
-    """Call the LLM provider for exploration and return the structured response.
+    """Call the LLM for exploration and return the structured response.
 
-    Separated from the imperative shell so tests can inject a mock provider.
+    Separated from the imperative shell so tests can inject a mock client.
     """
-    from sax_llm import parse_model_id
+    from sax_platform.llm.tiers import split_provider
 
     system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
     full_model = input.model_name or DEFAULT_EXPLORATION_MODEL
-    _, model = parse_model_id(full_model)
+    _, model = split_provider(full_model)
 
-    params = provider.build_request_params(
-        messages=text_messages(system_prompt, user_prompt),
+    completion = await llm.complete(
+        [{"role": "user", "content": user_prompt}],
         output_type=ExplorationResponse,
         model=model,
         max_tokens=DEFAULT_EXPLORATION_MAX_TOKENS,
+        system=system_prompt,
     )
-    result = await provider.call(params)
 
     if input.log_messages and input.worktree_path:
-        request_json = json.dumps(params, indent=2, default=str)
+        request_json = json.dumps(
+            {
+                "model": model,
+                "max_tokens": DEFAULT_EXPLORATION_MAX_TOKENS,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}],
+            },
+            indent=2,
+            default=str,
+        )
         write_message_log(input.worktree_path, "explore-request", request_json)
-        write_message_log(input.worktree_path, "explore-response", result.raw_response_json)
+        write_message_log(
+            input.worktree_path, "explore-response", completion.output.model_dump_json(indent=2)
+        )
 
-    return ExplorationResponse.model_validate(result.tool_input)
+    return completion.output
 
 
 # ---------------------------------------------------------------------------
@@ -218,12 +228,11 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
     """Activity: call the exploration LLM to decide what context to request."""
     from pathlib import Path
 
-    from sax_llm import get_provider
-
     from forge.activities.context import (
         _read_project_instructions,
         build_project_instructions_section,
     )
+    from forge.llm_client import get_llm
     from forge.tracing import get_tracer
 
     tracer = get_tracer()
@@ -240,10 +249,10 @@ async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
                 _read_project_instructions(Path(input.repo_root))
             )
 
-        provider = get_provider(input.model_name or DEFAULT_EXPLORATION_MODEL)
+        llm = get_llm()
         start = time.monotonic()
         async with heartbeat_during():
-            response = await execute_exploration_call(input, provider, project_instructions)
+            response = await execute_exploration_call(input, llm, project_instructions)
         elapsed_ms = (time.monotonic() - start) * 1000
         logger.info(
             "Exploration result: task_id=%s requests=%d", input.task_id, len(response.requests)

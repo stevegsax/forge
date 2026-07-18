@@ -20,28 +20,30 @@ The Mistral SDK client is a constructor parameter (`MistralOcr.__init__`) —
 no module global, no env reading inside the class. Build one with
 `make_mistral_client`.
 
-This module imports `mistralai` eagerly at the top level: unlike
-`sax_platform.llm`, which lazily exports its SDK-importing surfaces via PEP
-562 in `__init__.py` so `import sax_platform` / `import sax_platform.llm`
-stay safe inside the Temporal workflow sandbox, `sax_platform/ocr.py` is a
-standalone top-level module (a sibling of `llm/`, not exported through
-either `__init__.py`). A consumer imports it explicitly —
-`from sax_platform.ocr import MistralOcr` — which is what keeps the
-sandbox-light rule intact: neither `sax_platform/__init__.py` nor
-`sax_platform/llm/__init__.py` references this module, so importing them
-never drags in the Mistral SDK.
+This module keeps the `mistralai` SDK out of module import time (T3.5):
+the frozen poll-result models here (`BatchPollStatus`, `BatchResultEntry`,
+`BatchPollResult`, `ExtractedImage`) are the shared batch-poll shapes that
+consumers import at module level — including modules that are chain-imported
+inside the Temporal workflow sandbox — so `import sax_platform.ocr` must not
+drag in an HTTP stack. SDK types are annotation-only (`TYPE_CHECKING` +
+deferred annotations) and the two runtime touch points (`make_mistral_client`,
+`MistralOcr.submit_batch`'s `UnrecognizedStr`) import locally, mirroring the
+PEP-562 lazy-export discipline `sax_platform.llm` uses.
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import os
 from enum import StrEnum
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from mistralai import Mistral
-from mistralai.models import BatchError, DocumentTypedDict, FileTypedDict
-from mistralai.types.basemodel import UnrecognizedStr
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from mistralai import Mistral
+    from mistralai.models import BatchError, DocumentTypedDict, FileTypedDict
 
 __all__ = [
     "BatchPollResult",
@@ -139,6 +141,8 @@ def make_mistral_client(api_key: str | None = None) -> Mistral:
     constructing with `api_key=""` and failing every call hours later with a
     401.
     """
+    from mistralai import Mistral
+
     resolved_key = api_key if api_key is not None else os.environ.get("MISTRAL_API_KEY", "")
     if not resolved_key:
         msg = (
@@ -329,6 +333,8 @@ class MistralOcr:
         provider's normalization: an empty string is treated the same as
         "not supplied."
         """
+        from mistralai.types.basemodel import UnrecognizedStr
+
         endpoint = endpoint or _OCR_ENDPOINT
         lines = [json.dumps(r) for r in requests]
         jsonl_bytes = ("\n".join(lines) + "\n").encode("utf-8")

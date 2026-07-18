@@ -494,7 +494,7 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D75: Remove pydantic-ai, Use Anthropic SDK + Plain Pydantic
 
-> **Mechanism superseded by D90** — forced tool use as the structured-output vehicle is retired in favor of provider structured outputs (`messages.parse` / `output_config.format`); the goal (plain Pydantic in, validated models out, direct SDK access) stands.
+> **Mechanism superseded by D90** (implemented 2026-07-17, T3.5) — forced tool use as the structured-output vehicle is retired in favor of provider structured outputs (`messages.parse` / `output_config.format`); the goal (plain Pydantic in, validated models out, direct SDK access) stands.
 
 **Decision:** Remove the pydantic-ai dependency. Replace `pydantic_ai.Agent` with direct Anthropic SDK calls (`client.messages.create`) for synchronous LLM calls and `client.messages.batches.create` for batch calls. Use plain Pydantic models for structured output via tool definitions (`Model.model_json_schema()`) and response validation (`Model.model_validate_json()`).
 
@@ -604,6 +604,8 @@ Each sub-phase is independently committable with all tests passing. 14a is pure 
 
 ## D90: Structured Outputs Everywhere; Forced Tool Use Retired
 
+> **Implemented 2026-07-17 (T3.5).** Forced tool use retired platform-wide; forge and pbook run on `sax_platform.llm` structured outputs; both output-type registries replaced by frozen `OUTPUT_TYPES`; `libs/sax-llm` deleted.
+
 **Decision:** All structured LLM output uses Anthropic structured outputs on both lanes: `client.messages.parse` on the sync lane (`complete[T]`/`complete_schema`/`complete_text` in `sax_platform.llm`) and `output_config.format` on the batch lane (a pure request-body builder plus submit/status/results helpers, with caller-side `model_validate` at the fetch activity). Forced tool use as a structured-output mechanism is retired platform-wide, and both string-keyed output-type registries (forge's and sax-llm's) are deleted in favor of frozen `OUTPUT_TYPES` mappings owned by composition roots (D93). This supersedes D75's mechanism while keeping its goal: plain Pydantic schemas in, validated Pydantic models out, direct SDK access.
 
 **Rationale:** Verified: structured outputs are GA, work in the Message Batches API via `output_config.format`, compose with prompt caching (best-effort 30–98% hit rates in batches; use the 1h TTL), and are supported on the current model set. Forced tool use was a workaround from before structured outputs existed; it cost a tool-definition detour on every call and required string registries to recover the output class at parse time. With the provider enforcing the schema on both lanes, the registries' only job disappears — an explicit frozen mapping at each composition root is simpler, type-checkable, and survives the workflow sandbox. `messages.parse` is sync-only, which is why the platform library must own the batch lane explicitly rather than leaving each app to rebuild it.
@@ -621,6 +623,8 @@ Each sub-phase is independently committable with all tests passing. 14a is pure 
 **Rationale:** The review confirmed the knowledge-loop disconnect: pbook knowledge never reached task execution, while forge's parallel playbook store was polluted by the re-extraction loop's duplicates — two stores, neither feeding the orchestrator well. The view is the only consumption path that is deterministic, dependency-light, and DAG-clean; a library or CLI path would recreate app-to-app coupling or put a uvx invocation on the context-assembly hot path. Exposing `search_tsv` fixes the recall hole in pure tag-gated retrieval — tag-gated candidates can never surface zero-tag entries — while the capped boost preserves D45's determinism principle. pbook's full hybrid retrieval (lexical + semantic + tags under RRF) remains its own surface for skill, CLI, and library consumers; forge takes the cheap deterministic slice. A pbook-side schema-sync test after every migration keeps the contract honest, and no blanket-approve migration runs because the playbook table's contents do not meet pbook's judged-entry bar.
 
 ## D93: Composition Roots Everywhere
+
+> **Partial (T3.5).** The sax-llm portion of the module-global deletions below — its global caches, `_client`, and the forked output-type registry — died with the package in T3.5; the forge/pbook composition-root work (frozen `Settings`, class-based activities, one engine per process) remains T3.6's.
 
 **Decision:** Every process (forge worker and CLI, ocr worker, pbook worker and CLI) gets a composition root. A frozen pydantic-settings `Settings` class per process is the only place environment variables are read, failing fast at startup. Activities become class-based with bound methods — `StoreActivities(engine)`, `LlmActivities(llm, output_types)`, `BatchActivities(...)`, `ContextActivities(engine)` — which is Temporal's sanctioned dependency injection. Each process owns exactly one database engine. Module-level singletons (the global Temporal client and `set_temporal_client`, per-call engines, sax-llm's global caches and forked registry) and test-support reset functions (`dispose_store_engines`, the `_TRACER_PROVIDER_SET_ONCE` reset, the workflow-test harness's 30 globals and 11 resets) are deleted.
 

@@ -12,13 +12,13 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from sax_llm.models import text_messages
+from sax_platform.llm.tiers import split_provider
 
 from forge.eval.models import EvalCase, JudgeCriterion, JudgeVerdict
 from forge.models import CapabilityTier, ModelConfig, resolve_model
 
 if TYPE_CHECKING:
-    from sax_llm.protocol import LLMProvider
+    from sax_platform.llm import AnthropicLLM
 
     from forge.models import Plan
 
@@ -137,39 +137,35 @@ def build_judge_user_prompt() -> str:
 async def execute_judge_call(
     system_prompt: str,
     user_prompt: str,
-    provider: LLMProvider,
+    llm: AnthropicLLM,
     *,
     model_name: str | None = None,
 ) -> JudgeVerdict:
-    """Call the LLM provider for judging and return the verdict.
+    """Call the LLM for judging and return the verdict.
 
-    Separated from the imperative shell so tests can inject a mock provider.
+    Separated from the imperative shell so tests can inject a mock client.
     """
-    from sax_llm import parse_model_id
-
     full_model = model_name or DEFAULT_JUDGE_MODEL
-    _, model = parse_model_id(full_model)
+    _, model = split_provider(full_model)
     start = time.monotonic()
 
-    params = provider.build_request_params(
-        messages=text_messages(system_prompt, user_prompt, cache_system=False),
+    completion = await llm.complete(
+        [{"role": "user", "content": user_prompt}],
         output_type=JudgeVerdict,
         model=model,
         max_tokens=DEFAULT_JUDGE_MAX_TOKENS,
-        cache_instructions=False,
-        cache_tool_definitions=False,
+        system=system_prompt,
     )
-    result = await provider.call(params)
 
     elapsed_ms = (time.monotonic() - start) * 1000
     logger.info(
         "Judge call completed in %.0fms (input=%d, output=%d)",
         elapsed_ms,
-        result.input_tokens,
-        result.output_tokens,
+        completion.input_tokens,
+        completion.output_tokens,
     )
 
-    return JudgeVerdict.model_validate(result.tool_input)
+    return completion.output
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +185,8 @@ async def judge_plan(
     This is the imperative shell entry point — creates the client and
     delegates to pure/testable functions.
     """
-    from sax_llm import get_provider
+    from forge.llm_client import get_llm
 
     system_prompt = build_judge_system_prompt(case, plan, repo_context)
     user_prompt = build_judge_user_prompt()
-    provider = get_provider(model_name or DEFAULT_JUDGE_MODEL)
-    return await execute_judge_call(system_prompt, user_prompt, provider, model_name=model_name)
+    return await execute_judge_call(system_prompt, user_prompt, get_llm(), model_name=model_name)

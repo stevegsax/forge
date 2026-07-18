@@ -2,7 +2,7 @@
 
 Start here: **[docs/OVERVIEW.md](docs/OVERVIEW.md)** — current project status, completed/remaining requirements, and known issues.
 
-This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pbook/) (own CLAUDE.md and `design/` notes), [apps/ocr/](apps/ocr/), [libs/sax-llm/](libs/sax-llm/), and [libs/sax-platform/](libs/sax-platform/) (the Phase 3 platform library; absorbed `libs/forge-contracts` at T3.4).
+This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pbook/) (own CLAUDE.md and `design/` notes), [apps/ocr/](apps/ocr/), and [libs/sax-platform/](libs/sax-platform/) (the Phase 3 platform library; absorbed `libs/forge-contracts` at T3.4; `libs/sax-llm` was deleted at T3.5).
 
 ## Status & Planning
 

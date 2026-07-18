@@ -42,6 +42,9 @@ from anthropic.types import (
     MessageParam,
     OutputConfigParam,
     TextBlockParam,
+    ThinkingConfigAdaptiveParam,
+    ThinkingConfigDisabledParam,
+    ThinkingConfigParam,
 )
 from pydantic import BaseModel, ValidationError
 
@@ -53,8 +56,79 @@ from sax_platform.llm.models import (
     classify_message,
 )
 from sax_platform.llm.schema import to_json_schema, to_output_format
+from sax_platform.llm.tiers import Effort, ThinkingPolicy
 
 __all__ = ["AnthropicLLM", "make_client"]
+
+
+def thinking_request_parts(
+    thinking: ThinkingPolicy | None,
+) -> tuple[ThinkingConfigParam | None, Effort | None]:
+    """Translate a `ThinkingPolicy` into its two request contributions.
+
+    Both lanes (`sax_platform.llm.client` and `sax_platform.llm.batch`) build
+    requests from the same pair, so this is the single place a `ThinkingPolicy`
+    becomes wire shapes — the successor to `sax_llm.client.build_thinking_param`,
+    minus the forced-tool-use machinery that path carried (there are no tools
+    on the structured-outputs path). Returns:
+
+    - the ``thinking`` param value, or `None` to omit the param entirely; and
+    - the ``effort`` to merge into ``output_config``, or `None`.
+
+    Semantics ported from `sax_llm` (D94):
+
+    - `None` — no `ThinkingPolicy` given: emit no ``thinking`` param and no
+      ``effort`` key, leaving the request wire-identical to one built without
+      any thinking argument.
+    - `ThinkingPolicy(enabled=True)` — adaptive thinking: the API runs
+      adaptive thinking whenever the ``thinking`` field is present as
+      ``{"type": "adaptive"}``, and the policy's `effort` rides along in
+      ``output_config``.
+    - `ThinkingPolicy(enabled=False)` — thinking explicitly OFF: on the
+      current model generation, *omitting* the ``thinking`` field runs
+      adaptive thinking BY DEFAULT, so disabling it requires the explicit
+      ``{"type": "disabled"}`` shape rather than leaving the field out. No
+      `effort` accompanies a disabled policy.
+
+    Unlike `sax_llm.client.build_thinking_param`, this does not gate on the
+    model name (no Haiku/pre-adaptive special-casing, no `PRE_ADAPTIVE_HINTS`
+    warning): thinking is now opt-in per call via an explicit `ThinkingPolicy`,
+    and the platform's single tier registry only pins adaptive-generation
+    models (D94), so a pre-adaptive pin cannot reach this through the supported
+    path.
+    """
+    if thinking is None:
+        return None, None
+    if thinking.enabled:
+        adaptive: ThinkingConfigAdaptiveParam = {"type": "adaptive"}
+        return adaptive, thinking.effort
+    disabled: ThinkingConfigDisabledParam = {"type": "disabled"}
+    return disabled, None
+
+
+def _with_effort(
+    output_config: OutputConfigParam | Omit, effort: Effort | None
+) -> OutputConfigParam | Omit:
+    """Merge `effort` into `output_config`, leaving `format` (if any) intact.
+
+    When `effort` is `None`, `output_config` is returned unchanged — including
+    the `omit` sentinel, so the text lane with no thinking sends no
+    ``output_config`` key at all. Otherwise `effort` is added alongside any
+    existing keys (e.g. `format`): starting from an empty dict when the base
+    was `omit`, or from a copy of the base config when structured output is
+    requested.
+
+    The `cast` widens the platform's `Effort` vocabulary — which includes
+    ``"xhigh"`` — onto `OutputConfigParam`, whose installed SDK stub models a
+    narrower ``Literal`` for the field. `sax_llm` likewise sent `effort` as a
+    free string; the platform tier vocabulary is the contract, not this SDK
+    version's generated literal.
+    """
+    if effort is None:
+        return output_config
+    base: dict[str, Any] = {} if isinstance(output_config, Omit) else dict(output_config)
+    base["effort"] = effort
+    return cast("OutputConfigParam", base)
 
 
 def make_client(api_key: str | None = None) -> AsyncAnthropic:
@@ -144,6 +218,7 @@ class AnthropicLLM:
         max_tokens: int,
         system: str | list[dict[str, Any]] | None = None,
         cache: CacheSpec | None = None,
+        thinking: ThinkingPolicy | None = None,
     ) -> Completion[T]:
         """Structured output validated into `output_type`.
 
@@ -152,6 +227,11 @@ class AnthropicLLM:
         classified text fails `output_type.model_validate_json` raises
         `LLMSchemaMismatch` — a pydantic `ValidationError` never escapes
         this method directly.
+
+        `thinking` opts into extended thinking (see `thinking_request_parts`):
+        `None` (the default) leaves the request wire-identical to the
+        no-thinking path; a `ThinkingPolicy` adds the ``thinking`` param and,
+        when enabled, its `effort` alongside the ``format`` in ``output_config``.
         """
         # `to_output_format` always returns the `{"type": "json_schema",
         # "schema": ...}` shape `JSONOutputFormatParam` requires; the cast
@@ -167,6 +247,7 @@ class AnthropicLLM:
             system=system,
             cache=cache,
             output_config=output_config,
+            thinking=thinking,
         )
         try:
             parsed = output_type.model_validate_json(classified.text)
@@ -185,6 +266,7 @@ class AnthropicLLM:
         max_tokens: int,
         system: str | list[dict[str, Any]] | None = None,
         cache: CacheSpec | None = None,
+        thinking: ThinkingPolicy | None = None,
     ) -> Completion[dict[str, Any]]:
         """Structured output validated as a raw JSON object against a
         caller-supplied `output_schema`.
@@ -195,6 +277,8 @@ class AnthropicLLM:
         its validity. A response whose classified text fails to parse as
         JSON, or parses to something other than a JSON object, raises
         `LLMSchemaMismatch`.
+
+        `thinking` behaves as documented on `complete`.
         """
         output_config: OutputConfigParam = {
             "format": cast("JSONOutputFormatParam", to_output_format(output_schema))
@@ -206,6 +290,7 @@ class AnthropicLLM:
             system=system,
             cache=cache,
             output_config=output_config,
+            thinking=thinking,
         )
         try:
             parsed = json.loads(classified.text)
@@ -229,9 +314,15 @@ class AnthropicLLM:
         max_tokens: int,
         system: str | list[dict[str, Any]] | None = None,
         cache: CacheSpec | None = None,
+        thinking: ThinkingPolicy | None = None,
     ) -> Completion[str]:
-        """Plain text completion. No ``output_config`` is sent — this is
-        the one variant with no structured-output request at all."""
+        """Plain text completion. No structured-output ``format`` is sent —
+        this is the one variant with no structured-output request at all.
+
+        `thinking` still applies: when it enables thinking, its `effort` is
+        the *only* key in ``output_config`` (there is no ``format`` here). With
+        `thinking=None` (the default) no ``output_config`` is sent at all.
+        """
         classified = await self._complete_raw(
             messages,
             model=model,
@@ -239,6 +330,7 @@ class AnthropicLLM:
             system=system,
             cache=cache,
             output_config=omit,
+            thinking=thinking,
         )
         return _completion_from_classified(classified, classified.text)
 
@@ -251,20 +343,28 @@ class AnthropicLLM:
         system: str | list[dict[str, Any]] | None,
         cache: CacheSpec | None,
         output_config: OutputConfigParam | Omit,
+        thinking: ThinkingPolicy | None = None,
     ) -> ClassifiedMessage:
         """Shared transport + classification step for all three public
-        methods: normalize `system`, apply the cache placement policy, send
-        the request, and classify the response by `stop_reason`.
+        methods: normalize `system`, apply the cache placement policy, apply
+        the thinking policy, send the request, and classify the response by
+        `stop_reason`.
 
         Raises `LLMRefused` / `LLMTruncated` (via `classify_message`) for
         the two terminal stop reasons; returns a `ClassifiedMessage` for
         every other stop reason, leaving parsing to the caller.
+
+        `thinking` is translated by `thinking_request_parts` into the
+        ``thinking`` param (omitted entirely when `None`) and an `effort`
+        merged into `output_config` via `_with_effort`.
         """
+        thinking_param, effort = thinking_request_parts(thinking)
         response = await self._client.messages.create(
             model=model,
             max_tokens=max_tokens,
             messages=messages,
             system=_normalize_system(system, model=model, cache=cache),
-            output_config=output_config,
+            output_config=_with_effort(output_config, effort),
+            thinking=thinking_param if thinking_param is not None else omit,
         )
         return classify_message(response, max_tokens=max_tokens)

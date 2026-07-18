@@ -2,8 +2,9 @@
 
 Forge's copy of this registry (`forge.models.CapabilityTier` / `ModelConfig` /
 `resolve_model` / `ThinkingConfig`) is retired in favor of this module (T3.2).
-`sax_llm`'s wire builders and, later, `sax_platform.llm.client` are the callers
-that turn a resolved model name and a `ThinkingPolicy` into an actual request.
+`sax_platform.llm.client` and `sax_platform.llm.batch` are the callers that turn
+a resolved model name and a `ThinkingPolicy` into an actual request (via the
+shared `thinking_request_parts` helper, T3.5).
 """
 
 from collections.abc import Mapping
@@ -85,8 +86,9 @@ class ThinkingPolicy(BaseModel):
     not "leave the field off" — it requires sending an explicit disabled
     shape. `ThinkingPolicy` carries only the policy (enabled + effort);
     translating it into the actual wire shape — including that explicit-
-    disabled case — is built in `sax_llm`'s wire builders until T3.5/T3.6,
-    and by `sax_platform.llm.client` after.
+    disabled case — is built by `sax_platform.llm.client` and
+    `sax_platform.llm.batch`, both via the shared `thinking_request_parts`
+    helper (T3.5).
     """
 
     model_config = ConfigDict(frozen=True)

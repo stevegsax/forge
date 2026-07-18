@@ -9,11 +9,11 @@ via :mod:`pbook.workflow_steps.output_types`), and validates the
 returned ``tool_input`` dict on its own side with
 ``OutputType.model_validate(...)``.
 
-Why a string-keyed registry rather than passing a class? Temporal
+Why a string-keyed mapping rather than passing a class? Temporal
 serializes activity inputs as JSON; a class reference can't cross that
-boundary. The registry, registered at worker startup, lets us recover
-the correct ``BaseModel`` subclass inside the activity to drive
-``provider.build_request_params(output_type=...)``.
+boundary. The frozen mapping in :mod:`pbook.workflow_steps.output_types`
+lets us recover the correct ``BaseModel`` subclass inside the activity to
+pass as ``complete(output_type=...)``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ import time
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sax_llm.models import text_messages
+from sax_platform.llm import LLMRefused, LLMTruncated
+from sax_platform.llm.tiers import split_provider
 from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -42,9 +43,8 @@ class LLMChatInput(BaseModel):
     user_prompt: str
     output_type_name: str = Field(
         description=(
-            "Registry key for the desired structured output. The class "
-            "must have been registered via "
-            "pbook.workflow_steps.output_types.register_output_type."
+            "Key into pbook.workflow_steps.output_types.OUTPUT_TYPES naming "
+            "the desired structured-output class."
         ),
     )
     model: str = Field(
@@ -87,33 +87,43 @@ async def llm_chat(input: LLMChatInput) -> LLMChatResult:
         raise ValueError(msg)
 
     # Strip the `provider:` prefix if present. `resolve_model()` returns
-    # the fully-qualified id (e.g. `anthropic:claude-haiku-4-5-20251001`),
-    # but provider SDKs expect the bare model name. parse_model_id
-    # returns (provider, model); we keep the model half.
-    from sax_llm.registry import parse_model_id
-
-    _, bare_model = parse_model_id(input.model)
+    # the fully-qualified id (e.g. `anthropic:claude-haiku-4-5`), but the
+    # client expects the bare model name. split_provider returns
+    # (provider, model); we keep the model half.
+    _, bare_model = split_provider(input.model)
 
     output_type = resolve_output_type(input.output_type_name)
     provider = get_provider()
 
-    messages = text_messages(input.system_prompt, input.user_prompt)
-    params = provider.build_request_params(
-        messages=messages,
-        output_type=output_type,
-        model=bare_model,
-        max_tokens=input.max_tokens,
-    )
-
     start = time.monotonic()
     try:
         async with heartbeat_during():
-            response = await provider.call(params)
+            completion = await provider.complete(
+                [{"role": "user", "content": input.user_prompt}],
+                output_type=output_type,
+                model=bare_model,
+                max_tokens=input.max_tokens,
+                system=input.system_prompt,
+            )
+    except (LLMRefused, LLMTruncated) as exc:
+        # A refusal or truncation is terminal for THIS request: retrying the
+        # identical prompt reproduces it, so surface it as a non-retryable
+        # ApplicationError instead of burning the bounded LLM retry budget
+        # (which would otherwise leave the ingestion session stuck at
+        # "running"). LLMSchemaMismatch is deliberately NOT caught here — a
+        # malformed structured response can clear on retry, so it propagates
+        # unchanged and stays retryable.
+        category = getattr(exc, "category", None)
+        raise ApplicationError(
+            f"llm_chat: LLM {type(exc).__name__} "
+            f"(stop_reason={exc.telemetry.stop_reason}, category={category}): {exc}",
+            type=type(exc).__name__,
+            non_retryable=True,
+        ) from exc
     except Exception as exc:
         # A missing/invalid API key or unresolved auth method will never
         # succeed on retry — mark it non-retryable so the activity fails on
-        # the first attempt instead of exhausting LLM_RETRY_POLICY's budget
-        # (which would leave the ingestion session stuck at "running").
+        # the first attempt instead of exhausting LLM_RETRY_POLICY's budget.
         # All other provider errors (timeouts, 429/5xx) propagate unchanged
         # and stay retryable.
         if is_nonretryable_auth_error(exc):
@@ -129,18 +139,22 @@ async def llm_chat(input: LLMChatInput) -> LLMChatResult:
     logger.info(
         "llm_chat: type=%s model=%s tokens=%d/%d latency=%.0fms",
         input.output_type_name,
-        response.model_name,
-        response.input_tokens,
-        response.output_tokens,
+        completion.model,
+        completion.input_tokens,
+        completion.output_tokens,
         latency_ms,
     )
 
     return LLMChatResult(
-        tool_input=response.tool_input,
-        model_name=response.model_name,
-        input_tokens=response.input_tokens,
-        output_tokens=response.output_tokens,
-        cache_creation_input_tokens=response.cache_creation_input_tokens,
-        cache_read_input_tokens=response.cache_read_input_tokens,
+        # `tool_input` is a historical name from the forced-tool-use era; it
+        # now carries the structured-outputs payload. Kept as-is because the
+        # workflow side re-validates `chat_result.tool_input` into its own
+        # Pydantic class — renaming would touch every workflow (out of scope).
+        tool_input=completion.output.model_dump(),
+        model_name=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        cache_creation_input_tokens=completion.cache_creation_input_tokens,
+        cache_read_input_tokens=completion.cache_read_input_tokens,
         latency_ms=latency_ms,
     )

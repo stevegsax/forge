@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from sax_platform.llm import LLMRefused, LLMTruncated, Telemetry
 
 from forge.activities.sanity_check import (
     DEFAULT_SANITY_CHECK_MAX_TOKENS,
@@ -22,7 +23,7 @@ from forge.models import (
     TaskDefinition,
     TransitionSignal,
 )
-from tests.conftest import build_mock_provider
+from tests.conftest import build_mock_llm
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -166,6 +167,19 @@ class TestBuildSanityCheckUserPrompt:
 # ---------------------------------------------------------------------------
 
 
+def _telemetry(stop_reason: str) -> Telemetry:
+    """Minimal Telemetry for constructing typed LLM failures in tests."""
+    return Telemetry(
+        model="test-model",
+        stop_reason=stop_reason,
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        request_id=None,
+    )
+
+
 class TestExecuteSanityCheckCall:
     @pytest.mark.asyncio
     async def test_returns_result_with_correct_fields(self) -> None:
@@ -173,10 +187,14 @@ class TestExecuteSanityCheckCall:
             verdict=SanityCheckVerdict.CONTINUE,
             explanation="Plan looks good.",
         )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
+        llm = build_mock_llm(
+            output=mock_response,
+            model="claude-opus-4-8",
+            stop_reason="end_turn",
             input_tokens=100,
             output_tokens=50,
+            cache_creation_input_tokens=7,
+            cache_read_input_tokens=3,
         )
 
         input_data = SanityCheckInput(
@@ -185,15 +203,45 @@ class TestExecuteSanityCheckCall:
             user_prompt="user",
         )
 
-        result = await execute_sanity_check_call(input_data, provider)
+        result = await execute_sanity_check_call(input_data, llm)
 
         assert isinstance(result, SanityCheckCallResult)
         assert result.task_id == "test-task"
         assert result.response.verdict == SanityCheckVerdict.CONTINUE
         assert result.response.explanation == "Plan looks good."
+        assert result.model_name == "claude-opus-4-8"
         assert result.input_tokens == 100
         assert result.output_tokens == 50
+        assert result.cache_creation_input_tokens == 7
+        assert result.cache_read_input_tokens == 3
+        assert result.stop_reason == "end_turn"
         assert result.latency_ms > 0
+
+    @pytest.mark.asyncio
+    async def test_complete_called_with_expected_kwargs(self) -> None:
+        mock_response = SanityCheckResponse(
+            verdict=SanityCheckVerdict.CONTINUE,
+            explanation="ok",
+        )
+        llm = build_mock_llm(output=mock_response)
+        input_data = SanityCheckInput(
+            task_id="test-task",
+            system_prompt="system",
+            user_prompt="user",
+            model_name="anthropic:claude-sonnet-5",
+        )
+
+        await execute_sanity_check_call(input_data, llm)
+
+        llm.complete.assert_awaited_once()
+        call = llm.complete.await_args
+        assert call.args[0] == [{"role": "user", "content": "user"}]
+        assert call.kwargs["output_type"] is SanityCheckResponse
+        # split_provider strips the provider prefix before the model reaches complete.
+        assert call.kwargs["model"] == "claude-sonnet-5"
+        assert call.kwargs["max_tokens"] == DEFAULT_SANITY_CHECK_MAX_TOKENS
+        assert call.kwargs["system"] == "system"
+        assert call.kwargs["thinking"] == input_data.thinking
 
     @pytest.mark.asyncio
     async def test_revise_verdict_with_steps(self) -> None:
@@ -205,11 +253,7 @@ class TestExecuteSanityCheckCall:
             explanation="Need to adjust.",
             revised_steps=revised,
         )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            input_tokens=200,
-            output_tokens=100,
-        )
+        llm = build_mock_llm(output=mock_response, input_tokens=200, output_tokens=100)
 
         input_data = SanityCheckInput(
             task_id="test-task",
@@ -217,7 +261,7 @@ class TestExecuteSanityCheckCall:
             user_prompt="user",
         )
 
-        result = await execute_sanity_check_call(input_data, provider)
+        result = await execute_sanity_check_call(input_data, llm)
 
         assert result.response.verdict == SanityCheckVerdict.REVISE
         assert result.response.revised_steps is not None
@@ -233,90 +277,57 @@ class TestExecuteSanityCheckCall:
             verdict=SanityCheckVerdict.CONTINUE,
             explanation="Plan looks good.",
         )
-        provider = build_mock_provider(tool_input=mock_response.model_dump())
+        llm = build_mock_llm(output=mock_response)
         input_data = SanityCheckInput(
             task_id="test-task",
             system_prompt="system",
             user_prompt="user",
         )
 
-        await execute_sanity_check_call(input_data, provider)
+        await execute_sanity_check_call(input_data, llm)
 
         assert DEFAULT_SANITY_CHECK_MAX_TOKENS == 16384
-        call_kwargs = provider.build_request_params.call_args.kwargs
-        assert call_kwargs["max_tokens"] == DEFAULT_SANITY_CHECK_MAX_TOKENS
+        assert llm.complete.await_args.kwargs["max_tokens"] == DEFAULT_SANITY_CHECK_MAX_TOKENS
 
     @pytest.mark.asyncio
-    async def test_extracts_stop_reason(self) -> None:
-        mock_response = SanityCheckResponse(
-            verdict=SanityCheckVerdict.CONTINUE,
-            explanation="Plan looks good.",
-        )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            raw_response_json='{"stop_reason": "end_turn"}',
+    async def test_refusal_propagates(self) -> None:
+        llm = build_mock_llm(error=LLMRefused(category="policy", telemetry=_telemetry("refusal")))
+        input_data = SanityCheckInput(task_id="t", system_prompt="s", user_prompt="u")
+
+        with pytest.raises(LLMRefused):
+            await execute_sanity_check_call(input_data, llm)
+
+    @pytest.mark.asyncio
+    async def test_truncation_propagates(self) -> None:
+        llm = build_mock_llm(
+            error=LLMTruncated(
+                partial_text="partial", max_tokens=16384, telemetry=_telemetry("max_tokens")
+            )
         )
         input_data = SanityCheckInput(task_id="t", system_prompt="s", user_prompt="u")
 
-        result = await execute_sanity_check_call(input_data, provider)
-
-        assert result.stop_reason == "end_turn"
+        with pytest.raises(LLMTruncated):
+            await execute_sanity_check_call(input_data, llm)
 
 
 # ---------------------------------------------------------------------------
-# max_tokens truncation warning (owner-mandated token record-keeping caveat)
+# call_sanity_check shell
 # ---------------------------------------------------------------------------
 
 
-class TestCallSanityCheckMaxTokensWarning:
+class TestCallSanityCheck:
     @pytest.mark.asyncio
-    async def test_warns_on_max_tokens_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from forge.activities.sanity_check import call_sanity_check
-
-        mock_response = SanityCheckResponse(
-            verdict=SanityCheckVerdict.CONTINUE, explanation="partial"
-        )
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            output_tokens=16384,
-            raw_response_json='{"stop_reason": "max_tokens"}',
-        )
-
-        with (
-            patch("sax_llm.get_provider", return_value=provider),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-            caplog.at_level("WARNING", logger="forge.activities.sanity_check"),
-        ):
-            mock_span = MagicMock()
-            mock_span.__enter__ = MagicMock(return_value=mock_span)
-            mock_span.__exit__ = MagicMock(return_value=False)
-            mock_tracer = MagicMock()
-            mock_tracer.start_as_current_span.return_value = mock_span
-            mock_get_tracer.return_value = mock_tracer
-
-            sanity_input = SanityCheckInput(task_id="t-trunc", system_prompt="s", user_prompt="u")
-            await call_sanity_check(sanity_input)
-
-        assert any("truncated at max_tokens" in r.message for r in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_no_warning_on_normal_stop(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_delegates_to_client_and_returns_result(self) -> None:
         from unittest.mock import MagicMock, patch
 
         from forge.activities.sanity_check import call_sanity_check
 
         mock_response = SanityCheckResponse(verdict=SanityCheckVerdict.CONTINUE, explanation="ok")
-        provider = build_mock_provider(
-            tool_input=mock_response.model_dump(),
-            raw_response_json='{"stop_reason": "end_turn"}',
-        )
+        llm = build_mock_llm(output=mock_response, model="claude-opus-4-8")
 
         with (
-            patch("sax_llm.get_provider", return_value=provider),
+            patch("forge.llm_client.get_llm", return_value=llm),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
-            caplog.at_level("WARNING", logger="forge.activities.sanity_check"),
         ):
             mock_span = MagicMock()
             mock_span.__enter__ = MagicMock(return_value=mock_span)
@@ -326,6 +337,8 @@ class TestCallSanityCheckMaxTokensWarning:
             mock_get_tracer.return_value = mock_tracer
 
             sanity_input = SanityCheckInput(task_id="t-ok", system_prompt="s", user_prompt="u")
-            await call_sanity_check(sanity_input)
+            result = await call_sanity_check(sanity_input)
 
-        assert not any("truncated at max_tokens" in r.message for r in caplog.records)
+        assert result.task_id == "t-ok"
+        assert result.response.verdict == SanityCheckVerdict.CONTINUE
+        llm.complete.assert_awaited_once()

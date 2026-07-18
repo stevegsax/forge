@@ -23,6 +23,7 @@ from forge.models import (
     ReviewManualPlaybookInput,
     ValidatePlaybookInput,
 )
+from tests.conftest import build_mock_llm
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -157,31 +158,41 @@ class TestApplySuggestions:
 
 class TestReviewPlaybookEntry:
     @pytest.mark.asyncio
-    async def test_calls_provider_and_parses_result(self, sample_entry: PlaybookEntry) -> None:
-        mock_response = MagicMock()
-        mock_response.tool_input = {
-            "approved": True,
-            "rejection_reason": "",
-            "suggested_tags": ["extra-tag"],
-            "suggested_title": "",
-            "suggested_content": "",
-        }
+    async def test_calls_llm_and_returns_result(self, sample_entry: PlaybookEntry) -> None:
+        review = PlaybookReviewResult(approved=True, suggested_tags=["extra-tag"])
+        llm = build_mock_llm(review)
 
-        mock_provider = MagicMock()
-        mock_provider.build_request_params.return_value = {"mock": True}
-        mock_provider.call = AsyncMock(return_value=mock_response)
+        result = await review_playbook_entry(sample_entry, [], llm)
 
-        with patch(
-            "sax_llm.registry.get_provider",
-            return_value=mock_provider,
-        ):
-            result = await review_playbook_entry(sample_entry, [])
-
-        assert isinstance(result, PlaybookReviewResult)
+        assert result is review
         assert result.approved is True
         assert result.suggested_tags == ["extra-tag"]
-        mock_provider.build_request_params.assert_called_once()
-        mock_provider.call.assert_called_once()
+        llm.complete.assert_called_once()
+        messages = llm.complete.call_args.args[0]
+        assert messages[0]["role"] == "user"
+        assert "Query OCR documents" in messages[0]["content"]
+        call_kwargs = llm.complete.call_args.kwargs
+        assert call_kwargs["output_type"] is PlaybookReviewResult
+        assert call_kwargs["max_tokens"] == 1024
+        assert "playbook entry reviewer" in call_kwargs["system"]
+
+    @pytest.mark.asyncio
+    async def test_propagates_typed_failure(self, sample_entry: PlaybookEntry) -> None:
+        from sax_platform.llm import LLMRefused, Telemetry
+
+        telemetry = Telemetry(
+            model="test-model",
+            stop_reason="refusal",
+            input_tokens=0,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            request_id=None,
+        )
+        llm = build_mock_llm(error=LLMRefused(category="policy", telemetry=telemetry))
+
+        with pytest.raises(LLMRefused):
+            await review_playbook_entry(sample_entry, [], llm)
 
 
 # ---------------------------------------------------------------------------
@@ -272,10 +283,13 @@ class TestReviewManualPlaybookActivity:
             approved=True,
             suggested_title="Better title",
         )
-        with patch(
-            "forge.activities.playbook_review.review_playbook_entry",
-            new_callable=AsyncMock,
-            return_value=mock_review,
+        with (
+            patch(
+                "forge.activities.playbook_review.review_playbook_entry",
+                new_callable=AsyncMock,
+                return_value=mock_review,
+            ),
+            patch("forge.activities.playbook_review.get_llm", return_value=MagicMock()),
         ):
             result = await review_manual_playbook(
                 ReviewManualPlaybookInput(entry=sample_entry, existing_playbooks=[])
@@ -290,10 +304,13 @@ class TestReviewManualPlaybookActivity:
             approved=False,
             rejection_reason="Duplicate entry.",
         )
-        with patch(
-            "forge.activities.playbook_review.review_playbook_entry",
-            new_callable=AsyncMock,
-            return_value=mock_review,
+        with (
+            patch(
+                "forge.activities.playbook_review.review_playbook_entry",
+                new_callable=AsyncMock,
+                return_value=mock_review,
+            ),
+            patch("forge.activities.playbook_review.get_llm", return_value=MagicMock()),
         ):
             result = await review_manual_playbook(
                 ReviewManualPlaybookInput(entry=sample_entry, existing_playbooks=[])

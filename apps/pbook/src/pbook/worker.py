@@ -65,7 +65,6 @@ from pbook.activities.review import (
 from pbook.workflow_steps import (
     llm_chat,
     llm_embed,
-    register_output_type,
 )
 
 # Import workflows
@@ -99,29 +98,19 @@ PBOOK_TASK_QUEUE = "pbook-task-queue"
 
 
 def _register_llm_provider() -> None:
-    """Register the default LLM provider (Anthropic) for extraction and review."""
-    from sax_llm import get_provider
+    """Register the platform structured-outputs LLM client for pbook activities.
+
+    The client carries no model pin: ``llm_chat`` resolves the model per call
+    from the tier-resolved ``LLMChatInput.model`` the calling workflow passes.
+    ``make_client`` reads ``ANTHROPIC_API_KEY`` from the environment lazily,
+    so no key is required at registration time.
+    """
+    from sax_platform.llm import AnthropicLLM, make_client
 
     from pbook.llm import set_provider
 
-    # Default to a reasoning model for complex extraction and consolidation
-    provider = get_provider("anthropic:claude-3-5-sonnet-20241022")
-    set_provider(provider)
-    logger.info("Registered LLM provider: anthropic:claude-3-5-sonnet-20241022")
-
-
-def _register_output_types() -> None:
-    """Register pbook's structured-output classes with the local registry.
-
-    The generic ``llm_chat`` activity resolves output types by name at
-    activity-time; without this registration the activity raises KeyError.
-    """
-    from pbook.llm import ConsolidationResult, ExtractionResult, ReviewResult
-
-    register_output_type("ExtractionResult", ExtractionResult)
-    register_output_type("ReviewResult", ReviewResult)
-    register_output_type("ConsolidationResult", ConsolidationResult)
-    logger.info("Registered output types: ExtractionResult, ReviewResult, ConsolidationResult")
+    set_provider(AnthropicLLM(make_client()))
+    logger.info("Registered platform LLM provider (sax_platform.llm.AnthropicLLM)")
 
 
 def _migrate_if_configured() -> None:
@@ -177,7 +166,6 @@ async def run_worker(address: str = "localhost:7233") -> None:
 
     setup_logging(console=True)
     _register_llm_provider()
-    _register_output_types()
     _migrate_if_configured()
     logger.info("Connecting to Temporal at %s", address)
 

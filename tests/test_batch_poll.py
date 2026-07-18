@@ -6,12 +6,14 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sax_llm.models import BatchPollResult as ProviderBatchPollResult
-from sax_llm.models import BatchPollStatus, BatchResultEntry, ExtractedImage
 from sax_platform.contracts.models import parse_batch_result_payload
+from sax_platform.llm.batch import BatchRequestFailed, BatchStatus
+from sax_platform.ocr import BatchPollResult as ProviderBatchPollResult
+from sax_platform.ocr import BatchPollStatus, BatchResultEntry, ExtractedImage
 
 from forge.activities.batch_poll import (
     _ensure_utc,
+    _poll_anthropic_batch,
     _poll_batch_for,
     execute_poll_batch_results,
 )
@@ -41,22 +43,6 @@ def _make_pending_job(
     }
 
 
-def _make_mock_provider(
-    *,
-    poll_result: ProviderBatchPollResult | None = None,
-    poll_error: Exception | None = None,
-) -> MagicMock:
-    """Build a mock LLMProvider with poll_batch method."""
-    provider = MagicMock()
-    if poll_error:
-        provider.poll_batch = AsyncMock(side_effect=poll_error)
-    else:
-        provider.poll_batch = AsyncMock(
-            return_value=poll_result or ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
-        )
-    return provider
-
-
 def _make_temporal_client(*, signal_error: Exception | None = None) -> AsyncMock:
     """Build a mock Temporal client."""
     client = AsyncMock()
@@ -78,6 +64,28 @@ def _noop_update(**_kwargs) -> None:
 def _put_blob(custom_id: str, data: bytes) -> str:
     """Fake blob upload: record nothing, return a deterministic key."""
     return f"blob-{custom_id}"
+
+
+def _patch_poll(*, result: ProviderBatchPollResult | None = None, side_effect=None):
+    """Patch the per-provider poll dispatch used by execute_poll_batch_results."""
+    if side_effect is not None:
+        return patch(
+            "forge.activities.batch_poll._poll_batch_for", AsyncMock(side_effect=side_effect)
+        )
+    return patch("forge.activities.batch_poll._poll_batch_for", AsyncMock(return_value=result))
+
+
+def _batch_status(processing_status: str) -> BatchStatus:
+    """A BatchStatus with the given processing_status and zeroed counts."""
+    return BatchStatus(
+        batch_id="b-1",
+        processing_status=processing_status,
+        succeeded=0,
+        errored=0,
+        canceled=0,
+        expired=0,
+        processing=0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +131,6 @@ class TestExecutePollBatchResults:
                 )
             ],
         )
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
         updates: list[dict] = []
 
@@ -131,7 +138,7 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
         assert result.batches_checked == 1
@@ -178,11 +185,10 @@ class TestExecutePollBatchResults:
                 )
             ],
         )
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results([job], temporal, _noop_update, capture_put)
 
         assert result.signals_sent == 1
@@ -207,11 +213,10 @@ class TestExecutePollBatchResults:
                 )
             ],
         )
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
 
         assert result.signals_sent == 1
@@ -223,11 +228,10 @@ class TestExecutePollBatchResults:
     @pytest.mark.asyncio
     async def test_still_processing_is_skipped(self) -> None:
         poll_result = ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
 
         assert result.batches_checked == 1
@@ -238,11 +242,10 @@ class TestExecutePollBatchResults:
     async def test_retrieve_failure_reports_error_without_raising(self) -> None:
         """A poll failure on a fresh job is counted in errors_found; the poller
         no longer raises (that wedged the schedule — see T1.3)."""
-        provider = _make_mock_provider(poll_error=RuntimeError("network error"))
         temporal = _make_temporal_client()
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(side_effect=RuntimeError("network error")):
             result = await execute_poll_batch_results([job], temporal, _noop_update, _put_blob)
 
         assert result.batches_checked == 1
@@ -270,7 +273,6 @@ class TestExecutePollBatchResults:
         error and update the batch_jobs DB status so the poller stops re-polling.
         CANCELED collapses to the generic FAILED state."""
         poll_result = ProviderBatchPollResult(status=status)
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
         updates: list[dict] = []
 
@@ -278,7 +280,7 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
         # Error signal was sent to the waiting workflow
@@ -303,7 +305,6 @@ class TestExecutePollBatchResults:
         increments and the DB status is still updated (the batch failed at the
         provider, so it is terminal regardless of signal delivery). No raise."""
         poll_result = ProviderBatchPollResult(status=BatchPollStatus.FAILED)
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client(signal_error=RuntimeError("workflow gone"))
         updates: list[dict] = []
 
@@ -311,7 +312,7 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
         assert result.errors_found == 1
@@ -324,7 +325,6 @@ class TestExecutePollBatchResults:
             status=BatchPollStatus.ENDED,
             entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
         )
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client()
 
         jobs = [
@@ -332,7 +332,7 @@ class TestExecutePollBatchResults:
             _make_pending_job(request_id="req-2", batch_id="batch-2", workflow_id="wf-2"),
         ]
 
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results(jobs, temporal, _noop_update, _put_blob)
 
         assert result.batches_checked == 2
@@ -352,7 +352,6 @@ class TestExecutePollBatchResults:
             status=BatchPollStatus.ENDED,
             entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
         )
-        provider = _make_mock_provider(poll_result=poll_result)
         temporal = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
         updates: list[dict] = []
 
@@ -360,7 +359,7 @@ class TestExecutePollBatchResults:
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
         assert result.errors_found == 1
@@ -376,14 +375,13 @@ class TestExecutePollBatchResults:
             status=BatchPollStatus.ENDED,
             entries=[BatchResultEntry(custom_id="req-1", succeeded=True, raw_response_json="{}")],
         )
-        provider = _make_mock_provider(poll_result=poll_result)
         updates: list[dict] = []
 
         def track_update(**kwargs):
             updates.append(kwargs)
 
         job = _make_pending_job()
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(result=poll_result):
             # Cycle 1: delivery fails, row left SUBMITTED.
             failing = _make_temporal_client(signal_error=RuntimeError("workflow not found"))
             first = await execute_poll_batch_results([job], failing, track_update, _put_blob)
@@ -403,9 +401,7 @@ class TestExecutePollBatchResults:
     async def test_missing_signals_waiter_with_error(self) -> None:
         """Criterion 2: a >24h unretrievable batch marks the row MISSING AND now
         sends the waiter an error-payload signal so it fails fast instead of
-        burning the 25h wait timeout. (The waiter's fail-fast on an error-bearing
-        BatchResult is covered by test_batch_error_in_signal_raises.)"""
-        provider = _make_mock_provider(poll_error=RuntimeError("not found"))
+        burning the 25h wait timeout."""
         temporal = _make_temporal_client()
         updates: list[dict] = []
 
@@ -414,7 +410,7 @@ class TestExecutePollBatchResults:
 
         old_time = datetime.now(UTC) - timedelta(hours=25)
         job = _make_pending_job(created_at=old_time)
-        with patch("sax_llm.get_provider_by_name", return_value=provider):
+        with _patch_poll(side_effect=RuntimeError("not found")):
             result = await execute_poll_batch_results([job], temporal, track_update, _put_blob)
 
         # Row marked MISSING with an error message.
@@ -437,21 +433,13 @@ class TestExecutePollBatchResults:
         completes (no raise), the other jobs in the same cycle are processed, and
         errors_found reports the failure so the next scheduled run is the retry."""
 
-        def by_name(_name: str) -> MagicMock:
-            provider = MagicMock()
-
-            async def poll(batch_id: str):
-                if batch_id == "batch-bad":
-                    raise RuntimeError("network error")
-                return ProviderBatchPollResult(
-                    status=BatchPollStatus.ENDED,
-                    entries=[
-                        BatchResultEntry(custom_id="req", succeeded=True, raw_response_json="{}")
-                    ],
-                )
-
-            provider.poll_batch = poll
-            return provider
+        def poll(_provider_name: str, batch_id: str) -> ProviderBatchPollResult:
+            if batch_id == "batch-bad":
+                raise RuntimeError("network error")
+            return ProviderBatchPollResult(
+                status=BatchPollStatus.ENDED,
+                entries=[BatchResultEntry(custom_id="req", succeeded=True, raw_response_json="{}")],
+            )
 
         temporal = _make_temporal_client()
         updates: list[dict] = []
@@ -464,7 +452,7 @@ class TestExecutePollBatchResults:
             _make_pending_job(request_id="req-bad", batch_id="batch-bad", workflow_id="wf-bad"),
             _make_pending_job(request_id="req-good-2", batch_id="batch-2", workflow_id="wf-2"),
         ]
-        with patch("sax_llm.get_provider_by_name", side_effect=by_name):
+        with _patch_poll(side_effect=poll):
             result = await execute_poll_batch_results(jobs, temporal, track_update, _put_blob)
 
         # Cycle completed without raising; the bad job is reported, the two good
@@ -479,47 +467,42 @@ class TestExecutePollBatchResults:
 
 
 # ---------------------------------------------------------------------------
-# _poll_batch_for — the per-provider poll dispatch (T3.3)
+# _poll_batch_for — the per-provider poll dispatch
 # ---------------------------------------------------------------------------
 
 
 class TestPollBatchFor:
     @pytest.mark.asyncio
-    async def test_anthropic_resolves_via_sax_llm_registry(self) -> None:
-        """Every non-mistral provider name still goes through sax_llm's registry,
-        unchanged by the mistral migration."""
+    async def test_anthropic_dispatches_to_platform_adapter(self) -> None:
+        """The anthropic route no longer goes through sax_llm — it polls via the
+        platform batch lane adapter over the shared AsyncAnthropic client."""
+        sentinel_client = object()
         expected = ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
-        provider = _make_mock_provider(poll_result=expected)
+        adapter = AsyncMock(return_value=expected)
 
-        with patch("sax_llm.get_provider_by_name", return_value=provider) as mock_get_provider:
+        with (
+            patch("forge.activities.batch_poll._get_batch_client", return_value=sentinel_client),
+            patch("forge.activities.batch_poll._poll_anthropic_batch", adapter),
+        ):
             result = await _poll_batch_for("anthropic", "batch-1")
 
-        mock_get_provider.assert_called_once_with("anthropic")
-        provider.poll_batch.assert_awaited_once_with("batch-1")
-        assert result == expected
+        adapter.assert_awaited_once_with(sentinel_client, "batch-1")
+        assert result is expected
 
     @pytest.mark.asyncio
-    async def test_mistral_normalizes_sax_platform_ocr_result(self) -> None:
-        """mistral no longer resolves through sax_llm at all (it carries no
-        provider entry for it post-T3.3) — it routes through
-        sax_platform.ocr.MistralOcr, and its poll result (a structurally
-        identical but distinct pydantic type) is normalized back into
-        sax_llm.models.BatchPollResult so every downstream branch in
-        execute_poll_batch_results stays provider-agnostic."""
-        from sax_platform.ocr import BatchPollResult as OcrBatchPollResult
-        from sax_platform.ocr import BatchPollStatus as OcrBatchPollStatus
-        from sax_platform.ocr import BatchResultEntry as OcrBatchResultEntry
-        from sax_platform.ocr import ExtractedImage as OcrExtractedImage
-
-        ocr_result = OcrBatchPollResult(
-            status=OcrBatchPollStatus.ENDED,
+    async def test_mistral_returns_native_ocr_result(self) -> None:
+        """mistral routes through sax_platform.ocr.MistralOcr and returns its
+        native poll result directly — no conversion (the lingua franca IS the
+        sax_platform.ocr family now)."""
+        ocr_result = ProviderBatchPollResult(
+            status=BatchPollStatus.ENDED,
             entries=[
-                OcrBatchResultEntry(
+                BatchResultEntry(
                     custom_id="req-1",
                     succeeded=True,
                     raw_response_json='{"pages": []}',
                     extracted_images=[
-                        OcrExtractedImage(
+                        ExtractedImage(
                             original_image_id="img-0",
                             page_index=0,
                             image_base64="ZmFrZQ==",
@@ -538,7 +521,89 @@ class TestPollBatchFor:
             result = await _poll_batch_for("mistral", "batch-mistral")
 
         mistral_provider.poll_batch.assert_awaited_once_with("batch-mistral")
-        assert isinstance(result, ProviderBatchPollResult)
+        assert result is ocr_result
+
+
+# ---------------------------------------------------------------------------
+# _poll_anthropic_batch — status mapping + entry construction
+# ---------------------------------------------------------------------------
+
+
+class TestPollAnthropicBatch:
+    @pytest.mark.asyncio
+    async def test_in_progress_returns_without_fetching(self) -> None:
+        client = MagicMock()
+        get_status = AsyncMock(return_value=_batch_status("in_progress"))
+        fetch = AsyncMock()
+
+        with (
+            patch("sax_platform.llm.batch.get_batch_status", get_status),
+            patch("sax_platform.llm.batch.fetch_batch_result_lines", fetch),
+        ):
+            result = await _poll_anthropic_batch(client, "b-1")
+
+        assert result.status == BatchPollStatus.IN_PROGRESS
+        assert result.entries == []
+        fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_canceling_maps_to_in_progress(self) -> None:
+        # Anthropic's only non-ended statuses are in_progress / canceling; both
+        # keep polling (IN_PROGRESS), never a batch-level terminal failure.
+        client = MagicMock()
+        get_status = AsyncMock(return_value=_batch_status("canceling"))
+        with (
+            patch("sax_platform.llm.batch.get_batch_status", get_status),
+            patch("sax_platform.llm.batch.fetch_batch_result_lines", AsyncMock()),
+        ):
+            result = await _poll_anthropic_batch(client, "b-1")
+
+        assert result.status == BatchPollStatus.IN_PROGRESS
+
+    @pytest.mark.asyncio
+    async def test_ended_builds_succeeded_entry_from_raw_line(self) -> None:
+        client = MagicMock()
+        get_status = AsyncMock(return_value=_batch_status("ended"))
+        fetch = AsyncMock(return_value=[("req-1", '{"stop_reason": "end_turn"}')])
+
+        with (
+            patch("sax_platform.llm.batch.get_batch_status", get_status),
+            patch("sax_platform.llm.batch.fetch_batch_result_lines", fetch),
+        ):
+            result = await _poll_anthropic_batch(client, "b-1")
+
         assert result.status == BatchPollStatus.ENDED
-        assert result.entries[0].custom_id == "req-1"
-        assert result.entries[0].extracted_images[0].original_image_id == "img-0"
+        assert len(result.entries) == 1
+        entry = result.entries[0]
+        assert entry.custom_id == "req-1"
+        assert entry.succeeded is True
+        assert entry.raw_response_json == '{"stop_reason": "end_turn"}'
+        assert entry.error is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "fragment"),
+        [
+            ("errored", "Batch error"),
+            ("expired", "expired"),
+            ("canceled", "canceled"),
+        ],
+    )
+    async def test_ended_maps_failed_line_to_error_entry(self, kind: str, fragment: str) -> None:
+        client = MagicMock()
+        get_status = AsyncMock(return_value=_batch_status("ended"))
+        failed = BatchRequestFailed(kind=kind, detail="boom")
+        fetch = AsyncMock(return_value=[("req-x", failed)])
+
+        with (
+            patch("sax_platform.llm.batch.get_batch_status", get_status),
+            patch("sax_platform.llm.batch.fetch_batch_result_lines", fetch),
+        ):
+            result = await _poll_anthropic_batch(client, "b-1")
+
+        entry = result.entries[0]
+        assert entry.custom_id == "req-x"
+        assert entry.succeeded is False
+        assert entry.raw_response_json is None
+        assert entry.error is not None
+        assert fragment in entry.error

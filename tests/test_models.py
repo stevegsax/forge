@@ -35,7 +35,6 @@ from forge.models import (
     WriteFilesInput,
     WriteResult,
     build_llm_stats,
-    extract_stop_reason,
 )
 
 # ---------------------------------------------------------------------------
@@ -570,39 +569,6 @@ class TestLLMStats:
         )
         rebuilt = LLMStats.model_validate_json(stats.model_dump_json())
         assert rebuilt.stop_reason == "max_tokens"
-
-
-class TestExtractStopReason:
-    """Pure function: pulls stop_reason out of a raw Anthropic Message JSON."""
-
-    @pytest.mark.parametrize(
-        ("raw_json", "expected"),
-        [
-            ('{"stop_reason": "end_turn"}', "end_turn"),
-            ('{"stop_reason": "max_tokens"}', "max_tokens"),
-            ('{"stop_reason": "tool_use", "model": "x"}', "tool_use"),
-        ],
-    )
-    def test_extracts_known_stop_reasons(self, raw_json: str, expected: str) -> None:
-        assert extract_stop_reason(raw_json) == expected
-
-    def test_none_input_returns_none(self) -> None:
-        assert extract_stop_reason(None) is None
-
-    def test_empty_string_returns_none(self) -> None:
-        assert extract_stop_reason("") is None
-
-    def test_malformed_json_returns_none(self) -> None:
-        assert extract_stop_reason("not json {") is None
-
-    def test_missing_field_returns_none(self) -> None:
-        assert extract_stop_reason('{"model": "x"}') is None
-
-    def test_non_string_field_returns_none(self) -> None:
-        assert extract_stop_reason('{"stop_reason": 123}') is None
-
-    def test_non_object_json_returns_none(self) -> None:
-        assert extract_stop_reason("[1, 2, 3]") is None
 
 
 class TestBuildLlmStats:

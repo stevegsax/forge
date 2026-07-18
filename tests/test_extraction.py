@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sax_platform.llm import LLMRefused, LLMTruncated, Telemetry
 
 from forge.activities.extraction import (
     build_extraction_system_prompt,
@@ -17,7 +18,7 @@ from forge.models import (
     ExtractionResult,
     PlaybookEntry,
 )
-from tests.conftest import build_mock_provider
+from tests.conftest import build_mock_llm
 
 # ---------------------------------------------------------------------------
 # build_extraction_system_prompt
@@ -159,6 +160,19 @@ class TestInferTagsFromTask:
 # ---------------------------------------------------------------------------
 
 
+def _telemetry(stop_reason: str) -> Telemetry:
+    """Minimal Telemetry for constructing typed LLM failures in tests."""
+    return Telemetry(
+        model="test-model",
+        stop_reason=stop_reason,
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        request_id=None,
+    )
+
+
 class TestExecuteExtractionCall:
     def _make_input(self) -> ExtractionInput:
         return ExtractionInput(
@@ -167,7 +181,7 @@ class TestExecuteExtractionCall:
             source_workflow_ids=["wf-1", "wf-2"],
         )
 
-    def _make_provider(self) -> MagicMock:
+    def _make_llm(self) -> MagicMock:
         mock_output = ExtractionResult(
             entries=[
                 PlaybookEntry(
@@ -180,8 +194,10 @@ class TestExecuteExtractionCall:
             ],
             summary="Extracted 1 lesson.",
         )
-        return build_mock_provider(
-            tool_input=mock_output.model_dump(),
+        return build_mock_llm(
+            output=mock_output,
+            model="claude-sonnet-5",
+            stop_reason="end_turn",
             input_tokens=500,
             output_tokens=200,
         )
@@ -189,20 +205,22 @@ class TestExecuteExtractionCall:
     @pytest.mark.asyncio
     async def test_returns_extraction_call_result(self) -> None:
         input_data = self._make_input()
-        provider = self._make_provider()
+        llm = self._make_llm()
 
-        result = await execute_extraction_call(input_data, provider)
+        result = await execute_extraction_call(input_data, llm)
 
         assert len(result.result.entries) == 1
         assert result.result.entries[0].title == "Test lesson"
         assert result.source_workflow_ids == ["wf-1", "wf-2"]
+        assert result.model_name == "claude-sonnet-5"
+        assert result.stop_reason == "end_turn"
 
     @pytest.mark.asyncio
     async def test_extracts_usage(self) -> None:
         input_data = self._make_input()
-        provider = self._make_provider()
+        llm = self._make_llm()
 
-        result = await execute_extraction_call(input_data, provider)
+        result = await execute_extraction_call(input_data, llm)
 
         assert result.input_tokens == 500
         assert result.output_tokens == 200
@@ -210,11 +228,31 @@ class TestExecuteExtractionCall:
     @pytest.mark.asyncio
     async def test_latency_is_positive(self) -> None:
         input_data = self._make_input()
-        provider = self._make_provider()
+        llm = self._make_llm()
 
-        result = await execute_extraction_call(input_data, provider)
+        result = await execute_extraction_call(input_data, llm)
 
         assert result.latency_ms > 0
+
+    @pytest.mark.asyncio
+    async def test_complete_called_with_expected_kwargs(self) -> None:
+        from forge.activities.extraction import DEFAULT_EXTRACTION_MAX_TOKENS
+
+        input_data = self._make_input()
+        llm = self._make_llm()
+
+        await execute_extraction_call(input_data, llm)
+
+        llm.complete.assert_awaited_once()
+        call = llm.complete.await_args
+        assert call.args[0] == [{"role": "user", "content": "Do it."}]
+        assert call.kwargs["output_type"] is ExtractionResult
+        # Default model resolves to the GENERATION tier; split_provider strips the prefix.
+        assert call.kwargs["model"] == "claude-sonnet-5"
+        assert call.kwargs["max_tokens"] == DEFAULT_EXTRACTION_MAX_TOKENS
+        assert call.kwargs["system"] == "Extract lessons."
+        # Extraction passes no thinking policy.
+        assert "thinking" not in call.kwargs
 
     @pytest.mark.asyncio
     async def test_populates_empty_workflow_id(self) -> None:
@@ -232,15 +270,31 @@ class TestExecuteExtractionCall:
             ],
             summary="Test.",
         )
-        provider = build_mock_provider(
-            tool_input=mock_output.model_dump(),
-            input_tokens=100,
-            output_tokens=50,
-        )
+        llm = build_mock_llm(output=mock_output, input_tokens=100, output_tokens=50)
 
-        result = await execute_extraction_call(input_data, provider)
+        result = await execute_extraction_call(input_data, llm)
 
         assert result.result.entries[0].source_workflow_id == "wf-1"
+
+    @pytest.mark.asyncio
+    async def test_refusal_propagates(self) -> None:
+        input_data = self._make_input()
+        llm = build_mock_llm(error=LLMRefused(category="policy", telemetry=_telemetry("refusal")))
+
+        with pytest.raises(LLMRefused):
+            await execute_extraction_call(input_data, llm)
+
+    @pytest.mark.asyncio
+    async def test_truncation_propagates(self) -> None:
+        input_data = self._make_input()
+        llm = build_mock_llm(
+            error=LLMTruncated(
+                partial_text="partial", max_tokens=4096, telemetry=_telemetry("max_tokens")
+            )
+        )
+
+        with pytest.raises(LLMTruncated):
+            await execute_extraction_call(input_data, llm)
 
 
 # ---------------------------------------------------------------------------
@@ -257,15 +311,10 @@ class TestCallExtractionLlmModelNameThreading:
             entries=[],
             summary="Nothing to extract.",
         )
-        provider = build_mock_provider(
-            tool_input=mock_output.model_dump(),
-            model_name="custom-extract",
-            input_tokens=100,
-            output_tokens=50,
-        )
+        llm = build_mock_llm(output=mock_output, input_tokens=100, output_tokens=50)
 
         with (
-            patch("sax_llm.get_provider", return_value=provider) as mock_get,
+            patch("forge.llm_client.get_llm", return_value=llm),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -283,10 +332,13 @@ class TestCallExtractionLlmModelNameThreading:
             )
             await call_extraction_llm(input_data)
 
-            mock_get.assert_called_once_with("custom-extract")
+        # split_provider defaults a bare name to the anthropic provider.
+        assert llm.complete.await_args.kwargs["model"] == "custom-extract"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
+        from sax_platform.llm.tiers import split_provider
+
         from forge.activities.extraction import call_extraction_llm
         from forge.activities.llm import DEFAULT_MODEL
 
@@ -294,15 +346,10 @@ class TestCallExtractionLlmModelNameThreading:
             entries=[],
             summary="Nothing.",
         )
-        provider = build_mock_provider(
-            tool_input=mock_output.model_dump(),
-            model_name=DEFAULT_MODEL,
-            input_tokens=100,
-            output_tokens=50,
-        )
+        llm = build_mock_llm(output=mock_output, input_tokens=100, output_tokens=50)
 
         with (
-            patch("sax_llm.get_provider", return_value=provider) as mock_get,
+            patch("forge.llm_client.get_llm", return_value=llm),
             patch("forge.tracing.get_tracer") as mock_get_tracer,
         ):
             mock_span = MagicMock()
@@ -319,4 +366,4 @@ class TestCallExtractionLlmModelNameThreading:
             )
             await call_extraction_llm(input_data)
 
-            mock_get.assert_called_once_with(DEFAULT_MODEL)
+        assert llm.complete.await_args.kwargs["model"] == split_provider(DEFAULT_MODEL)[1]
