@@ -20,7 +20,7 @@ from temporalio.client import WorkflowFailureError
 from temporalio.common import RetryPolicy
 from temporalio.worker import Worker
 
-from forge.activities.persist import persist_to_store
+from forge.activities.roots import StoreActivities
 from forge.models import PlaybookEntry, TaskResult, TransitionSignal
 from forge.persist_models import (
     PersistBatchStatus,
@@ -48,6 +48,17 @@ if TYPE_CHECKING:
 def migrated(forge_db_url: str) -> str:
     run_migrations(forge_db_url)
     return forge_db_url
+
+
+@pytest.fixture
+def store_acts(migrated: str) -> StoreActivities:
+    """StoreActivities bound to the migrated test store (T3.6 composition root).
+
+    Replaces the former module-global ``persist_to_store`` free activity; tests
+    call ``store_acts.persist_to_store(req)``. The engine is built from the
+    ``migrated`` URL and injected.
+    """
+    return StoreActivities(get_store_engine(migrated))
 
 
 # ---------------------------------------------------------------------------
@@ -113,35 +124,37 @@ class TestInteractionKeyHelpers:
 
 class TestPersistIdempotency:
     @pytest.mark.asyncio
-    async def test_run_idempotent(self, migrated: str) -> None:
+    async def test_run_idempotent(self, store_acts: StoreActivities, migrated: str) -> None:
         req = PersistRun(
             workflow_id="wf-1",
             run_id="run-1",
             task_result=TaskResult(task_id="t", status=TransitionSignal.SUCCESS),
         )
-        first = await persist_to_store(req)
-        second = await persist_to_store(req)
+        first = await store_acts.persist_to_store(req)
+        second = await store_acts.persist_to_store(req)
         assert (first.applied, second.applied) == (True, False)
-        assert get_run(get_store_engine(), "wf-1") is not None
+        assert get_run(get_store_engine(migrated), "wf-1") is not None
 
     @pytest.mark.asyncio
-    async def test_rerun_records_second_run(self, migrated: str) -> None:
+    async def test_rerun_records_second_run(
+        self, store_acts: StoreActivities, migrated: str
+    ) -> None:
         """A rerun (same workflow_id, fresh run_id) is a distinct row, not swallowed."""
         task_result = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
-        first = await persist_to_store(
+        first = await store_acts.persist_to_store(
             PersistRun(workflow_id="wf-1", run_id="run-A", task_result=task_result)
         )
-        second = await persist_to_store(
+        second = await store_acts.persist_to_store(
             PersistRun(workflow_id="wf-1", run_id="run-B", task_result=task_result)
         )
         assert (first.applied, second.applied) == (True, True)
         from forge.store import list_recent_runs
 
-        runs = list_recent_runs(get_store_engine())
+        runs = list_recent_runs(get_store_engine(migrated))
         assert {r["run_id"] for r in runs} == {"run-A", "run-B"}
 
     @pytest.mark.asyncio
-    async def test_interaction_idempotent(self, migrated: str) -> None:
+    async def test_interaction_idempotent(self, store_acts: StoreActivities) -> None:
         req = PersistInteraction(
             idempotency_key="wf:llm:1",
             task_id="t",
@@ -153,21 +166,21 @@ class TestPersistIdempotency:
             output_tokens=2,
             latency_ms=3.0,
         )
-        first = await persist_to_store(req)
-        second = await persist_to_store(req)
+        first = await store_acts.persist_to_store(req)
+        second = await store_acts.persist_to_store(req)
         assert (first.applied, second.applied) == (True, False)
 
     @pytest.mark.asyncio
-    async def test_batch_submission_idempotent(self, migrated: str) -> None:
+    async def test_batch_submission_idempotent(self, store_acts: StoreActivities) -> None:
         req = PersistBatchSubmission(
             request_id="req-1", batch_id="b-1", workflow_id="wf", provider="mistral"
         )
-        first = await persist_to_store(req)
-        second = await persist_to_store(req)
+        first = await store_acts.persist_to_store(req)
+        second = await store_acts.persist_to_store(req)
         assert (first.applied, second.applied) == (True, False)
 
     @pytest.mark.asyncio
-    async def test_playbooks_idempotent(self, migrated: str) -> None:
+    async def test_playbooks_idempotent(self, store_acts: StoreActivities) -> None:
         entry = PlaybookEntry(
             title="Lesson",
             content="Do X.",
@@ -176,21 +189,25 @@ class TestPersistIdempotency:
             source_workflow_id="wf",
         )
         req = PersistPlaybooks(extraction_workflow_id="extract-1", entries=[entry])
-        first = await persist_to_store(req)
-        second = await persist_to_store(req)
+        first = await store_acts.persist_to_store(req)
+        second = await store_acts.persist_to_store(req)
         assert (first.applied, second.applied) == (True, False)
 
     @pytest.mark.asyncio
-    async def test_batch_status_update_applies(self, migrated: str) -> None:
-        await persist_to_store(
+    async def test_batch_status_update_applies(self, store_acts: StoreActivities) -> None:
+        await store_acts.persist_to_store(
             PersistBatchSubmission(request_id="req-s", batch_id="b", workflow_id="wf")
         )
         # A status transition is a plain UPDATE (no dedupe) — always "applied".
-        result = await persist_to_store(PersistBatchStatus(request_id="req-s", status="processing"))
+        result = await store_acts.persist_to_store(
+            PersistBatchStatus(request_id="req-s", status="processing")
+        )
         assert result.applied is True
 
     @pytest.mark.asyncio
-    async def test_interaction_row_carries_tokens_and_stop_reason(self, migrated: str) -> None:
+    async def test_interaction_row_carries_tokens_and_stop_reason(
+        self, store_acts: StoreActivities, migrated: str
+    ) -> None:
         """End-to-end: interactions rows actually get token + stop_reason columns
         populated (2026-07 Phase 3 code review, item 3a/3b) — not just the
         in-memory PersistInteraction DTO, the real DB row after a round trip
@@ -209,12 +226,12 @@ class TestPersistIdempotency:
             cache_read_input_tokens=22,
             stop_reason="max_tokens",
         )
-        result = await persist_to_store(req)
+        result = await store_acts.persist_to_store(req)
         assert result.applied is True
 
         from forge.store import get_interactions
 
-        rows = get_interactions(get_store_engine(), "t-token-check")
+        rows = get_interactions(get_store_engine(migrated), "t-token-check")
         assert len(rows) == 1
         row = rows[0]
         assert row["input_tokens"] == 321
@@ -224,7 +241,9 @@ class TestPersistIdempotency:
         assert row["stop_reason"] == "max_tokens"
 
     @pytest.mark.asyncio
-    async def test_interaction_row_stop_reason_defaults_to_none(self, migrated: str) -> None:
+    async def test_interaction_row_stop_reason_defaults_to_none(
+        self, store_acts: StoreActivities, migrated: str
+    ) -> None:
         req = PersistInteraction(
             idempotency_key="wf:llm:no-stop-reason",
             task_id="t-no-stop-reason",
@@ -236,11 +255,11 @@ class TestPersistIdempotency:
             output_tokens=2,
             latency_ms=3.0,
         )
-        await persist_to_store(req)
+        await store_acts.persist_to_store(req)
 
         from forge.store import get_interactions
 
-        rows = get_interactions(get_store_engine(), "t-no-stop-reason")
+        rows = get_interactions(get_store_engine(migrated), "t-no-stop-reason")
         assert rows[0]["stop_reason"] is None
 
 

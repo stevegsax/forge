@@ -4,8 +4,10 @@ Decomposes a task into ordered steps using an LLM with structured output.
 
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_planner_system_prompt, build_planner_user_prompt
-- Testable function: execute_planner_call (takes provider as argument)
-- Imperative shell: assemble_planner_context, call_planner
+- Testable function: execute_planner_call (takes the LLM client as an argument)
+- Imperative shell: assemble_planner_context (free activity — no dependency to
+  inject); the ``call_planner`` bound method on ``LlmActivities``
+  (forge.activities.roots) delegates to execute_planner_call.
 """
 
 from __future__ import annotations
@@ -16,7 +18,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
 from forge.activities.context import (
@@ -333,35 +334,3 @@ async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
-
-
-@activity.defn
-async def call_planner(input: PlannerInput) -> PlanCallResult:
-    """Activity wrapper — obtains the LLM client and delegates to execute_planner_call."""
-    from forge.llm_client import get_llm
-    from forge.tracing import get_tracer, llm_call_attributes
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.call_planner") as span:
-        logger.info("Planner call: task_id=%s", input.task_id)
-        llm = get_llm()
-        async with heartbeat_during():
-            result = await execute_planner_call(input, llm)
-        logger.info("Plan produced: task_id=%s steps=%d", input.task_id, len(result.plan.steps))
-        # A max_tokens truncation now raises LLMTruncated inside llm.complete
-        # before this wrapper is built, so result.stop_reason can never be
-        # "max_tokens" here — the former truncation warning branch was dropped.
-
-        span.set_attributes(
-            llm_call_attributes(
-                model_name=result.model_name,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                latency_ms=result.latency_ms,
-                task_id=input.task_id,
-                cache_creation_input_tokens=result.cache_creation_input_tokens,
-                cache_read_input_tokens=result.cache_read_input_tokens,
-            )
-        )
-
-        return result

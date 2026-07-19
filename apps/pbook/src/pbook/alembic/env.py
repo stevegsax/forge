@@ -13,12 +13,29 @@ target_metadata = Base.metadata
 
 
 def _resolve_url() -> str:
-    """Connection URL from alembic config, falling back to the env var."""
-    url = context.config.get_main_option("sqlalchemy.url")
+    """Connection URL for the migration run.
+
+    Resolution order:
+
+    1. ``cfg.attributes["pbook_url"]`` — how :func:`pbook.store.run_migrations`
+       (the worker/CLI in-process path) passes the URL, avoiding both
+       ConfigParser %-interpolation on a percent-encoded password and any
+       ``os.environ`` write.
+    2. ``sqlalchemy.url`` from alembic.ini.
+    3. ``PBOOK_DATABASE_URL`` env var — kept ONLY for the operator running the
+       standalone ``alembic`` CLI directly (not via ``pbook migrate``), which
+       has no way to populate ``cfg.attributes``.
+    """
+    url = context.config.attributes.get("pbook_url")
+    if not url:
+        url = context.config.get_main_option("sqlalchemy.url")
     if not url:
         url = os.environ.get("PBOOK_DATABASE_URL")
     if not url:
-        msg = "No database URL: set sqlalchemy.url or PBOOK_DATABASE_URL."
+        msg = (
+            "No database URL: set cfg.attributes['pbook_url'], sqlalchemy.url, "
+            "or PBOOK_DATABASE_URL."
+        )
         raise RuntimeError(msg)
     return normalize_url(url)
 

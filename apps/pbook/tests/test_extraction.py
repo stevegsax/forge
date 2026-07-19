@@ -7,20 +7,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 from temporalio import activity
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from pbook.activities.extraction import (
-    record_ingested_session,
-    record_ingested_session_error,
-    save_extracted_entries,
-)
-from pbook.llm import reset_provider
 from pbook.models import PushExperienceInput
 from pbook.prompts.extraction import (
     build_extraction_system_prompt,
     build_extraction_user_prompt,
 )
+from pbook.roots import StoreActivities
 from pbook.store import list_recent_entries
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflow_steps import LLMChatResult
@@ -30,22 +24,12 @@ from tests.conftest import encode_test_embedding, setup_db
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from temporalio.testing import WorkflowEnvironment
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-async def env():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        yield env
-
-
-@pytest.fixture(autouse=True)
-def _cleanup_provider():
-    yield
-    reset_provider()
 
 
 def _setup_db(_tmp_path: Path | None = None):
@@ -175,7 +159,7 @@ class TestSaveExtractedEntries:
             }
         )
 
-        count = await save_extracted_entries(input_data)
+        count = await StoreActivities(engine).save_extracted_entries(input_data)
         assert count == 1
 
         entries = list_recent_entries(engine)
@@ -186,7 +170,9 @@ class TestSaveExtractedEntries:
 
     @pytest.mark.asyncio
     async def test_empty_entries(self):
-        count = await save_extracted_entries(json.dumps({"entries": [], "project": ""}))
+        count = await StoreActivities(None).save_extracted_entries(
+            json.dumps({"entries": [], "project": ""})
+        )
         assert count == 0
 
 
@@ -245,7 +231,7 @@ class TestExtractionWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ExtractionWorkflow],
-            activities=[mock_chat, mock_embed, save_extracted_entries],
+            activities=[mock_chat, mock_embed, StoreActivities(engine).save_extracted_entries],
         ):
             result = await env.client.execute_workflow(
                 ExtractionWorkflow.run,
@@ -348,7 +334,8 @@ class TestRecordIngestedSessionActivities:
 
     @pytest.mark.asyncio
     async def test_completion_activity_writes_completed_row(self):
-        await record_ingested_session(
+        engine = setup_db()[0]
+        await StoreActivities(engine).record_ingested_session(
             json.dumps(
                 {
                     "session_id": "s-good",
@@ -359,10 +346,8 @@ class TestRecordIngestedSessionActivities:
             )
         )
 
-        from pbook.store import get_store_engine, list_ingested_sessions
+        from pbook.store import list_ingested_sessions
 
-        engine = get_store_engine()
-        assert engine is not None
         rows = list_ingested_sessions(engine)
         assert len(rows) == 1
         assert rows[0]["session_id"] == "s-good"
@@ -372,7 +357,8 @@ class TestRecordIngestedSessionActivities:
 
     @pytest.mark.asyncio
     async def test_error_activity_writes_error_row(self):
-        await record_ingested_session_error(
+        engine = setup_db()[0]
+        await StoreActivities(engine).record_ingested_session_error(
             json.dumps(
                 {
                     "session_id": "s-bad",
@@ -382,10 +368,8 @@ class TestRecordIngestedSessionActivities:
             )
         )
 
-        from pbook.store import get_store_engine, list_ingested_sessions
+        from pbook.store import list_ingested_sessions
 
-        engine = get_store_engine()
-        assert engine is not None
         rows = list_ingested_sessions(engine)
         assert len(rows) == 1
         assert rows[0]["session_id"] == "s-bad"
@@ -393,11 +377,10 @@ class TestRecordIngestedSessionActivities:
         assert rows[0]["error_message"] == "malformed_llm_response"
 
     @pytest.mark.asyncio
-    async def test_disabled_db_is_a_noop(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
-
-        # Should not raise when the store is disabled.
-        await record_ingested_session(json.dumps({"session_id": "s-x"}))
-        await record_ingested_session_error(
+    async def test_disabled_db_is_a_noop(self):
+        # With the store disabled (engine None), the callbacks no-op.
+        store = StoreActivities(None)
+        await store.record_ingested_session(json.dumps({"session_id": "s-x"}))
+        await store.record_ingested_session_error(
             json.dumps({"session_id": "s-x", "error_message": "boom"})
         )

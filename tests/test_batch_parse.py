@@ -206,8 +206,9 @@ class TestParseFailureOutcomes:
 class TestParseLlmResponseActivity:
     @pytest.mark.asyncio
     async def test_activity_delegates_and_records_model(self) -> None:
-        from forge.activities.batch_parse import parse_llm_response
+        from forge.activities.roots import BatchActivities
         from forge.models import ParseResponseInput
+        from forge.output_types import OUTPUT_TYPES
 
         raw = _typed_message({"files": [], "edits": [], "explanation": "done"})
 
@@ -217,8 +218,16 @@ class TestParseLlmResponseActivity:
         mock_tracer = MagicMock()
         mock_tracer.start_as_current_span.return_value = mock_span
 
-        with patch("forge.tracing.get_tracer", return_value=mock_tracer):
-            result = await parse_llm_response(
+        batch = BatchActivities(
+            client=MagicMock(),
+            output_types=OUTPUT_TYPES,
+            engine=MagicMock(),
+            blob_store=None,
+            temporal_client=MagicMock(),
+            mistral_ocr=None,
+        )
+        with patch("forge.activities.roots.get_tracer", return_value=mock_tracer):
+            result = await batch.parse_llm_response(
                 ParseResponseInput(
                     raw_response_json=raw,
                     output_type_name="LLMResponse",

@@ -1692,7 +1692,7 @@ class TestStatusCommand:
         from forge.store import get_store_engine, run_migrations, save_run
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         save_run(
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
@@ -1713,7 +1713,7 @@ class TestStatusCommand:
         from forge.store import get_store_engine, run_migrations, save_run
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         save_run(
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
@@ -1737,7 +1737,7 @@ class TestStatusCommand:
         from forge.store import get_store_engine, run_migrations, save_run
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         task_result = TaskResult(task_id="t1", status=TransitionSignal.SUCCESS)
         save_run(engine, task_result, "forge-task-t1", "run-A")
         save_run(engine, task_result, "forge-task-t1", "run-B")
@@ -1756,7 +1756,7 @@ class TestStatusCommand:
         from forge.store import get_store_engine, run_migrations, save_run
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         save_run(
             engine,
             TaskResult(task_id="t1", status=TransitionSignal.SUCCESS),
@@ -1800,7 +1800,7 @@ class TestPlaybooksCommand:
         from forge.store import get_store_engine, run_migrations, save_playbooks
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         save_playbooks(
             engine,
             [
@@ -1832,7 +1832,7 @@ class TestPlaybooksCommand:
         from forge.store import get_store_engine, run_migrations, save_playbooks
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         save_playbooks(
             engine,
             [
@@ -1872,7 +1872,7 @@ class TestPlaybooksCommand:
         from forge.store import get_store_engine, run_migrations, save_playbooks
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         save_playbooks(
             engine,
             [
@@ -2066,7 +2066,7 @@ class TestPlaybooksCommand:
         from forge.store import get_store_engine, run_migrations, save_playbooks
 
         run_migrations(f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         save_playbooks(
             engine,
             [
@@ -2397,7 +2397,7 @@ class TestIngestCommand:
 
     def test_no_args_shows_error(self, cli_runner: CliRunner) -> None:
         # Prevent the "already ingested" filter from hitting a real pbook DB.
-        with patch("pbook.store.get_store_engine", return_value=None):
+        with patch("pbook.store.build_engine", return_value=None):
             result = cli_runner.invoke(main, ["ingest"])
         assert result.exit_code == EXIT_FAILURE
         assert "TRANSCRIPT_PATH" in result.stderr or "--all" in result.stderr
@@ -2405,7 +2405,7 @@ class TestIngestCommand:
     def test_dry_run_all_with_no_sessions(self, cli_runner: CliRunner) -> None:
         with (
             patch("pbook.transcript.discover_sessions", return_value=[]),
-            patch("pbook.store.get_store_engine", return_value=None),
+            patch("pbook.store.build_engine", return_value=None),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all", "--dry-run"])
         assert result.exit_code == 0
@@ -2418,7 +2418,7 @@ class TestIngestCommand:
         ]
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_store_engine", return_value=None),
+            patch("pbook.store.build_engine", return_value=None),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all", "--dry-run"])
         assert result.exit_code == 0
@@ -2429,7 +2429,7 @@ class TestIngestCommand:
     def test_dry_run_single_path(self, cli_runner: CliRunner, tmp_path: pathlib.Path) -> None:
         fake = tmp_path / "sess-xyz.jsonl"
         fake.write_text('{"type": "user", "sessionId": "sess-xyz"}\n')
-        with patch("pbook.store.get_store_engine", return_value=None):
+        with patch("pbook.store.build_engine", return_value=None):
             result = cli_runner.invoke(
                 main, ["ingest", str(fake), "--project", "demo", "--dry-run"]
             )
@@ -2444,7 +2444,7 @@ class TestIngestCommand:
         ]
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_store_engine", return_value=None),
+            patch("pbook.store.build_engine", return_value=None),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all", "--project", "forge", "--dry-run"])
         assert result.exit_code == 0
@@ -2460,7 +2460,7 @@ class TestIngestCommand:
 
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_store_engine", return_value=MagicMock()),
+            patch("pbook.store.build_engine", return_value=MagicMock()),
             patch(
                 "pbook.store.get_ingested_session_ids",
                 return_value={"already-done"},
@@ -2500,7 +2500,7 @@ class TestIngestCommand:
         )
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_store_engine", return_value=None),
+            patch("pbook.store.build_engine", return_value=None),
             patch("forge.cli._submit_ingestion", mock_submit),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all"])
@@ -2530,7 +2530,7 @@ class TestIngestCommand:
         )
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_store_engine", return_value=None),
+            patch("pbook.store.build_engine", return_value=None),
             patch("forge.cli._submit_ingestion", mock_submit),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all", "--json"])
@@ -2551,7 +2551,7 @@ class TestIngestCommand:
 
         with (
             patch("pbook.transcript.discover_sessions", return_value=sessions),
-            patch("pbook.store.get_store_engine", return_value=None),
+            patch("pbook.store.build_engine", return_value=None),
             patch("forge.cli._submit_ingestion", side_effect=_raise),
         ):
             result = cli_runner.invoke(main, ["ingest", "--all"])

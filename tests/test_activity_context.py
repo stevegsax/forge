@@ -5,15 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.config import DbSettings
 
 from forge.activities.context import (
     _build_context_stats,
     _detect_package_name,
     _read_context_files,
     _read_project_instructions,
-    assemble_context,
-    assemble_step_context,
-    assemble_sub_task_context,
     build_discovered_context_section,
     build_error_section,
     build_project_instructions_section,
@@ -27,8 +25,10 @@ from forge.activities.context import (
     find_enclosing_scope,
     parse_ruff_error_lines,
 )
+from forge.activities.roots import ContextActivities
 from forge.models import (
     AssembleContextInput,
+    AssembledContext,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
     ContextConfig,
@@ -40,11 +40,35 @@ from forge.models import (
     TransitionSignal,
     ValidationResult,
 )
+from forge.store import get_store_engine
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from forge.code_intel.budget import ContextItem, Representation
+
+
+# T3.6: the assemble_* activities are now bound methods on ContextActivities
+# (store engine injected). These thin async wrappers construct a ContextActivities
+# over the test store (the URL is resolved from the autouse FORGE_DB_URL via
+# DbSettings; playbook loading tolerates an empty/unmigrated store) so the
+# existing call sites below read unchanged.
+async def assemble_context(input_data: AssembleContextInput) -> AssembledContext:
+    return await ContextActivities(get_store_engine(DbSettings().url)).assemble_context(input_data)
+
+
+async def assemble_step_context(input_data: AssembleStepContextInput) -> AssembledContext:
+    return await ContextActivities(get_store_engine(DbSettings().url)).assemble_step_context(
+        input_data
+    )
+
+
+async def assemble_sub_task_context(
+    input_data: AssembleSubTaskContextInput,
+) -> AssembledContext:
+    return await ContextActivities(get_store_engine(DbSettings().url)).assemble_sub_task_context(
+        input_data
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +383,7 @@ class TestAssembleStepContext:
             )
 
         monkeypatch.setattr(forge.code_intel, "discover_context", fake_discover_context)
-        monkeypatch.setattr(context_module, "_load_playbooks_for_task", lambda task: [])
+        monkeypatch.setattr(context_module, "_load_playbooks_for_task", lambda task, engine: [])
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
@@ -452,7 +476,7 @@ class TestAssembleStepContext:
             )
 
         monkeypatch.setattr(forge.code_intel, "discover_context", fake_discover_context)
-        monkeypatch.setattr(context_module, "_load_playbooks_for_task", lambda task: [])
+        monkeypatch.setattr(context_module, "_load_playbooks_for_task", lambda task, engine: [])
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()

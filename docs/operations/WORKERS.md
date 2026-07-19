@@ -13,6 +13,16 @@ forge worker --temporal-address temporal.example.com:7233
 
 The worker polls the `forge-task-queue` task queue. All Forge workflows and activities are registered on this single queue.
 
+## Startup and Configuration
+
+Each worker main is a composition root (T3.6): it reads a frozen settings object **once** at startup, then builds one database engine, one Anthropic SDK client, one S3 blob client, and (when `MISTRAL_API_KEY` is set) one Mistral OCR client for the whole process, injecting them into the class-based activities. Environment variables are read only through those settings, so a misconfiguration is a **startup failure, not a mid-workflow surprise**:
+
+- The **forge worker** fails fast if `FORGE_DB_URL` is unset.
+- The **ocr worker** fails fast if `FORGE_DB_URL` or `FORGE_OCR_S3_BUCKET` is unset (the bucket check moved to startup in T3.6; it used to surface at first OCR use).
+- `MISTRAL_API_KEY` is **not** a fail-fast for either worker: unset simply means the Mistral OCR client is not built (forge makes the OCR submit today; the ocr worker builds its client ahead of Phase 4's self-polling).
+
+The full environment-variable reference is in [DEPLOYMENT.md](DEPLOYMENT.md#configuration).
+
 ## Checking Whether Workers Are Running
 
 Workers do not write a PID file or store local state. Because workers can run on any machine that can reach the Temporal server, the Temporal server itself is the source of truth.

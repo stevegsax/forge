@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
@@ -123,34 +122,24 @@ class BatchPollResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def make_mistral_client(api_key: str | None = None) -> Mistral:
-    """Construct a `Mistral` SDK client.
+def make_mistral_client(api_key: str) -> Mistral:
+    """Construct a `Mistral` SDK client from an explicit `api_key`.
 
-    Unlike `sax_platform.llm.client.make_client` (Anthropic), the installed
-    `mistralai` SDK (1.12.4) does **not** fall back to a `MISTRAL_API_KEY`
-    env var itself when `api_key` is omitted or `None` — there is no
-    reference to that variable anywhere in the package. sax_llm's
-    `MistralProvider.__init__` read the env var explicitly
-    (`os.environ.get("MISTRAL_API_KEY", "")`) before constructing the SDK
-    client; this factory preserves that exact fallback rather than relying
-    on SDK behavior that doesn't exist.
+    `api_key` is required, explicit config: a composition root resolves it from
+    `MISTRAL_API_KEY` via `LlmSettings` and passes it in. This factory reads no
+    environment itself. (The installed `mistralai` SDK does not fall back to a
+    `MISTRAL_API_KEY` env var of its own, so an empty key would otherwise
+    construct a client that fails every call later with a 401.)
 
-    Raises `ValueError` if the resolved key is empty or missing — the ocr
-    worker calls this at startup, which is exactly where an operator should
-    learn of a missing `MISTRAL_API_KEY`, rather than the client silently
-    constructing with `api_key=""` and failing every call hours later with a
-    401.
+    Raises `ValueError` if `api_key` is empty — the ocr worker calls this at
+    startup, exactly where an operator should learn of a missing key.
     """
     from mistralai import Mistral
 
-    resolved_key = api_key if api_key is not None else os.environ.get("MISTRAL_API_KEY", "")
-    if not resolved_key:
-        msg = (
-            "MISTRAL_API_KEY is not set (and no api_key was passed explicitly). "
-            "Set the MISTRAL_API_KEY environment variable or pass api_key explicitly."
-        )
+    if not api_key:
+        msg = "make_mistral_client requires a non-empty api_key (MISTRAL_API_KEY)."
         raise ValueError(msg)
-    return Mistral(api_key=resolved_key)
+    return Mistral(api_key=api_key)
 
 
 # ---------------------------------------------------------------------------

@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 from pbook.models import EntryType, PlaybookEntry
+from pbook.settings import PbookDbSettings
 from pbook.store import (
     SESSION_STATUS_COMPLETED,
     SESSION_STATUS_ERROR,
     SESSION_STATUS_RUNNING,
     SOURCE_DEDUP_THRESHOLD,
     add_entry_source,
+    build_engine,
     build_entry_dict,
     check_duplicate,
     delete_entry,
     find_similar_source_contexts,
-    get_database_url,
     get_entries_by_tags,
     get_entry_by_id,
     get_ingested_session_ids,
@@ -34,28 +35,38 @@ from pbook.store import (
 from tests.conftest import make_embedding, setup_db
 
 # ---------------------------------------------------------------------------
-# get_database_url / normalize_url
+# normalize_url
 # ---------------------------------------------------------------------------
 
 
-class TestDatabaseUrl:
-    def test_env_var_normalized_to_psycopg(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "postgresql://u:p@host:5432/db")
-        assert get_database_url() == "postgresql+psycopg://u:p@host:5432/db"
-
-    def test_empty_disables(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
-        assert get_database_url() is None
-
-    def test_unset_disables(self, monkeypatch):
-        monkeypatch.delenv("PBOOK_DATABASE_URL", raising=False)
-        assert get_database_url() is None
-
+class TestNormalizeUrl:
     def test_normalize_url_variants(self):
         assert normalize_url("postgres://u@h/db") == "postgresql+psycopg://u@h/db"
         assert normalize_url("postgresql://u@h/db") == "postgresql+psycopg://u@h/db"
         # Already-qualified URLs pass through untouched.
         assert normalize_url("postgresql+psycopg://u@h/db") == "postgresql+psycopg://u@h/db"
+
+
+# ---------------------------------------------------------------------------
+# build_engine — store-disabled semantics + normalization
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEngine:
+    def test_none_url_returns_none(self):
+        assert build_engine(PbookDbSettings(url=None)) is None
+
+    def test_empty_url_returns_none(self):
+        assert build_engine(PbookDbSettings(url="")) is None
+
+    def test_builds_normalized_engine(self):
+        # No connection is made here — just construction + URL normalization.
+        engine = build_engine(PbookDbSettings(url="postgresql://u:p@host:5432/db"))
+        assert engine is not None
+        try:
+            assert engine.url.drivername == "postgresql+psycopg"
+        finally:
+            engine.dispose()
 
 
 # ---------------------------------------------------------------------------

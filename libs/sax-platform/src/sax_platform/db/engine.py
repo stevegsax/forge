@@ -15,13 +15,12 @@ neither forge-contracts nor any single consumer had on its own (T3.4, ST3):
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
-from sax_platform.db.ops import ensure_sqlite_parent, get_store_url
+from sax_platform.db.ops import ensure_sqlite_parent
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -33,28 +32,28 @@ if TYPE_CHECKING:
 # locked" on what would otherwise resolve itself.
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 
-# Env var names truthy-checked the same way pbook already does for its own
-# pooler override.
-_TRUTHY = {"1", "true", "yes"}
-
 
 def is_pooler_url(url: str, *, pooler_override: bool = False) -> bool:
     """True when ``url`` targets Supabase's transaction-mode connection pooler.
 
-    Pure: the caller (``get_store_engine``, the imperative shell) reads the
-    ``PBOOK_DB_POOLER`` env override and passes it in, rather than this
-    predicate reading it itself. Detected by host (``pooler.supabase.com`),
-    the pooler's default port (``6543``), or the explicit override — the
-    transaction-mode pooler (PgBouncer) breaks server-side prepared
-    statements, so psycopg must be told to skip them.
+    Pure: the caller (``get_store_engine``, the imperative shell) passes the
+    override in rather than this predicate reading any environment itself.
+    Detected by host (``pooler.supabase.com`), the pooler's default port
+    (``6543``), or the explicit override — the transaction-mode pooler
+    (PgBouncer) breaks server-side prepared statements, so psycopg must be told
+    to skip them.
     """
     if pooler_override:
         return True
     return "pooler.supabase.com" in url or ":6543" in url
 
 
-def get_store_engine() -> Engine:
-    """Build the store engine from ``FORGE_DB_URL``.
+def get_store_engine(url: str, *, pooler_override: bool = False) -> Engine:
+    """Build the store engine for ``url``.
+
+    ``url`` and ``pooler_override`` are required, explicit config: the caller
+    (a composition root, via :class:`~sax_platform.config.DbSettings`) resolves
+    both. This factory reads no environment itself.
 
     SQLite URLs get WAL journaling plus a busy-timeout pragma (and the parent
     directory is created); Postgres URLs get connection pre-ping, a small
@@ -63,7 +62,6 @@ def get_store_engine() -> Engine:
     statements disabled via ``connect_args``. Connection errors are not caught
     here — they propagate (no runtime failover).
     """
-    url = get_store_url()
     if make_url(url).get_backend_name() == "sqlite":
         ensure_sqlite_parent(url)
         engine = sa.create_engine(url)
@@ -79,7 +77,6 @@ def get_store_engine() -> Engine:
 
         return engine
 
-    pooler_override = os.environ.get("PBOOK_DB_POOLER", "").lower() in _TRUTHY
     connect_args: dict[str, object] = {}
     if is_pooler_url(url, pooler_override=pooler_override):
         connect_args["prepare_threshold"] = None

@@ -17,14 +17,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest import mock
 
-import pytest
 import sqlalchemy as sa
 
 from sax_platform.db.engine import get_store_engine, is_pooler_url
 from sax_platform.db.ops import (
-    StoreConfigError,
     ensure_sqlite_parent,
-    get_store_url,
     insert_or_ignore,
 )
 
@@ -37,22 +34,6 @@ _widgets = sa.Table(
     sa.Column("id", sa.String, primary_key=True),
     sa.Column("value", sa.String),
 )
-
-
-class TestGetStoreUrl:
-    def test_returns_configured_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_URL", "sqlite:///tmp/x.db")
-        assert get_store_url() == "sqlite:///tmp/x.db"
-
-    def test_unset_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FORGE_DB_URL", raising=False)
-        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
-            get_store_url()
-
-    def test_empty_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_URL", "")
-        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
-            get_store_url()
 
 
 class TestEnsureSqliteParent:
@@ -94,13 +75,13 @@ class TestIsPoolerUrl:
 
 
 class TestGetStoreEngine:
-    def test_sqlite_url_enables_wal_and_creates_parent_dir(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        db_path = tmp_path / "nested" / "wal.db"
-        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
+    """``url`` and ``pooler_override`` are required, explicit config — the factory
+    reads no environment itself (T3.6)."""
 
-        engine = get_store_engine()
+    def test_sqlite_url_enables_wal_and_creates_parent_dir(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "nested" / "wal.db"
+
+        engine = get_store_engine(f"sqlite:///{db_path}")
 
         assert engine.dialect.name == "sqlite"
         assert db_path.parent.exists()
@@ -108,75 +89,60 @@ class TestGetStoreEngine:
             mode = conn.execute(sa.text("PRAGMA journal_mode")).scalar()
         assert mode == "wal"
 
-    def test_sqlite_url_sets_busy_timeout(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_sqlite_url_sets_busy_timeout(self, tmp_path: Path) -> None:
         db_path = tmp_path / "busy.db"
-        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
 
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
 
         with engine.connect() as conn:
             timeout_ms = conn.execute(sa.text("PRAGMA busy_timeout")).scalar()
         assert timeout_ms is not None
         assert timeout_ms > 0
 
-    def test_postgres_url_builds_pooled_engine_without_wal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_postgres_url_builds_pooled_engine_without_wal(self) -> None:
         # Building the engine imports the driver but never connects, so no
         # Postgres server is needed — only the psycopg2 DBAPI module.
-        monkeypatch.delenv("PBOOK_DB_POOLER", raising=False)
-        monkeypatch.setenv(
-            "FORGE_DB_URL", "postgresql+psycopg2://user:pw@localhost:5432/forge_test"
-        )
-        engine = get_store_engine()
+        engine = get_store_engine("postgresql+psycopg2://user:pw@localhost:5432/forge_test")
         assert engine.dialect.name == "postgresql"
         assert isinstance(engine.pool, sa.pool.QueuePool)
         assert engine.pool.size() == 5
         assert engine.pool._max_overflow == 5  # only public accessor is size(); overflow is private
 
-    def test_postgres_pooler_url_disables_prepared_statements(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("PBOOK_DB_POOLER", raising=False)
-        monkeypatch.setenv(
-            "FORGE_DB_URL",
-            "postgresql+psycopg2://user:pw@aws-0-us-east-1.pooler.supabase.com:5432/postgres",
-        )
+    def test_postgres_pooler_url_disables_prepared_statements(self) -> None:
         with mock.patch("sax_platform.db.engine.sa.create_engine") as create_engine:
-            get_store_engine()
+            get_store_engine(
+                "postgresql+psycopg2://user:pw@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
+            )
         _, kwargs = create_engine.call_args
         assert kwargs["connect_args"] == {"prepare_threshold": None}
 
-    def test_postgres_env_pooler_override_disables_prepared_statements(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("PBOOK_DB_POOLER", "true")
-        monkeypatch.setenv(
-            "FORGE_DB_URL", "postgresql+psycopg2://user:pw@localhost:5432/forge_test"
-        )
+    def test_postgres_non_pooler_url_leaves_connect_args_empty(self) -> None:
         with mock.patch("sax_platform.db.engine.sa.create_engine") as create_engine:
-            get_store_engine()
-        _, kwargs = create_engine.call_args
-        assert kwargs["connect_args"] == {"prepare_threshold": None}
-
-    def test_postgres_non_pooler_url_leaves_connect_args_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("PBOOK_DB_POOLER", raising=False)
-        monkeypatch.setenv(
-            "FORGE_DB_URL", "postgresql+psycopg2://user:pw@localhost:5432/forge_test"
-        )
-        with mock.patch("sax_platform.db.engine.sa.create_engine") as create_engine:
-            get_store_engine()
+            get_store_engine("postgresql+psycopg2://user:pw@localhost:5432/forge_test")
         _, kwargs = create_engine.call_args
         assert kwargs["connect_args"] == {}
 
-    def test_unset_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FORGE_DB_URL", raising=False)
-        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
-            get_store_engine()
+    def test_explicit_pooler_override_true_disables_prepared_statements(self) -> None:
+        # A plain (non-pooler) URL would be False by shape, so True here can only
+        # come from the explicit override — proving it is threaded.
+        with mock.patch("sax_platform.db.engine.sa.create_engine") as create_engine:
+            get_store_engine(
+                "postgresql+psycopg2://user:pw@localhost:5432/forge_test",
+                pooler_override=True,
+            )
+        _, kwargs = create_engine.call_args
+        assert kwargs["connect_args"] == {"prepare_threshold": None}
+
+    def test_explicit_pooler_override_false_still_detects_pooler_url_shape(self) -> None:
+        # override=False only defers to URL shape; a pooler-shaped URL is still
+        # detected (matches is_pooler_url semantics).
+        with mock.patch("sax_platform.db.engine.sa.create_engine") as create_engine:
+            get_store_engine(
+                "postgresql+psycopg2://user:pw@aws-0.pooler.supabase.com:5432/postgres",
+                pooler_override=False,
+            )
+        _, kwargs = create_engine.call_args
+        assert kwargs["connect_args"] == {"prepare_threshold": None}
 
 
 class TestInsertOrIgnoreSqlite:

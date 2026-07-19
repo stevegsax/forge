@@ -7,7 +7,6 @@ and runs the worker until interrupted.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -28,43 +27,25 @@ from temporalio.client import (
 )
 
 from forge.activities import (
+    BatchActivities,
+    ContextActivities,
+    LlmActivities,
+    StoreActivities,
     assemble_conflict_resolution_context,
-    assemble_context,
     assemble_exploration_context,
     assemble_planner_context,
     assemble_sanity_check_context,
-    assemble_step_context,
-    assemble_sub_task_context,
-    call_conflict_resolution,
-    call_exploration_llm,
-    call_extraction_llm,
-    call_llm,
-    call_planner,
-    call_sanity_check,
     commit_changes_activity,
     create_worktree_activity,
     detect_file_conflicts_activity,
     evaluate_transition,
-    export_single_playbook,
-    fetch_existing_playbooks,
-    fetch_extraction_input,
-    fetch_playbook_ids,
-    fulfill_context_requests,
-    parse_llm_response,
-    persist_to_store,
-    poll_batch_results,
     remove_worktree_activity,
     reset_worktree_activity,
-    review_manual_playbook,
-    save_extraction_results,
-    submit_batch_blob,
-    submit_batch_request,
     validate_output,
     validate_playbook_entry,
     write_files,
     write_output,
 )
-from forge.activities.batch_poll import set_temporal_client
 from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.export_playbook_workflow import ExportPlaybookWorkflow
 
@@ -87,8 +68,6 @@ from forge.workflows import ForgeSubTaskWorkflow, ForgeTaskWorkflow
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
-
 # INTERIM (Phase 4 deletes the schedules): execution-timeout backstop for the
 # scheduled batch-poller run. A run that exceeds its timeout is terminated by
 # Temporal so the overlap=SKIP schedule can fire the next run — guarding against a
@@ -99,18 +78,17 @@ _POLLER_EXECUTION_TIMEOUT = timedelta(minutes=10)
 logger = logging.getLogger(__name__)
 
 
-def _init_store() -> None:
-    """Run database migrations on startup.
+def _init_store(url: str) -> None:
+    """Run database migrations against the configured store *url* on startup.
 
-    The store is mandatory: ``FORGE_DB_URL`` must be set (a ``sqlite:///`` URL
-    for dev/tests, a ``postgresql+psycopg2://`` URL for production). An unset
-    URL or an unreachable database raises, and the worker refuses to start.
+    The URL comes from ``ForgeSettings().db.url`` (fail-fast: an unset
+    ``FORGE_DB_URL`` raises when the settings are built, before this is reached).
+    An unreachable database raises here, and the worker refuses to start.
     """
     from sqlalchemy.engine import make_url
 
-    from forge.store import get_store_url, run_migrations
+    from forge.store import run_migrations
 
-    url = get_store_url()
     run_migrations(url)
     logger.info(
         "Database migrations complete: %s",
@@ -178,22 +156,57 @@ async def run_worker(
     batch_poll_interval: int = 600,
     identity: str | None = None,
 ) -> None:
-    """Connect to Temporal and run the Forge worker."""
-    from forge.tracing import init_tracing, shutdown_tracing
+    """Connect to Temporal and run the Forge worker.
 
-    if address is None:
-        address = os.environ.get("FORGE_TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS)
+    The single composition root: ``ForgeSettings()`` reads the environment once
+    (fail-fast on an unset ``FORGE_DB_URL``); the store engine, the shared
+    AnthropicLLM/AsyncAnthropic client, the optional S3 blob store, and the
+    optional MistralOcr client are each built exactly once and injected into the
+    four activity classes. No activity reads config or builds a client itself.
+    """
+    from sax_platform.contracts.s3_blobs import S3Blobs
+    from sax_platform.db import get_store_engine
+    from sax_platform.llm import AnthropicLLM, make_client
 
     from forge.logging_config import silence_noisy_loggers
+    from forge.output_types import OUTPUT_TYPES
+    from forge.settings import ForgeSettings
+    from forge.tracing import init_tracing, shutdown_tracing
 
-    _init_store()
-    init_tracing()
+    settings = ForgeSettings()
+
+    _init_store(settings.db.url)
+    init_tracing(settings.tracing.exporter)
     silence_noisy_loggers()
 
-    client = await connect_temporal(address, identity=identity)
+    resolved_address = settings.temporal.address if address is None else address
+    client = await connect_temporal(resolved_address, identity=identity, settings=settings.temporal)
 
-    # Inject Temporal client for poll activity signal delivery
-    set_temporal_client(client)
+    # Build the process-wide dependencies ONCE. One AsyncAnthropic SDK client is
+    # shared by the sync lane (AnthropicLLM) and the batch lane (BatchActivities);
+    # one store engine (bounded Postgres pool) serves every store activity. The
+    # blob store and MistralOcr client are built only when configured.
+    sdk_client = make_client()
+    llm = AnthropicLLM(sdk_client)
+    engine = get_store_engine(settings.db.url)
+    blobs = S3Blobs(settings.blob.bucket, settings.blob.prefix) if settings.blob.bucket else None
+    mistral = None
+    if settings.llm.mistral_api_key:
+        from sax_platform.ocr import MistralOcr, make_mistral_client
+
+        mistral = MistralOcr(make_mistral_client(settings.llm.mistral_api_key))
+
+    store_activities = StoreActivities(engine)
+    context_activities = ContextActivities(engine)
+    llm_activities = LlmActivities(llm)
+    batch_activities = BatchActivities(
+        client=sdk_client,
+        output_types=OUTPUT_TYPES,
+        engine=engine,
+        blob_store=blobs,
+        temporal_client=client,
+        mistral_ocr=mistral,
+    )
 
     # Create/update schedules — if these fail, the worker is useless
     await _ensure_schedule(
@@ -220,41 +233,43 @@ async def run_worker(
         logger.warning("pbook not installed — ingestion workflows skipped at worker registration")
 
     activities: list[Callable[..., Any]] = [
+        # Free-function activities (no dependency to inject).
         assemble_conflict_resolution_context,
-        assemble_context,
         assemble_exploration_context,
         assemble_planner_context,
         assemble_sanity_check_context,
-        assemble_step_context,
-        assemble_sub_task_context,
-        call_conflict_resolution,
-        call_exploration_llm,
-        call_extraction_llm,
-        call_llm,
-        call_planner,
-        call_sanity_check,
         commit_changes_activity,
         create_worktree_activity,
         detect_file_conflicts_activity,
         evaluate_transition,
-        export_single_playbook,
-        fetch_existing_playbooks,
-        fetch_extraction_input,
-        fetch_playbook_ids,
-        fulfill_context_requests,
-        parse_llm_response,
-        persist_to_store,
-        poll_batch_results,
         remove_worktree_activity,
         reset_worktree_activity,
-        review_manual_playbook,
-        save_extraction_results,
-        submit_batch_blob,
-        submit_batch_request,
         validate_output,
         validate_playbook_entry,
         write_files,
         write_output,
+        # Composition-root class bound methods (dependencies injected).
+        store_activities.fetch_extraction_input,
+        store_activities.save_extraction_results,
+        store_activities.persist_to_store,
+        store_activities.fetch_existing_playbooks,
+        store_activities.fetch_playbook_ids,
+        store_activities.export_single_playbook,
+        context_activities.assemble_context,
+        context_activities.assemble_step_context,
+        context_activities.assemble_sub_task_context,
+        context_activities.fulfill_context_requests,
+        llm_activities.call_llm,
+        llm_activities.call_planner,
+        llm_activities.call_exploration_llm,
+        llm_activities.call_sanity_check,
+        llm_activities.call_conflict_resolution,
+        llm_activities.call_extraction_llm,
+        llm_activities.review_manual_playbook,
+        batch_activities.submit_batch_request,
+        batch_activities.submit_batch_blob,
+        batch_activities.poll_batch_results,
+        batch_activities.parse_llm_response,
     ]
     if _INGESTION_AVAILABLE:
         assert prepare_transcript is not None

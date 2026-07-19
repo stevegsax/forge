@@ -1,85 +1,61 @@
-"""Temporal activities for Forge workflow steps."""
+"""Temporal activities for Forge workflow steps.
+
+Two kinds are registered by ``forge.worker``:
+
+- **Free-function activities** — no process-wide dependency to inject (git,
+  validate, output, the pure ``assemble_*_context`` prompt builders,
+  ``detect_file_conflicts_activity``, ``evaluate_transition``,
+  ``validate_playbook_entry``). Exported here as functions.
+- **Composition-root classes** (T3.6, ``forge.activities.roots``) — every
+  activity that carries a dependency (store engine, LLM client, batch SDK
+  client, blob store, Temporal client, OCR client) is a bound method on
+  ``StoreActivities`` / ``ContextActivities`` / ``LlmActivities`` /
+  ``BatchActivities``, constructed once in the worker main. The bound methods
+  keep the former activity names, so workflows (which invoke by string) are
+  unaffected.
+"""
 
 from __future__ import annotations
 
-from forge.activities.batch_parse import parse_llm_response
-from forge.activities.batch_poll import poll_batch_results
-from forge.activities.batch_submit import submit_batch_blob, submit_batch_request
 from forge.activities.conflict_resolution import (
     assemble_conflict_resolution_context,
-    call_conflict_resolution,
     detect_file_conflicts_activity,
 )
-from forge.activities.context import (
-    assemble_context,
-    assemble_step_context,
-    assemble_sub_task_context,
-)
-from forge.activities.exploration import (
-    assemble_exploration_context,
-    call_exploration_llm,
-    fulfill_context_requests,
-)
-from forge.activities.extraction import (
-    call_extraction_llm,
-    fetch_extraction_input,
-    save_extraction_results,
-)
+from forge.activities.exploration import assemble_exploration_context
 from forge.activities.git_activities import (
     commit_changes_activity,
     create_worktree_activity,
     remove_worktree_activity,
     reset_worktree_activity,
 )
-from forge.activities.llm import call_llm
 from forge.activities.output import write_files, write_output
-from forge.activities.persist import persist_to_store
-from forge.activities.planner import assemble_planner_context, call_planner
-from forge.activities.playbook_export import (
-    export_single_playbook,
-    fetch_playbook_ids,
+from forge.activities.planner import assemble_planner_context
+from forge.activities.playbook_review import validate_playbook_entry
+from forge.activities.roots import (
+    BatchActivities,
+    ContextActivities,
+    LlmActivities,
+    StoreActivities,
 )
-from forge.activities.playbook_review import (
-    fetch_existing_playbooks,
-    review_manual_playbook,
-    validate_playbook_entry,
-)
-from forge.activities.sanity_check import assemble_sanity_check_context, call_sanity_check
+from forge.activities.sanity_check import assemble_sanity_check_context
 from forge.activities.transition import evaluate_transition
 from forge.activities.validate import validate_output
 
 __all__ = [
+    "BatchActivities",
+    "ContextActivities",
+    "LlmActivities",
+    "StoreActivities",
     "assemble_conflict_resolution_context",
-    "assemble_context",
     "assemble_exploration_context",
     "assemble_planner_context",
     "assemble_sanity_check_context",
-    "assemble_step_context",
-    "assemble_sub_task_context",
-    "call_conflict_resolution",
-    "call_exploration_llm",
-    "call_extraction_llm",
-    "call_llm",
-    "call_planner",
-    "call_sanity_check",
     "commit_changes_activity",
     "create_worktree_activity",
     "detect_file_conflicts_activity",
     "evaluate_transition",
-    "export_single_playbook",
-    "fetch_existing_playbooks",
-    "fetch_extraction_input",
-    "fetch_playbook_ids",
-    "fulfill_context_requests",
-    "parse_llm_response",
-    "persist_to_store",
-    "poll_batch_results",
     "remove_worktree_activity",
     "reset_worktree_activity",
-    "review_manual_playbook",
-    "save_extraction_results",
-    "submit_batch_blob",
-    "submit_batch_request",
     "validate_output",
     "validate_playbook_entry",
     "write_files",

@@ -11,9 +11,7 @@ the workflow loudly. Duplicate re-applies are absorbed by ``insert_or_ignore``.
 from __future__ import annotations
 
 import logging
-from typing import assert_never
-
-from temporalio import activity
+from typing import TYPE_CHECKING, assert_never
 
 from forge.persist_models import (
     PersistBatchFailure,
@@ -26,20 +24,24 @@ from forge.persist_models import (
     PersistRun,
 )
 
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
+
 logger = logging.getLogger(__name__)
 
 
-@activity.defn
-async def persist_to_store(req: PersistRequest) -> PersistResult:
+async def execute_persist(req: PersistRequest, engine: Engine) -> PersistResult:
     """Apply one idempotent store write, dispatched on ``req.kind``.
 
-    Resolves the engine via ``get_store_engine()`` — an unreachable DB raises, which
-    is exactly what triggers the Temporal retry that makes the write survivable.
+    Core of the ``persist_to_store`` activity: the store *engine* is injected by
+    the ``StoreActivities`` composition root (the bound method wraps this). An
+    unreachable DB raises, which is exactly what triggers the Temporal retry that
+    makes the write survivable; duplicate re-applies are absorbed by
+    ``insert_or_ignore``.
     """
     from forge.store import (
         InteractionRow,
         build_playbook_dict,
-        get_store_engine,
         record_batch_failure,
         record_batch_submission,
         save_interaction,
@@ -47,8 +49,6 @@ async def persist_to_store(req: PersistRequest) -> PersistResult:
         save_run,
         update_batch_status,
     )
-
-    engine = get_store_engine()
 
     match req:
         case PersistInteraction():

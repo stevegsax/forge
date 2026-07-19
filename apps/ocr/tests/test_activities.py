@@ -19,11 +19,7 @@ from ocr.activities import (
     _mime_to_extension,
     _strip_image_prefix,
     build_ocr_batch_body,
-    build_ocr_request_blob,
-    check_ocr_duplicate,
-    clear_ocr_removal_mark,
     compute_file_hash,
-    delete_file_content_blob,
     detect_mime_type,
     execute_build_request_blob,
     execute_check_ocr_duplicate,
@@ -33,17 +29,9 @@ from ocr.activities import (
     execute_reassemble_ocr_chunks,
     execute_split_file_into_chunks,
     execute_store_ocr_result,
-    export_ocr_document,
-    list_ocr_jobs,
-    mark_ocr_for_removal,
     parse_ocr_pages,
-    read_and_store_file_content,
-    reassemble_ocr_chunks,
     rewrite_image_references,
     rewrite_ocr_uris_to_local,
-    split_file_into_chunks,
-    store_ocr_result,
-    upsert_ocr_status,
     validate_file_size,
 )
 from ocr.models import OcrJobDerivedStatus
@@ -52,7 +40,6 @@ from ocr.store import (
     get_ocr_images,
     get_ocr_job_status,
     get_ocr_result,
-    get_store_engine,
     save_file_content,
     save_ocr_result,
     upsert_ocr_job_status,
@@ -192,17 +179,17 @@ class TestRewriteOcrUrisToLocal:
 
 
 class TestExecuteReadAndStoreFile:
-    def test_reads_and_stores_bytes(self, migrated: str, tmp_path) -> None:
-        engine = get_store_engine()
+    def test_reads_and_stores_bytes(self, store_engine, blobs, tmp_path) -> None:
+        engine = store_engine
         path = tmp_path / "doc.pdf"
         data = b"%PDF-1.4 fake pdf bytes"
         path.write_bytes(data)
 
-        ref = execute_read_and_store_file(str(path), engine)
+        ref = execute_read_and_store_file(str(path), engine, blobs)
 
         assert ref.mime_type == "application/pdf"
         assert ref.file_size_bytes == len(data)
-        stored = get_file_content(engine, ref.content_id)
+        stored = get_file_content(engine, ref.content_id, blobs)
         assert stored is not None
         assert stored["data"] == data
 
@@ -226,9 +213,9 @@ def _create_test_pdf(page_count: int) -> bytes:
 
 
 class TestExecuteSplitFileIntoChunks:
-    def test_non_pdf_single_chunk(self, migrated: str) -> None:
+    def test_non_pdf_single_chunk(self, store_engine, blobs) -> None:
         """Non-PDF files produce a single chunk reusing the original blob."""
-        engine = get_store_engine()
+        engine = store_engine
         content_id = "img-content"
         data = b"fake image bytes"
         save_file_content(
@@ -237,9 +224,10 @@ class TestExecuteSplitFileIntoChunks:
             data=data,
             mime_type="image/png",
             file_size_bytes=len(data),
+            blobs=blobs,
         )
 
-        result = execute_split_file_into_chunks(content_id, "image/png", len(data), engine)
+        result = execute_split_file_into_chunks(content_id, "image/png", len(data), engine, blobs)
 
         assert len(result.chunks) == 1
         assert result.chunks[0].content_id == content_id  # reuses original
@@ -249,9 +237,9 @@ class TestExecuteSplitFileIntoChunks:
         assert result.total_pages == 1
         assert result.original_content_id == content_id
 
-    def test_non_pdf_over_size_raises(self, migrated: str) -> None:
+    def test_non_pdf_over_size_raises(self, store_engine, blobs) -> None:
         """Non-PDF files exceeding the size limit are rejected."""
-        engine = get_store_engine()
+        engine = store_engine
         content_id = "big-img"
         data = b"x" * (MAX_FILE_SIZE_BYTES + 1)
         save_file_content(
@@ -260,14 +248,15 @@ class TestExecuteSplitFileIntoChunks:
             data=data,
             mime_type="image/png",
             file_size_bytes=len(data),
+            blobs=blobs,
         )
 
         with pytest.raises(ValueError, match="Non-PDF file"):
-            execute_split_file_into_chunks(content_id, "image/png", len(data), engine)
+            execute_split_file_into_chunks(content_id, "image/png", len(data), engine, blobs)
 
-    def test_small_pdf_single_chunk(self, migrated: str) -> None:
+    def test_small_pdf_single_chunk(self, store_engine, blobs) -> None:
         """PDFs under cutoffs produce a single chunk reusing the original blob."""
-        engine = get_store_engine()
+        engine = store_engine
         pdf_data = _create_test_pdf(10)
         content_id = "small-pdf"
         save_file_content(
@@ -276,10 +265,11 @@ class TestExecuteSplitFileIntoChunks:
             data=pdf_data,
             mime_type="application/pdf",
             file_size_bytes=len(pdf_data),
+            blobs=blobs,
         )
 
         result = execute_split_file_into_chunks(
-            content_id, "application/pdf", len(pdf_data), engine
+            content_id, "application/pdf", len(pdf_data), engine, blobs
         )
 
         assert len(result.chunks) == 1
@@ -287,11 +277,11 @@ class TestExecuteSplitFileIntoChunks:
         assert result.chunks[0].page_start == 1
         assert result.chunks[0].page_end == 10
         assert result.total_pages == 10
-        assert get_file_content(engine, content_id) is not None
+        assert get_file_content(engine, content_id, blobs) is not None
 
-    def test_boundary_30_pages_single_chunk(self, migrated: str) -> None:
+    def test_boundary_30_pages_single_chunk(self, store_engine, blobs) -> None:
         """Exactly MAX_PAGES pages stays a single chunk."""
-        engine = get_store_engine()
+        engine = store_engine
         pdf_data = _create_test_pdf(MAX_PAGES)
         content_id = "boundary-30"
         save_file_content(
@@ -300,18 +290,19 @@ class TestExecuteSplitFileIntoChunks:
             data=pdf_data,
             mime_type="application/pdf",
             file_size_bytes=len(pdf_data),
+            blobs=blobs,
         )
 
         result = execute_split_file_into_chunks(
-            content_id, "application/pdf", len(pdf_data), engine
+            content_id, "application/pdf", len(pdf_data), engine, blobs
         )
 
         assert len(result.chunks) == 1
         assert result.total_pages == MAX_PAGES
 
-    def test_boundary_31_pages_splits(self, migrated: str) -> None:
+    def test_boundary_31_pages_splits(self, store_engine, blobs) -> None:
         """MAX_PAGES + 1 pages triggers a split: 25 + 6."""
-        engine = get_store_engine()
+        engine = store_engine
         pdf_data = _create_test_pdf(MAX_PAGES + 1)
         content_id = "boundary-31"
         save_file_content(
@@ -320,10 +311,11 @@ class TestExecuteSplitFileIntoChunks:
             data=pdf_data,
             mime_type="application/pdf",
             file_size_bytes=len(pdf_data),
+            blobs=blobs,
         )
 
         result = execute_split_file_into_chunks(
-            content_id, "application/pdf", len(pdf_data), engine
+            content_id, "application/pdf", len(pdf_data), engine, blobs
         )
 
         assert len(result.chunks) == 2
@@ -337,9 +329,9 @@ class TestExecuteSplitFileIntoChunks:
         assert result.chunks[1].page_end == MAX_PAGES + 1
         assert result.chunks[1].chunk_index == 1
 
-    def test_large_pdf_60_pages_3_chunks(self, migrated: str) -> None:
+    def test_large_pdf_60_pages_3_chunks(self, store_engine, blobs) -> None:
         """60-page PDF splits into 3 chunks: 25 + 25 + 10."""
-        engine = get_store_engine()
+        engine = store_engine
         pdf_data = _create_test_pdf(60)
         content_id = "large-60"
         save_file_content(
@@ -348,10 +340,11 @@ class TestExecuteSplitFileIntoChunks:
             data=pdf_data,
             mime_type="application/pdf",
             file_size_bytes=len(pdf_data),
+            blobs=blobs,
         )
 
         result = execute_split_file_into_chunks(
-            content_id, "application/pdf", len(pdf_data), engine
+            content_id, "application/pdf", len(pdf_data), engine, blobs
         )
 
         assert len(result.chunks) == 3
@@ -360,9 +353,9 @@ class TestExecuteSplitFileIntoChunks:
         assert (result.chunks[1].page_start, result.chunks[1].page_end) == (26, 50)
         assert (result.chunks[2].page_start, result.chunks[2].page_end) == (51, 60)
 
-    def test_original_blob_deleted_after_split(self, migrated: str) -> None:
+    def test_original_blob_deleted_after_split(self, store_engine, blobs) -> None:
         """After a multi-chunk split, the original blob is deleted; chunk blobs exist."""
-        engine = get_store_engine()
+        engine = store_engine
         pdf_data = _create_test_pdf(MAX_PAGES + 1)
         content_id = "delete-test"
         save_file_content(
@@ -371,19 +364,20 @@ class TestExecuteSplitFileIntoChunks:
             data=pdf_data,
             mime_type="application/pdf",
             file_size_bytes=len(pdf_data),
+            blobs=blobs,
         )
 
         result = execute_split_file_into_chunks(
-            content_id, "application/pdf", len(pdf_data), engine
+            content_id, "application/pdf", len(pdf_data), engine, blobs
         )
 
-        assert get_file_content(engine, content_id) is None
+        assert get_file_content(engine, content_id, blobs) is None
         for chunk in result.chunks:
-            assert get_file_content(engine, chunk.content_id) is not None
+            assert get_file_content(engine, chunk.content_id, blobs) is not None
 
-    def test_original_blob_kept_for_single_chunk(self, migrated: str) -> None:
+    def test_original_blob_kept_for_single_chunk(self, store_engine, blobs) -> None:
         """The single-chunk case preserves the original blob."""
-        engine = get_store_engine()
+        engine = store_engine
         pdf_data = _create_test_pdf(5)
         content_id = "keep-test"
         save_file_content(
@@ -392,17 +386,18 @@ class TestExecuteSplitFileIntoChunks:
             data=pdf_data,
             mime_type="application/pdf",
             file_size_bytes=len(pdf_data),
+            blobs=blobs,
         )
 
-        execute_split_file_into_chunks(content_id, "application/pdf", len(pdf_data), engine)
+        execute_split_file_into_chunks(content_id, "application/pdf", len(pdf_data), engine, blobs)
 
-        assert get_file_content(engine, content_id) is not None
+        assert get_file_content(engine, content_id, blobs) is not None
 
-    def test_chunk_pdfs_are_valid(self, migrated: str) -> None:
+    def test_chunk_pdfs_are_valid(self, store_engine, blobs) -> None:
         """Each chunk blob is a valid PDF with the expected page count."""
         import fitz
 
-        engine = get_store_engine()
+        engine = store_engine
         pdf_data = _create_test_pdf(60)
         content_id = "valid-chunks"
         save_file_content(
@@ -411,24 +406,25 @@ class TestExecuteSplitFileIntoChunks:
             data=pdf_data,
             mime_type="application/pdf",
             file_size_bytes=len(pdf_data),
+            blobs=blobs,
         )
 
         result = execute_split_file_into_chunks(
-            content_id, "application/pdf", len(pdf_data), engine
+            content_id, "application/pdf", len(pdf_data), engine, blobs
         )
 
         for chunk, expected in zip(result.chunks, [25, 25, 10], strict=True):
-            blob = get_file_content(engine, chunk.content_id)
+            blob = get_file_content(engine, chunk.content_id, blobs)
             assert blob is not None
             doc = fitz.open(stream=blob["data"], filetype="pdf")
             assert len(doc) == expected
             doc.close()
 
-    def test_missing_content_raises(self, migrated: str) -> None:
+    def test_missing_content_raises(self, store_engine, blobs) -> None:
         """Raises RuntimeError if the content_id is not found in the store."""
-        engine = get_store_engine()
+        engine = store_engine
         with pytest.raises(RuntimeError, match="File content not found"):
-            execute_split_file_into_chunks("nonexistent", "application/pdf", 1000, engine)
+            execute_split_file_into_chunks("nonexistent", "application/pdf", 1000, engine, blobs)
 
 
 # ---------------------------------------------------------------------------
@@ -437,8 +433,8 @@ class TestExecuteSplitFileIntoChunks:
 
 
 class TestStoreOcrResult:
-    def test_inline_body_no_images(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_inline_body_no_images(self, store_engine, blobs) -> None:
+        engine = store_engine
         body = json.dumps(
             {"model": "m", "pages": [{"markdown": "hello"}], "usage_info": {"pages_processed": 1}}
         )
@@ -451,14 +447,13 @@ class TestStoreOcrResult:
             raw_response_json=body,
             s3_key=None,
             engine=engine,
+            blobs=blobs,
         )
         assert result.text_length > 0
         assert get_ocr_result(engine, "doc-1")["text"] == "hello"
         assert get_ocr_job_status(engine, "r1")["status"] == "stored"
 
-    def test_s3_envelope_with_images(self, migrated: str) -> None:
-        from sax_platform.contracts import s3_blobs
-
+    def test_s3_envelope_with_images(self, store_engine, blobs) -> None:
         body = json.dumps(
             {"model": "m", "pages": [{"markdown": "![x](img-0.jpeg)"}], "usage_info": {}}
         )
@@ -470,11 +465,11 @@ class TestStoreOcrResult:
                 "mime_type": "image/jpeg",
             }
         ]
-        key = s3_blobs.build_key("batch-result-r2")
+        key = blobs.build_key("batch-result-r2")
         envelope = dump_batch_result_payload(body, images).encode("utf-8")
-        s3_blobs.put(key, envelope, "application/json")
+        blobs.put(key, envelope, "application/json")
 
-        engine = get_store_engine()
+        engine = store_engine
         result = execute_store_ocr_result(
             request_id="r2",
             document_id="doc-2",
@@ -484,6 +479,7 @@ class TestStoreOcrResult:
             raw_response_json=None,
             s3_key=key,
             engine=engine,
+            blobs=blobs,
         )
         assert result.page_count == 1
         stored = get_ocr_result(engine, "doc-2")
@@ -492,8 +488,8 @@ class TestStoreOcrResult:
         assert len(imgs) == 1
         assert imgs[0]["document_id"] == "doc-2"
 
-    def test_idempotent_on_retry(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_idempotent_on_retry(self, store_engine, blobs) -> None:
+        engine = store_engine
         body = json.dumps({"model": "m", "pages": [{"markdown": "hi"}], "usage_info": {}})
         kw = dict(
             request_id="r3",
@@ -504,14 +500,15 @@ class TestStoreOcrResult:
             raw_response_json=body,
             s3_key=None,
             engine=engine,
+            blobs=blobs,
         )
         execute_store_ocr_result(**kw)
         execute_store_ocr_result(**kw)  # retry — must not raise or duplicate
         assert get_ocr_result(engine, "doc-3") is not None
 
-    def test_no_body_raises(self, migrated: str) -> None:
+    def test_no_body_raises(self, store_engine, blobs) -> None:
         """Neither an inline body nor an s3 envelope is a hard failure."""
-        engine = get_store_engine()
+        engine = store_engine
         with pytest.raises(RuntimeError, match="neither inline body nor"):
             execute_store_ocr_result(
                 request_id="r4",
@@ -522,13 +519,12 @@ class TestStoreOcrResult:
                 raw_response_json=None,
                 s3_key=None,
                 engine=engine,
+                blobs=blobs,
             )
 
-    def test_image_with_data_uri_prefix_is_decoded(self, migrated: str) -> None:
+    def test_image_with_data_uri_prefix_is_decoded(self, store_engine, blobs) -> None:
         """image_base64 delivered as a data: URI has its header stripped before decode."""
-        from sax_platform.contracts import s3_blobs
-
-        engine = get_store_engine()
+        engine = store_engine
         body = json.dumps(
             {"model": "m", "pages": [{"markdown": "![x](img-0.jpeg)"}], "usage_info": {}}
         )
@@ -539,9 +535,9 @@ class TestStoreOcrResult:
                 "image_base64": "data:image/png;base64,ZmFrZQ==",
             }
         ]
-        key = s3_blobs.build_key("batch-result-r5")
+        key = blobs.build_key("batch-result-r5")
         envelope = dump_batch_result_payload(body, images).encode("utf-8")
-        s3_blobs.put(key, envelope, "application/json")
+        blobs.put(key, envelope, "application/json")
 
         execute_store_ocr_result(
             request_id="r5",
@@ -552,13 +548,14 @@ class TestStoreOcrResult:
             raw_response_json=None,
             s3_key=key,
             engine=engine,
+            blobs=blobs,
         )
         imgs = get_ocr_images(engine, "doc-5")
         assert len(imgs) == 1
         assert imgs[0]["mime_type"] == "image/png"
 
-    def test_file_hash_computed_when_file_exists(self, migrated: str, tmp_path) -> None:
-        engine = get_store_engine()
+    def test_file_hash_computed_when_file_exists(self, store_engine, blobs, tmp_path) -> None:
+        engine = store_engine
         path = tmp_path / "source.pdf"
         data = b"%PDF-1.4 content"
         path.write_bytes(data)
@@ -573,6 +570,7 @@ class TestStoreOcrResult:
             raw_response_json=body,
             s3_key=None,
             engine=engine,
+            blobs=blobs,
         )
         stored = get_ocr_result(engine, "doc-6")
         assert stored["file_hash"] == hashlib.sha256(data).hexdigest()
@@ -584,37 +582,38 @@ class TestStoreOcrResult:
 
 
 class TestBuildRequestBlob:
-    def test_mints_id_and_stashes_blob(self, migrated: str) -> None:
-        from sax_platform.contracts import s3_blobs
-
-        engine = get_store_engine()
+    def test_mints_id_and_stashes_blob(self, store_engine, blobs) -> None:
+        engine = store_engine
         save_file_content(
             engine,
             content_id="c1",
             data=b"%PDF-1.4",
             mime_type="application/pdf",
             file_size_bytes=8,
+            blobs=blobs,
         )
         ref = execute_build_request_blob(
             content_id="c1",
             mime_type="application/pdf",
             model_name="mistral:mistral-ocr-latest",
             engine=engine,
+            blobs=blobs,
         )
         assert ref.request_id
         assert ref.model == "mistral-ocr-latest"
-        requests = json.loads(s3_blobs.get(ref.s3_key).decode("utf-8"))
+        requests = json.loads(blobs.get(ref.s3_key).decode("utf-8"))
         assert requests[0]["custom_id"] == ref.request_id
         assert requests[0]["body"]["include_image_base64"] is True
 
-    def test_missing_content_raises(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_missing_content_raises(self, store_engine, blobs) -> None:
+        engine = store_engine
         with pytest.raises(RuntimeError, match="File content not found"):
             execute_build_request_blob(
                 content_id="nonexistent",
                 mime_type="application/pdf",
                 model_name="mistral:mistral-ocr-latest",
                 engine=engine,
+                blobs=blobs,
             )
 
 
@@ -624,8 +623,8 @@ class TestBuildRequestBlob:
 
 
 class TestExecuteReassembleOcrChunks:
-    def test_combines_chunk_results_and_cleans_up(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_combines_chunk_results_and_cleans_up(self, store_engine) -> None:
+        engine = store_engine
         for doc_id, text, tokens_in, tokens_out in (
             ("chunk-1", "page one", 5, 10),
             ("chunk-2", "page two", 7, 14),
@@ -661,8 +660,8 @@ class TestExecuteReassembleOcrChunks:
         assert get_ocr_result(engine, "chunk-1") is None
         assert get_ocr_result(engine, "chunk-2") is None
 
-    def test_missing_chunk_raises(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_missing_chunk_raises(self, store_engine) -> None:
+        engine = store_engine
         with pytest.raises(RuntimeError, match="OCR result not found"):
             execute_reassemble_ocr_chunks(
                 document_id="combined-doc",
@@ -698,19 +697,19 @@ class TestGetExportDir:
 
 
 class TestExecuteExportOcrDocument:
-    def test_not_found_document(self, migrated: str, tmp_path) -> None:
-        engine = get_store_engine()
+    def test_not_found_document(self, store_engine, blobs, tmp_path) -> None:
+        engine = store_engine
         result = execute_export_ocr_document(
-            document_id="no-such-doc", output_dir=str(tmp_path), engine=engine
+            document_id="no-such-doc", output_dir=str(tmp_path), engine=engine, blobs=blobs
         )
         assert result.status == "not_found"
         assert result.image_count == 0
         assert result.export_dir == ""
 
-    def test_exports_text_and_images(self, migrated: str, tmp_path) -> None:
+    def test_exports_text_and_images(self, store_engine, blobs, tmp_path) -> None:
         from ocr.store import ocr_image_id, save_ocr_image
 
-        engine = get_store_engine()
+        engine = store_engine
         image_id = ocr_image_id("req-export", "img-0.jpeg", 0)
         save_ocr_image(
             engine,
@@ -721,6 +720,7 @@ class TestExecuteExportOcrDocument:
             data=b"\xff\xd8\xffimgdata",
             mime_type="image/jpeg",
             file_size_bytes=10,
+            blobs=blobs,
         )
         save_ocr_result(
             engine,
@@ -735,7 +735,7 @@ class TestExecuteExportOcrDocument:
         )
 
         result = execute_export_ocr_document(
-            document_id="doc-export", output_dir=str(tmp_path), engine=engine
+            document_id="doc-export", output_dir=str(tmp_path), engine=engine, blobs=blobs
         )
 
         assert result.status == "exported"
@@ -753,18 +753,18 @@ class TestExecuteExportOcrDocument:
 
 
 class TestExecuteCheckOcrDuplicate:
-    def test_no_prior_result_is_not_duplicate(self, migrated: str, tmp_path) -> None:
-        engine = get_store_engine()
+    def test_no_prior_result_is_not_duplicate(self, store_engine, tmp_path) -> None:
+        engine = store_engine
         path = tmp_path / "fresh.pdf"
         path.write_bytes(b"unique content")
         result = execute_check_ocr_duplicate(str(path), engine)
         assert result.is_duplicate is False
         assert result.existing_document_id == ""
 
-    def test_matching_hash_is_duplicate(self, migrated: str, tmp_path) -> None:
+    def test_matching_hash_is_duplicate(self, store_engine, tmp_path) -> None:
         from ocr.store import save_ocr_result as _save
 
-        engine = get_store_engine()
+        engine = store_engine
         data = b"same bytes both times"
         file_hash = hashlib.sha256(data).hexdigest()
         _save(
@@ -793,11 +793,11 @@ class TestExecuteCheckOcrDuplicate:
 
 
 class TestListOcrJobs:
-    def test_status_join(self, migrated: str) -> None:
+    def test_status_join(self, store_engine) -> None:
         from sax_platform.contracts.batch_jobs import batch_jobs
         from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
-        engine = get_store_engine()
+        engine = store_engine
         # Platform owns batch_jobs — create it for the join (OCR migration doesn't).
         bj_metadata.create_all(engine)
 
@@ -828,10 +828,10 @@ class TestListOcrJobs:
         assert by_doc["d-go"] == OcrJobDerivedStatus.PROCESSING.value
         assert by_doc["d-bad"] == OcrJobDerivedStatus.ERRORED.value
 
-    def test_status_filter_narrows_results(self, migrated: str) -> None:
+    def test_status_filter_narrows_results(self, store_engine) -> None:
         from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
-        engine = get_store_engine()
+        engine = store_engine
         bj_metadata.create_all(engine)
         upsert_ocr_job_status(
             engine, request_id="r-a", document_id="d-a", file_path="/a.pdf", status="stored"
@@ -847,46 +847,52 @@ class TestListOcrJobs:
 
 
 # ---------------------------------------------------------------------------
-# Temporal activity wrappers — thin JSON-decode + engine-injection shells
+# Temporal activity methods — OcrStoreActivities bound-method shells
 # ---------------------------------------------------------------------------
 
 
 class TestActivityWrappers:
-    """Exercises the ``@activity.defn`` functions directly as plain async calls.
+    """Exercises the ``@activity.defn`` bound methods directly as plain async calls.
 
-    Per project convention these are called without a Temporal worker. The only
-    "external" dependencies are the store (isolated sqlite via the ``migrated``
-    fixture) and S3 (moto, via the autouse ``ocr_s3`` fixture) — no real service
-    is reachable.
+    Per project convention these are called without a Temporal worker. The
+    dependencies (store engine + ``S3Blobs``) are injected via the
+    ``store_activities`` fixture: an ``OcrStoreActivities`` bound to the test's
+    migrated sqlite store and a moto-backed bucket — no real service is reachable.
     """
 
-    async def test_read_and_store_file_content(self, migrated: str, tmp_path) -> None:
+    async def test_read_and_store_file_content(
+        self, store_activities, store_engine, blobs, tmp_path
+    ) -> None:
         path = tmp_path / "in.pdf"
         path.write_bytes(b"%PDF-1.4 bytes")
-        ref = await read_and_store_file_content(str(path))
+        ref = await store_activities.read_and_store_file_content(str(path))
         assert ref.mime_type == "application/pdf"
-        assert get_file_content(get_store_engine(), ref.content_id) is not None
+        assert get_file_content(store_engine, ref.content_id, blobs) is not None
 
-    async def test_split_file_into_chunks(self, migrated: str) -> None:
-        engine = get_store_engine()
+    async def test_split_file_into_chunks(self, store_activities, store_engine, blobs) -> None:
         save_file_content(
-            engine, content_id="split-me", data=b"img", mime_type="image/png", file_size_bytes=3
+            store_engine,
+            content_id="split-me",
+            data=b"img",
+            mime_type="image/png",
+            file_size_bytes=3,
+            blobs=blobs,
         )
         input_json = json.dumps(
             {"content_id": "split-me", "mime_type": "image/png", "file_size_bytes": 3}
         )
-        result = await split_file_into_chunks(input_json)
+        result = await store_activities.split_file_into_chunks(input_json)
         assert len(result.chunks) == 1
         assert result.chunks[0].content_id == "split-me"
 
-    async def test_build_ocr_request_blob(self, migrated: str) -> None:
-        engine = get_store_engine()
+    async def test_build_ocr_request_blob(self, store_activities, store_engine, blobs) -> None:
         save_file_content(
-            engine,
+            store_engine,
             content_id="blob-me",
             data=b"%PDF-1.4",
             mime_type="application/pdf",
             file_size_bytes=8,
+            blobs=blobs,
         )
         input_json = json.dumps(
             {
@@ -895,18 +901,22 @@ class TestActivityWrappers:
                 "model_name": "mistral:mistral-ocr-latest",
             }
         )
-        ref = await build_ocr_request_blob(input_json)
+        ref = await store_activities.build_ocr_request_blob(input_json)
         assert ref.model == "mistral-ocr-latest"
 
-    async def test_delete_file_content_blob(self, migrated: str) -> None:
-        engine = get_store_engine()
+    async def test_delete_file_content_blob(self, store_activities, store_engine, blobs) -> None:
         save_file_content(
-            engine, content_id="del-me", data=b"x", mime_type="image/png", file_size_bytes=1
+            store_engine,
+            content_id="del-me",
+            data=b"x",
+            mime_type="image/png",
+            file_size_bytes=1,
+            blobs=blobs,
         )
-        await delete_file_content_blob("del-me")
-        assert get_file_content(engine, "del-me") is None
+        await store_activities.delete_file_content_blob("del-me")
+        assert get_file_content(store_engine, "del-me", blobs) is None
 
-    async def test_store_ocr_result(self, migrated: str) -> None:
+    async def test_store_ocr_result(self, store_activities, store_engine) -> None:
         body = json.dumps({"model": "m", "pages": [{"markdown": "hi"}], "usage_info": {}})
         input_json = json.dumps(
             {
@@ -918,11 +928,11 @@ class TestActivityWrappers:
                 "raw_response_json": body,
             }
         )
-        result = await store_ocr_result(input_json)
+        result = await store_activities.store_ocr_result(input_json)
         assert result.document_id == "wdoc-1"
-        assert get_ocr_result(get_store_engine(), "wdoc-1") is not None
+        assert get_ocr_result(store_engine, "wdoc-1") is not None
 
-    async def test_upsert_ocr_status(self, migrated: str) -> None:
+    async def test_upsert_ocr_status(self, store_activities, store_engine) -> None:
         input_json = json.dumps(
             {
                 "request_id": "wr-2",
@@ -931,14 +941,13 @@ class TestActivityWrappers:
                 "status": "submitted",
             }
         )
-        await upsert_ocr_status(input_json)
-        assert get_ocr_job_status(get_store_engine(), "wr-2")["status"] == "submitted"
+        await store_activities.upsert_ocr_status(input_json)
+        assert get_ocr_job_status(store_engine, "wr-2")["status"] == "submitted"
 
-    async def test_reassemble_ocr_chunks(self, migrated: str) -> None:
-        engine = get_store_engine()
+    async def test_reassemble_ocr_chunks(self, store_activities, store_engine) -> None:
         for doc_id in ("wchunk-1", "wchunk-2"):
             save_ocr_result(
-                engine,
+                store_engine,
                 document_id=doc_id,
                 file_path="",
                 text="t",
@@ -956,13 +965,12 @@ class TestActivityWrappers:
                 "total_pages": 2,
             }
         )
-        result = await reassemble_ocr_chunks(input_json)
+        result = await store_activities.reassemble_ocr_chunks(input_json)
         assert result.document_id == "wcombined"
 
-    async def test_export_ocr_document(self, migrated: str, tmp_path) -> None:
-        engine = get_store_engine()
+    async def test_export_ocr_document(self, store_activities, store_engine, tmp_path) -> None:
         save_ocr_result(
-            engine,
+            store_engine,
             document_id="wexport",
             file_path="/orig/f.pdf",
             text="hello",
@@ -973,19 +981,18 @@ class TestActivityWrappers:
             workflow_id="wf",
         )
         input_json = json.dumps({"document_id": "wexport", "output_dir": str(tmp_path)})
-        result = await export_ocr_document(input_json)
+        result = await store_activities.export_ocr_document(input_json)
         assert result.status == "exported"
 
-    async def test_check_ocr_duplicate(self, migrated: str, tmp_path) -> None:
+    async def test_check_ocr_duplicate(self, store_activities, tmp_path) -> None:
         path = tmp_path / "check.pdf"
         path.write_bytes(b"content")
-        result = await check_ocr_duplicate(str(path))
+        result = await store_activities.check_ocr_duplicate(str(path))
         assert result.is_duplicate is False
 
-    async def test_mark_and_clear_ocr_removal(self, migrated: str) -> None:
-        engine = get_store_engine()
+    async def test_mark_and_clear_ocr_removal(self, store_activities, store_engine) -> None:
         save_ocr_result(
-            engine,
+            store_engine,
             document_id="wmark",
             file_path="",
             text="t",
@@ -995,26 +1002,25 @@ class TestActivityWrappers:
             batch_id="b",
             workflow_id="wf",
         )
-        marked = await mark_ocr_for_removal("wmark")
+        marked = await store_activities.mark_ocr_for_removal("wmark")
         assert marked.found is True
-        assert get_ocr_result(engine, "wmark")["marked_for_removal"] is True
+        assert get_ocr_result(store_engine, "wmark")["marked_for_removal"] is True
 
-        cleared = await clear_ocr_removal_mark("wmark")
+        cleared = await store_activities.clear_ocr_removal_mark("wmark")
         assert cleared.found is True
-        assert get_ocr_result(engine, "wmark")["marked_for_removal"] is False
+        assert get_ocr_result(store_engine, "wmark")["marked_for_removal"] is False
 
-    async def test_list_ocr_jobs(self, migrated: str) -> None:
+    async def test_list_ocr_jobs(self, store_activities, store_engine) -> None:
         from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
-        engine = get_store_engine()
-        bj_metadata.create_all(engine)
+        bj_metadata.create_all(store_engine)
         upsert_ocr_job_status(
-            engine,
+            store_engine,
             request_id="wr-list",
             document_id="wdoc-list",
             file_path="/x.pdf",
             status="stored",
         )
         input_json = json.dumps({"limit": 10, "status_filter": ""})
-        result = await list_ocr_jobs(input_json)
+        result = await store_activities.list_ocr_jobs(input_json)
         assert result.total == 1

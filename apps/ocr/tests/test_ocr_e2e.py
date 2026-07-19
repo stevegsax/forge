@@ -37,12 +37,15 @@ from pathlib import Path
 
 import pytest
 from sax_platform.contracts.constants import OCR_TASK_QUEUE
+from sax_platform.contracts.s3_blobs import S3Blobs
+from sax_platform.db import get_store_engine
 from sax_platform.temporal.client import connect_temporal
 from temporalio.worker import Worker
 
+from ocr.activities import OcrStoreActivities
 from ocr.models import OcrSubmitInput
-from ocr.store import get_ocr_job_status, get_ocr_result, get_store_engine, run_migrations
-from ocr.worker import activities as ocr_activities
+from ocr.store import get_ocr_job_status, get_ocr_result, run_migrations
+from ocr.worker import activity_methods
 from ocr.worker import workflows as ocr_workflows
 from ocr.workflow_submit import OcrSubmitWorkflow
 
@@ -95,11 +98,15 @@ async def _submit_and_await_stored(file_path: str, expected_words: list[str]) ->
     timeout = int(os.environ.get("OCR_E2E_TIMEOUT", _DEFAULT_TIMEOUT))
     client = await connect_temporal(address)
 
+    engine = get_store_engine(os.environ["FORGE_DB_URL"])
+    blobs = S3Blobs(os.environ["FORGE_OCR_S3_BUCKET"], os.environ.get("FORGE_OCR_S3_PREFIX", ""))
+    store = OcrStoreActivities(engine, blobs)
+
     async with Worker(
         client,
         task_queue=OCR_TASK_QUEUE,
         workflows=ocr_workflows(),
-        activities=ocr_activities(),
+        activities=activity_methods(store),
     ):
         result = await client.execute_workflow(
             OcrSubmitWorkflow.run,
@@ -114,7 +121,6 @@ async def _submit_and_await_stored(file_path: str, expected_words: list[str]) ->
 
         # The store child waits for the platform poller's signal; poll the OCR-owned
         # status projection until it reaches a terminal state (or we time out).
-        engine = get_store_engine()
         deadline = time.monotonic() + timeout
         row = None
         while time.monotonic() < deadline:

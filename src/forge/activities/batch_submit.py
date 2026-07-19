@@ -4,8 +4,11 @@ Submits an assembled context to the Anthropic Message Batches API via the
 platform batch lane (`sax_platform.llm.batch`).
 
 Design follows Function Core / Imperative Shell:
-- Testable function: execute_batch_submit (takes the AsyncAnthropic client as an argument)
-- Imperative shell: submit_batch_request
+- Testable functions: execute_batch_submit / execute_submit_batch_blob (take the
+  AsyncAnthropic client / provider as arguments)
+- Imperative shell: the ``submit_batch_request`` / ``submit_batch_blob`` bound
+  methods on ``BatchActivities`` (forge.activities.roots), which pass the
+  composition-root client, output-type registry, blob store, and mistral client.
 """
 
 from __future__ import annotations
@@ -16,28 +19,29 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sax_platform.llm.tiers import split_provider
-from temporalio import activity
 
 from forge.message_log import write_message_log
 
-# BatchSubmitResult is instantiated below (runtime); BatchSubmitInput/BatchSubmitSpiInput
-# are activity-parameter types Temporal resolves at registration, so all three must be
-# real runtime imports (not TYPE_CHECKING-guarded).
+# BatchSubmitResult is instantiated below (runtime); CapabilityTier/ModelConfig/
+# resolve_model compute DEFAULT_MODEL at import — all runtime. The input types are
+# annotation-only here (the activity params live on the BatchActivities methods).
 from forge.models import (
-    BatchSubmitInput,
     BatchSubmitResult,
-    BatchSubmitSpiInput,
     CapabilityTier,
     ModelConfig,
     resolve_model,
 )
-from forge.output_types import resolve_output_type
+from forge.output_types import OUTPUT_TYPES, resolve_output_type
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from typing import Any, Protocol
 
     from anthropic import AsyncAnthropic
+    from pydantic import BaseModel
+    from sax_platform.ocr import MistralOcr
+
+    from forge.models import BatchSubmitInput, BatchSubmitSpiInput
 
     class _BlobSubmitProvider(Protocol):
         """Structural contract for the opaque-blob submit SPI.
@@ -60,28 +64,6 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Module-global AsyncAnthropic client for batch submit calls
-# ---------------------------------------------------------------------------
-#
-# The batch lane needs the raw ``AsyncAnthropic`` SDK client (submit_batch takes
-# the client as its first argument), not the ``AnthropicLLM`` wrapper that
-# ``forge.llm_client.get_llm()`` hands out for the sync lane — hence a small
-# local cache here, mirroring that seam's shape, rather than reusing it.
-
-_batch_client: AsyncAnthropic | None = None
-
-
-def _get_batch_client() -> AsyncAnthropic:
-    """Return the process-wide AsyncAnthropic client, building it on first use."""
-    global _batch_client
-    if _batch_client is None:
-        from sax_platform.llm import make_client
-
-        _batch_client = make_client()
-    return _batch_client
-
-
-# ---------------------------------------------------------------------------
 # Testable function
 # ---------------------------------------------------------------------------
 
@@ -89,13 +71,20 @@ def _get_batch_client() -> AsyncAnthropic:
 async def execute_batch_submit(
     input: BatchSubmitInput,
     client: AsyncAnthropic,
+    output_types: Mapping[str, type[BaseModel]] = OUTPUT_TYPES,
 ) -> BatchSubmitResult:
     """Build and submit a batch request via the platform batch lane.
 
-    Separated from the imperative shell so tests can inject the client and a
-    mocked ``submit_batch``.
+    The AsyncAnthropic *client* and the *output_types* registry are injected by
+    the ``BatchActivities`` composition root (``output_types`` defaults to the
+    frozen ``OUTPUT_TYPES`` for direct callers); separated from the imperative
+    shell so tests can inject the client and a mocked ``submit_batch``.
     """
-    output_type = resolve_output_type(input.output_type_name) if input.output_type_name else None
+    output_type = (
+        resolve_output_type(input.output_type_name, output_types)
+        if input.output_type_name
+        else None
+    )
     # Imported here, not at module level: sax_platform.llm.batch loads the
     # anthropic SDK, and forge.activities is chain-imported inside the Temporal
     # workflow sandbox (via workflow-bearing modules importing activity fns).
@@ -129,41 +118,6 @@ async def execute_batch_submit(
     handle = await submit_batch(client, [request])
 
     return BatchSubmitResult(request_id=request_id, batch_id=handle.batch_id)
-
-
-# ---------------------------------------------------------------------------
-# Imperative shell
-# ---------------------------------------------------------------------------
-
-
-@activity.defn
-async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
-    """Activity wrapper — wires the client and delegates to execute_batch_submit."""
-    from forge.tracing import get_tracer
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.submit_batch_request") as span:
-        logger.info(
-            "Batch submitted: task_id=%s output_type=%s",
-            input.context.task_id,
-            input.output_type_name,
-        )
-        client = _get_batch_client()
-        result = await execute_batch_submit(input, client)
-
-        span.set_attributes(
-            {
-                "forge.batch.request_id": result.request_id,
-                "forge.batch.batch_id": result.batch_id,
-                "forge.batch.output_type": input.output_type_name,
-                "forge.batch.workflow_id": input.workflow_id,
-            }
-        )
-
-        provider_name, _ = split_provider(input.context.model_name or DEFAULT_MODEL)
-        # Thread the provider back to the workflow, which persists the submission
-        # survivably (Phase C) — the activity no longer writes to the store.
-        return result.model_copy(update={"provider": provider_name})
 
 
 # ---------------------------------------------------------------------------
@@ -218,44 +172,28 @@ class _AnthropicBlobSubmit:
         return handle.batch_id
 
 
-def _resolve_blob_submit_provider(provider_name: str) -> _BlobSubmitProvider:
+def _resolve_blob_submit_provider(
+    provider_name: str,
+    *,
+    client: AsyncAnthropic,
+    mistral_ocr: MistralOcr | None,
+) -> _BlobSubmitProvider:
     """Resolve the batch-submit provider for the opaque-blob SPI.
 
-    Mistral routes through the shared lazily-cached ``MistralOcr`` resolver
-    (``forge.activities._mistral``). Every other provider name is Anthropic's
-    Message Batches API, submitted through the platform batch lane via a thin
-    ``_AnthropicBlobSubmit`` adapter over the shared client.
+    The composition root supplies both the AsyncAnthropic *client* and the
+    optional *mistral_ocr* (``BatchActivities`` state). Mistral routes through
+    the injected ``MistralOcr`` — a ``None`` here means ``MISTRAL_API_KEY`` was
+    unset at worker startup, so it raises a clear error. Every other provider
+    name is Anthropic's Message Batches API, submitted through the platform batch
+    lane via a thin ``_AnthropicBlobSubmit`` adapter over the shared client.
     """
     if provider_name == "mistral":
-        from forge.activities._mistral import get_mistral_ocr
+        if mistral_ocr is None:
+            msg = (
+                "mistral batch submit requires MISTRAL_API_KEY to be set at worker "
+                "startup (no MistralOcr was constructed)."
+            )
+            raise RuntimeError(msg)
+        return mistral_ocr
 
-        return get_mistral_ocr()
-
-    return _AnthropicBlobSubmit(_get_batch_client())
-
-
-@activity.defn
-async def submit_batch_blob(input: BatchSubmitSpiInput) -> BatchSubmitResult:
-    """Activity: submit an opaque pre-built request blob to the provider.
-
-    Wires the real provider (by ``input.provider``) and S3 blob fetch. Used by
-    consumer apps (e.g. OCR) cross-queue; the generic in-platform path keeps its
-    own ``submit_batch_request`` builder.
-    """
-    from sax_platform.contracts import s3_blobs
-
-    from forge.tracing import get_tracer
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.submit_batch_blob") as span:
-        provider = _resolve_blob_submit_provider(input.provider)
-        result = await execute_submit_batch_blob(input, provider, s3_blobs.get)
-        span.set_attributes(
-            {
-                "forge.batch.request_id": result.request_id,
-                "forge.batch.batch_id": result.batch_id,
-                "forge.batch.provider": input.provider,
-                "forge.batch.endpoint": input.endpoint or "",
-            }
-        )
-        return result
+    return _AnthropicBlobSubmit(client)

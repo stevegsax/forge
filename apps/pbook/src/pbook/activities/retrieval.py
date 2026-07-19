@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
-
-from temporalio import activity
+from typing import TYPE_CHECKING, Any
 
 from pbook.models import EntryType, RetrievalMode
 from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES, parse_tag
+
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -198,8 +199,7 @@ def _minimize(row: dict[str, Any]) -> dict[str, Any]:
     return {k: row.get(k) for k in _MINIMAL_FIELDS}
 
 
-@activity.defn
-async def fetch_candidates(input_json: str) -> list[dict[str, Any]]:
+async def fetch_candidates(engine: Engine | None, input_json: str) -> list[dict[str, Any]]:
     """Fetch candidate entries matching the query tags or query string.
 
     Returns **minimal** dicts (id + ranking fields only). Heavy fields
@@ -207,7 +207,7 @@ async def fetch_candidates(input_json: str) -> list[dict[str, Any]]:
     content for only the top-N entries that fit the token budget.
     """
     from pbook.models import RetrievalInput
-    from pbook.store import get_entries_by_tags, get_store_engine, list_embedded_entries
+    from pbook.store import get_entries_by_tags, list_embedded_entries
 
     inp = RetrievalInput.model_validate_json(input_json)
     logger.info(
@@ -217,7 +217,6 @@ async def fetch_candidates(input_json: str) -> list[dict[str, Any]]:
         inp.query,
     )
 
-    engine = get_store_engine()
     if engine is None:
         return []
 
@@ -246,8 +245,7 @@ async def fetch_candidates(input_json: str) -> list[dict[str, Any]]:
     return minimized
 
 
-@activity.defn
-async def compute_similarities_by_id(input_json: str) -> dict[str, float]:
+async def compute_similarities_by_id(engine: Engine | None, input_json: str) -> dict[str, float]:
     """Compute cosine similarity between a query embedding and the
     embeddings of the named entries.
 
@@ -264,7 +262,7 @@ async def compute_similarities_by_id(input_json: str) -> dict[str, float]:
     embeddings or IDs not found in the DB are silently absent.
     """
     from pbook.embeddings import decode_embedding
-    from pbook.store import cosine_similarities_for_ids, get_store_engine
+    from pbook.store import cosine_similarities_for_ids
 
     data = json.loads(input_json)
     query_embedding = decode_embedding(data["query_embedding_b64"])
@@ -272,7 +270,6 @@ async def compute_similarities_by_id(input_json: str) -> dict[str, float]:
     if not ids:
         return {}
 
-    engine = get_store_engine()
     if engine is None:
         return {}
 
@@ -280,8 +277,7 @@ async def compute_similarities_by_id(input_json: str) -> dict[str, float]:
     return {str(entry_id): sim for entry_id, sim in sims.items()}
 
 
-@activity.defn
-async def score_and_pack(input_json: str) -> dict[str, Any]:
+async def score_and_pack(engine: Engine | None, input_json: str) -> dict[str, Any]:
     """Orchestrate ranking and packing on the activity side.
 
     1. Score the minimal candidate list with pure ``rank_meta``.
@@ -306,7 +302,7 @@ async def score_and_pack(input_json: str) -> dict[str, Any]:
         ``similarity`` annotation when applicable)
       - ``token_count``: total tokens packed
     """
-    from pbook.store import get_entries_by_ids, get_store_engine
+    from pbook.store import get_entries_by_ids
 
     data = json.loads(input_json)
     meta_list: list[dict[str, Any]] = data["meta"]
@@ -329,7 +325,6 @@ async def score_and_pack(input_json: str) -> dict[str, Any]:
     if not scored:
         return {"packed": [], "token_count": 0}
 
-    engine = get_store_engine()
     if engine is None:
         return {"packed": [], "token_count": 0}
 
@@ -352,21 +347,19 @@ async def score_and_pack(input_json: str) -> dict[str, Any]:
     return {"packed": packed, "token_count": total_tokens}
 
 
-@activity.defn
-async def record_retrieval_event(entry_ids_json: str) -> None:
+async def record_retrieval_event(engine: Engine | None, entry_ids_json: str) -> None:
     """Record that entries were served in a retrieval result.
 
     Accepts JSON-serialized list of entry IDs. Increments
     retrieval_count for each entry. Failures are logged but do not
     propagate.
     """
-    from pbook.store import get_store_engine, record_retrieval
+    from pbook.store import record_retrieval
 
     entry_ids = json.loads(entry_ids_json)
     if not entry_ids:
         return
 
-    engine = get_store_engine()
     if engine is None:
         return
 

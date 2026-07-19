@@ -6,8 +6,10 @@ completed work. Three verdicts: continue, revise, abort.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_sanity_check_system_prompt, build_sanity_check_user_prompt,
   build_step_digest
-- Testable function: execute_sanity_check_call (takes client as argument)
-- Imperative shell: assemble_sanity_check_context, call_sanity_check
+- Testable function: execute_sanity_check_call (takes the LLM client as an argument)
+- Imperative shell: assemble_sanity_check_context (free activity); the
+  ``call_sanity_check`` bound method on ``LlmActivities`` (forge.activities.roots)
+  delegates to execute_sanity_check_call.
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
 from forge.activities.context import (
@@ -255,40 +256,3 @@ async def assemble_sanity_check_context(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
-
-
-@activity.defn
-async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
-    """Activity wrapper -- obtains the LLM client and delegates to execute_sanity_check_call.
-
-    The former ``stop_reason == "max_tokens"`` warning branch is gone: on the
-    structured-outputs path a truncated response raises `LLMTruncated` from
-    inside `AnthropicLLM.complete` (non-retryable via LLM_RETRY), so this shell
-    never sees a truncated `SanityCheckCallResult` to warn about.
-    """
-    from forge.llm_client import get_llm
-    from forge.tracing import get_tracer, llm_call_attributes
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.call_sanity_check") as span:
-        logger.info("Sanity check call: task_id=%s", input.task_id)
-        llm = get_llm()
-        async with heartbeat_during():
-            result = await execute_sanity_check_call(input, llm)
-        logger.info(
-            "Sanity verdict: task_id=%s verdict=%s", input.task_id, result.response.verdict.value
-        )
-
-        span.set_attributes(
-            llm_call_attributes(
-                model_name=result.model_name,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                latency_ms=result.latency_ms,
-                task_id=input.task_id,
-                cache_creation_input_tokens=result.cache_creation_input_tokens,
-                cache_read_input_tokens=result.cache_read_input_tokens,
-            )
-        )
-
-        return result

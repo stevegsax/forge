@@ -52,7 +52,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T3.3 — MistralOcr; Mistral chat deleted](tasks/T3.3-mistral-ocr-chat-deleted.md)
 - [x] [T3.4 — Platform plumbing modules](tasks/T3.4-platform-plumbing-modules.md)
 - [x] [T3.5 — Forced-tool-use retirement](tasks/T3.5-forced-tool-use-retirement.md)
-- [ ] [T3.6 — Composition roots everywhere](tasks/T3.6-composition-roots.md)
+- [x] [T3.6 — Composition roots everywhere](tasks/T3.6-composition-roots.md) — Phase 3 complete
 
 ### Phase 4 — Batch transport simplification (timer-loop)
 

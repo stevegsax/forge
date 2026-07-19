@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 if TYPE_CHECKING:
-    import pytest
+    from sqlalchemy import Engine
 
 from forge.activities.context import (
     build_playbook_context_items,
@@ -238,19 +238,20 @@ class TestPlaybooksRespectTokenBudget:
 
 
 class TestLoadPlaybooksGraceful:
-    def test_missing_store_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unmigrated_store_returns_empty(self, store_engine: Engine) -> None:
         from forge.activities.context import _load_playbooks_for_task
 
-        monkeypatch.delenv("FORGE_DB_URL", raising=False)
         task = TaskDefinition(
             task_id="t",
             description="Create module",
             target_files=["a.py"],
         )
-        result = _load_playbooks_for_task(task)
+        # The store engine is injected (T3.6) but points at an unmigrated DB with
+        # no playbooks table, so the query raises and the D42 guard returns [].
+        result = _load_playbooks_for_task(task, store_engine)
         assert result == []
 
-    def test_exception_returns_empty(self) -> None:
+    def test_exception_returns_empty(self, store_engine: Engine) -> None:
         from forge.activities.context import _load_playbooks_for_task
 
         task = TaskDefinition(
@@ -262,5 +263,5 @@ class TestLoadPlaybooksGraceful:
             "forge.activities.context.infer_task_tags",
             side_effect=RuntimeError("boom"),
         ):
-            result = _load_playbooks_for_task(task)
+            result = _load_playbooks_for_task(task, store_engine)
             assert result == []

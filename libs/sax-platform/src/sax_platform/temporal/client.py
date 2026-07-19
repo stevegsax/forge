@@ -24,14 +24,16 @@ Environment variables
 NOTE: the ``FORGE_TEMPORAL_TLS_*`` env names are retained from the pre-split
 layout; generalizing them is a tracked follow-up.
 
-Ported verbatim from ``forge_contracts.temporal`` (T3.4, ST2) — same env
-reads, same behavior. Not yet routed through ``sax_platform.config``; that
-wiring is a later task.
+:func:`build_tls_config` takes an explicit
+:class:`~sax_platform.config.TemporalSettings` as its single source — that
+settings group is the one place the ``FORGE_TEMPORAL_*`` environment variables
+are read. :func:`connect_temporal` accepts the same settings; when a caller
+passes none (e.g. a CLI), it constructs a default ``TemporalSettings``, which
+reads those env vars via pydantic-settings.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,15 +43,11 @@ if TYPE_CHECKING:
     from temporalio.client import Client
     from temporalio.service import TLSConfig
 
-_TRUTHY = {"1", "true", "yes", "on"}
+    from sax_platform.config import TemporalSettings
 
 
 class TemporalTLSConfigError(RuntimeError):
     """Raised when the Temporal TLS environment configuration is invalid."""
-
-
-def _truthy(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in _TRUTHY
 
 
 def _read_pem(path: str | None, *, what: str) -> bytes | None:
@@ -62,27 +60,28 @@ def _read_pem(path: str | None, *, what: str) -> bytes | None:
         raise TemporalTLSConfigError(f"Cannot read {what} at {path!r}: {exc}") from exc
 
 
-def build_tls_config() -> TLSConfig | bool:
-    """Build the ``tls=`` argument for ``Client.connect`` from the environment.
+def _assemble_tls_config(
+    *,
+    tls_enabled: bool,
+    server_ca_path: str | None,
+    client_cert_path: str | None,
+    client_key_path: str | None,
+    server_name: str | None,
+) -> TLSConfig | bool:
+    """Assemble the ``tls=`` value from already-resolved string inputs.
 
-    Returns one of:
-
-    - ``False`` when ``FORGE_TEMPORAL_TLS`` is unset/falsey (plaintext).
-    - ``True`` for server-only TLS validated against the system trust store.
-    - a :class:`temporalio.service.TLSConfig` when a private server CA and/or
-      a client certificate (mTLS) is supplied.
-
-    Raises:
-        TemporalTLSConfigError: if exactly one of the client cert/key pair is
-            supplied, or a referenced PEM file cannot be read.
+    The validation semantics :func:`build_tls_config` relies on: half a
+    cert/key pair raises; TLS on with no custom material validates against the
+    system trust store; otherwise a :class:`~temporalio.service.TLSConfig` is
+    built from the PEM files.
     """
-    if not _truthy(os.environ.get("FORGE_TEMPORAL_TLS")):
+    if not tls_enabled:
         return False
 
-    server_ca = _read_pem(os.environ.get("FORGE_TEMPORAL_TLS_SERVER_CA"), what="server CA cert")
-    client_cert = _read_pem(os.environ.get("FORGE_TEMPORAL_TLS_CLIENT_CERT"), what="client cert")
-    client_key = _read_pem(os.environ.get("FORGE_TEMPORAL_TLS_CLIENT_KEY"), what="client key")
-    server_name = os.environ.get("FORGE_TEMPORAL_TLS_SERVER_NAME") or None
+    server_ca = _read_pem(server_ca_path, what="server CA cert")
+    client_cert = _read_pem(client_cert_path, what="client cert")
+    client_key = _read_pem(client_key_path, what="client key")
+    server_name = server_name or None
 
     if (client_cert is None) != (client_key is None):
         raise TemporalTLSConfigError(
@@ -104,11 +103,39 @@ def build_tls_config() -> TLSConfig | bool:
     )
 
 
+def build_tls_config(settings: TemporalSettings) -> TLSConfig | bool:
+    """Build the ``tls=`` argument for ``Client.connect``.
+
+    Returns one of:
+
+    - ``False`` when TLS is disabled (plaintext).
+    - ``True`` for server-only TLS validated against the system trust store.
+    - a :class:`temporalio.service.TLSConfig` when a private server CA and/or
+      a client certificate (mTLS) is supplied.
+
+    ``settings`` is the single source: ``settings.tls`` is a pydantic bool
+    coerced at settings construction, and the ``FORGE_TEMPORAL_*`` environment
+    variables are read only by :class:`~sax_platform.config.TemporalSettings`.
+
+    Raises:
+        TemporalTLSConfigError: if exactly one of the client cert/key pair is
+            supplied, or a referenced PEM file cannot be read.
+    """
+    return _assemble_tls_config(
+        tls_enabled=settings.tls,
+        server_ca_path=settings.tls_server_ca,
+        client_cert_path=settings.tls_client_cert,
+        client_key_path=settings.tls_client_key,
+        server_name=settings.tls_server_name,
+    )
+
+
 async def connect_temporal(
     address: str,
     *,
     identity: str | None = None,
     namespace: str = TEMPORAL_NAMESPACE,
+    settings: TemporalSettings | None = None,
 ) -> Client:
     """Connect to Temporal with the shared data converter, namespace, and TLS.
 
@@ -116,14 +143,23 @@ async def connect_temporal(
     converter, namespace, and TLS / mTLS are configured identically everywhere.
     ``namespace`` defaults to the shared :data:`TEMPORAL_NAMESPACE` (``"default"``,
     the same namespace used implicitly before the split).
+
+    ``settings`` is passed through to :func:`build_tls_config`. Workers hand in
+    their already-built ``settings.temporal``; when a caller passes ``None`` (a
+    CLI), a default :class:`~sax_platform.config.TemporalSettings` is constructed,
+    which reads the ``FORGE_TEMPORAL_*`` env vars via pydantic-settings — the one
+    sanctioned env-reading path.
     """
     from temporalio.client import Client
     from temporalio.contrib.pydantic import pydantic_data_converter
 
+    from sax_platform.config import TemporalSettings
+
+    resolved = settings if settings is not None else TemporalSettings()
     return await Client.connect(
         address,
         namespace=namespace,
         data_converter=pydantic_data_converter,
-        tls=build_tls_config(),
+        tls=build_tls_config(resolved),
         identity=identity,
     )

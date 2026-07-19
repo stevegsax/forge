@@ -6,26 +6,24 @@ from typing import Any
 
 import pytest
 from sax_platform.llm import (
-    Completion,
     LLMRefused,
     LLMSchemaMismatch,
     LLMTruncated,
     Telemetry,
 )
+from sax_platform.testing import FakeLLM
 from temporalio.exceptions import ApplicationError
 
 from pbook.llm import (
     ConsolidationResult,
     ExtractionResult,
     ReviewResult,
-    reset_provider,
-    set_provider,
 )
+from pbook.roots import LlmActivities
 from pbook.workflow_steps import (
     OUTPUT_TYPES,
     LLMChatInput,
     LLMChatResult,
-    llm_chat,
     resolve_output_type,
 )
 
@@ -42,69 +40,16 @@ def _telemetry(*, stop_reason: str) -> Telemetry:
     )
 
 
-def _completion(output: Any) -> Completion[Any]:
-    """A canned successful Completion carrying distinctive telemetry."""
-    return Completion(
-        output=output,
-        model="anthropic-claude-x",
-        stop_reason="end_turn",
-        input_tokens=42,
-        output_tokens=17,
-        cache_creation_input_tokens=3,
-        cache_read_input_tokens=5,
-        request_id="req-1",
-    )
-
-
-class _StubProvider:
-    """A ``SupportsComplete`` stub returning a canned Completion or raising.
-
-    Records the kwargs of each ``complete`` call so tests can assert what
-    ``llm_chat`` forwarded (bare model, system prompt, max_tokens, output_type).
-    """
-
-    def __init__(
-        self,
-        *,
-        completion: Completion[Any] | None = None,
-        error: BaseException | None = None,
-    ) -> None:
-        self._completion = completion
-        self._error = error
-        self.calls: list[dict[str, Any]] = []
-
-    async def complete(
-        self,
-        messages: Any,
-        *,
-        output_type: Any,
-        model: str,
-        max_tokens: int,
-        system: Any = None,
-        cache: Any = None,
-        thinking: Any = None,
-    ) -> Completion[Any]:
-        self.calls.append(
-            {
-                "messages": list(messages),
-                "output_type": output_type,
-                "model": model,
-                "max_tokens": max_tokens,
-                "system": system,
-            }
-        )
-        if self._error is not None:
-            raise self._error
-        assert self._completion is not None
-        return self._completion
-
-
-@pytest.fixture(autouse=True)
-def _isolate_provider():
-    """Ensure a clean provider between tests."""
-    reset_provider()
-    yield
-    reset_provider()
+def _chat(fake: FakeLLM, **kwargs: Any) -> Any:
+    """Build LlmActivities(fake) and invoke its llm_chat bound method."""
+    defaults: dict[str, Any] = {
+        "system_prompt": "sys",
+        "user_prompt": "usr",
+        "output_type_name": "ReviewResult",
+        "model": "anthropic:claude-x",
+    }
+    defaults.update(kwargs)
+    return LlmActivities(fake).llm_chat(LLMChatInput(**defaults))
 
 
 # ---------------------------------------------------------------------------
@@ -147,16 +92,17 @@ class TestLLMChat:
     @pytest.mark.asyncio
     async def test_happy_path_returns_tool_input_and_telemetry(self):
         review = ReviewResult(approved=True, suggested_title="Better title")
-        set_provider(_StubProvider(completion=_completion(review)))
-
-        result = await llm_chat(
-            LLMChatInput(
-                system_prompt="sys",
-                user_prompt="usr",
-                output_type_name="ReviewResult",
-                model="anthropic:claude-x",
-            ),
+        fake = FakeLLM(
+            output=review,
+            model="anthropic-claude-x",
+            input_tokens=42,
+            output_tokens=17,
+            cache_creation_input_tokens=3,
+            cache_read_input_tokens=5,
+            request_id="req-1",
         )
+
+        result = await _chat(fake, output_type_name="ReviewResult")
 
         assert isinstance(result, LLMChatResult)
         # tool_input is exactly the structured output serialized.
@@ -173,97 +119,57 @@ class TestLLMChat:
         """The intended consumption pattern: the workflow takes the raw
         tool_input dict and validates it against its own Pydantic class."""
         review = ReviewResult(approved=True, rejection_reason="", suggested_title="ok")
-        set_provider(_StubProvider(completion=_completion(review)))
+        fake = FakeLLM(output=review)
 
-        result = await llm_chat(
-            LLMChatInput(
-                system_prompt="s",
-                user_prompt="u",
-                output_type_name="ReviewResult",
-                model="anthropic:m",
-            ),
-        )
+        result = await _chat(fake, model="anthropic:m")
         validated = ReviewResult.model_validate(result.tool_input)
         assert validated.approved is True
         assert validated.suggested_title == "ok"
 
     @pytest.mark.asyncio
     async def test_unknown_output_type_raises_keyerror(self):
-        set_provider(_StubProvider(completion=_completion(ReviewResult())))
+        fake = FakeLLM(output=ReviewResult())
         with pytest.raises(KeyError):
-            await llm_chat(
-                LLMChatInput(
-                    system_prompt="s",
-                    user_prompt="u",
-                    output_type_name="NeverRegistered",
-                    model="anthropic:x",
-                ),
-            )
+            await _chat(fake, output_type_name="NeverRegistered", model="anthropic:x")
 
     @pytest.mark.asyncio
     async def test_empty_model_raises_value_error(self):
-        set_provider(_StubProvider(completion=_completion(ReviewResult())))
+        fake = FakeLLM(output=ReviewResult())
         with pytest.raises(ValueError, match="empty model"):
-            await llm_chat(
-                LLMChatInput(
-                    system_prompt="s",
-                    user_prompt="u",
-                    output_type_name="ReviewResult",
-                    model="",
-                ),
-            )
+            await _chat(fake, model="")
 
     @pytest.mark.asyncio
     async def test_forwards_prompt_output_type_and_max_tokens_to_provider(self):
-        provider = _StubProvider(completion=_completion(ReviewResult()))
-        set_provider(provider)
+        fake = FakeLLM(output=ReviewResult())
 
-        await llm_chat(
-            LLMChatInput(
-                system_prompt="the system prompt",
-                user_prompt="the user prompt",
-                output_type_name="ReviewResult",
-                model="anthropic:m",
-                max_tokens=512,
-            ),
+        await _chat(
+            fake,
+            system_prompt="the system prompt",
+            user_prompt="the user prompt",
+            model="anthropic:m",
+            max_tokens=512,
         )
-        call = provider.calls[-1]
-        assert call["max_tokens"] == 512
-        assert call["output_type"] is ReviewResult
-        assert call["system"] == "the system prompt"
-        assert call["messages"] == [{"role": "user", "content": "the user prompt"}]
+        call = fake.calls[-1]
+        assert call.kwargs["max_tokens"] == 512
+        assert call.kwargs["output_type"] is ReviewResult
+        assert call.kwargs["system"] == "the system prompt"
+        assert call.args[0] == [{"role": "user", "content": "the user prompt"}]
 
     @pytest.mark.asyncio
     async def test_strips_provider_prefix_from_model(self):
         """resolve_model() returns 'anthropic:claude-...' but the client
         expects the bare model name; llm_chat must strip the prefix."""
-        provider = _StubProvider(completion=_completion(ReviewResult()))
-        set_provider(provider)
+        fake = FakeLLM(output=ReviewResult())
 
-        await llm_chat(
-            LLMChatInput(
-                system_prompt="s",
-                user_prompt="u",
-                output_type_name="ReviewResult",
-                model="anthropic:claude-haiku-4-5",
-            ),
-        )
-        assert provider.calls[-1]["model"] == "claude-haiku-4-5"
+        await _chat(fake, model="anthropic:claude-haiku-4-5")
+        assert fake.calls[-1].kwargs["model"] == "claude-haiku-4-5"
 
     @pytest.mark.asyncio
     async def test_bare_model_passes_through_unchanged(self):
-        provider = _StubProvider(completion=_completion(ReviewResult()))
-        set_provider(provider)
+        fake = FakeLLM(output=ReviewResult())
 
-        await llm_chat(
-            LLMChatInput(
-                system_prompt="s",
-                user_prompt="u",
-                output_type_name="ReviewResult",
-                model="claude-haiku-4-5",
-            ),
-        )
-        assert provider.calls[-1]["model"] == "claude-haiku-4-5"
+        await _chat(fake, model="claude-haiku-4-5")
+        assert fake.calls[-1].kwargs["model"] == "claude-haiku-4-5"
 
 
 # ---------------------------------------------------------------------------
@@ -278,24 +184,15 @@ class TestLLMChatTypedFailures:
 
     @pytest.mark.asyncio
     async def test_refusal_maps_to_non_retryable_application_error(self):
-        set_provider(
-            _StubProvider(
-                error=LLMRefused(
-                    category="policy",
-                    telemetry=_telemetry(stop_reason="refusal"),
-                ),
+        fake = FakeLLM(
+            error=LLMRefused(
+                category="policy",
+                telemetry=_telemetry(stop_reason="refusal"),
             ),
         )
 
         with pytest.raises(ApplicationError) as excinfo:
-            await llm_chat(
-                LLMChatInput(
-                    system_prompt="s",
-                    user_prompt="u",
-                    output_type_name="ReviewResult",
-                    model="anthropic:m",
-                ),
-            )
+            await _chat(fake, model="anthropic:m")
 
         assert excinfo.value.non_retryable is True
         assert excinfo.value.type == "LLMRefused"
@@ -306,25 +203,16 @@ class TestLLMChatTypedFailures:
 
     @pytest.mark.asyncio
     async def test_truncation_maps_to_non_retryable_application_error(self):
-        set_provider(
-            _StubProvider(
-                error=LLMTruncated(
-                    partial_text="half a resu",
-                    max_tokens=8,
-                    telemetry=_telemetry(stop_reason="max_tokens"),
-                ),
+        fake = FakeLLM(
+            error=LLMTruncated(
+                partial_text="half a resu",
+                max_tokens=8,
+                telemetry=_telemetry(stop_reason="max_tokens"),
             ),
         )
 
         with pytest.raises(ApplicationError) as excinfo:
-            await llm_chat(
-                LLMChatInput(
-                    system_prompt="s",
-                    user_prompt="u",
-                    output_type_name="ReviewResult",
-                    model="anthropic:m",
-                ),
-            )
+            await _chat(fake, model="anthropic:m")
 
         assert excinfo.value.non_retryable is True
         assert excinfo.value.type == "LLMTruncated"
@@ -335,25 +223,16 @@ class TestLLMChatTypedFailures:
     async def test_schema_mismatch_propagates_retryable(self):
         """LLMSchemaMismatch is not caught: it propagates unwrapped so the
         activity's retry policy still governs it."""
-        set_provider(
-            _StubProvider(
-                error=LLMSchemaMismatch(
-                    raw_text="not json",
-                    error="invalid",
-                    telemetry=_telemetry(stop_reason="end_turn"),
-                ),
+        fake = FakeLLM(
+            error=LLMSchemaMismatch(
+                raw_text="not json",
+                error="invalid",
+                telemetry=_telemetry(stop_reason="end_turn"),
             ),
         )
 
         with pytest.raises(LLMSchemaMismatch):
-            await llm_chat(
-                LLMChatInput(
-                    system_prompt="s",
-                    user_prompt="u",
-                    output_type_name="ReviewResult",
-                    model="anthropic:m",
-                ),
-            )
+            await _chat(fake, model="anthropic:m")
 
 
 class TestLLMChatRetryClassification:
@@ -363,24 +242,15 @@ class TestLLMChatRetryClassification:
 
     @pytest.mark.asyncio
     async def test_auth_error_raises_non_retryable_application_error(self):
-        set_provider(
-            _StubProvider(
-                error=TypeError(
-                    "Could not resolve authentication method. Expected "
-                    "either api_key or auth_token to be set."
-                ),
+        fake = FakeLLM(
+            error=TypeError(
+                "Could not resolve authentication method. Expected "
+                "either api_key or auth_token to be set."
             ),
         )
 
         with pytest.raises(ApplicationError) as excinfo:
-            await llm_chat(
-                LLMChatInput(
-                    system_prompt="s",
-                    user_prompt="u",
-                    output_type_name="ReviewResult",
-                    model="anthropic:m",
-                ),
-            )
+            await _chat(fake, model="anthropic:m")
 
         assert excinfo.value.non_retryable is True
         assert excinfo.value.type == "TypeError"
@@ -388,14 +258,7 @@ class TestLLMChatRetryClassification:
 
     @pytest.mark.asyncio
     async def test_transient_error_propagates_unwrapped(self):
-        set_provider(_StubProvider(error=ConnectionError("connection reset")))
+        fake = FakeLLM(error=ConnectionError("connection reset"))
 
         with pytest.raises(ConnectionError, match="connection reset"):
-            await llm_chat(
-                LLMChatInput(
-                    system_prompt="s",
-                    user_prompt="u",
-                    output_type_name="ReviewResult",
-                    model="anthropic:m",
-                ),
-            )
+            await _chat(fake, model="anthropic:m")

@@ -5,15 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from pbook.activities.export import (
-    db_row_to_entry_dict,
-    export_single_entry,
-    fetch_entry_ids,
-)
+from pbook.activities.export import db_row_to_entry_dict
 from pbook.models import PlaybookEntry
+from pbook.roots import StoreActivities
 from pbook.store import build_entry_dict, save_entries
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflows.export import ExportWorkflow
@@ -22,21 +18,23 @@ from tests.conftest import setup_db
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from temporalio.testing import WorkflowEnvironment
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-async def env():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        yield env
-
-
 def _setup_db(_tmp_path: Path | None = None):
     """Return the session test engine (migrations already applied)."""
     return setup_db()[0]
+
+
+def _export_activities(engine):
+    """The two ExportWorkflow store activities, bound to one engine."""
+    store = StoreActivities(engine)
+    return [store.fetch_entry_ids, store.export_single_entry]
 
 
 # ---------------------------------------------------------------------------
@@ -72,18 +70,18 @@ class TestDbRowToEntryDict:
 
 class TestExportSingleEntry:
     @pytest.mark.asyncio
-    async def test_no_store_configured_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With the store disabled, export_single_entry fails loudly rather than no-op-ing."""
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
-
+    async def test_no_store_configured_raises(self) -> None:
+        """With the store disabled (engine None), export_single_entry fails
+        loudly rather than no-op-ing."""
         with pytest.raises(RuntimeError, match="No store available"):
-            await export_single_entry(1)
+            await StoreActivities(None).export_single_entry(1)
 
     @pytest.mark.asyncio
     async def test_missing_entry_raises(self) -> None:
         """A well-formed but nonexistent entry id is reported by id, not swallowed."""
+        store = StoreActivities(_setup_db())
         with pytest.raises(RuntimeError, match="Entry 999 not found"):
-            await export_single_entry(999)
+            await store.export_single_entry(999)
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +112,7 @@ class TestExportWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ExportWorkflow],
-            activities=[fetch_entry_ids, export_single_entry],
+            activities=_export_activities(engine),
         ):
             result = await env.client.execute_workflow(
                 ExportWorkflow.run,
@@ -133,7 +131,7 @@ class TestExportWorkflow:
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        _setup_db(tmp_path)
+        engine = _setup_db(tmp_path)
 
         import json
 
@@ -141,7 +139,7 @@ class TestExportWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ExportWorkflow],
-            activities=[fetch_entry_ids, export_single_entry],
+            activities=_export_activities(engine),
         ):
             result = await env.client.execute_workflow(
                 ExportWorkflow.run,

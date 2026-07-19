@@ -7,21 +7,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 from temporalio import activity
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from pbook.activities.extraction import save_extracted_entries
-from pbook.activities.review import (
-    fetch_existing_entries,
-    validate_entry,
-)
-from pbook.llm import ReviewResult, reset_provider
+from pbook.activities.review import validate_entry
+from pbook.llm import ReviewResult
 from pbook.models import PlaybookEntry
 from pbook.prompts.review import (
     apply_suggestions,
     build_review_system_prompt,
     build_review_user_prompt,
 )
+from pbook.roots import StoreActivities
 from pbook.store import build_entry_dict, save_entries
 from pbook.worker import PBOOK_TASK_QUEUE
 from pbook.workflow_steps import LLMChatResult
@@ -31,27 +27,31 @@ from tests.conftest import encode_test_embedding, setup_db
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from temporalio.testing import WorkflowEnvironment
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-async def env():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        yield env
-
-
-@pytest.fixture(autouse=True)
-def _cleanup_provider():
-    yield
-    reset_provider()
-
-
 def _setup_db(_tmp_path: Path | None = None):
     """Return the session test engine (migrations already applied)."""
     return setup_db()[0]
+
+
+def _manual_entry_activities(engine, mock_chat, mock_embed, find_duplicates):
+    """ManualEntryWorkflow's activities: two engine-bound store methods, the
+    no-dep validate_entry free function, plus the LLM/embed/dup stubs."""
+    store = StoreActivities(engine)
+    return [
+        validate_entry,
+        store.fetch_existing_entries,
+        mock_chat,
+        store.save_extracted_entries,
+        mock_embed,
+        find_duplicates,
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +170,7 @@ class TestFetchExistingEntries:
         entry = PlaybookEntry(title="Existing", content="Content", tags=["lang:python"])
         save_entries(engine, [build_entry_dict(entry)])
 
-        result = await fetch_existing_entries(50)
+        result = await StoreActivities(engine).fetch_existing_entries(50)
         assert len(result) == 1
         assert result[0]["title"] == "Existing"
         # Embeddings are stripped before crossing the wire.
@@ -178,13 +178,12 @@ class TestFetchExistingEntries:
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_store_empty(self):
-        result = await fetch_existing_entries(50)
+        result = await StoreActivities(_setup_db()).fetch_existing_entries(50)
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
-        result = await fetch_existing_entries(50)
+    async def test_returns_empty_when_disabled(self):
+        result = await StoreActivities(None).fetch_existing_entries(50)
         assert result == []
 
 
@@ -230,7 +229,7 @@ class TestManualEntryWorkflow:
         env: WorkflowEnvironment,
         tmp_path: Path,
     ) -> None:
-        _setup_db(tmp_path)
+        engine = _setup_db(tmp_path)
 
         mock_chat = _make_chat_stub(
             {
@@ -255,14 +254,9 @@ class TestManualEntryWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ManualEntryWorkflow],
-            activities=[
-                validate_entry,
-                fetch_existing_entries,
-                mock_chat,
-                save_extracted_entries,
-                mock_embed,
-                _make_find_duplicates_stub(),
-            ],
+            activities=_manual_entry_activities(
+                engine, mock_chat, mock_embed, _make_find_duplicates_stub()
+            ),
         ):
             result = await env.client.execute_workflow(
                 ManualEntryWorkflow.run,
@@ -280,7 +274,7 @@ class TestManualEntryWorkflow:
         env: WorkflowEnvironment,
         tmp_path: Path,
     ) -> None:
-        _setup_db(tmp_path)
+        engine = _setup_db(tmp_path)
 
         mock_chat = _make_chat_stub(
             {
@@ -305,14 +299,9 @@ class TestManualEntryWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[ManualEntryWorkflow],
-            activities=[
-                validate_entry,
-                fetch_existing_entries,
-                mock_chat,
-                save_extracted_entries,
-                mock_embed,
-                _make_find_duplicates_stub(),
-            ],
+            activities=_manual_entry_activities(
+                engine, mock_chat, mock_embed, _make_find_duplicates_stub()
+            ),
         ):
             result = await env.client.execute_workflow(
                 ManualEntryWorkflow.run,

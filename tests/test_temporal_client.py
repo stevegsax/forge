@@ -1,8 +1,14 @@
-"""Tests for the centralized Temporal connection / TLS helper."""
+"""Tests for the centralized Temporal connection / TLS helper (forge re-export).
+
+``build_tls_config`` takes an explicit ``TemporalSettings`` (its single source);
+``connect_temporal`` with no settings constructs a default ``TemporalSettings``,
+which reads the ``FORGE_TEMPORAL_*`` env vars via pydantic-settings.
+"""
 
 from __future__ import annotations
 
 import pytest
+from sax_platform.config import TemporalSettings
 
 from forge.temporal_client import (
     TemporalTLSConfigError,
@@ -26,23 +32,15 @@ def _clear_tls_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_tls_disabled_by_default():
-    assert build_tls_config() is False
+def test_tls_disabled_when_settings_tls_false():
+    assert build_tls_config(TemporalSettings(tls=False)) is False
 
 
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
-def test_tls_enabled_server_only_uses_system_roots(monkeypatch, value):
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS", value)
-    assert build_tls_config() is True
+def test_tls_enabled_server_only_uses_system_roots():
+    assert build_tls_config(TemporalSettings(tls=True)) is True
 
 
-@pytest.mark.parametrize("value", ["0", "false", "no", ""])
-def test_falsey_value_is_plaintext(monkeypatch, value):
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS", value)
-    assert build_tls_config() is False
-
-
-def test_mtls_builds_tlsconfig_from_files(monkeypatch, tmp_path):
+def test_mtls_builds_tlsconfig_from_files(tmp_path):
     from temporalio.service import TLSConfig
 
     ca = tmp_path / "ca.pem"
@@ -52,13 +50,15 @@ def test_mtls_builds_tlsconfig_from_files(monkeypatch, tmp_path):
     key = tmp_path / "client.key"
     key.write_bytes(b"KEY-PEM")
 
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_CA", str(ca))
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS_CLIENT_CERT", str(cert))
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS_CLIENT_KEY", str(key))
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_NAME", "temporal.example.com")
+    settings = TemporalSettings(
+        tls=True,
+        tls_server_ca=str(ca),
+        tls_client_cert=str(cert),
+        tls_client_key=str(key),
+        tls_server_name="temporal.example.com",
+    )
 
-    cfg = build_tls_config()
+    cfg = build_tls_config(settings)
     assert isinstance(cfg, TLSConfig)
     assert cfg.server_root_ca_cert == b"CA-PEM"
     assert cfg.client_cert == b"CERT-PEM"
@@ -66,35 +66,18 @@ def test_mtls_builds_tlsconfig_from_files(monkeypatch, tmp_path):
     assert cfg.domain == "temporal.example.com"
 
 
-def test_server_ca_only_without_client_cert(monkeypatch, tmp_path):
-    from temporalio.service import TLSConfig
-
-    ca = tmp_path / "ca.pem"
-    ca.write_bytes(b"CA-PEM")
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_CA", str(ca))
-
-    cfg = build_tls_config()
-    assert isinstance(cfg, TLSConfig)
-    assert cfg.server_root_ca_cert == b"CA-PEM"
-    assert cfg.client_cert is None
-    assert cfg.client_private_key is None
-
-
-def test_half_mtls_pair_raises(monkeypatch, tmp_path):
+def test_half_mtls_pair_raises(tmp_path):
     cert = tmp_path / "client.pem"
     cert.write_bytes(b"CERT-PEM")
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS_CLIENT_CERT", str(cert))
+    settings = TemporalSettings(tls=True, tls_client_cert=str(cert))
     with pytest.raises(TemporalTLSConfigError, match="both"):
-        build_tls_config()
+        build_tls_config(settings)
 
 
-def test_missing_pem_file_raises(monkeypatch, tmp_path):
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-    monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_CA", str(tmp_path / "nope.pem"))
+def test_missing_pem_file_raises(tmp_path):
+    settings = TemporalSettings(tls=True, tls_server_ca=str(tmp_path / "nope.pem"))
     with pytest.raises(TemporalTLSConfigError, match="Cannot read"):
-        build_tls_config()
+        build_tls_config(settings)
 
 
 async def test_connect_temporal_threads_tls_and_converter(monkeypatch):

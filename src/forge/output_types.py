@@ -53,14 +53,21 @@ except ImportError:
 OUTPUT_TYPES: Final[Mapping[str, type[BaseModel]]] = MappingProxyType(_OUTPUT_TYPES)
 
 
-def resolve_output_type(name: str) -> type[BaseModel]:
-    """Resolve an output-type name to its Pydantic model class.
+def resolve_output_type(
+    name: str, output_types: Mapping[str, type[BaseModel]] = OUTPUT_TYPES
+) -> type[BaseModel]:
+    """Resolve an output-type name against *output_types* (default: ``OUTPUT_TYPES``).
+
+    ``output_types`` is a parameter so the batch composition root can inject the
+    frozen mapping (``BatchActivities`` holds it), and tests can substitute a
+    fake registry; it defaults to the module-level frozen ``OUTPUT_TYPES`` for
+    direct callers.
 
     Raises ``KeyError`` naming the unknown type (and the known ones) — the same
     failure the old registry raised on a missing key, kept clear for operators.
     """
     try:
-        return OUTPUT_TYPES[name]
+        return output_types[name]
     except KeyError:
-        known = ", ".join(sorted(OUTPUT_TYPES))
+        known = ", ".join(sorted(output_types))
         raise KeyError(f"Unknown output type {name!r}. Known types: {known}") from None

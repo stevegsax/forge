@@ -1,163 +1,125 @@
-"""Tests for pbook.worker."""
+"""Tests for pbook.worker (the composition root)."""
 
 from __future__ import annotations
 
-import asyncio
-import signal
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sax_platform.llm import AnthropicLLM
 
 import pbook.worker as worker_mod
 
 
-class TestRegisterLLMProvider:
-    def test_builds_platform_client_and_registers_it(self) -> None:
-        """The provider is the platform AnthropicLLM built from make_client();
-        there is no hardcoded model pin (the model comes per call from
-        LLMChatInput.model). make_client is patched so no API key is needed."""
-        with (
-            patch("sax_platform.llm.make_client", return_value=MagicMock()) as mock_make,
-            patch("pbook.llm.set_provider") as mock_set,
-        ):
-            worker_mod._register_llm_provider()
-
-        # Client built with no explicit key — make_client reads the env lazily.
-        mock_make.assert_called_once_with()
-        mock_set.assert_called_once()
-        (provider,) = mock_set.call_args.args
-        assert isinstance(provider, AnthropicLLM)
+def _base_patches():
+    """Patch the I/O boundary of run_worker (logging, migrations, engine,
+    Temporal connect, and the platform worker scaffold) so composition can be
+    exercised without a DB, a network, or a running worker."""
+    return (
+        patch.object(worker_mod, "setup_logging", MagicMock()),
+        patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
+        patch.object(worker_mod, "build_engine", MagicMock(return_value=None)),
+        patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())),
+        patch.object(worker_mod, "run_platform_worker", AsyncMock()),
+    )
 
 
-class TestRequestShutdown:
-    def test_sets_stop_event(self) -> None:
-        stop = asyncio.Event()
+class TestMigrateIfConfigured:
+    def test_runs_migrations_when_url_set(self) -> None:
+        db = MagicMock(url="postgresql://u@h/db")
+        with patch.object(worker_mod, "run_migrations") as mock_run:
+            worker_mod._migrate_if_configured(db)
+        mock_run.assert_called_once_with("postgresql://u@h/db")
 
-        worker_mod._request_shutdown(signal.SIGTERM, stop)
+    def test_skips_when_url_unset(self) -> None:
+        db = MagicMock(url=None)
+        with patch.object(worker_mod, "run_migrations") as mock_run:
+            worker_mod._migrate_if_configured(db)
+        mock_run.assert_not_called()
 
-        assert stop.is_set()
 
-
-class TestRunUntilShutdown:
-    @pytest.mark.asyncio
-    async def test_stop_triggers_shutdown_then_waits_for_run(self) -> None:
-        """Setting ``stop`` drains gracefully: shutdown() is awaited, then run()."""
-        stop = asyncio.Event()
-        worker = MagicMock()
-        run_gate = asyncio.Event()
-
-        async def _run() -> None:
-            await run_gate.wait()
-
-        async def _shutdown() -> None:
-            # Mirrors real temporalio behavior: shutdown() and run() both
-            # unblock once the same underlying drain completes.
-            run_gate.set()
-
-        worker.run = AsyncMock(side_effect=_run)
-        worker.shutdown = AsyncMock(side_effect=_shutdown)
-
-        task = asyncio.create_task(worker_mod._run_until_shutdown(worker, stop))
-        await asyncio.sleep(0)  # let run_task start awaiting run_gate
-        stop.set()
-        await asyncio.wait_for(task, timeout=1)
-
-        worker.shutdown.assert_awaited_once_with()
-        worker.run.assert_awaited_once_with()
+class TestRunWorkerComposition:
+    def test_no_provider_global_seam_remains(self) -> None:
+        """The set_provider / _register_llm_provider seam is gone — the worker
+        injects the provider via LlmActivities, not a module global."""
+        assert not hasattr(worker_mod, "_register_llm_provider")
+        assert not hasattr(worker_mod, "set_provider")
 
     @pytest.mark.asyncio
-    async def test_run_completing_first_skips_shutdown(self) -> None:
-        stop = asyncio.Event()
-        worker = MagicMock()
-        worker.run = AsyncMock()
-        worker.shutdown = AsyncMock()
-
-        await worker_mod._run_until_shutdown(worker, stop)
-
-        worker.shutdown.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_run_crash_propagates_without_shutdown(self) -> None:
-        stop = asyncio.Event()
-        worker = MagicMock()
-        worker.run = AsyncMock(side_effect=RuntimeError("worker boom"))
-        worker.shutdown = AsyncMock()
-
-        with pytest.raises(RuntimeError, match="worker boom"):
-            await worker_mod._run_until_shutdown(worker, stop)
-
-        worker.shutdown.assert_not_awaited()
-
-
-class TestRunWorker:
-    @pytest.mark.asyncio
-    async def test_bootstraps_worker_and_runs_until_clean_exit(self) -> None:
-        mock_client = MagicMock()
-        mock_worker_instance = MagicMock()
-        mock_worker_instance.run = AsyncMock()
-
-        with (
-            patch.object(worker_mod, "_register_llm_provider", MagicMock()),
-            patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
-            patch("pbook.log_config.setup_logging", MagicMock()),
-            patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
-            patch.object(worker_mod, "Worker", return_value=mock_worker_instance) as mock_worker,
-        ):
+    async def test_adopts_platform_scaffold_and_registers_activities(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
+        with p_log, p_mig, p_eng, p_conn, p_run as run_scaffold:
             await worker_mod.run_worker(address="localhost:7233")
 
-        mock_worker.assert_called_once()
-        worker_kwargs = mock_worker.call_args.kwargs
-        assert worker_kwargs["task_queue"] == worker_mod.PBOOK_TASK_QUEUE
-        assert worker_kwargs["graceful_shutdown_timeout"].total_seconds() == 30
-        mock_worker_instance.run.assert_awaited_once_with()
+        run_scaffold.assert_awaited_once()
+        kwargs = run_scaffold.call_args.kwargs
+        assert kwargs["task_queue"] == worker_mod.PBOOK_TASK_QUEUE
+        assert kwargs["graceful_shutdown_timeout"] == timedelta(minutes=5)
+
+        names = {getattr(a, "__name__", None) for a in kwargs["activities"]}
+        # Generic steps, the two no-dep free functions, and a sample of the
+        # engine-bound store + cli-op activities are all registered by name.
+        assert {
+            "llm_chat",
+            "llm_embed",
+            "validate_entry",
+            "get_session_text_activity",
+            "fetch_candidates",
+            "add_entry_activity",
+        } <= names
 
     @pytest.mark.asyncio
-    async def test_worker_crash_propagates(self) -> None:
-        mock_client = MagicMock()
-        mock_worker_instance = MagicMock()
-        mock_worker_instance.run = AsyncMock(side_effect=RuntimeError("worker boom"))
-
+    async def test_builds_provider_and_embedder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
         with (
-            patch.object(worker_mod, "_register_llm_provider", MagicMock()),
-            patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
-            patch("pbook.log_config.setup_logging", MagicMock()),
-            patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
-            patch.object(worker_mod, "Worker", return_value=mock_worker_instance),
-            pytest.raises(RuntimeError, match="worker boom"),
+            p_log,
+            p_mig,
+            p_eng,
+            p_conn,
+            p_run,
+            patch.object(worker_mod, "make_client", MagicMock(return_value="CLIENT")) as mk,
+            patch.object(worker_mod, "AnthropicLLM", MagicMock()) as allm,
+            patch.object(worker_mod, "AsyncOpenAI", MagicMock(return_value="OAI")) as aoai,
+            patch.object(worker_mod, "OpenAIEmbeddings", MagicMock()) as oemb,
         ):
-            await worker_mod.run_worker(address="localhost:7233")
+            await worker_mod.run_worker()
+
+        # Provider: AnthropicLLM(make_client()) — no hardcoded key.
+        mk.assert_called_once_with()
+        allm.assert_called_once_with("CLIENT")
+        # Embedder: OpenAIEmbeddings(AsyncOpenAI(api_key=<settings.openai_api_key>)).
+        aoai.assert_called_once_with(api_key="sk-test")
+        oemb.assert_called_once_with("OAI")
 
     @pytest.mark.asyncio
-    async def test_registers_and_removes_sigterm_sigint_handlers(self) -> None:
-        mock_client = MagicMock()
-        mock_worker_instance = MagicMock()
-        mock_worker_instance.run = AsyncMock()
-
-        loop = asyncio.get_running_loop()
-        add_calls: list[tuple[int, tuple[object, ...]]] = []
-        remove_calls: list[int] = []
-
-        def _fake_add_signal_handler(sig: int, callback: object, *args: object) -> None:
-            add_calls.append((sig, args))
-
-        def _fake_remove_signal_handler(sig: int) -> bool:
-            remove_calls.append(sig)
-            return True
-
+    async def test_embedder_is_none_without_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
         with (
-            patch.object(worker_mod, "_register_llm_provider", MagicMock()),
-            patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
-            patch("pbook.log_config.setup_logging", MagicMock()),
-            patch.object(worker_mod.Client, "connect", AsyncMock(return_value=mock_client)),
-            patch.object(worker_mod, "Worker", return_value=mock_worker_instance),
-            patch.object(loop, "add_signal_handler", _fake_add_signal_handler),
-            patch.object(loop, "remove_signal_handler", _fake_remove_signal_handler),
+            p_log,
+            p_mig,
+            p_eng,
+            p_conn,
+            p_run,
+            patch.object(worker_mod, "AsyncOpenAI", MagicMock()) as aoai,
+            patch.object(worker_mod, "OpenAIEmbeddings", MagicMock()) as oemb,
         ):
-            await worker_mod.run_worker(address="localhost:7233")
+            await worker_mod.run_worker()
 
-        registered = {sig for sig, _args in add_calls}
-        assert registered == {signal.SIGTERM, signal.SIGINT}
-        for sig, args in add_calls:
-            assert args[0] == sig
-        assert set(remove_calls) == {signal.SIGTERM, signal.SIGINT}
+        # No key ⇒ no client and no embedder constructed.
+        aoai.assert_not_called()
+        oemb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connects_via_platform_chokepoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
+        with p_log, p_mig, p_eng, p_conn as conn, p_run:
+            await worker_mod.run_worker(address="host:1234")
+        conn.assert_awaited_once()
+        # address is passed positionally; TLS settings threaded via keyword.
+        assert conn.call_args.args[0] == "host:1234"
+        assert "settings" in conn.call_args.kwargs

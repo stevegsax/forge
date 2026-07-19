@@ -1041,8 +1041,8 @@ class TestCLIOpsWireFormat:
 
     @pytest.mark.asyncio
     async def test_get_entry_result_is_json_serializable(self, tmp_path):
-        from pbook.activities.cli_ops import get_entry_activity
         from pbook.models import EntryType
+        from pbook.roots import StoreActivities
 
         engine = _setup_db(tmp_path)
         emb = make_embedding(1.0, 0.0, 0.0, 0.0)
@@ -1061,7 +1061,7 @@ class TestCLIOpsWireFormat:
             ],
         )
 
-        result = await get_entry_activity({"entry_id": 1})
+        result = await StoreActivities(engine).get_entry_activity({"entry_id": 1})
         # Must be JSON-serializable (datetimes via default=str); crucially
         # no raw vector/BLOB columns leak across the wire.
         json.dumps(result, default=str)
@@ -1070,8 +1070,8 @@ class TestCLIOpsWireFormat:
 
     @pytest.mark.asyncio
     async def test_list_entries_result_is_json_serializable(self, tmp_path):
-        from pbook.activities.cli_ops import list_entries_activity
         from pbook.models import EntryType
+        from pbook.roots import StoreActivities
 
         engine = _setup_db(tmp_path)
         emb = make_embedding(1.0, 0.0, 0.0, 0.0)
@@ -1090,14 +1090,14 @@ class TestCLIOpsWireFormat:
             ],
         )
 
-        result = await list_entries_activity({})
+        result = await StoreActivities(engine).list_entries_activity({})
         json.dumps(result, default=str)
         assert all("embedding" not in e for e in result)
 
     @pytest.mark.asyncio
     async def test_review_queue_result_is_json_serializable(self, tmp_path):
-        from pbook.activities.cli_ops import review_queue_activity
         from pbook.models import EntryType
+        from pbook.roots import StoreActivities
 
         engine = _setup_db(tmp_path)
         emb = make_embedding(1.0, 0.0, 0.0, 0.0)
@@ -1118,17 +1118,18 @@ class TestCLIOpsWireFormat:
         )
 
         # Both modes — flat and clustered — must be wire-safe.
-        flat = await review_queue_activity({"limit": 20, "by_experience": False})
+        store = StoreActivities(engine)
+        flat = await store.review_queue_activity({"limit": 20, "by_experience": False})
         json.dumps(flat, default=str)
         assert all("embedding" not in e for e in flat["entries"])
 
-        clustered = await review_queue_activity({"limit": 20, "by_experience": True})
+        clustered = await store.review_queue_activity({"limit": 20, "by_experience": True})
         json.dumps(clustered, default=str)
 
     @pytest.mark.asyncio
     async def test_list_sources_result_is_json_serializable(self, tmp_path):
-        from pbook.activities.cli_ops import list_sources_activity
         from pbook.models import EntryType
+        from pbook.roots import StoreActivities
         from pbook.store import add_entry_source
 
         engine = _setup_db(tmp_path)
@@ -1155,7 +1156,7 @@ class TestCLIOpsWireFormat:
             source_context_embedding=make_embedding(0.1, 0.2, 0.3),
         )
 
-        result = await list_sources_activity({"entry_id": 1})
+        result = await StoreActivities(engine).list_sources_activity({"entry_id": 1})
         json.dumps(result, default=str)
         for row in result["rows"]:
             assert "source_context_embedding" not in row

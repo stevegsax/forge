@@ -1,24 +1,20 @@
 """Exploration activities for LLM-guided context discovery (Phase 7).
 
-Two activities:
-1. call_exploration_llm — Calls LLM provider with ExplorationResponse output type.
-2. fulfill_context_requests — Dispatches requests to the provider registry.
-
 Design follows Function Core / Imperative Shell:
-- Testable functions: execute_exploration_call, build_exploration_prompt,
-  fulfill_requests
-- Imperative shell: call_exploration_llm, fulfill_context_requests
+- Pure/testable functions: execute_exploration_call, build_exploration_prompt,
+  fulfill_requests. The ``call_exploration_llm`` (LlmActivities) and
+  ``fulfill_context_requests`` (ContextActivities) activity shells are bound
+  methods on the T3.6 composition-root classes (``forge.activities.roots``)
+  that delegate to these; ``assemble_exploration_context`` stays a free
+  activity (no dependency to inject).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import time
 from typing import TYPE_CHECKING
 
-from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
 from forge.domains import get_domain_config
@@ -29,13 +25,13 @@ from forge.models import (
     ContextResult,
     ExplorationInput,
     ExplorationResponse,
-    FulfillContextInput,
     ModelConfig,
     resolve_model,
 )
 
 if TYPE_CHECKING:
     from sax_platform.llm import AnthropicLLM
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +124,7 @@ def fulfill_requests(
     requests: list[dict[str, object]],
     repo_root: str,
     worktree_path: str,
+    engine: Engine | None = None,
 ) -> list[ContextResult]:
     """Dispatch context requests to the provider registry.
 
@@ -135,12 +132,21 @@ def fulfill_requests(
         requests: List of dicts with 'provider' and 'params' keys.
         repo_root: Path to the repository root.
         worktree_path: Path to the worktree.
+        engine: Store engine threaded to the store-backed providers
+            (``past_runs``/``playbooks``). Supplied by the
+            ``ContextActivities`` composition root; ``None`` (the default,
+            for callers that request no store-backed provider) makes those
+            providers report the store unavailable.
 
     Returns:
         List of ContextResult with provider responses.
     """
     from forge.code_intel.repo_map import estimate_tokens
-    from forge.providers import PROVIDER_REGISTRY
+    from forge.providers import PROVIDER_REGISTRY, handle_past_runs, handle_playbooks
+
+    # The two store-backed providers take the engine as a 4th argument; every
+    # other handler keeps the 3-arg ProviderHandler shape.
+    engine_providers = {"past_runs": handle_past_runs, "playbooks": handle_playbooks}
 
     results: list[ContextResult] = []
 
@@ -155,7 +161,11 @@ def fulfill_requests(
             content = f"Error: Unknown provider '{provider_name}'."
         else:
             try:
-                content = handler(params, repo_root, worktree_path)
+                engine_handler = engine_providers.get(provider_name)
+                if engine_handler is not None:
+                    content = engine_handler(params, repo_root, worktree_path, engine)
+                else:
+                    content = handler(params, repo_root, worktree_path)
             except Exception as e:
                 logger.warning("Provider %s failed: %s", provider_name, e, exc_info=True)
                 content = f"Error: Provider '{provider_name}' failed: {e}"
@@ -221,83 +231,6 @@ async def execute_exploration_call(
 # ---------------------------------------------------------------------------
 # Imperative shell
 # ---------------------------------------------------------------------------
-
-
-@activity.defn
-async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
-    """Activity: call the exploration LLM to decide what context to request."""
-    from pathlib import Path
-
-    from forge.activities.context import (
-        _read_project_instructions,
-        build_project_instructions_section,
-    )
-    from forge.llm_client import get_llm
-    from forge.tracing import get_tracer
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.call_exploration_llm") as span:
-        logger.info(
-            "Exploration call: task_id=%s round=%d/%d",
-            input.task_id,
-            input.round_number,
-            input.max_rounds,
-        )
-        project_instructions = ""
-        if input.repo_root:
-            project_instructions = build_project_instructions_section(
-                _read_project_instructions(Path(input.repo_root))
-            )
-
-        llm = get_llm()
-        start = time.monotonic()
-        async with heartbeat_during():
-            response = await execute_exploration_call(input, llm, project_instructions)
-        elapsed_ms = (time.monotonic() - start) * 1000
-        logger.info(
-            "Exploration result: task_id=%s requests=%d", input.task_id, len(response.requests)
-        )
-
-        span.set_attributes(
-            {
-                "forge.exploration.round": input.round_number,
-                "forge.exploration.requests_count": len(response.requests),
-                "forge.exploration.latency_ms": elapsed_ms,
-            }
-        )
-
-        return response
-
-
-@activity.defn
-async def fulfill_context_requests(input: FulfillContextInput) -> list[ContextResult]:
-    """Activity: dispatch context requests to the provider registry."""
-    from forge.tracing import get_tracer
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.fulfill_context_requests") as span:
-        logger.info("Fulfilling %d context requests", len(input.requests))
-        requests_as_dicts: list[dict[str, object]] = [
-            {"provider": r.provider, "params": r.params} for r in input.requests
-        ]
-
-        # Provider handlers run subprocesses (git, ruff, rg) and repo-proportional
-        # grimp/file scans; offload the whole dispatch off the event loop.
-        results = await asyncio.to_thread(
-            fulfill_requests,
-            requests_as_dicts,
-            input.repo_root,
-            input.worktree_path,
-        )
-
-        span.set_attributes(
-            {
-                "forge.exploration.providers_called": len(results),
-                "forge.exploration.total_tokens": sum(r.estimated_tokens for r in results),
-            }
-        )
-
-        return results
 
 
 @activity.defn

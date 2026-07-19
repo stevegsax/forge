@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from sax_platform.testing import FakeLLM
 
 from forge.eval.judge import (
     DEFAULT_JUDGE_MAX_TOKENS,
@@ -17,7 +18,6 @@ from forge.eval.models import (
     JudgeVerdict,
 )
 from forge.models import Plan, PlanStep, SubTask, TaskDefinition
-from tests.conftest import build_mock_llm
 
 _TASK = TaskDefinition(
     task_id="t1",
@@ -128,7 +128,7 @@ class TestExecuteJudgeCall:
             overall_assessment="Solid plan.",
         )
 
-        llm = build_mock_llm(verdict, input_tokens=500, output_tokens=200)
+        llm = FakeLLM(verdict, input_tokens=500, output_tokens=200)
 
         result = await execute_judge_call("system prompt", "user prompt", llm)
 
@@ -141,18 +141,19 @@ class TestExecuteJudgeCall:
             overall_assessment="OK.",
         )
 
-        llm = build_mock_llm(verdict, input_tokens=0, output_tokens=0)
+        llm = FakeLLM(verdict, input_tokens=0, output_tokens=0)
 
         await execute_judge_call("sys", "usr", llm)
 
-        llm.complete.assert_called_once()
-        messages = llm.complete.call_args.args[0]
+        assert len(llm.calls) == 1
+        call = llm.calls[-1]
+        assert call.method == "complete"
+        messages = call.args[0]
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "usr"
-        call_kwargs = llm.complete.call_args.kwargs
-        assert call_kwargs["system"] == "sys"
-        assert call_kwargs["output_type"] is JudgeVerdict
-        assert call_kwargs["max_tokens"] == DEFAULT_JUDGE_MAX_TOKENS
+        assert call.kwargs["system"] == "sys"
+        assert call.kwargs["output_type"] is JudgeVerdict
+        assert call.kwargs["max_tokens"] == DEFAULT_JUDGE_MAX_TOKENS
 
     @pytest.mark.asyncio
     async def test_propagates_typed_failure(self) -> None:
@@ -170,7 +171,7 @@ class TestExecuteJudgeCall:
         error = LLMTruncated(
             partial_text="", max_tokens=DEFAULT_JUDGE_MAX_TOKENS, telemetry=telemetry
         )
-        llm = build_mock_llm(error=error)
+        llm = FakeLLM(error=error)
 
         with pytest.raises(LLMTruncated):
             await execute_judge_call("sys", "usr", llm)

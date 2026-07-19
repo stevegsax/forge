@@ -1,22 +1,18 @@
 """Activities for playbook export workflow.
 
 Follows Function Core / Imperative Shell:
-- Pure function: db_row_to_playbook_entry
-- Temporal activities: fetch_playbook_ids, export_single_playbook
+- Pure function: db_row_to_playbook_entry. The ``fetch_playbook_ids`` and
+  ``export_single_playbook`` bound methods on ``StoreActivities``
+  (forge.activities.roots) delegate to it and the store helpers.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from temporalio import activity
-
-from forge.models import (  # noqa: TC001 — Temporal needs these at runtime for activity deserialization
-    ExportSinglePlaybookInput,
-    FetchPlaybookIdsInput,
-    PlaybookEntry,
-)
+if TYPE_CHECKING:
+    from forge.models import PlaybookEntry
 
 # ---------------------------------------------------------------------------
 # Function core
@@ -41,36 +37,3 @@ def db_row_to_playbook_entry(row: dict[str, Any]) -> PlaybookEntry:
         source_task_id=row.get("source_task_id", ""),
         source_workflow_id=row.get("source_workflow_id", ""),
     )
-
-
-# ---------------------------------------------------------------------------
-# Temporal activities
-# ---------------------------------------------------------------------------
-
-
-@activity.defn
-async def fetch_playbook_ids(input: FetchPlaybookIdsInput) -> list[int]:
-    """Query store for matching playbook IDs."""
-    from forge.store import get_playbook_ids, get_store_engine
-
-    engine = get_store_engine()
-    return get_playbook_ids(
-        engine,
-        tags=input.tags if input.tags else None,
-        source_task_id=input.source_task_id,
-        limit=input.limit,
-    )
-
-
-@activity.defn
-async def export_single_playbook(input: ExportSinglePlaybookInput) -> PlaybookEntry:
-    """Fetch one playbook row by ID and convert to PlaybookEntry."""
-    from forge.store import get_playbook_by_id, get_store_engine
-
-    engine = get_store_engine()
-    row = get_playbook_by_id(engine, input.playbook_id)
-    if row is None:
-        msg = f"Playbook {input.playbook_id} not found"
-        raise RuntimeError(msg)
-
-    return db_row_to_playbook_entry(row)

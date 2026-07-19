@@ -93,31 +93,19 @@ class TestMakeMistralClient:
         client = make_mistral_client(api_key="explicit-key")
         assert client.sdk_configuration.security.api_key == "explicit-key"  # type: ignore[union-attr]
 
-    def test_none_falls_back_to_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MISTRAL_API_KEY", "env-key")
-        client = make_mistral_client()
-        assert client.sdk_configuration.security.api_key == "env-key"  # type: ignore[union-attr]
-
-    def test_none_with_no_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Regression test: a missing MISTRAL_API_KEY used to resolve
-        silently to "" and construct a client that would only fail hours
-        later with 401s. It must now fail loudly at construction — the ocr
-        worker calls this at startup, exactly where an operator should
-        learn of the misconfiguration."""
-        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
-
-        with pytest.raises(ValueError, match="MISTRAL_API_KEY"):
-            make_mistral_client()
-
-    def test_explicit_empty_string_raises(self) -> None:
+    def test_empty_string_raises(self) -> None:
+        """An empty key used to resolve silently to "" and construct a client
+        that would only fail hours later with 401s. It must now fail loudly at
+        construction — the ocr worker calls this at startup, exactly where an
+        operator should learn of the misconfiguration."""
         with pytest.raises(ValueError, match="MISTRAL_API_KEY"):
             make_mistral_client(api_key="")
 
-    def test_explicit_arg_path_still_used_verbatim_when_env_var_also_set(
+    def test_explicit_arg_used_verbatim_ignoring_ambient_env(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The explicit-arg path is unaffected by the raise: a non-empty
-        explicit api_key is used verbatim regardless of the env var."""
+        """The factory reads no environment: a non-empty explicit api_key is
+        used verbatim regardless of any MISTRAL_API_KEY in the env."""
         monkeypatch.setenv("MISTRAL_API_KEY", "env-key")
         client = make_mistral_client(api_key="explicit-key")
         assert client.sdk_configuration.security.api_key == "explicit-key"  # type: ignore[union-attr]

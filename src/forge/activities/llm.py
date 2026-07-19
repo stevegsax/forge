@@ -3,8 +3,10 @@
 Sends the assembled context to the LLM provider and extracts the structured response.
 
 Design follows Function Core / Imperative Shell:
-- Testable function: execute_llm_call (takes provider as argument)
-- Imperative shell: call_llm
+- Testable function: execute_llm_call (takes the LLM client as an argument)
+- Imperative shell: the ``call_llm`` bound method on ``LlmActivities``
+  (forge.activities.roots), which delegates here with the composition-root
+  client.
 """
 
 from __future__ import annotations
@@ -13,9 +15,6 @@ import json
 import logging
 import time
 from typing import TYPE_CHECKING
-
-from sax_platform.temporal.heartbeat import heartbeat_during
-from temporalio import activity
 
 from forge.message_log import write_message_log
 from forge.models import (
@@ -96,46 +95,3 @@ async def execute_llm_call(
         cache_read_input_tokens=completion.cache_read_input_tokens,
         stop_reason=completion.stop_reason,
     )
-
-
-# ---------------------------------------------------------------------------
-# Imperative shell
-# ---------------------------------------------------------------------------
-
-
-@activity.defn
-async def call_llm(context: AssembledContext) -> LLMCallResult:
-    """Activity wrapper — obtains the LLM client and delegates to execute_llm_call."""
-    from forge.llm_client import get_llm
-    from forge.tracing import get_tracer, llm_call_attributes
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.call_llm") as span:
-        logger.info("LLM call start: task_id=%s model=%s", context.task_id, context.model_name)
-        llm = get_llm()
-        async with heartbeat_during():
-            result = await execute_llm_call(context, llm)
-        logger.info(
-            "LLM call done: task_id=%s tokens=%din/%dout latency=%.0fms",
-            context.task_id,
-            result.input_tokens,
-            result.output_tokens,
-            result.latency_ms,
-        )
-        # A max_tokens truncation now raises LLMTruncated inside llm.complete
-        # before this wrapper is built, so result.stop_reason can never be
-        # "max_tokens" here — the former truncation warning branch was dropped.
-
-        span.set_attributes(
-            llm_call_attributes(
-                model_name=result.model_name,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                latency_ms=result.latency_ms,
-                task_id=context.task_id,
-                cache_creation_input_tokens=result.cache_creation_input_tokens,
-                cache_read_input_tokens=result.cache_read_input_tokens,
-            )
-        )
-
-        return result

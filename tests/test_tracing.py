@@ -8,7 +8,6 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from forge.tracing import (
-    FORGE_OTEL_EXPORTER_ENV,
     SERVICE_NAME,
     SERVICE_VERSION,
     ExporterType,
@@ -87,29 +86,21 @@ class TestBuildResource:
 
 
 class TestResolveExporterType:
-    def test_explicit_param_wins(self) -> None:
-        result = resolve_exporter_type(ExporterType.OTLP_GRPC)
-        assert result is ExporterType.OTLP_GRPC
+    """T3.6: resolve_exporter_type is pure — it maps a name string (from
+    TracingSettings.exporter) to an ExporterType and reads no environment."""
 
-    def test_explicit_param_wins_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(FORGE_OTEL_EXPORTER_ENV, "none")
-        result = resolve_exporter_type(ExporterType.CONSOLE)
-        assert result is ExporterType.CONSOLE
+    def test_explicit_name_maps(self) -> None:
+        assert resolve_exporter_type("otlp_grpc") is ExporterType.OTLP_GRPC
 
-    def test_env_var_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(FORGE_OTEL_EXPORTER_ENV, "otlp_grpc")
-        result = resolve_exporter_type()
-        assert result is ExporterType.OTLP_GRPC
+    def test_none_defaults_to_console(self) -> None:
+        assert resolve_exporter_type(None) is ExporterType.CONSOLE
 
-    def test_default_is_console(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(FORGE_OTEL_EXPORTER_ENV, raising=False)
-        result = resolve_exporter_type()
-        assert result is ExporterType.CONSOLE
+    def test_no_arg_defaults_to_console(self) -> None:
+        assert resolve_exporter_type() is ExporterType.CONSOLE
 
-    def test_invalid_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(FORGE_OTEL_EXPORTER_ENV, "banana")
+    def test_invalid_name_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid FORGE_OTEL_EXPORTER"):
-            resolve_exporter_type()
+            resolve_exporter_type("banana")
 
 
 # ---------------------------------------------------------------------------
@@ -238,12 +229,12 @@ class TestCreateTracerProvider:
 
 class TestInitTracing:
     def test_sets_global_provider(self) -> None:
-        init_tracing(exporter=ExporterType.NONE)
+        init_tracing(exporter="none")
         provider = trace.get_tracer_provider()
         assert isinstance(provider, TracerProvider)
 
     def test_get_tracer_returns_working_tracer(self) -> None:
-        init_tracing(exporter=ExporterType.NONE)
+        init_tracing(exporter="none")
         tracer = get_tracer()
         assert tracer is not None
         # Verify we can start a span without error.
@@ -263,7 +254,7 @@ class TestGetTracer:
 
 class TestShutdownTracing:
     def test_no_crash_after_init(self) -> None:
-        init_tracing(exporter=ExporterType.NONE)
+        init_tracing(exporter="none")
         shutdown_tracing()  # should not raise
 
     def test_no_crash_without_init(self) -> None:

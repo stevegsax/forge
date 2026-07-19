@@ -74,7 +74,7 @@ increment 2, but the build-agent rationale keeps them on the host.)
 | Supabase Postgres | Forge store (and pbook store if used) | `FORGE_DB_URL`; direct (non-transaction-pooled) connection |
 | S3 bucket | OCR/batch blobs | Creds via `~/.aws` or the env file; lifecycle policy: [deploy/s3/](../../deploy/s3/) |
 | Anthropic API | All Forge LLM calls; pbook extraction/review | `ANTHROPIC_API_KEY` |
-| Mistral API | OCR pipeline | `MISTRAL_API_KEY` (required by the ocr worker) |
+| Mistral API | OCR submits | `MISTRAL_API_KEY` — built into a client at startup when set; unset → Mistral OCR disabled (not a fail-fast) |
 | OpenAI API | pbook embeddings | `OPENAI_API_KEY` (only if pbook used) |
 | GitHub | Clone/push the repos Forge operates on | The operator's normal git credentials |
 
@@ -86,10 +86,9 @@ every internal package is a workspace member, so one clone and one
 
 ```toml
 [tool.uv.workspace]
-members = ["apps/pbook", "libs/sax-llm", "apps/ocr", "libs/sax-platform"]
+members = ["apps/pbook", "apps/ocr", "libs/sax-platform"]
 
 [tool.uv.sources]
-sax-llm = { workspace = true }
 pbook = { workspace = true }
 sax-platform = { workspace = true }
 ```
@@ -98,10 +97,10 @@ sax-platform = { workspace = true }
 forge/                     # the workspace root — this is the whole deployment
 ├── apps/pbook/            # knowledge playbook service
 ├── apps/ocr/              # document OCR app (member, not a forge dependency)
-├── libs/sax-llm/          # LLM provider abstraction
 └── libs/sax-platform/     # model-tier registry, LLM client, Mistral OCR,
                             # shared wire contracts + platform primitives
-                            # (absorbed libs/forge-contracts at T3.4)
+                            # (absorbed libs/forge-contracts at T3.4; sax-llm
+                            # deleted at T3.5 — four packages now)
 ```
 
 ```bash
@@ -143,9 +142,10 @@ wrapper parses it without shell evaluation, so URLs with `&` are safe.
 
 The forge worker runs its own Alembic migrations at startup (advisory-locked
 against the shared database); the ocr worker likewise applies its own `ocr_*`
-chain at startup. pbook does **not** auto-migrate: if ingestion is in scope,
-run `uv run pbook migrate` once (and after upgrades that ship pbook
-migrations).
+chain at startup. The pbook worker applies its own chain (custom
+`pbk_alembic_version` table) to head at startup too — but only when
+`PBOOK_DATABASE_URL` is set (unset → store disabled, migration skipped). Run
+`uv run pbook migrate` manually only to migrate without starting the worker.
 
 ### 4. Install the launchd agents
 
@@ -186,14 +186,14 @@ Worker/CLI environment (the launchd agents read these from
 | --- | --- | --- |
 | `FORGE_TEMPORAL_ADDRESS` | Temporal frontend | `127.0.0.1:7233` |
 | `FORGE_DB_URL` | **Required.** Forge store. Unset → hard error | `postgresql+psycopg2://…supabase…/forge?sslmode=require` |
-| `FORGE_OCR_S3_BUCKET` | S3 bucket for blobs; required for OCR work | bucket name |
+| `FORGE_OCR_S3_BUCKET` | S3 bucket for blobs. The **ocr worker fails fast at startup if unset** (T3.6; previously a first-use error); forge needs it for OCR/batch-blob work | bucket name |
 | `FORGE_OCR_S3_PREFIX` | Optional key prefix for blobs | e.g. `ocr/` |
 | `FORGE_LOG_DIR` | App log directory (empty = no file logging) | `$XDG_STATE_HOME/forge/logs` |
 | `FORGE_OTEL_EXPORTER` | `console`/`otlp_grpc`/`otlp_http`/`none` (code default `console`) | `none` |
-| `FORGE_OTEL_ENDPOINT` | OTel endpoint; only read for the `otlp_*` exporters | unset (exporter is `none`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for the `otlp_*` exporters — the standard OpenTelemetry SDK var (forge's own `FORGE_OTEL_ENDPOINT` was deleted at T3.6) | unset (exporter is `none`) |
 | `FORGE_WORKER_IDENTITY` | Worker identity in Temporal | set by the launchd agents (`desktop-forge-worker-1/2`) |
 | `ANTHROPIC_API_KEY` | Anthropic SDK auth | key |
-| `MISTRAL_API_KEY` | **Required by the ocr worker.** Read at startup; the worker fails fast if unset | key (ocr worker only) |
+| `MISTRAL_API_KEY` | OCR submits. The forge and ocr workers each build a Mistral client at startup **only when it is set**; unset → Mistral OCR is disabled (no fail-fast). Forge makes the OCR submit today; the ocr worker's client is built ahead of Phase 4's self-polling | key |
 | `OPENAI_API_KEY` | pbook embeddings | key (if pbook used) |
 | `PBOOK_DATABASE_URL` | pbook Postgres store | Supabase URL (if pbook used) |
 | `AWS_*` | S3 auth if not using `~/.aws` | keys/region |

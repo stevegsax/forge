@@ -176,17 +176,18 @@ async def execute_judge_call(
 async def judge_plan(
     case: EvalCase,
     plan: Plan,
+    llm: AnthropicLLM,
     *,
     repo_context: str | None = None,
     model_name: str | None = None,
 ) -> JudgeVerdict:
     """Evaluate a plan using the LLM judge.
 
-    This is the imperative shell entry point — creates the client and
-    delegates to pure/testable functions.
+    This is the imperative shell entry point — it builds the prompts and
+    delegates to the pure/testable functions. The ``llm`` client is injected by
+    the caller (the composition root builds one client per eval run), never
+    acquired from a module-global cache.
     """
-    from forge.llm_client import get_llm
-
     system_prompt = build_judge_system_prompt(case, plan, repo_context)
     user_prompt = build_judge_user_prompt()
-    return await execute_judge_call(system_prompt, user_prompt, get_llm(), model_name=model_name)
+    return await execute_judge_call(system_prompt, user_prompt, llm, model_name=model_name)

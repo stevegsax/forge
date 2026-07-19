@@ -16,9 +16,6 @@ from temporalio import activity
 from temporalio.worker import Worker
 
 from forge.activities import (
-    assemble_context,
-    assemble_step_context,
-    assemble_sub_task_context,
     commit_changes_activity,
     create_worktree_activity,
     detect_file_conflicts_activity,
@@ -29,6 +26,7 @@ from forge.activities import (
     write_files,
     write_output,
 )
+from forge.activities.roots import ContextActivities
 from forge.models import (
     AssembleContextInput,
     AssembledContext,
@@ -51,6 +49,7 @@ from forge.models import (
     TransitionSignal,
 )
 from forge.persist_models import PersistRequest, PersistResult
+from forge.store import get_store_engine
 from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 if TYPE_CHECKING:
@@ -245,16 +244,32 @@ def _e2e_fixable_parse(input: ParseResponseInput) -> ParsedLLMResponse:
 # Activity lists
 # ---------------------------------------------------------------------------
 
+# T3.6: assemble_context/step/sub_task are ContextActivities bound methods now
+# (store engine injected). Each runner appends the appropriate bound method to
+# the Worker's activity list via ``_context_bound(...)`` below.
 _REAL_ACTIVITIES = [
     mock_persist_to_store,
     create_worktree_activity,
     remove_worktree_activity,
     commit_changes_activity,
-    assemble_context,
     write_output,
     validate_output,
     evaluate_transition,
 ]
+
+
+def _context_bound(name: str) -> object:
+    """Return a ContextActivities bound method over the test store engine.
+
+    The store is unmigrated in these e2e tests; playbook loading tolerates that
+    and returns [], so a plain engine over the autouse FORGE_DB_URL (resolved via
+    DbSettings) is enough.
+    """
+    from sax_platform.config import DbSettings
+
+    ctx = ContextActivities(get_store_engine(DbSettings().url))
+    return getattr(ctx, name)
+
 
 _BATCH_ACTIVITIES = [mock_self_signaling_submit, mock_parse_response]
 
@@ -310,7 +325,7 @@ async def _run_e2e_workflow(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
         workflows=[ForgeTaskWorkflow],
-        activities=activities,
+        activities=[*activities, _context_bound("assemble_context")],
     ):
         return await env.client.execute_workflow(
             ForgeTaskWorkflow.run,
@@ -580,7 +595,6 @@ _PLANNED_REAL_ACTIVITIES = [
     remove_worktree_activity,
     reset_worktree_activity,
     commit_changes_activity,
-    assemble_step_context,
     write_output,
     validate_output,
     evaluate_transition,
@@ -648,7 +662,7 @@ async def _run_planned_e2e(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
         workflows=[ForgeTaskWorkflow],
-        activities=activities,
+        activities=[*activities, _context_bound("assemble_step_context")],
     ):
         return await env.client.execute_workflow(
             ForgeTaskWorkflow.run,
@@ -924,7 +938,6 @@ _FANOUT_REAL_ACTIVITIES = [
     remove_worktree_activity,
     reset_worktree_activity,
     commit_changes_activity,
-    assemble_sub_task_context,
     write_output,
     write_files,
     validate_output,
@@ -1000,7 +1013,7 @@ async def _run_fanout_e2e(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
         workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
-        activities=activities,
+        activities=[*activities, _context_bound("assemble_sub_task_context")],
     ):
         return await env.client.execute_workflow(
             ForgeTaskWorkflow.run,

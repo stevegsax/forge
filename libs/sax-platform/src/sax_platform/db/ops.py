@@ -12,7 +12,6 @@ NOTE: the ``FORGE_DB_URL`` env name is retained from the pre-split layout.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,24 +26,12 @@ if TYPE_CHECKING:
 
 
 class StoreConfigError(RuntimeError):
-    """The store is misconfigured (e.g. ``FORGE_DB_URL`` unset)."""
+    """The store is misconfigured (e.g. an unsupported SQL dialect).
 
-
-def get_store_url() -> str:
-    """Return the configured store URL from ``FORGE_DB_URL``.
-
-    The store is mandatory infrastructure with no implicit default and no
-    runtime failover. A ``sqlite:///<path>`` URL is the dev/test configuration;
-    a ``postgresql+psycopg2://...`` URL is production. Unset or empty raises.
+    The store URL itself is resolved by :class:`~sax_platform.config.DbSettings`
+    (which raises on an unset ``FORGE_DB_URL``); this error covers the remaining
+    store-shape invariants enforced here.
     """
-    url = os.environ.get("FORGE_DB_URL")
-    if not url:
-        raise StoreConfigError(
-            "FORGE_DB_URL is not set. Set it to a 'sqlite:///<path>' URL for "
-            "development and tests, or a 'postgresql+psycopg2://...' URL for "
-            "production."
-        )
-    return url
 
 
 def ensure_sqlite_parent(url: str) -> None:

@@ -229,7 +229,7 @@ def _mock_tracer() -> MagicMock:
 class TestCallLlmModelNameThreading:
     @pytest.mark.asyncio
     async def test_threads_model_name_to_client(self) -> None:
-        from forge.activities.llm import call_llm
+        from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
             output=LLMResponse(explanation="done"),
@@ -238,24 +238,21 @@ class TestCallLlmModelNameThreading:
             output_tokens=20,
         )
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
-        ):
+        with patch("forge.activities.roots.get_tracer", return_value=_mock_tracer()):
             context = AssembledContext(
                 task_id="t1",
                 system_prompt="sys",
                 user_prompt="usr",
                 model_name="custom-model",
             )
-            llm_result = await call_llm(context)
+            llm_result = await LlmActivities(llm).call_llm(context)
 
         assert llm_result.model_name == "custom-model"
         assert llm.complete.await_args.kwargs["model"] == "custom-model"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
-        from forge.activities.llm import call_llm
+        from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
             output=LLMResponse(explanation="done"),
@@ -264,16 +261,13 @@ class TestCallLlmModelNameThreading:
             output_tokens=20,
         )
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
-        ):
+        with patch("forge.activities.roots.get_tracer", return_value=_mock_tracer()):
             context = AssembledContext(
                 task_id="t1",
                 system_prompt="sys",
                 user_prompt="usr",
             )
-            await call_llm(context)
+            await LlmActivities(llm).call_llm(context)
 
         _, default_model = DEFAULT_MODEL.split(":", 1)
         assert llm.complete.await_args.kwargs["model"] == default_model

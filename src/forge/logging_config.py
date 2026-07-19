@@ -8,7 +8,6 @@ Follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import logging
-import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -27,33 +26,35 @@ FILE_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 # ---------------------------------------------------------------------------
 
 
-def get_log_dir(log_dir_override: str | Path | None = None) -> Path | None:
-    """Resolve the log directory.
+def get_log_dir(
+    log_dir_override: str | Path | None = None,
+    *,
+    xdg_state_home: str | None = None,
+) -> Path | None:
+    """Resolve the log directory from explicit values — no environment reads.
 
     Resolution order:
 
-    1. *log_dir_override* parameter (explicit caller override).
-    2. ``FORGE_LOG_DIR`` environment variable.
-    3. ``$XDG_STATE_HOME/forge/``
-    4. ``~/.local/state/forge/``
+    1. *log_dir_override* (the ``FORGE_LOG_DIR`` value the caller resolved via
+       ``LogSettings``; explicit callers may also pass one directly).
+    2. ``$XDG_STATE_HOME/forge/`` (from the *xdg_state_home* argument).
+    3. ``~/.local/state/forge/``
 
-    Returns ``None`` if *log_dir_override* or ``FORGE_LOG_DIR`` is an empty
-    string (disables file logging).
+    Returns ``None`` if *log_dir_override* is an empty string (disables file
+    logging — the historical ``FORGE_LOG_DIR=""`` semantics, now supplied by
+    the composition root rather than read here).
+
+    The ``FORGE_LOG_DIR``/``XDG_STATE_HOME`` reads that once lived in this
+    function moved to :class:`sax_platform.config.LogSettings` (T3.6); the
+    values arrive as arguments so this function stays pure.
     """
     if log_dir_override is not None:
         if str(log_dir_override) == "":
             return None
         return Path(log_dir_override)
 
-    env_value = os.environ.get("FORGE_LOG_DIR")
-    if env_value is not None:
-        if env_value == "":
-            return None
-        return Path(env_value)
-
-    xdg_state = os.environ.get("XDG_STATE_HOME")
-    if xdg_state:
-        return Path(xdg_state) / "forge"
+    if xdg_state_home:
+        return Path(xdg_state_home) / "forge"
 
     return Path.home() / ".local" / "state" / "forge"
 
@@ -94,6 +95,8 @@ def silence_noisy_loggers() -> None:
 def configure_file_handler(
     log_name: str = "forge",
     log_dir_override: str | Path | None = None,
+    *,
+    xdg_state_home: str | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
     backup_count: int = DEFAULT_BACKUP_COUNT,
 ) -> RotatingFileHandler | None:
@@ -101,9 +104,13 @@ def configure_file_handler(
 
     Best-effort: returns ``None`` on failure (directory creation errors,
     permission issues, etc.) so callers never need to handle exceptions.
+
+    *log_dir_override* and *xdg_state_home* are passed straight through to
+    :func:`get_log_dir`; the composition root (``cli.configure_logging``)
+    resolves them from :class:`sax_platform.config.LogSettings`.
     """
     try:
-        log_dir = get_log_dir(log_dir_override)
+        log_dir = get_log_dir(log_dir_override, xdg_state_home=xdg_state_home)
         if log_dir is None:
             return None
 

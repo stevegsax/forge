@@ -10,6 +10,11 @@ Postgres. Resolution order for the test database:
 
 Per-test isolation is by TRUNCATE (RESTART IDENTITY) of the pbk_ tables
 between tests, so ids restart at 1 the way the SQLite-era tests expected.
+
+The session Temporal environment fixture is imported from
+``sax_platform.testing`` (D93) and re-exported here as ``env`` — the name
+the workflow tests request. It carries ``pydantic_data_converter``, matching
+production (the worker connects with it too).
 """
 
 from __future__ import annotations
@@ -22,11 +27,20 @@ from typing import TYPE_CHECKING
 
 import pytest
 import sqlalchemy as sa
+from sax_platform.testing import temporal_env
 
-from pbook.store import EMBEDDING_DIM, SCHEMA, get_engine, run_migrations
+from pbook.settings import PbookDbSettings
+from pbook.store import EMBEDDING_DIM, SCHEMA, build_engine, run_migrations
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from sqlalchemy import Engine
+
+# Re-export the shared session Temporal fixture under the name the suite uses.
+# It is the SAME fixture object; request only ``env`` (not ``temporal_env``)
+# within a session so the time-skipping server starts once.
+env = temporal_env
 
 
 def make_embedding(*coords: float) -> list[float]:
@@ -57,6 +71,12 @@ _PBK_TABLES = (
     "pbk_ingested_sessions",
     "pbk_entries",
 )
+
+# The single session-scoped store engine (one engine per process, the T3.6
+# invariant). Populated by the ``_store_engine`` fixture and read by the
+# module-level ``setup_db`` helper, which test bodies call directly (not via
+# fixture injection). Disposed at session end by the fixture's finalizer.
+_SESSION_ENGINE: Engine | None = None
 
 
 def _free_port() -> int:
@@ -131,22 +151,35 @@ def _pg_url() -> Iterator[str]:
     try:
         yield url
     finally:
-        from pbook.store import _engines
-
-        for engine in _engines.values():
-            engine.dispose()
-        _engines.clear()
         if container is not None:
             subprocess.run(["podman", "rm", "-f", container], capture_output=True, check=False)
 
 
+@pytest.fixture(scope="session")
+def _store_engine(_pg_url: str) -> Iterator[Engine]:
+    """The one store engine for the session, disposed at session end.
+
+    Also published to the module-level ``_SESSION_ENGINE`` so ``setup_db``
+    (called directly from test bodies) hands back the same engine rather than
+    building a fresh pool per test.
+    """
+    global _SESSION_ENGINE
+    engine = build_engine(PbookDbSettings(url=_pg_url))
+    assert engine is not None
+    _SESSION_ENGINE = engine
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+        _SESSION_ENGINE = None
+
+
 @pytest.fixture(autouse=True)
-def _isolate_db(_pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the store at the test DB and truncate tables before each test."""
+def _isolate_db(_pg_url: str, _store_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the store env at the test DB and truncate tables before each test."""
     monkeypatch.setenv("PBOOK_DATABASE_URL", _pg_url)
-    engine = get_engine(_pg_url)
     qualified = ", ".join(f"{SCHEMA}.{t}" for t in _PBK_TABLES)
-    with engine.begin() as conn:
+    with _store_engine.begin() as conn:
         conn.execute(sa.text(f"TRUNCATE {qualified} RESTART IDENTITY CASCADE"))
 
 
@@ -157,8 +190,10 @@ def _bypass_cli_workflows(monkeypatch: pytest.MonkeyPatch):
     Production CLI commands submit workflows to a Temporal server. Tests
     don't want to spin one up; the activity-level path runs the same DB
     code, so behavior is faithful. This fixture replaces the workflow
-    submission with a direct activity call keyed off the workflow's
-    ``.run`` method.
+    submission with a direct call to the matching
+    :class:`~pbook.roots.StoreActivities` bound method, constructing the
+    class from the current ``PBOOK_DATABASE_URL`` at call time (so the
+    store-disabled tests, which blank the env var, still see ``None``).
 
     Workflows whose ``.run`` isn't in the map (e.g. RetrievalWorkflow,
     which has multiple activities) fall through to the real
@@ -168,41 +203,58 @@ def _bypass_cli_workflows(monkeypatch: pytest.MonkeyPatch):
     import asyncio
 
     from pbook import cli
-    from pbook.activities import cli_ops as activities
+    from pbook.roots import StoreActivities
+    from pbook.store import build_engine
     from pbook.workflows import cli_ops as workflows
 
+    # workflow ``.run`` → StoreActivities method name.
     mapping = {
-        workflows.GetEntryWorkflow.run: activities.get_entry_activity,
-        workflows.ListEntriesWorkflow.run: activities.list_entries_activity,
-        workflows.ListSourcesWorkflow.run: activities.list_sources_activity,
-        workflows.ListTagsWorkflow.run: activities.list_tags_activity,
-        workflows.ReviewQueueWorkflow.run: activities.review_queue_activity,
-        workflows.ListSessionsWorkflow.run: activities.list_sessions_activity,
-        workflows.GetSessionTextWorkflow.run: activities.get_session_text_activity,
-        workflows.CheckDuplicateWorkflow.run: activities.check_duplicate_activity,
-        workflows.AddEntryWorkflow.run: activities.add_entry_activity,
-        workflows.ApproveEntryWorkflow.run: activities.approve_entry_activity,
-        workflows.RejectEntryWorkflow.run: activities.reject_entry_activity,
-        workflows.UpdateEntryWorkflow.run: activities.update_entry_activity,
-        workflows.RecordFeedbackWorkflow.run: activities.record_feedback_activity,
-        workflows.PruneWorkflow.run: activities.prune_activity,
-        workflows.FilterAlreadyIngestedWorkflow.run: activities.filter_already_ingested_activity,
-        workflows.RecordStartedSessionsWorkflow.run: activities.record_started_sessions_activity,
+        workflows.GetEntryWorkflow.run: "get_entry_activity",
+        workflows.ListEntriesWorkflow.run: "list_entries_activity",
+        workflows.ListSourcesWorkflow.run: "list_sources_activity",
+        workflows.ListTagsWorkflow.run: "list_tags_activity",
+        workflows.ReviewQueueWorkflow.run: "review_queue_activity",
+        workflows.ListSessionsWorkflow.run: "list_sessions_activity",
+        workflows.GetSessionTextWorkflow.run: "get_session_text_activity",
+        workflows.CheckDuplicateWorkflow.run: "check_duplicate_activity",
+        workflows.AddEntryWorkflow.run: "add_entry_activity",
+        workflows.ApproveEntryWorkflow.run: "approve_entry_activity",
+        workflows.RejectEntryWorkflow.run: "reject_entry_activity",
+        workflows.UpdateEntryWorkflow.run: "update_entry_activity",
+        workflows.RecordFeedbackWorkflow.run: "record_feedback_activity",
+        workflows.PruneWorkflow.run: "prune_activity",
+        workflows.FilterAlreadyIngestedWorkflow.run: "filter_already_ingested_activity",
+        workflows.RecordStartedSessionsWorkflow.run: "record_started_sessions_activity",
     }
 
     real_execute = cli._execute_workflow
 
     def bypassed(workflow_fn, arg, *, id_prefix="pbook", temporal_address=""):
-        activity_fn = mapping.get(workflow_fn)
-        if activity_fn is None:
+        method_name = mapping.get(workflow_fn)
+        if method_name is None:
             return real_execute(
                 workflow_fn,
                 arg,
                 id_prefix=id_prefix,
                 temporal_address=temporal_address,
             )
+        # GetSessionTextWorkflow maps to a no-dependency free function; the
+        # others are engine-bound StoreActivities methods.
+        if method_name == "get_session_text_activity":
+            from pbook.activities.cli_ops import get_session_text_activity
+
+            payload = arg.model_dump() if hasattr(arg, "model_dump") else arg
+            return asyncio.run(get_session_text_activity(payload))
+
+        engine = build_engine(PbookDbSettings())
+        store = StoreActivities(engine)
+        method = getattr(store, method_name)
         payload = arg.model_dump() if hasattr(arg, "model_dump") else arg
-        return asyncio.run(activity_fn(payload))
+        try:
+            return asyncio.run(method(payload))
+        finally:
+            if engine is not None:
+                engine.dispose()
 
     monkeypatch.setattr(cli, "_execute_workflow", bypassed)
 
@@ -210,9 +262,11 @@ def _bypass_cli_workflows(monkeypatch: pytest.MonkeyPatch):
 def setup_db(_tmp_path=None):
     """Return ``(engine, url)`` for the configured test database.
 
-    Migrations have already run for the session; the per-test TRUNCATE
-    fixture provides isolation. The ``_tmp_path`` argument is accepted and
-    ignored for compatibility with the previous SQLite-era signature.
+    Hands back the session-scoped engine (one per process); migrations have
+    already run for the session and the per-test TRUNCATE fixture provides
+    isolation. The ``_tmp_path`` argument is accepted and ignored for
+    compatibility with the previous SQLite-era signature.
     """
+    assert _SESSION_ENGINE is not None, "the _store_engine fixture must be active (via _isolate_db)"
     url = os.environ["PBOOK_DATABASE_URL"]
-    return get_engine(url), url
+    return _SESSION_ENGINE, url

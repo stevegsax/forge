@@ -21,6 +21,8 @@ from forge.eval.models import (
 )
 
 if TYPE_CHECKING:
+    from sax_platform.llm import AnthropicLLM
+
     from forge.eval.models import DeterministicResult, EvalCase, JudgeVerdict
     from forge.models import Plan
 
@@ -121,16 +123,22 @@ async def evaluate_plan(
     *,
     run_judge: bool = False,
     judge_model: str | None = None,
+    llm: AnthropicLLM | None = None,
 ) -> PlanEvalResult:
     """Evaluate a single plan against a case.
 
-    Runs deterministic checks always. Optionally runs the LLM judge.
+    Runs deterministic checks always. Optionally runs the LLM judge, which
+    requires an injected ``llm`` client (the caller builds one per run); passing
+    ``run_judge=True`` without an ``llm`` is a programming error.
     """
     deterministic = run_deterministic_checks(plan, case.task, known_repo_files)
 
     verdict: JudgeVerdict | None = None
     if run_judge:
-        verdict = await judge_plan(case, plan, model_name=judge_model)
+        if llm is None:
+            msg = "run_judge=True requires an llm client"
+            raise ValueError(msg)
+        verdict = await judge_plan(case, plan, llm, model_name=judge_model)
 
     return build_eval_result(case.case_id, plan, deterministic, verdict)
 
@@ -142,6 +150,7 @@ async def evaluate_corpus(
     known_repo_files: dict[str, set[str]] | None = None,
     run_judge: bool = False,
     judge_model: str | None = None,
+    llm: AnthropicLLM | None = None,
 ) -> list[PlanEvalResult]:
     """Evaluate a corpus of cases against their plans.
 
@@ -151,6 +160,7 @@ async def evaluate_corpus(
         known_repo_files: Optional mapping of case_id -> set of known files.
         run_judge: Whether to run the LLM judge.
         judge_model: Override judge model.
+        llm: Injected judge client, required when *run_judge* is ``True``.
 
     Returns:
         List of PlanEvalResult for cases that have matching plans.
@@ -163,7 +173,7 @@ async def evaluate_corpus(
             continue
         repo_files = (known_repo_files or {}).get(case.case_id)
         result = await evaluate_plan(
-            case, plan, repo_files, run_judge=run_judge, judge_model=judge_model
+            case, plan, repo_files, run_judge=run_judge, judge_model=judge_model, llm=llm
         )
         results.append(result)
     return results

@@ -44,6 +44,7 @@ from forge.temporal_client import connect_temporal
 
 if TYPE_CHECKING:
     from pbook.transcript import SessionInfo
+    from sax_platform.llm import AnthropicLLM
     from sqlalchemy import Engine
 
     from forge.eval.models import DeterministicResult, PlanEvalResult
@@ -68,15 +69,30 @@ _WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=48)
 
 
 def _require_store_engine() -> Engine:
-    """Resolve the store engine for a CLI command, exiting if it is unconfigured."""
-    from forge.store import StoreConfigError, get_store_engine
+    """Resolve the store engine for a CLI command, exiting if it is unconfigured.
+
+    Builds the ``DbSettings`` group at command start (the composition-root
+    convention: each command constructs exactly the settings it needs) and
+    threads ``settings.url`` into the engine factory. An unset ``FORGE_DB_URL``
+    surfaces as a pydantic ``ValidationError``, which is translated into the
+    same clean, exit-code-1 message the store used to raise itself.
+    """
+    from pydantic import ValidationError
+    from sax_platform.config import DbSettings
+
+    from forge.store import get_store_engine
 
     try:
-        engine: Engine = get_store_engine()
-    except StoreConfigError as exc:
-        click.echo(str(exc), err=True)
+        settings = DbSettings()  # type: ignore[call-arg]  # url comes from FORGE_DB_URL
+    except ValidationError:
+        click.echo(
+            "FORGE_DB_URL is not set. Set it to a 'sqlite:///<path>' URL for "
+            "development and tests, or a 'postgresql+psycopg2://...' URL for "
+            "production.",
+            err=True,
+        )
         sys.exit(EXIT_FAILURE)
-    return engine
+    return get_store_engine(settings.url)
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +216,11 @@ def format_verbose_result(result: TaskResult) -> str:
 
     # Query store for interaction details
     try:
+        from sax_platform.config import DbSettings
+
         from forge.store import get_interactions, get_store_engine
 
-        engine = get_store_engine()
+        engine = get_store_engine(DbSettings().url)  # type: ignore[call-arg]  # url from env
         interactions = get_interactions(engine, result.task_id)
         if interactions:
             lines.append("")
@@ -467,7 +485,14 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
 
     When *verbosity* is 0, the console stream handler is omitted if file
     logging is available — this keeps the worker silent on stdout by default.
+
+    The log directory is resolved through the ``LogSettings`` group (the
+    composition-root convention) rather than by ``logging_config`` reading the
+    environment at point of use: this shell builds ``LogSettings()`` and hands
+    the resolved values to :func:`~forge.logging_config.configure_file_handler`.
     """
+    from sax_platform.config import LogSettings
+
     from forge.logging_config import configure_file_handler
 
     level_map = {0: logging.WARNING, 1: logging.INFO}
@@ -476,7 +501,12 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
     root = logging.getLogger()
     root.handlers.clear()
 
-    file_handler = configure_file_handler(log_name=log_name)
+    log_settings = LogSettings()
+    file_handler = configure_file_handler(
+        log_name=log_name,
+        log_dir_override=log_settings.log_dir,
+        xdg_state_home=log_settings.xdg_state_home,
+    )
 
     # Only add a console handler when the user explicitly asked for verbosity
     # or when file logging is unavailable (so messages aren't lost).
@@ -1177,11 +1207,12 @@ def ingest(
     # assume nothing is ingested rather than failing.
     if not force:
         try:
-            from pbook.store import get_ingested_session_ids, get_store_engine
+            from pbook.settings import PbookDbSettings
+            from pbook.store import build_engine, get_ingested_session_ids
 
-            # get_store_engine() returns None when pbook's store is disabled
+            # build_engine returns None when pbook's store is disabled
             # (PBOOK_DATABASE_URL unset); otherwise a connected engine.
-            engine = get_store_engine()
+            engine = build_engine(PbookDbSettings())
             if engine is not None:
                 ingested_ids = get_ingested_session_ids(engine)
                 before = len(sessions)
@@ -1519,6 +1550,15 @@ async def _run_eval(
     if not cases:
         return []
 
+    # Build the judge LLM client ONCE for the whole run (only when judging),
+    # then thread it through every judge call — no per-case client and no
+    # module-global cache (T3.6 composition root).
+    llm: AnthropicLLM | None = None
+    if run_judge:
+        from sax_platform.llm import AnthropicLLM, make_client
+
+        llm = AnthropicLLM(make_client())
+
     # Load plans from plans_dir if provided, otherwise use reference plans from cases
     plans: dict[str, Plan] = {}
     if plans_dir:
@@ -1549,7 +1589,8 @@ async def _run_eval(
         if run_judge:
             from forge.eval.judge import judge_plan
 
-            verdict = await judge_plan(case, plan, model_name=judge_model)
+            assert llm is not None  # built above whenever run_judge is True
+            verdict = await judge_plan(case, plan, llm, model_name=judge_model)
 
         result = build_eval_result(case.case_id, plan, det, verdict)
         results.append(result)

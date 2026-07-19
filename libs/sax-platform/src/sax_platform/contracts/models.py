@@ -8,9 +8,12 @@ via ``pydantic_data_converter``.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from sax_platform.contracts.s3_blobs import S3Blobs
 
 
 class BatchJobStatus(StrEnum):
@@ -134,15 +137,17 @@ def parse_batch_result_payload(envelope_json: str) -> tuple[str | None, list[dic
     return data.get("raw_response_json"), data.get("extracted_images", [])
 
 
-def resolve_batch_result(result: BatchResult) -> tuple[str | None, list[dict[str, Any]]]:
+def resolve_batch_result(
+    result: BatchResult, blobs: S3Blobs
+) -> tuple[str | None, list[dict[str, Any]]]:
     """Return ``(raw_response_json, extracted_images)`` for a delivered result.
 
-    Fetches the S3 envelope when the result was delivered by reference, else uses
-    the inline body (which never carries images). Performs S3 I/O — call only from
-    an activity, never inside a workflow.
+    Fetches the S3 envelope through the injected :class:`S3Blobs` when the result
+    was delivered by reference, else uses the inline body (which never carries
+    images). Performs S3 I/O — call only from an activity, never inside a
+    workflow.
     """
     if result.s3_key:
-        from . import s3_blobs
-
-        return parse_batch_result_payload(s3_blobs.get(result.s3_key).decode("utf-8"))
+        raw = blobs.get(result.s3_key)
+        return parse_batch_result_payload(raw.decode("utf-8"))
     return result.raw_response_json, []

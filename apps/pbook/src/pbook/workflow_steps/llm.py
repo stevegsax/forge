@@ -1,18 +1,19 @@
-"""Generic structured-output chat activity.
+"""Generic structured-output chat step.
 
-This module provides the ``llm_chat`` activity, which any workflow can
-call to make a structured-output LLM request. The activity is
-intentionally agnostic about prompt construction and result parsing:
-the workflow builds its prompts (typically by calling pure functions in
-``pbook.prompts``), names the desired output type by string (resolved
-via :mod:`pbook.workflow_steps.output_types`), and validates the
-returned ``tool_input`` dict on its own side with
-``OutputType.model_validate(...)``.
+This module provides :func:`execute_llm_chat`, the logic behind the
+``llm_chat`` activity (the ``@activity.defn`` bound method lives on
+:class:`pbook.roots.LlmActivities`, which threads in the injected
+structured-outputs provider). The step is intentionally agnostic about
+prompt construction and result parsing: the workflow builds its prompts
+(typically by calling pure functions in ``pbook.prompts``), names the
+desired output type by string (resolved via
+:mod:`pbook.workflow_steps.output_types`), and validates the returned
+``tool_input`` dict on its own side with ``OutputType.model_validate(...)``.
 
 Why a string-keyed mapping rather than passing a class? Temporal
 serializes activity inputs as JSON; a class reference can't cross that
 boundary. The frozen mapping in :mod:`pbook.workflow_steps.output_types`
-lets us recover the correct ``BaseModel`` subclass inside the activity to
+lets us recover the correct ``BaseModel`` subclass inside the step to
 pass as ``complete(output_type=...)``.
 """
 
@@ -20,18 +21,19 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 from sax_platform.llm import LLMRefused, LLMTruncated
 from sax_platform.llm.tiers import split_provider
 from sax_platform.temporal.heartbeat import heartbeat_during
-from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from pbook.llm import get_provider
 from pbook.workflow_steps._errors import is_nonretryable_auth_error
 from pbook.workflow_steps.output_types import resolve_output_type
+
+if TYPE_CHECKING:
+    from pbook.llm import SupportsComplete
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +72,8 @@ class LLMChatResult(BaseModel):
     latency_ms: float
 
 
-@activity.defn
-async def llm_chat(input: LLMChatInput) -> LLMChatResult:
-    """Make a structured-output chat call against the registered provider.
+async def execute_llm_chat(provider: SupportsComplete, input: LLMChatInput) -> LLMChatResult:
+    """Make a structured-output chat call against the injected ``provider``.
 
     Heartbeats during the underlying network call so Temporal can detect
     a stalled worker. Telemetry (tokens, latency, cache hits) is
@@ -93,7 +94,6 @@ async def llm_chat(input: LLMChatInput) -> LLMChatResult:
     _, bare_model = split_provider(input.model)
 
     output_type = resolve_output_type(input.output_type_name)
-    provider = get_provider()
 
     start = time.monotonic()
     try:

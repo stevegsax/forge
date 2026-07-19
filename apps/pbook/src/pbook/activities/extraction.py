@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 
-from temporalio import activity
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +23,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@activity.defn
-async def save_extracted_entries(input_json: str) -> int:
+async def save_extracted_entries(engine: Engine | None, input_json: str) -> int:
     """Save extracted entries via match-or-attach, then write source rows.
 
     Accepts JSON with keys:
@@ -57,7 +58,6 @@ async def save_extracted_entries(input_json: str) -> int:
         build_entry_dict,
         find_semantic_duplicates,
         find_similar_source_contexts,
-        get_store_engine,
         insert_entry,
     )
 
@@ -70,7 +70,6 @@ async def save_extracted_entries(input_json: str) -> int:
         logger.debug("No extracted entries to save")
         return 0
 
-    engine = get_store_engine()
     if engine is None:
         return 0
 
@@ -150,20 +149,17 @@ async def save_extracted_entries(input_json: str) -> int:
     return new_entry_count
 
 
-@activity.defn
-async def record_ingested_session(input_json: str) -> None:
+async def record_ingested_session(engine: Engine | None, input_json: str) -> None:
     """Record that a Claude Code session has been ingested.
 
     Accepts JSON with keys: session_id, project_name, experiences_found, entries_created.
     Called cross-queue from forge's IngestionWorkflow.
     """
-    from pbook.store import get_store_engine
     from pbook.store import record_ingested_session as _record
 
     data = json.loads(input_json)
     session_id = data["session_id"]
 
-    engine = get_store_engine()
     if engine is None:
         return
 
@@ -176,14 +172,12 @@ async def record_ingested_session(input_json: str) -> None:
     )
 
 
-@activity.defn
-async def record_ingested_session_error(input_json: str) -> None:
+async def record_ingested_session_error(engine: Engine | None, input_json: str) -> None:
     """Mark a Claude Code session as failed.
 
     Accepts JSON with keys: session_id, error_message, project_name (optional).
     Called cross-queue from forge's IngestionWorkflow on failure paths.
     """
-    from pbook.store import get_store_engine
     from pbook.store import (
         record_ingested_session_error as _record_error,
     )
@@ -191,7 +185,6 @@ async def record_ingested_session_error(input_json: str) -> None:
     data = json.loads(input_json)
     session_id = data["session_id"]
 
-    engine = get_store_engine()
     if engine is None:
         return
 

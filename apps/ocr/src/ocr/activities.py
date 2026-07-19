@@ -39,6 +39,7 @@ from ocr.models import (
 )
 
 if TYPE_CHECKING:
+    from sax_platform.contracts.s3_blobs import S3Blobs
     from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
@@ -186,7 +187,11 @@ def compute_file_hash(file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def execute_read_and_store_file(file_path: str, engine: Engine) -> FileContentRef:
+def execute_read_and_store_file(
+    file_path: str,
+    engine: Engine,
+    blobs: S3Blobs,
+) -> FileContentRef:
     """Read a file and store raw bytes (S3-backed) keyed by a new content id."""
     from ocr.store import save_file_content
 
@@ -200,12 +205,17 @@ def execute_read_and_store_file(file_path: str, engine: Engine) -> FileContentRe
         data=raw,
         mime_type=mime_type,
         file_size_bytes=len(raw),
+        blobs=blobs,
     )
     return FileContentRef(content_id=content_id, mime_type=mime_type, file_size_bytes=len(raw))
 
 
 def execute_split_file_into_chunks(
-    content_id: str, mime_type: str, file_size_bytes: int, engine: Engine
+    content_id: str,
+    mime_type: str,
+    file_size_bytes: int,
+    engine: Engine,
+    blobs: S3Blobs,
 ) -> SplitResult:
     """Split a stored file into chunks for parallel OCR processing."""
     import fitz
@@ -229,7 +239,7 @@ def execute_split_file_into_chunks(
             original_content_id=content_id,
         )
 
-    blob = get_file_content(engine, content_id)
+    blob = get_file_content(engine, content_id, blobs)
     if blob is None:
         msg = f"File content not found for content_id={content_id}"
         raise RuntimeError(msg)
@@ -269,6 +279,7 @@ def execute_split_file_into_chunks(
             data=chunk_bytes,
             mime_type="application/pdf",
             file_size_bytes=len(chunk_bytes),
+            blobs=blobs,
         )
         chunks.append(
             ChunkRef(
@@ -282,12 +293,17 @@ def execute_split_file_into_chunks(
         )
 
     doc.close()
-    delete_file_content(engine, content_id)
+    delete_file_content(engine, content_id, blobs)
     return SplitResult(chunks=chunks, total_pages=total_pages, original_content_id=content_id)
 
 
 def execute_build_request_blob(
-    *, content_id: str, mime_type: str, model_name: str, engine: Engine
+    *,
+    content_id: str,
+    mime_type: str,
+    model_name: str,
+    engine: Engine,
+    blobs: S3Blobs,
 ) -> OcrBatchRequestRef:
     """Build the /v1/ocr batch request and stash it to S3 as an opaque blob.
 
@@ -295,11 +311,9 @@ def execute_build_request_blob(
     batch_jobs PK) and returns it with the blob key so the submit workflow can
     hand the platform a pointer.
     """
-    from sax_platform.contracts import s3_blobs
-
     from ocr.store import get_file_content
 
-    blob = get_file_content(engine, content_id)
+    blob = get_file_content(engine, content_id, blobs)
     if blob is None:
         msg = f"File content not found for content_id={content_id}"
         raise RuntimeError(msg)
@@ -309,8 +323,8 @@ def execute_build_request_blob(
     request_id = str(uuid.uuid4())
     requests = [{"custom_id": request_id, "body": body}]
 
-    s3_key = s3_blobs.build_key(f"ocr-request-{request_id}")
-    s3_blobs.put(s3_key, json.dumps(requests).encode("utf-8"), "application/json")
+    s3_key = blobs.build_key(f"ocr-request-{request_id}")
+    blobs.put(s3_key, json.dumps(requests).encode("utf-8"), "application/json")
 
     _provider, model = model_name.split(":", 1) if ":" in model_name else ("mistral", model_name)
     return OcrBatchRequestRef(request_id=request_id, s3_key=s3_key, model=model)
@@ -326,6 +340,7 @@ def execute_store_ocr_result(
     raw_response_json: str | None,
     s3_key: str | None,
     engine: Engine,
+    blobs: S3Blobs,
 ) -> OcrStoreResult:
     """Resolve the delivered result, store images, save text + status (idempotent)."""
     from sax_platform.contracts.models import BatchResult
@@ -339,7 +354,8 @@ def execute_store_ocr_result(
             raw_response_json=raw_response_json,
             s3_key=s3_key,
             result_type="succeeded",
-        )
+        ),
+        blobs,
     )
     if body is None:
         msg = "OCR result has neither inline body nor s3 envelope"
@@ -371,6 +387,7 @@ def execute_store_ocr_result(
             top_left_y=img.get("top_left_y"),
             bottom_right_x=img.get("bottom_right_x"),
             bottom_right_y=img.get("bottom_right_y"),
+            blobs=blobs,
         )
         image_mapping[original_image_id] = image_id
 
@@ -475,7 +492,11 @@ def _get_export_dir(document_id: str, output_dir: str) -> Path:
 
 
 def execute_export_ocr_document(
-    *, document_id: str, output_dir: str, engine: Engine
+    *,
+    document_id: str,
+    output_dir: str,
+    engine: Engine,
+    blobs: S3Blobs,
 ) -> OcrExportResult:
     """Export OCR text + images to the filesystem."""
     from ocr.store import get_ocr_image, get_ocr_images, get_ocr_result
@@ -500,7 +521,7 @@ def execute_export_ocr_document(
         image_id: str = img_meta["id"]
         filename = f"{image_id}{_mime_to_extension(img_meta['mime_type'])}"
         id_to_filename[image_id] = filename
-        img_full = get_ocr_image(engine, image_id)
+        img_full = get_ocr_image(engine, image_id, blobs)
         if img_full is not None:
             (export_path / filename).write_bytes(_strip_image_prefix(img_full["data"]))
 
@@ -585,154 +606,150 @@ def _derive_status(ocr_status: str, provider_status: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Imperative shell (Temporal activities)
+# Imperative shell — class-based Temporal activities (T3.6 composition root)
 # ---------------------------------------------------------------------------
 
 
-@activity.defn
-async def read_and_store_file_content(file_path: str) -> FileContentRef:
-    """Activity: read a file and store its bytes (S3-backed)."""
-    from ocr.store import get_store_engine
+class OcrStoreActivities:
+    """Dependency-carrying OCR activities: one store engine + one blob client.
 
-    logger.info("Reading and storing file: %s", file_path)
-    return execute_read_and_store_file(file_path, get_store_engine())
+    Temporal's sanctioned dependency injection (T3.6): the process-wide store
+    engine and :class:`S3Blobs` are built once at worker startup and injected
+    here, replacing the per-call ``get_store_engine()`` each shell used to build
+    (a fresh pooled Postgres engine per activity invocation). OCR requires S3, so
+    ``blobs`` is required — the worker fails fast at startup on an unset bucket
+    rather than deferring the error to the first blob-touching activity.
 
+    Each method is a bare ``@activity.defn`` so its *registered* name equals the
+    method ``__name__`` — the exact names the OCR workflows invoke by string.
+    Bound methods preserve ``__name__``, so converting the former module-level
+    activity functions into methods is invisible to the workflows and to the
+    by-name activity mocks in the workflow tests.
+    """
 
-@activity.defn
-async def split_file_into_chunks(input_json: str) -> SplitResult:
-    """Activity: split a stored file into OCR chunks."""
-    from ocr.store import get_store_engine
+    def __init__(self, engine: Engine, blobs: S3Blobs) -> None:
+        self._engine = engine
+        self._blobs = blobs
 
-    data = json.loads(input_json)
-    return execute_split_file_into_chunks(
-        content_id=data["content_id"],
-        mime_type=data["mime_type"],
-        file_size_bytes=data["file_size_bytes"],
-        engine=get_store_engine(),
-    )
+    @activity.defn
+    async def read_and_store_file_content(self, file_path: str) -> FileContentRef:
+        """Activity: read a file and store its bytes (S3-backed)."""
+        logger.info("Reading and storing file: %s", file_path)
+        return execute_read_and_store_file(file_path, self._engine, self._blobs)
 
+    @activity.defn
+    async def split_file_into_chunks(self, input_json: str) -> SplitResult:
+        """Activity: split a stored file into OCR chunks."""
+        data = json.loads(input_json)
+        return execute_split_file_into_chunks(
+            content_id=data["content_id"],
+            mime_type=data["mime_type"],
+            file_size_bytes=data["file_size_bytes"],
+            engine=self._engine,
+            blobs=self._blobs,
+        )
 
-@activity.defn
-async def build_ocr_request_blob(input_json: str) -> OcrBatchRequestRef:
-    """Activity: build the /v1/ocr request and stash it to S3; mint request_id."""
-    from ocr.store import get_store_engine
+    @activity.defn
+    async def build_ocr_request_blob(self, input_json: str) -> OcrBatchRequestRef:
+        """Activity: build the /v1/ocr request and stash it to S3; mint request_id."""
+        data = json.loads(input_json)
+        return execute_build_request_blob(
+            content_id=data["content_id"],
+            mime_type=data["mime_type"],
+            model_name=data["model_name"],
+            engine=self._engine,
+            blobs=self._blobs,
+        )
 
-    data = json.loads(input_json)
-    return execute_build_request_blob(
-        content_id=data["content_id"],
-        mime_type=data["mime_type"],
-        model_name=data["model_name"],
-        engine=get_store_engine(),
-    )
+    @activity.defn
+    async def delete_file_content_blob(self, content_id: str) -> None:
+        """Activity: delete a stored file-content blob (DB row + S3 object)."""
+        from ocr.store import delete_file_content
 
+        delete_file_content(self._engine, content_id, self._blobs)
 
-@activity.defn
-async def delete_file_content_blob(content_id: str) -> None:
-    """Activity: delete a stored file-content blob (DB row + S3 object)."""
-    from ocr.store import delete_file_content, get_store_engine
+    @activity.defn
+    async def store_ocr_result(self, input_json: str) -> OcrStoreResult:
+        """Activity: resolve the delivered result and store text + images + status."""
+        data = json.loads(input_json)
+        logger.info("Storing OCR result: document_id=%s", data.get("document_id", ""))
+        return execute_store_ocr_result(
+            request_id=data["request_id"],
+            document_id=data["document_id"],
+            file_path=data["file_path"],
+            batch_id=data["batch_id"],
+            workflow_id=data["workflow_id"],
+            raw_response_json=data.get("raw_response_json"),
+            s3_key=data.get("s3_key"),
+            engine=self._engine,
+            blobs=self._blobs,
+        )
 
-    delete_file_content(get_store_engine(), content_id)
+    @activity.defn
+    async def upsert_ocr_status(self, input_json: str) -> None:
+        """Activity: upsert the OCR processing-status row (single-writer)."""
+        from ocr.store import upsert_ocr_job_status
 
+        data = json.loads(input_json)
+        upsert_ocr_job_status(
+            self._engine,
+            request_id=data["request_id"],
+            document_id=data["document_id"],
+            file_path=data.get("file_path", ""),
+            status=data["status"],
+            error_message=data.get("error_message"),
+        )
 
-@activity.defn
-async def store_ocr_result(input_json: str) -> OcrStoreResult:
-    """Activity: resolve the delivered result and store text + images + status."""
-    from ocr.store import get_store_engine
+    @activity.defn
+    async def reassemble_ocr_chunks(self, input_json: str) -> OcrStoreResult:
+        """Activity: combine OCR results from multiple chunks into one."""
+        data = json.loads(input_json)
+        return execute_reassemble_ocr_chunks(
+            document_id=data["document_id"],
+            chunk_document_ids=data["chunk_document_ids"],
+            file_path=data["file_path"],
+            total_pages=data["total_pages"],
+            engine=self._engine,
+        )
 
-    data = json.loads(input_json)
-    logger.info("Storing OCR result: document_id=%s", data.get("document_id", ""))
-    return execute_store_ocr_result(
-        request_id=data["request_id"],
-        document_id=data["document_id"],
-        file_path=data["file_path"],
-        batch_id=data["batch_id"],
-        workflow_id=data["workflow_id"],
-        raw_response_json=data.get("raw_response_json"),
-        s3_key=data.get("s3_key"),
-        engine=get_store_engine(),
-    )
+    @activity.defn
+    async def export_ocr_document(self, input_json: str) -> OcrExportResult:
+        """Activity: export OCR text and images to the filesystem."""
+        data = json.loads(input_json)
+        return execute_export_ocr_document(
+            document_id=data["document_id"],
+            output_dir=data.get("output_dir", ""),
+            engine=self._engine,
+            blobs=self._blobs,
+        )
 
+    @activity.defn
+    async def check_ocr_duplicate(self, file_path: str) -> OcrDuplicateCheckResult:
+        """Activity: check if a file has already been successfully OCR'd."""
+        return execute_check_ocr_duplicate(file_path, self._engine)
 
-@activity.defn
-async def upsert_ocr_status(input_json: str) -> None:
-    """Activity: upsert the OCR processing-status row (single-writer)."""
-    from ocr.store import get_store_engine, upsert_ocr_job_status
+    @activity.defn
+    async def mark_ocr_for_removal(self, document_id: str) -> OcrMarkResult:
+        """Activity: set marked_for_removal=True on an OCR document."""
+        from ocr.store import mark_ocr_for_removal as _mark
 
-    data = json.loads(input_json)
-    upsert_ocr_job_status(
-        get_store_engine(),
-        request_id=data["request_id"],
-        document_id=data["document_id"],
-        file_path=data.get("file_path", ""),
-        status=data["status"],
-        error_message=data.get("error_message"),
-    )
+        found = _mark(self._engine, document_id)
+        return OcrMarkResult(document_id=document_id, found=found)
 
+    @activity.defn
+    async def clear_ocr_removal_mark(self, document_id: str) -> OcrMarkResult:
+        """Activity: set marked_for_removal=False on an OCR document."""
+        from ocr.store import clear_ocr_removal_mark as _clear
 
-@activity.defn
-async def reassemble_ocr_chunks(input_json: str) -> OcrStoreResult:
-    """Activity: combine OCR results from multiple chunks into one."""
-    from ocr.store import get_store_engine
+        found = _clear(self._engine, document_id)
+        return OcrMarkResult(document_id=document_id, found=found)
 
-    data = json.loads(input_json)
-    return execute_reassemble_ocr_chunks(
-        document_id=data["document_id"],
-        chunk_document_ids=data["chunk_document_ids"],
-        file_path=data["file_path"],
-        total_pages=data["total_pages"],
-        engine=get_store_engine(),
-    )
-
-
-@activity.defn
-async def export_ocr_document(input_json: str) -> OcrExportResult:
-    """Activity: export OCR text and images to the filesystem."""
-    from ocr.store import get_store_engine
-
-    data = json.loads(input_json)
-    return execute_export_ocr_document(
-        document_id=data["document_id"],
-        output_dir=data.get("output_dir", ""),
-        engine=get_store_engine(),
-    )
-
-
-@activity.defn
-async def check_ocr_duplicate(file_path: str) -> OcrDuplicateCheckResult:
-    """Activity: check if a file has already been successfully OCR'd."""
-    from ocr.store import get_store_engine
-
-    return execute_check_ocr_duplicate(file_path, get_store_engine())
-
-
-@activity.defn
-async def mark_ocr_for_removal(document_id: str) -> OcrMarkResult:
-    """Activity: set marked_for_removal=True on an OCR document."""
-    from ocr.store import get_store_engine
-    from ocr.store import mark_ocr_for_removal as _mark
-
-    found = _mark(get_store_engine(), document_id)
-    return OcrMarkResult(document_id=document_id, found=found)
-
-
-@activity.defn
-async def clear_ocr_removal_mark(document_id: str) -> OcrMarkResult:
-    """Activity: set marked_for_removal=False on an OCR document."""
-    from ocr.store import clear_ocr_removal_mark as _clear
-    from ocr.store import get_store_engine
-
-    found = _clear(get_store_engine(), document_id)
-    return OcrMarkResult(document_id=document_id, found=found)
-
-
-@activity.defn
-async def list_ocr_jobs(input_json: str) -> OcrListJobsResult:
-    """Activity: list OCR submissions (status join)."""
-    from ocr.store import get_store_engine
-
-    data = json.loads(input_json)
-    return execute_list_ocr_jobs(
-        get_store_engine(),
-        limit=data.get("limit", 50),
-        status_filter=data.get("status_filter", ""),
-    )
+    @activity.defn
+    async def list_ocr_jobs(self, input_json: str) -> OcrListJobsResult:
+        """Activity: list OCR submissions (status join)."""
+        data = json.loads(input_json)
+        return execute_list_ocr_jobs(
+            self._engine,
+            limit=data.get("limit", 50),
+            status_filter=data.get("status_filter", ""),
+        )

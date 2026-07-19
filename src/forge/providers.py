@@ -10,11 +10,14 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from forge.models import ContextProviderSpec
 from forge.path_safety import resolve_within
 from forge.subprocess_env import allowlist_env
+
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -362,14 +365,28 @@ def handle_discover_context(params: dict[str, str], repo_root: str, worktree_pat
     return "\n".join(lines)
 
 
-def handle_past_runs(params: dict[str, str], repo_root: str, worktree_path: str) -> str:
-    """Show recent workflow run results."""
+def handle_past_runs(
+    params: dict[str, str],
+    repo_root: str,
+    worktree_path: str,
+    engine: Engine | None = None,
+) -> str:
+    """Show recent workflow run results.
+
+    The store *engine* is threaded in by ``fulfill_requests`` (composition root
+    state), replacing the former per-call ``get_store_engine()``. ``engine`` is
+    optional only to keep this handler compatible with the 3-arg
+    :class:`ProviderHandler` shape; a ``None`` engine reports the store as
+    unavailable rather than querying.
+    """
     limit = int(params.get("limit", "5"))
 
-    try:
-        from forge.store import get_store_engine, list_recent_runs
+    if engine is None:
+        return "Error querying runs: store engine not available."
 
-        engine = get_store_engine()
+    try:
+        from forge.store import list_recent_runs
+
         runs = list_recent_runs(engine, limit=limit)
     except Exception as e:
         return f"Error querying runs: {e}"
@@ -385,18 +402,30 @@ def handle_past_runs(params: dict[str, str], repo_root: str, worktree_path: str)
     return "\n".join(lines)
 
 
-def handle_playbooks(params: dict[str, str], repo_root: str, worktree_path: str) -> str:
-    """Show relevant playbook entries."""
+def handle_playbooks(
+    params: dict[str, str],
+    repo_root: str,
+    worktree_path: str,
+    engine: Engine | None = None,
+) -> str:
+    """Show relevant playbook entries.
+
+    The store *engine* is threaded in by ``fulfill_requests`` (see
+    :func:`handle_past_runs`); a ``None`` engine reports the store as
+    unavailable.
+    """
     tags_raw = params.get("tags", "")
     if not tags_raw:
         return "Error: 'tags' parameter is required."
 
     tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
 
-    try:
-        from forge.store import get_playbooks_by_tags, get_store_engine
+    if engine is None:
+        return "Error querying playbooks: store engine not available."
 
-        engine = get_store_engine()
+    try:
+        from forge.store import get_playbooks_by_tags
+
         entries = get_playbooks_by_tags(engine, tags, limit=5)
     except Exception as e:
         return f"Error querying playbooks: {e}"

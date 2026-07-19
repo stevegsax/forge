@@ -305,7 +305,7 @@ class TestExecuteExtractionCall:
 class TestCallExtractionLlmModelNameThreading:
     @pytest.mark.asyncio
     async def test_threads_model_name_to_client(self) -> None:
-        from forge.activities.extraction import call_extraction_llm
+        from forge.activities.roots import LlmActivities
 
         mock_output = ExtractionResult(
             entries=[],
@@ -313,10 +313,7 @@ class TestCallExtractionLlmModelNameThreading:
         )
         llm = build_mock_llm(output=mock_output, input_tokens=100, output_tokens=50)
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-        ):
+        with patch("forge.activities.roots.get_tracer") as mock_get_tracer:
             mock_span = MagicMock()
             mock_span.__enter__ = MagicMock(return_value=mock_span)
             mock_span.__exit__ = MagicMock(return_value=False)
@@ -330,7 +327,7 @@ class TestCallExtractionLlmModelNameThreading:
                 source_workflow_ids=["wf-1"],
                 model_name="custom-extract",
             )
-            await call_extraction_llm(input_data)
+            await LlmActivities(llm).call_extraction_llm(input_data)
 
         # split_provider defaults a bare name to the anthropic provider.
         assert llm.complete.await_args.kwargs["model"] == "custom-extract"
@@ -339,8 +336,8 @@ class TestCallExtractionLlmModelNameThreading:
     async def test_uses_default_when_model_name_empty(self) -> None:
         from sax_platform.llm.tiers import split_provider
 
-        from forge.activities.extraction import call_extraction_llm
         from forge.activities.llm import DEFAULT_MODEL
+        from forge.activities.roots import LlmActivities
 
         mock_output = ExtractionResult(
             entries=[],
@@ -348,10 +345,7 @@ class TestCallExtractionLlmModelNameThreading:
         )
         llm = build_mock_llm(output=mock_output, input_tokens=100, output_tokens=50)
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-        ):
+        with patch("forge.activities.roots.get_tracer") as mock_get_tracer:
             mock_span = MagicMock()
             mock_span.__enter__ = MagicMock(return_value=mock_span)
             mock_span.__exit__ = MagicMock(return_value=False)
@@ -364,6 +358,6 @@ class TestCallExtractionLlmModelNameThreading:
                 user_prompt="usr",
                 source_workflow_ids=["wf-1"],
             )
-            await call_extraction_llm(input_data)
+            await LlmActivities(llm).call_extraction_llm(input_data)
 
         assert llm.complete.await_args.kwargs["model"] == split_provider(DEFAULT_MODEL)[1]

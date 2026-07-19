@@ -10,13 +10,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pbook.activities.maintenance import (
-    cluster_similar_entries,
-    fetch_all_entries_for_maintenance,
-    group_similar_entries,
-    prune_entries,
-)
+from pbook.activities.maintenance import group_similar_entries
 from pbook.models import PlaybookEntry
+from pbook.roots import StoreActivities
 from pbook.store import build_entry_dict, save_entries
 from tests.conftest import make_embedding, setup_db
 
@@ -141,7 +137,7 @@ class TestFetchAllEntriesForMaintenance:
             ],
         )
 
-        result = await fetch_all_entries_for_maintenance()
+        result = await StoreActivities(engine).fetch_all_entries_for_maintenance()
         assert len(result) == 1
         assert result[0]["title"] == "Test"
         # Embeddings are stripped before crossing the wire.
@@ -149,13 +145,12 @@ class TestFetchAllEntriesForMaintenance:
 
     @pytest.mark.asyncio
     async def test_empty_when_store_empty(self):
-        result = await fetch_all_entries_for_maintenance()
+        result = await StoreActivities(_setup_db()).fetch_all_entries_for_maintenance()
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_empty_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
-        result = await fetch_all_entries_for_maintenance()
+    async def test_empty_when_disabled(self):
+        result = await StoreActivities(None).fetch_all_entries_for_maintenance()
         assert result == []
 
 
@@ -188,7 +183,7 @@ class TestPruneEntries:
             ],
         )
 
-        count = await prune_entries([1, 2])
+        count = await StoreActivities(engine).prune_entries([1, 2])
         assert count == 2
 
         # Only entry 3 remains
@@ -200,13 +195,12 @@ class TestPruneEntries:
 
     @pytest.mark.asyncio
     async def test_empty_list(self):
-        count = await prune_entries([])
+        count = await StoreActivities(None).prune_entries([])
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_disabled_store(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
-        count = await prune_entries([1, 2])
+    async def test_disabled_store(self):
+        count = await StoreActivities(None).prune_entries([1, 2])
         assert count == 0
 
 
@@ -242,7 +236,7 @@ class TestClusterSimilarEntries:
             make_embedding(1.0, 0.0001),
             make_embedding(0.0, 1.0),
         )
-        clusters = await cluster_similar_entries(
+        clusters = await StoreActivities(engine).cluster_similar_entries(
             json.dumps({"threshold": 0.9, "exclude_ids": []}),
         )
         assert len(clusters) == 1
@@ -252,15 +246,17 @@ class TestClusterSimilarEntries:
     async def test_excluded_ids_break_the_cluster(self, tmp_path):
         engine = _setup_db(tmp_path)
         self._seed(engine, make_embedding(1.0, 0.0), make_embedding(1.0, 0.0001))
-        clusters = await cluster_similar_entries(
+        clusters = await StoreActivities(engine).cluster_similar_entries(
             json.dumps({"threshold": 0.9, "exclude_ids": [2]}),
         )
         assert clusters == []
 
     @pytest.mark.asyncio
-    async def test_disabled_store(self, monkeypatch):
-        monkeypatch.setenv("PBOOK_DATABASE_URL", "")
-        assert await cluster_similar_entries(json.dumps({"threshold": 0.9})) == []
+    async def test_disabled_store(self):
+        assert (
+            await StoreActivities(None).cluster_similar_entries(json.dumps({"threshold": 0.9}))
+            == []
+        )
 
 
 # consolidate_entries_llm activity is gone — consolidation now goes

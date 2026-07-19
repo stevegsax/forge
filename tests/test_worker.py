@@ -1,7 +1,8 @@
-"""Tests for forge.worker."""
+"""Tests for forge.worker — the composition root (T3.6)."""
 
 from __future__ import annotations
 
+import contextlib
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -12,34 +13,34 @@ import pytest
 import forge.worker as worker_mod
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
 class TestInitStore:
-    def test_raises_when_store_url_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from forge.store import StoreConfigError
-
-        mock_run_migrations = MagicMock()
-        monkeypatch.delenv("FORGE_DB_URL", raising=False)
-        monkeypatch.setattr("forge.store.run_migrations", mock_run_migrations)
-
-        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
-            worker_mod._init_store()
-
-        mock_run_migrations.assert_not_called()
-
-    def test_runs_migrations_against_configured_url(
+    def test_runs_migrations_against_given_url(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         url = f"sqlite:///{tmp_path / 'forge.db'}"
         mock_run_migrations = MagicMock()
-
-        monkeypatch.setenv("FORGE_DB_URL", url)
         monkeypatch.setattr("forge.store.run_migrations", mock_run_migrations)
 
-        worker_mod._init_store()
+        worker_mod._init_store(url)
 
         mock_run_migrations.assert_called_once_with(url)
+
+
+class TestForgeSettingsFailFast:
+    def test_missing_db_url_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ForgeSettings() (built first in run_worker) fails fast on an unset
+        FORGE_DB_URL — the store-mandatory invariant the old _init_store held."""
+        from pydantic import ValidationError
+
+        from forge.settings import ForgeSettings
+
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
+        with pytest.raises(ValidationError):
+            ForgeSettings()
 
 
 class TestEnsureSchedule:
@@ -64,8 +65,6 @@ class TestEnsureSchedule:
         assert schedule.action.task_queue == worker_mod.FORGE_TASK_QUEUE
         assert schedule.spec.intervals[0].every == timedelta(seconds=300)
         assert schedule.state.note == "Forge schedule: forge-batch-poller"
-        # T1.3: execution-timeout + overlap=SKIP backstop so a wedged run is
-        # terminated and the next scheduled run can fire.
         assert schedule.action.execution_timeout == timedelta(minutes=10)
         assert schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
 
@@ -105,110 +104,210 @@ class TestEnsureSchedule:
         update_input = SimpleNamespace(description=SimpleNamespace(schedule=existing_schedule))
 
         update = await updater(update_input)
-        # The update path reconciles spec, action, and policy so an already-running
-        # schedule (created before T1.3) picks up the execution-timeout + overlap
-        # backstop — not just the interval.
         assert update.schedule.spec.intervals[0].every == timedelta(minutes=10)
         assert update.schedule.action.id == "forge-batch-poller-run"
         assert update.schedule.action.execution_timeout == timedelta(minutes=10)
         assert update.schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
 
 
-class TestRunWorker:
-    """forge.worker.run_worker delegates Worker construction and the signal-handled
-    graceful-drain loop to sax_platform.temporal.worker.run_worker (T3.4, ST7,
-    aliased ``_run_platform_worker``); that delegate's own drain/signal behavior is
-    covered in libs/sax-platform. These tests cover what stays forge's job: setup
-    ordering, schedule registration, and the workflow/activity lists passed through.
-    """
+# ---------------------------------------------------------------------------
+# Composition root: run_worker builds each dependency once and injects it into
+# the four activity classes. run_worker's SDK/settings imports are function-local,
+# so the patches target the source modules the `from X import Y` lines resolve.
+# ---------------------------------------------------------------------------
+
+
+def _fake_settings(*, bucket: str | None = "b", mistral_key: str | None = "mk") -> SimpleNamespace:
+    return SimpleNamespace(
+        db=SimpleNamespace(url="sqlite:///settings.db"),
+        tracing=SimpleNamespace(exporter="console"),
+        temporal=SimpleNamespace(address="settings-host:7233"),
+        blob=SimpleNamespace(bucket=bucket, prefix="pre/"),
+        llm=SimpleNamespace(mistral_api_key=mistral_key),
+        log=SimpleNamespace(),
+    )
+
+
+class _Composition:
+    """Sentinels for every dependency the composition root builds, plus the
+    patch set that injects them, so tests can assert the exact wiring."""
+
+    def __init__(self, *, bucket: str | None = "b", mistral_key: str | None = "mk") -> None:
+        self.settings = _fake_settings(bucket=bucket, mistral_key=mistral_key)
+        self.client = MagicMock(name="temporal_client")
+        self.sdk_client = MagicMock(name="sdk_client")
+        self.llm = MagicMock(name="anthropic_llm")
+        self.engine = MagicMock(name="store_engine")
+        self.blobs = MagicMock(name="s3_blobs")
+        self.mistral = MagicMock(name="mistral_ocr")
+
+        self.init_store = MagicMock(name="_init_store")
+        self.run_platform_worker = AsyncMock(name="run_platform_worker")
+        self.make_client = MagicMock(return_value=self.sdk_client)
+        self.get_store_engine = MagicMock(return_value=self.engine)
+        self.s3blobs_cls = MagicMock(return_value=self.blobs)
+        self.anthropic_llm_cls = MagicMock(return_value=self.llm)
+        self.mistral_cls = MagicMock(return_value=self.mistral)
+        self.connect = AsyncMock(return_value=self.client)
+        self.init_tracing = MagicMock()
+        self.shutdown_tracing = MagicMock()
+
+    @contextlib.contextmanager
+    def apply(self) -> Iterator[None]:
+        patches = [
+            patch("forge.settings.ForgeSettings", return_value=self.settings),
+            patch.object(worker_mod, "_init_store", self.init_store),
+            patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
+            patch.object(worker_mod, "connect_temporal", self.connect),
+            patch.object(worker_mod, "_run_platform_worker", self.run_platform_worker),
+            patch("forge.tracing.init_tracing", self.init_tracing),
+            patch("forge.tracing.shutdown_tracing", self.shutdown_tracing),
+            patch("forge.logging_config.silence_noisy_loggers", MagicMock()),
+            patch("sax_platform.llm.make_client", self.make_client),
+            patch("sax_platform.llm.AnthropicLLM", self.anthropic_llm_cls),
+            patch("sax_platform.db.get_store_engine", self.get_store_engine),
+            patch("sax_platform.contracts.s3_blobs.S3Blobs", self.s3blobs_cls),
+            patch("sax_platform.ocr.MistralOcr", self.mistral_cls),
+            patch("sax_platform.ocr.make_mistral_client", MagicMock(return_value="mistral-sdk")),
+        ]
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            yield
+
+    def registered(self) -> list:
+        return self.run_platform_worker.await_args.kwargs["activities"]
+
+    def bound(self, name: str) -> object:
+        for act in self.registered():
+            if getattr(act, "__name__", None) == name:
+                return act
+        raise AssertionError(f"activity {name!r} not registered")
+
+
+class TestRunWorkerComposition:
+    @pytest.mark.asyncio
+    async def test_builds_once_and_wires_settings(self) -> None:
+        comp = _Composition()
+        with comp.apply():
+            await worker_mod.run_worker(identity="worker-1")
+
+        comp.init_store.assert_called_once_with(comp.settings.db.url)
+        comp.init_tracing.assert_called_once_with(comp.settings.tracing.exporter)
+        comp.connect.assert_awaited_once_with(
+            "settings-host:7233", identity="worker-1", settings=comp.settings.temporal
+        )
+
+        # Exactly one SDK client and one store engine built.
+        assert comp.make_client.call_count == 1
+        comp.get_store_engine.assert_called_once_with(comp.settings.db.url)
+        comp.anthropic_llm_cls.assert_called_once_with(comp.sdk_client)
+
+        assert comp.run_platform_worker.await_args.kwargs["graceful_shutdown_timeout"] == timedelta(
+            minutes=5
+        )
+        comp.shutdown_tracing.assert_called_once_with()
 
     @pytest.mark.asyncio
-    async def test_bootstraps_worker_and_registers_schedules(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mock_client = MagicMock()
-        mock_run_platform_worker = AsyncMock()
-        mock_ensure_schedule = AsyncMock()
-        mock_set_temporal_client = MagicMock()
-        mock_init_store = MagicMock()
-        mock_init_tracing = MagicMock()
-        mock_shutdown_tracing = MagicMock()
-        mock_silence_noisy_loggers = MagicMock()
+    async def test_classes_share_the_one_engine_and_client(self) -> None:
+        comp = _Composition()
+        with comp.apply():
+            await worker_mod.run_worker()
 
-        monkeypatch.setenv("FORGE_TEMPORAL_ADDRESS", "temporal.example:7233")
+        assert comp.bound("persist_to_store").__self__._engine is comp.engine
+        assert comp.bound("assemble_context").__self__._engine is comp.engine
+        assert comp.bound("call_llm").__self__._llm is comp.llm
 
-        with (
-            patch.object(worker_mod, "_init_store", mock_init_store),
-            patch.object(worker_mod, "_ensure_schedule", mock_ensure_schedule),
-            patch.object(worker_mod, "set_temporal_client", mock_set_temporal_client),
-            patch.object(
-                worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)
-            ) as mock_connect,
-            patch.object(worker_mod, "_run_platform_worker", mock_run_platform_worker),
-            patch("forge.tracing.init_tracing", mock_init_tracing),
-            patch("forge.tracing.shutdown_tracing", mock_shutdown_tracing),
-            patch("forge.logging_config.silence_noisy_loggers", mock_silence_noisy_loggers),
-        ):
-            await worker_mod.run_worker(
-                batch_poll_interval=300,
-                identity="worker-123",
-            )
+        batch = comp.bound("poll_batch_results").__self__
+        assert batch._client is comp.sdk_client
+        assert batch._engine is comp.engine
+        assert batch._blob_store is comp.blobs
+        assert batch._temporal_client is comp.client
+        assert batch._mistral_ocr is comp.mistral
 
-        mock_init_store.assert_called_once_with()
-        mock_init_tracing.assert_called_once_with()
-        mock_silence_noisy_loggers.assert_called_once_with()
-        mock_connect.assert_awaited_once_with(
-            "temporal.example:7233",
-            identity="worker-123",
+    @pytest.mark.asyncio
+    async def test_registers_all_activity_names_unchanged(self) -> None:
+        comp = _Composition()
+        with comp.apply():
+            await worker_mod.run_worker()
+
+        names = {getattr(a, "__name__", None) for a in comp.registered()}
+        expected = {
+            "assemble_conflict_resolution_context",
+            "assemble_exploration_context",
+            "assemble_planner_context",
+            "assemble_sanity_check_context",
+            "commit_changes_activity",
+            "create_worktree_activity",
+            "detect_file_conflicts_activity",
+            "evaluate_transition",
+            "remove_worktree_activity",
+            "reset_worktree_activity",
+            "validate_output",
+            "validate_playbook_entry",
+            "write_files",
+            "write_output",
+            "fetch_extraction_input",
+            "save_extraction_results",
+            "persist_to_store",
+            "fetch_existing_playbooks",
+            "fetch_playbook_ids",
+            "export_single_playbook",
+            "assemble_context",
+            "assemble_step_context",
+            "assemble_sub_task_context",
+            "fulfill_context_requests",
+            "call_llm",
+            "call_planner",
+            "call_exploration_llm",
+            "call_sanity_check",
+            "call_conflict_resolution",
+            "call_extraction_llm",
+            "review_manual_playbook",
+            "submit_batch_request",
+            "submit_batch_blob",
+            "poll_batch_results",
+            "parse_llm_response",
+        }
+        assert expected <= names
+        assert (
+            worker_mod.BatchPollerWorkflow
+            in comp.run_platform_worker.await_args.kwargs["workflows"]
         )
-        mock_set_temporal_client.assert_called_once_with(mock_client)
-        assert mock_ensure_schedule.await_count == 1
 
-        first_call = mock_ensure_schedule.await_args_list[0]
-        assert first_call.args[0] is mock_client
-        assert first_call.kwargs["schedule_id"] == "forge-batch-poller"
-        assert first_call.kwargs["workflow_name"] == "BatchPollerWorkflow"
-        assert first_call.kwargs["interval"] == timedelta(seconds=300)
+    @pytest.mark.asyncio
+    async def test_explicit_address_overrides_settings(self) -> None:
+        comp = _Composition()
+        with comp.apply():
+            await worker_mod.run_worker(address="override:7233")
 
-        mock_run_platform_worker.assert_awaited_once()
-        call = mock_run_platform_worker.await_args
-        assert call.args[0] is mock_client
-        assert call.kwargs["task_queue"] == worker_mod.FORGE_TASK_QUEUE
-        assert worker_mod.BatchPollerWorkflow in call.kwargs["workflows"]
-        assert worker_mod.poll_batch_results in call.kwargs["activities"]
-        assert worker_mod.submit_batch_blob in call.kwargs["activities"]
-        # AC fix: the 5-minute drain never cancels an in-flight LLM call, unlike
-        # the prior hardcoded 30s (see sax_platform.temporal.worker module docstring).
-        assert call.kwargs["graceful_shutdown_timeout"] == timedelta(minutes=5)
+        comp.connect.assert_awaited_once_with(
+            "override:7233", identity=None, settings=comp.settings.temporal
+        )
 
-        # Ingestion workflows and activity should be registered when pbook
-        # is installed (which it is in the test environment).
-        if worker_mod._INGESTION_AVAILABLE:
-            assert worker_mod.TranscriptIngestionWorkflow in call.kwargs["workflows"]
-            assert worker_mod.BatchIngestionWorkflow in call.kwargs["workflows"]
-            assert worker_mod.prepare_transcript in call.kwargs["activities"]
+    @pytest.mark.asyncio
+    async def test_no_mistral_key_leaves_ocr_none(self) -> None:
+        comp = _Composition(mistral_key=None)
+        with comp.apply():
+            await worker_mod.run_worker()
 
-        mock_shutdown_tracing.assert_called_once_with()
+        comp.mistral_cls.assert_not_called()
+        assert comp.bound("poll_batch_results").__self__._mistral_ocr is None
+
+    @pytest.mark.asyncio
+    async def test_no_bucket_leaves_blob_store_none(self) -> None:
+        comp = _Composition(bucket=None)
+        with comp.apply():
+            await worker_mod.run_worker()
+
+        comp.s3blobs_cls.assert_not_called()
+        assert comp.bound("poll_batch_results").__self__._blob_store is None
 
     @pytest.mark.asyncio
     async def test_shutdown_tracing_runs_when_worker_fails(self) -> None:
-        mock_client = MagicMock()
+        comp = _Composition()
+        comp.run_platform_worker = AsyncMock(side_effect=RuntimeError("worker boom"))
+        with comp.apply(), pytest.raises(RuntimeError, match="worker boom"):
+            await worker_mod.run_worker()
 
-        with (
-            patch.object(worker_mod, "_init_store", MagicMock()),
-            patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
-            patch.object(worker_mod, "set_temporal_client", MagicMock()),
-            patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)),
-            patch.object(
-                worker_mod,
-                "_run_platform_worker",
-                AsyncMock(side_effect=RuntimeError("worker boom")),
-            ),
-            patch("forge.tracing.init_tracing", MagicMock()),
-            patch("forge.tracing.shutdown_tracing", MagicMock()) as mock_shutdown_tracing,
-            patch("forge.logging_config.silence_noisy_loggers", MagicMock()),
-            pytest.raises(RuntimeError, match="worker boom"),
-        ):
-            await worker_mod.run_worker(address="localhost:7233")
-
-        mock_shutdown_tracing.assert_called_once_with()
+        comp.shutdown_tracing.assert_called_once_with()

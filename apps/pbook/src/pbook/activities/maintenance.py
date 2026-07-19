@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from temporalio import activity
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -138,17 +139,15 @@ def group_similar_entries(
 # ---------------------------------------------------------------------------
 
 
-@activity.defn
-async def fetch_all_entries_for_maintenance() -> list[dict[str, Any]]:
+async def fetch_all_entries_for_maintenance(engine: Engine | None) -> list[dict[str, Any]]:
     """Fetch all entries for maintenance analysis (prune + prompt building).
 
     Embeddings are stripped before crossing the wire — pruning keys off
     counters and age, and clustering happens server-side in
     :func:`cluster_similar_entries` so vectors never leave the database.
     """
-    from pbook.store import get_store_engine, list_all_entries
+    from pbook.store import list_all_entries
 
-    engine = get_store_engine()
     if engine is None:
         return []
 
@@ -156,8 +155,7 @@ async def fetch_all_entries_for_maintenance() -> list[dict[str, Any]]:
     return [{k: v for k, v in row.items() if k != "embedding"} for row in rows]
 
 
-@activity.defn
-async def cluster_similar_entries(input_json: str) -> list[list[int]]:
+async def cluster_similar_entries(engine: Engine | None, input_json: str) -> list[list[int]]:
     """Cluster entries by semantic similarity, server-side.
 
     Loads entries WITH embeddings inside the activity (vectors stay
@@ -166,13 +164,12 @@ async def cluster_similar_entries(input_json: str) -> list[list[int]]:
     ``threshold`` (float) and ``exclude_ids`` (list[int], e.g. entries
     already pruned this run).
     """
-    from pbook.store import get_store_engine, list_all_entries
+    from pbook.store import list_all_entries
 
     data = json.loads(input_json)
     threshold = data.get("threshold", 0.85)
     exclude = set(data.get("exclude_ids", []))
 
-    engine = get_store_engine()
     if engine is None:
         return []
 
@@ -181,15 +178,13 @@ async def cluster_similar_entries(input_json: str) -> list[list[int]]:
     return [[e["id"] for e in cluster] for cluster in clusters]
 
 
-@activity.defn
-async def prune_entries(entry_ids: list[int]) -> int:
+async def prune_entries(engine: Engine | None, entry_ids: list[int]) -> int:
     """Delete the given entries from the store."""
-    from pbook.store import delete_entry, get_store_engine
+    from pbook.store import delete_entry
 
     if not entry_ids:
         return 0
 
-    engine = get_store_engine()
     if engine is None:
         return 0
 
@@ -200,8 +195,7 @@ async def prune_entries(entry_ids: list[int]) -> int:
     return len(entry_ids)
 
 
-@activity.defn
-async def save_consolidated_entry(input_json: str) -> int:
+async def save_consolidated_entry(engine: Engine | None, input_json: str) -> int:
     """Save a consolidated entry and re-parent the cluster's source rows.
 
     Accepts JSON with keys:
@@ -218,7 +212,6 @@ async def save_consolidated_entry(input_json: str) -> int:
     from pbook.models import EntryType, PlaybookEntry
     from pbook.store import (
         build_entry_dict,
-        get_store_engine,
         insert_entry,
         reparent_entry_sources,
     )
@@ -227,7 +220,6 @@ async def save_consolidated_entry(input_json: str) -> int:
     merged = data["merged_entry"]
     cluster_ids = list(data.get("cluster_ids", []))
 
-    engine = get_store_engine()
     if engine is None:
         return 0
 

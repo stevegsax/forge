@@ -16,7 +16,6 @@ from ocr.store import (
     get_ocr_job_status,
     get_ocr_result,
     get_ocr_results_missing_hash,
-    get_store_engine,
     mark_ocr_for_removal,
     ocr_image_id,
     reassign_ocr_images_document_id,
@@ -30,8 +29,8 @@ from ocr.store import (
 
 
 class TestOcrResult:
-    def test_save_idempotent(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_save_idempotent(self, store_engine) -> None:
+        engine = store_engine
         kw = dict(
             document_id="doc-1",
             file_path="/a.pdf",
@@ -46,8 +45,8 @@ class TestOcrResult:
         assert save_ocr_result(engine, **kw) is False
         assert get_ocr_result(engine, "doc-1")["text"] == "hello"
 
-    def test_find_by_hash_excludes_removed(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_find_by_hash_excludes_removed(self, store_engine) -> None:
+        engine = store_engine
         save_ocr_result(
             engine,
             document_id="doc-h",
@@ -63,12 +62,12 @@ class TestOcrResult:
         assert find_ocr_result_by_hash(engine, "abc123")["document_id"] == "doc-h"
         assert find_ocr_result_by_hash(engine, "nope") is None
 
-    def test_get_missing_returns_none(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_get_missing_returns_none(self, store_engine) -> None:
+        engine = store_engine
         assert get_ocr_result(engine, "no-such-doc") is None
 
-    def test_delete_ocr_results(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_delete_ocr_results(self, store_engine) -> None:
+        engine = store_engine
         for doc_id in ("del-1", "del-2", "keep-1"):
             save_ocr_result(
                 engine,
@@ -86,8 +85,8 @@ class TestOcrResult:
         assert get_ocr_result(engine, "del-2") is None
         assert get_ocr_result(engine, "keep-1") is not None
 
-    def test_find_by_file_path_excludes_removed(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_find_by_file_path_excludes_removed(self, store_engine) -> None:
+        engine = store_engine
         save_ocr_result(
             engine,
             document_id="doc-fp",
@@ -107,8 +106,8 @@ class TestOcrResult:
         mark_ocr_for_removal(engine, "doc-fp")
         assert find_ocr_result_by_file_path(engine, "/path/to/file.pdf") is None
 
-    def test_missing_hash_lists_only_unhashed(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_missing_hash_lists_only_unhashed(self, store_engine) -> None:
+        engine = store_engine
         save_ocr_result(
             engine,
             document_id="doc-no-hash",
@@ -137,8 +136,8 @@ class TestOcrResult:
         assert "doc-no-hash" in doc_ids
         assert "doc-has-hash" not in doc_ids
 
-    def test_update_file_hash(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_update_file_hash(self, store_engine) -> None:
+        engine = store_engine
         save_ocr_result(
             engine,
             document_id="doc-update-hash",
@@ -156,8 +155,8 @@ class TestOcrResult:
 
 
 class TestRemovalMark:
-    def test_mark_and_clear(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_mark_and_clear(self, store_engine) -> None:
+        engine = store_engine
         save_ocr_result(
             engine,
             document_id="doc-mark",
@@ -179,19 +178,24 @@ class TestRemovalMark:
 
 
 class TestFileContentBlob:
-    def test_round_trip_via_s3(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_round_trip_via_s3(self, store_engine, blobs) -> None:
+        engine = store_engine
         save_file_content(
-            engine, content_id="c1", data=b"bytes", mime_type="application/pdf", file_size_bytes=5
+            engine,
+            content_id="c1",
+            data=b"bytes",
+            mime_type="application/pdf",
+            file_size_bytes=5,
+            blobs=blobs,
         )
-        result = get_file_content(engine, "c1")
+        result = get_file_content(engine, "c1", blobs)
         assert result["data"] == b"bytes"
         assert result["mime_type"] == "application/pdf"
 
 
 class TestOcrImage:
-    def test_save_and_fetch_via_s3(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_save_and_fetch_via_s3(self, store_engine, blobs) -> None:
+        engine = store_engine
         image_id = ocr_image_id("req-1", "img-0.jpeg", 0)
         save_ocr_image(
             engine,
@@ -202,17 +206,18 @@ class TestOcrImage:
             data=b"\xff\xd8\xffimg",
             mime_type="image/jpeg",
             file_size_bytes=6,
+            blobs=blobs,
         )
-        fetched = get_ocr_image(engine, image_id)
+        fetched = get_ocr_image(engine, image_id, blobs)
         assert fetched["data"] == b"\xff\xd8\xffimg"
         assert fetched["document_id"] == "doc-1"
 
-    def test_get_missing_returns_none(self, migrated: str) -> None:
-        engine = get_store_engine()
-        assert get_ocr_image(engine, "no-such-image") is None
+    def test_get_missing_returns_none(self, store_engine, blobs) -> None:
+        engine = store_engine
+        assert get_ocr_image(engine, "no-such-image", blobs) is None
 
-    def test_update_images_document_id(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_update_images_document_id(self, store_engine, blobs) -> None:
+        engine = store_engine
         image_id = ocr_image_id("req-2", "img-0.jpeg", 0)
         save_ocr_image(
             engine,
@@ -222,14 +227,15 @@ class TestOcrImage:
             data=b"\xff\xd8\xffimg",
             mime_type="image/jpeg",
             file_size_bytes=6,
+            blobs=blobs,
         )
         update_ocr_images_document_id(engine, [image_id], "doc-assigned")
-        assert get_ocr_image(engine, image_id)["document_id"] == "doc-assigned"
+        assert get_ocr_image(engine, image_id, blobs)["document_id"] == "doc-assigned"
         # Empty id list is a no-op — must not raise.
         update_ocr_images_document_id(engine, [], "doc-noop")
 
-    def test_reassign_images_document_id(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_reassign_images_document_id(self, store_engine, blobs) -> None:
+        engine = store_engine
         image_id_1 = ocr_image_id("req-3", "img-0.jpeg", 0)
         image_id_2 = ocr_image_id("req-3", "img-1.jpeg", 1)
         for image_id, original in ((image_id_1, "img-0.jpeg"), (image_id_2, "img-1.jpeg")):
@@ -242,6 +248,7 @@ class TestOcrImage:
                 data=b"\xff\xd8\xffimg",
                 mime_type="image/jpeg",
                 file_size_bytes=6,
+                blobs=blobs,
             )
         reassign_ocr_images_document_id(engine, ["chunk-doc"], "combined-doc")
         images = get_ocr_images(engine, "combined-doc")
@@ -249,8 +256,8 @@ class TestOcrImage:
         # Empty old-ids list is a no-op — must not raise.
         reassign_ocr_images_document_id(engine, [], "combined-doc")
 
-    def test_delete_images_by_document(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_delete_images_by_document(self, store_engine, blobs) -> None:
+        engine = store_engine
         image_id = ocr_image_id("req-4", "img-0.jpeg", 0)
         save_ocr_image(
             engine,
@@ -261,17 +268,18 @@ class TestOcrImage:
             data=b"\xff\xd8\xffimg",
             mime_type="image/jpeg",
             file_size_bytes=6,
+            blobs=blobs,
         )
-        delete_ocr_images_by_document(engine, ["doc-to-delete"])
-        assert get_ocr_image(engine, image_id) is None
+        delete_ocr_images_by_document(engine, ["doc-to-delete"], blobs)
+        assert get_ocr_image(engine, image_id, blobs) is None
         assert get_ocr_images(engine, "doc-to-delete") == []
         # Empty document-ids list is a no-op — must not raise.
-        delete_ocr_images_by_document(engine, [])
+        delete_ocr_images_by_document(engine, [], blobs)
 
 
 class TestOcrJobStatus:
-    def test_upsert_inserts_then_updates(self, migrated: str) -> None:
-        engine = get_store_engine()
+    def test_upsert_inserts_then_updates(self, store_engine) -> None:
+        engine = store_engine
         upsert_ocr_job_status(
             engine, request_id="r1", document_id="d1", file_path="/a", status="submitted"
         )

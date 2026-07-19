@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from temporalio.types import MethodAsyncSingleParam
 
     from pbook.models import RetrievalResult
+    from pbook.settings import PbookSettings
     from pbook.transcript import SessionInfo
 
 from pbook.models import PlaybookEntry
@@ -170,11 +171,21 @@ def _format_entry(entry: dict[str, Any]) -> str:
 
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
-def main(verbose: bool) -> None:
+@click.pass_context
+def main(ctx: click.Context, verbose: bool) -> None:
     """pbook — Knowledge playbook service."""
-    from pbook.log_config import setup_logging
+    from sax_platform.logging import setup_logging
 
-    setup_logging(level=logging.DEBUG if verbose else logging.INFO, console=True)
+    from pbook.settings import PbookSettings
+
+    settings = PbookSettings()
+    ctx.obj = settings
+    setup_logging(
+        "pbook",
+        log_path=settings.log_path,
+        level=logging.DEBUG if verbose else logging.INFO,
+        console=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -911,16 +922,17 @@ def tags(output_json: bool) -> None:
 
 
 @main.command()
-def migrate() -> None:
+@click.pass_obj
+def migrate(settings: PbookSettings) -> None:
     """Run database migrations.
 
     The lone CLI command that opens the DB directly — schema bootstrap
     must precede the worker's first connection.
     """
-    from pbook.store import get_database_url, run_migrations
+    from pbook.store import run_migrations
 
-    url = get_database_url()
-    if url is None:
+    url = settings.db.url
+    if not url:
         click.echo("Error: Store is disabled (PBOOK_DATABASE_URL is unset or empty).", err=True)
         sys.exit(1)
 

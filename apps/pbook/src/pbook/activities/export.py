@@ -9,11 +9,12 @@ Design follows Function Core / Imperative Shell:
 from __future__ import annotations
 
 import logging
-from typing import Any
-
-from temporalio import activity
+from typing import TYPE_CHECKING, Any
 
 from pbook.models import PlaybookEntry
+
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +48,16 @@ def db_row_to_entry_dict(row: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@activity.defn
-async def fetch_entry_ids(input_json: str) -> list[int]:
+async def fetch_entry_ids(engine: Engine | None, input_json: str) -> list[int]:
     """Query store for matching entry IDs."""
     import json as json_mod
 
-    from pbook.store import get_entries_by_tags, get_store_engine
+    from pbook.store import get_entries_by_tags
 
     params = json_mod.loads(input_json)
     tags = params.get("tags", [])
     limit = params.get("limit", 50)
 
-    engine = get_store_engine()
     if engine is None:
         return []
 
@@ -67,12 +66,10 @@ async def fetch_entry_ids(input_json: str) -> list[int]:
     return [e["id"] for e in entries]
 
 
-@activity.defn
-async def export_single_entry(entry_id: int) -> dict[str, Any]:
+async def export_single_entry(engine: Engine | None, entry_id: int) -> dict[str, Any]:
     """Fetch one entry by ID and convert to PlaybookEntry dict."""
-    from pbook.store import get_entry_by_id, get_store_engine
+    from pbook.store import get_entry_by_id
 
-    engine = get_store_engine()
     if engine is None:
         msg = "No store available"
         raise RuntimeError(msg)

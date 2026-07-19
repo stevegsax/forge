@@ -1,11 +1,17 @@
-"""Tests for pbook.embeddings."""
+"""Tests for pbook.embeddings (the platform re-export shim).
+
+Since T3.6, ``pbook.embeddings`` re-exports the codec, similarity, and the
+``OpenAIEmbeddings`` client from ``sax_platform.embeddings`` — the module
+holds no state and reads no environment (the old ``get_client``/
+``get_embedding`` globals are gone; the client is injected at the worker
+composition root). These tests confirm the re-exported surface works.
+"""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
-from pbook.embeddings import cosine_similarity, get_client
+from pbook.embeddings import cosine_similarity, decode_embedding, encode_embedding
 
 # ---------------------------------------------------------------------------
 # cosine_similarity
@@ -47,81 +53,14 @@ class TestCosineSimilarity:
 
 
 # ---------------------------------------------------------------------------
-# get_client
+# encode/decode round-trip
 # ---------------------------------------------------------------------------
 
 
-class TestGetClient:
-    def test_missing_api_key_raises(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        # Reset cached client
-        import pbook.embeddings as mod
+class TestCodec:
+    def test_round_trip(self):
+        import numpy as np
 
-        monkeypatch.setattr(mod, "_client", None)
-
-        with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
-            get_client()
-
-
-# ---------------------------------------------------------------------------
-# get_embedding
-# ---------------------------------------------------------------------------
-
-
-class TestGetEmbedding:
-    @pytest.mark.asyncio
-    async def test_returns_float_list(self, monkeypatch):
-        """get_embedding calls the OpenAI API and returns a list[float]."""
-        from typing import ClassVar
-
-        import pbook.embeddings as mod
-
-        fake_vector = [0.1, 0.2, 0.3]
-
-        class FakeEmbeddingData:
-            embedding: ClassVar = fake_vector
-
-        class FakeResponse:
-            data: ClassVar = [FakeEmbeddingData()]
-
-        class FakeEmbeddings:
-            async def create(self, *, input, model):
-                return FakeResponse()
-
-        class FakeClient:
-            embeddings = FakeEmbeddings()
-
-        monkeypatch.setattr(mod, "_client", FakeClient())
-
-        result = await mod.get_embedding("test text")
-
-        assert isinstance(result, list)
-        np.testing.assert_allclose(result, fake_vector, rtol=1e-6)
-
-    @pytest.mark.asyncio
-    async def test_strips_newlines(self, monkeypatch):
-        """get_embedding replaces newlines with spaces in input text."""
-        from typing import ClassVar
-
-        import pbook.embeddings as mod
-
-        captured_input = {}
-
-        class FakeEmbeddingData:
-            embedding: ClassVar = [0.0]
-
-        class FakeResponse:
-            data: ClassVar = [FakeEmbeddingData()]
-
-        class FakeEmbeddings:
-            async def create(self, *, input, model):
-                captured_input["text"] = input[0]
-                return FakeResponse()
-
-        class FakeClient:
-            embeddings = FakeEmbeddings()
-
-        monkeypatch.setattr(mod, "_client", FakeClient())
-
-        await mod.get_embedding("line one\nline two")
-        assert captured_input["text"] == "line one line two"
+        vector = [0.1, 0.2, 0.3, -0.4]
+        decoded = decode_embedding(encode_embedding(vector))
+        np.testing.assert_allclose(decoded, vector, rtol=1e-6)

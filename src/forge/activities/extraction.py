@@ -5,8 +5,11 @@ Extracts structured lessons from completed task results via an LLM call.
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_extraction_system_prompt, build_extraction_user_prompt,
   infer_tags_from_task
-- Testable function: execute_extraction_call (takes client as argument)
-- Imperative shell: fetch_extraction_input, call_extraction_llm, save_extraction_results
+- Testable function: execute_extraction_call (takes the LLM client as an argument)
+- Imperative shells: the ``call_extraction_llm`` (LlmActivities),
+  ``fetch_extraction_input`` and ``save_extraction_results`` (StoreActivities)
+  bound methods on the composition-root classes (forge.activities.roots)
+  delegate to these pure functions and the store helpers.
 """
 
 from __future__ import annotations
@@ -16,15 +19,10 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from sax_platform.temporal.heartbeat import heartbeat_during
-from temporalio import activity
-
 from forge.models import (
     ExtractionCallResult,
     ExtractionInput,
     ExtractionResult,
-    FetchExtractionInput,
-    SaveExtractionInput,
 )
 
 if TYPE_CHECKING:
@@ -226,87 +224,3 @@ async def execute_extraction_call(
         cache_read_input_tokens=completion.cache_read_input_tokens,
         stop_reason=completion.stop_reason,
     )
-
-
-# ---------------------------------------------------------------------------
-# Imperative shell
-# ---------------------------------------------------------------------------
-
-
-@activity.defn
-async def fetch_extraction_input(input: FetchExtractionInput) -> ExtractionInput:
-    """Read unextracted runs from the store and build the extraction prompt.
-
-    Returns an ExtractionInput with empty source_workflow_ids if no runs found.
-    """
-    from forge.store import get_store_engine, get_unextracted_runs
-
-    engine = get_store_engine()
-    runs = get_unextracted_runs(engine, limit=input.limit)
-
-    if not runs:
-        return ExtractionInput(
-            system_prompt="",
-            user_prompt="",
-            source_workflow_ids=[],
-        )
-
-    for run in runs:
-        if "result_json" in run:
-            try:
-                run["result"] = json.loads(run["result_json"])
-            except (json.JSONDecodeError, TypeError):
-                run["result"] = {}
-
-    system_prompt = build_extraction_system_prompt(runs)
-    user_prompt = build_extraction_user_prompt()
-    source_ids = [r["workflow_id"] for r in runs]
-
-    return ExtractionInput(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        source_workflow_ids=source_ids,
-    )
-
-
-@activity.defn
-async def call_extraction_llm(input: ExtractionInput) -> ExtractionCallResult:
-    """Activity wrapper — obtains the LLM client and delegates to execute_extraction_call.
-
-    The former ``stop_reason == "max_tokens"`` warning branch is gone: on the
-    structured-outputs path a truncated response raises `LLMTruncated` from
-    inside `AnthropicLLM.complete` (non-retryable via LLM_RETRY), so this shell
-    never sees a truncated `ExtractionCallResult` to warn about.
-    """
-    from forge.llm_client import get_llm
-    from forge.tracing import get_tracer, llm_call_attributes
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.call_extraction_llm") as span:
-        llm = get_llm()
-        async with heartbeat_during():
-            result = await execute_extraction_call(input, llm)
-
-        span.set_attributes(
-            llm_call_attributes(
-                model_name=result.model_name,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                latency_ms=result.latency_ms,
-                task_id="__extraction__",
-                cache_creation_input_tokens=result.cache_creation_input_tokens,
-                cache_read_input_tokens=result.cache_read_input_tokens,
-            )
-        )
-
-        return result
-
-
-@activity.defn
-async def save_extraction_results(input: SaveExtractionInput) -> None:
-    """Write extracted playbook entries to the store."""
-    from forge.store import build_playbook_dict, get_store_engine, save_playbooks
-
-    engine = get_store_engine()
-    dicts = [build_playbook_dict(entry, input.extraction_workflow_id) for entry in input.entries]
-    save_playbooks(engine, dicts)

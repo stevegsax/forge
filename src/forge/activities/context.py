@@ -20,8 +20,6 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from temporalio import activity
-
 from forge.domains import get_domain_config
 from forge.models import (
     AssembleContextInput,
@@ -40,6 +38,8 @@ from forge.models import (
 from forge.path_safety import resolve_within
 
 if TYPE_CHECKING:
+    from sqlalchemy import Engine
+
     from forge.code_intel.budget import ContextItem, PackedContext
 
 logger = logging.getLogger(__name__)
@@ -533,19 +533,20 @@ def build_playbook_context_items(playbooks: list[dict[str, Any]]) -> list[Contex
 # ---------------------------------------------------------------------------
 
 
-def _load_playbooks_for_task(task: TaskDefinition) -> list[dict[str, Any]]:
+def _load_playbooks_for_task(task: TaskDefinition, engine: Engine) -> list[dict[str, Any]]:
     """Best-effort load of relevant playbooks from the store.
 
-    Returns empty list on any error (D42 pattern).
+    The store *engine* is threaded in from the ``ContextActivities`` composition
+    root (T3.6), replacing the former per-call ``get_store_engine()``. Returns
+    an empty list on any error (D42 pattern).
     """
     try:
-        from forge.store import get_playbooks_by_tags, get_store_engine
+        from forge.store import get_playbooks_by_tags
 
         tags = infer_task_tags(task)
         if not tags:
             return []
 
-        engine = get_store_engine()
         return get_playbooks_by_tags(engine, tags, limit=5)
     except Exception:
         logger.warning("Failed to load playbooks from store", exc_info=True)
@@ -594,12 +595,14 @@ def _discover_packed_context(
     project_root: str,
     context_config: ContextConfig,
     manual_contents: dict[str, str],
+    engine: Engine,
 ) -> PackedContext:
     """Run auto-discovery and inject playbooks, returning the packed context.
 
     Shared by single-step, planned-step, and sub-task assembly. ``project_root``
     differs per mode: the repo root for single-step, the (parent) worktree for
     planned and fan-out modes so later steps and sub-tasks see in-progress files.
+    The store *engine* is threaded through to :func:`_load_playbooks_for_task`.
     """
     from forge.code_intel import discover_context
     from forge.code_intel.budget import pack_context
@@ -617,7 +620,7 @@ def _discover_packed_context(
         include_dependencies=context_config.include_dependencies,
     )
 
-    playbooks = _load_playbooks_for_task(task_mock)
+    playbooks = _load_playbooks_for_task(task_mock, engine)
     if playbooks:
         playbook_items = build_playbook_context_items(playbooks)
         packed = pack_context(packed.items + playbook_items, context_config.token_budget)
@@ -625,24 +628,13 @@ def _discover_packed_context(
     return packed
 
 
-@activity.defn
-async def assemble_context(input: AssembleContextInput) -> AssembledContext:
-    """Read context files and assemble the prompts for the LLM call.
+async def _assemble_context_inner(input: AssembleContextInput, engine: Engine) -> AssembledContext:
+    """Core of the ``assemble_context`` activity (store *engine* injected).
 
-    When auto_discover is enabled and target_files are specified, uses
-    automatic context discovery via import graph analysis. Otherwise
-    falls back to manual context_files.
+    The ``ContextActivities.assemble_context`` bound method wraps this in the
+    OTel span; kept as a plain, engine-taking function so the composition root
+    threads its one process-wide engine through to playbook loading.
     """
-    from forge.tracing import get_tracer
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.assemble_context"):
-        logger.info("Assemble context: task_id=%s", input.task_id)
-        return await _assemble_context_inner(input)
-
-
-async def _assemble_context_inner(input: AssembleContextInput) -> AssembledContext:
-    """Inner implementation of assemble_context (extracted for span wrapping)."""
     repo_root = Path(input.repo_root)
 
     error_section = build_error_section(
@@ -670,6 +662,7 @@ async def _assemble_context_inner(input: AssembleContextInput) -> AssembledConte
             project_root=input.repo_root,
             context_config=input.context_config,
             manual_contents=manual_contents,
+            engine=engine,
         )
 
         system_prompt = build_system_prompt_with_context(
@@ -816,9 +809,10 @@ def build_step_user_prompt(
     )
 
 
-@activity.defn
-async def assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
-    """Read context files from the worktree and assemble step-level prompts.
+async def _assemble_step_context_inner(
+    input: AssembleStepContextInput, engine: Engine
+) -> AssembledContext:
+    """Core of the ``assemble_step_context`` activity (store *engine* injected).
 
     Context files are read from the **worktree** (not repo root) so that
     later steps can see files created by earlier steps.
@@ -856,6 +850,7 @@ async def assemble_step_context(input: AssembleStepContextInput) -> AssembledCon
             project_root=input.worktree_path,
             context_config=input.context_config,
             manual_contents=context_contents,
+            engine=engine,
         )
         context_stats = _build_context_stats(packed)
         discovered_section = build_discovered_context_section(packed)
@@ -974,11 +969,10 @@ def build_sub_task_user_prompt(
     )
 
 
-@activity.defn
-async def assemble_sub_task_context(
-    input: AssembleSubTaskContextInput,
+async def _assemble_sub_task_context_inner(
+    input: AssembleSubTaskContextInput, engine: Engine
 ) -> AssembledContext:
-    """Read context files from the parent worktree and assemble sub-task prompts.
+    """Core of the ``assemble_sub_task_context`` activity (store *engine* injected).
 
     Context files are read from the **parent worktree** because the sub-task
     worktree starts empty (branched from parent branch).
@@ -1020,6 +1014,7 @@ async def assemble_sub_task_context(
             project_root=input.worktree_path,
             context_config=input.context_config,
             manual_contents=context_contents,
+            engine=engine,
         )
         context_stats = _build_context_stats(packed)
         discovered_section = build_discovered_context_section(packed)

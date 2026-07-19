@@ -474,25 +474,28 @@ class TestExecutePollBatchResults:
 class TestPollBatchFor:
     @pytest.mark.asyncio
     async def test_anthropic_dispatches_to_platform_adapter(self) -> None:
-        """The anthropic route no longer goes through sax_llm — it polls via the
-        platform batch lane adapter over the shared AsyncAnthropic client."""
+        """The anthropic route polls via the platform batch lane adapter over the
+        injected AsyncAnthropic client (supplied by the BatchActivities root)."""
         sentinel_client = object()
         expected = ProviderBatchPollResult(status=BatchPollStatus.IN_PROGRESS)
         adapter = AsyncMock(return_value=expected)
 
-        with (
-            patch("forge.activities.batch_poll._get_batch_client", return_value=sentinel_client),
-            patch("forge.activities.batch_poll._poll_anthropic_batch", adapter),
-        ):
-            result = await _poll_batch_for("anthropic", "batch-1")
+        with patch("forge.activities.batch_poll._poll_anthropic_batch", adapter):
+            result = await _poll_batch_for("anthropic", "batch-1", client=sentinel_client)
 
         adapter.assert_awaited_once_with(sentinel_client, "batch-1")
         assert result is expected
 
     @pytest.mark.asyncio
+    async def test_anthropic_without_client_raises(self) -> None:
+        """No AsyncAnthropic injected is a configuration error, raised at point of use."""
+        with pytest.raises(RuntimeError, match="AsyncAnthropic client"):
+            await _poll_batch_for("anthropic", "batch-1")
+
+    @pytest.mark.asyncio
     async def test_mistral_returns_native_ocr_result(self) -> None:
-        """mistral routes through sax_platform.ocr.MistralOcr and returns its
-        native poll result directly — no conversion (the lingua franca IS the
+        """mistral routes through the injected MistralOcr and returns its native
+        poll result directly — no conversion (the lingua franca IS the
         sax_platform.ocr family now)."""
         ocr_result = ProviderBatchPollResult(
             status=BatchPollStatus.ENDED,
@@ -514,14 +517,16 @@ class TestPollBatchFor:
         mistral_provider = MagicMock()
         mistral_provider.poll_batch = AsyncMock(return_value=ocr_result)
 
-        with (
-            patch("sax_platform.ocr.make_mistral_client", return_value=MagicMock()),
-            patch("sax_platform.ocr.MistralOcr", return_value=mistral_provider),
-        ):
-            result = await _poll_batch_for("mistral", "batch-mistral")
+        result = await _poll_batch_for("mistral", "batch-mistral", mistral_ocr=mistral_provider)
 
         mistral_provider.poll_batch.assert_awaited_once_with("batch-mistral")
         assert result is ocr_result
+
+    @pytest.mark.asyncio
+    async def test_mistral_without_ocr_raises(self) -> None:
+        """No MistralOcr injected (MISTRAL_API_KEY unset at startup) raises clearly."""
+        with pytest.raises(RuntimeError, match="MISTRAL_API_KEY"):
+            await _poll_batch_for("mistral", "batch-mistral")
 
 
 # ---------------------------------------------------------------------------

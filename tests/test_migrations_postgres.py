@@ -145,17 +145,14 @@ def test_concurrent_migrations_serialize_on_postgres(postgres_url: str) -> None:
         engine.dispose()
 
 
-def test_insert_or_ignore_idempotent_on_postgres(
-    postgres_url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_insert_or_ignore_idempotent_on_postgres(postgres_url: str) -> None:
     """Exercise the postgresql ON CONFLICT DO NOTHING path + pooled engine."""
     from forge.models import TaskResult, TransitionSignal
     from forge.store import get_store_engine, run_migrations, save_run
 
     run_migrations(postgres_url)
-    monkeypatch.setenv("FORGE_DB_URL", postgres_url)
 
-    engine = get_store_engine()  # postgres branch: pool_pre_ping + bounded pool
+    engine = get_store_engine(postgres_url)  # postgres branch: pool_pre_ping + bounded pool
     try:
         assert engine.dialect.name == "postgresql"
         task_result = TaskResult(task_id="t", status=TransitionSignal.SUCCESS)
@@ -165,9 +162,7 @@ def test_insert_or_ignore_idempotent_on_postgres(
         engine.dispose()
 
 
-def test_runs_rekey_records_reruns_on_postgres(
-    postgres_url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runs_rekey_records_reruns_on_postgres(postgres_url: str) -> None:
     """The (workflow_id, run_id) rekey lets a reused workflow_id record reruns.
 
     Exercises the real Postgres ON CONFLICT arbiter on the composite unique
@@ -179,9 +174,8 @@ def test_runs_rekey_records_reruns_on_postgres(
     from forge.store import get_store_engine, list_recent_runs, run_migrations, save_run
 
     run_migrations(postgres_url)
-    monkeypatch.setenv("FORGE_DB_URL", postgres_url)
 
-    engine = get_store_engine()
+    engine = get_store_engine(postgres_url)
     try:
         # The rekey lives on the runs table as a composite unique constraint.
         uniques = {

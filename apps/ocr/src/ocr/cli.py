@@ -43,6 +43,9 @@ def _auto_id(prefix: str) -> str:
 @click.group()
 def main() -> None:
     """OCR app commands."""
+    from sax_platform.logging import setup_logging
+
+    setup_logging("ocr", console=True)
 
 
 @main.command("worker")

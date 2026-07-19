@@ -431,7 +431,7 @@ class TestBuildPlannerSystemPromptCapabilityTier:
 class TestCallPlannerModelNameThreading:
     @pytest.mark.asyncio
     async def test_threads_model_name_to_client(self) -> None:
-        from forge.activities.planner import call_planner
+        from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
             output=_TEST_PLAN,
@@ -440,24 +440,21 @@ class TestCallPlannerModelNameThreading:
             output_tokens=50,
         )
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
-        ):
+        with patch("forge.activities.roots.get_tracer", return_value=_mock_tracer()):
             planner_input = PlannerInput(
                 task_id="t1",
                 system_prompt="sys",
                 user_prompt="usr",
                 model_name="custom-planner",
             )
-            result = await call_planner(planner_input)
+            result = await LlmActivities(llm).call_planner(planner_input)
 
         assert result.model_name == "custom-planner"
         assert llm.complete.await_args.kwargs["model"] == "custom-planner"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
-        from forge.activities.planner import call_planner
+        from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
             output=_TEST_PLAN,
@@ -466,16 +463,13 @@ class TestCallPlannerModelNameThreading:
             output_tokens=50,
         )
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
-        ):
+        with patch("forge.activities.roots.get_tracer", return_value=_mock_tracer()):
             planner_input = PlannerInput(
                 task_id="t1",
                 system_prompt="sys",
                 user_prompt="usr",
             )
-            await call_planner(planner_input)
+            await LlmActivities(llm).call_planner(planner_input)
 
         assert llm.complete.await_args.kwargs["model"] == "claude-opus-4-8"
 
@@ -488,7 +482,7 @@ class TestCallPlannerModelNameThreading:
 class TestCallPlannerThinkingThreading:
     @pytest.mark.asyncio
     async def test_threads_thinking_policy_to_complete(self) -> None:
-        from forge.activities.planner import call_planner
+        from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
             output=_TEST_PLAN,
@@ -498,10 +492,7 @@ class TestCallPlannerThinkingThreading:
         )
 
         policy = ThinkingPolicy(enabled=True, effort="high")
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
-        ):
+        with patch("forge.activities.roots.get_tracer", return_value=_mock_tracer()):
             planner_input = PlannerInput(
                 task_id="t1",
                 system_prompt="sys",
@@ -509,7 +500,7 @@ class TestCallPlannerThinkingThreading:
                 model_name="claude-opus-4-6",
                 thinking=policy,
             )
-            await call_planner(planner_input)
+            await LlmActivities(llm).call_planner(planner_input)
 
         llm.complete.assert_awaited_once()
         assert llm.complete.await_args.kwargs["thinking"] == policy

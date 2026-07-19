@@ -405,17 +405,14 @@ class TestBuildExplorationPromptProjectInstructions:
 class TestCallExplorationLlmModelNameThreading:
     @pytest.mark.asyncio
     async def test_threads_model_name_to_client(self) -> None:
-        from forge.activities.exploration import call_exploration_llm
+        from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
             output=ExplorationResponse(requests=[]),
             model="custom-explore",
         )
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
-        ):
+        with patch("forge.activities.roots.get_tracer", return_value=_mock_tracer()):
             input_data = ExplorationInput(
                 task_id=_make_task().task_id,
                 task_description=_make_task().description,
@@ -427,23 +424,18 @@ class TestCallExplorationLlmModelNameThreading:
                 max_rounds=5,
                 model_name="custom-explore",
             )
-            await call_exploration_llm(input_data)
+            await LlmActivities(llm).call_exploration_llm(input_data)
 
         assert llm.complete.await_args.kwargs["model"] == "custom-explore"
 
     @pytest.mark.asyncio
     async def test_uses_default_when_model_name_empty(self) -> None:
-        from forge.activities.exploration import (
-            DEFAULT_EXPLORATION_MODEL,
-            call_exploration_llm,
-        )
+        from forge.activities.exploration import DEFAULT_EXPLORATION_MODEL
+        from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(output=ExplorationResponse(requests=[]))
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer", return_value=_mock_tracer()),
-        ):
+        with patch("forge.activities.roots.get_tracer", return_value=_mock_tracer()):
             input_data = ExplorationInput(
                 task_id=_make_task().task_id,
                 task_description=_make_task().description,
@@ -454,7 +446,7 @@ class TestCallExplorationLlmModelNameThreading:
                 round_number=1,
                 max_rounds=5,
             )
-            await call_exploration_llm(input_data)
+            await LlmActivities(llm).call_exploration_llm(input_data)
 
         _, default_model = DEFAULT_EXPLORATION_MODEL.split(":", 1)
         assert llm.complete.await_args.kwargs["model"] == default_model

@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 from forge.activities.playbook_review import (
     apply_suggestions,
     build_review_system_prompt,
     build_review_user_prompt,
-    fetch_existing_playbooks,
-    review_manual_playbook,
     review_playbook_entry,
     validate_playbook_entry,
 )
+from forge.activities.roots import LlmActivities, StoreActivities
 from forge.models import (
     FetchExistingPlaybooksInput,
     PlaybookEntry,
@@ -239,21 +242,22 @@ class TestValidatePlaybookEntryActivity:
 
 class TestFetchExistingPlaybooksActivity:
     @pytest.mark.asyncio
-    async def test_empty_store_returns_empty(self, forge_db_url: str) -> None:
+    async def test_empty_store_returns_empty(self, store_engine: Engine) -> None:
         from forge.store import run_migrations
 
-        run_migrations(forge_db_url)
-        result = await fetch_existing_playbooks(FetchExistingPlaybooksInput(limit=10))
+        run_migrations(str(store_engine.url))
+        result = await StoreActivities(store_engine).fetch_existing_playbooks(
+            FetchExistingPlaybooksInput(limit=10)
+        )
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_with_entries(self, forge_db_url: str) -> None:
-        from forge.store import get_store_engine, run_migrations, save_playbooks
+    async def test_with_entries(self, store_engine: Engine) -> None:
+        from forge.store import run_migrations, save_playbooks
 
-        run_migrations(forge_db_url)
-        engine = get_store_engine()
+        run_migrations(str(store_engine.url))
         save_playbooks(
-            engine,
+            store_engine,
             [
                 {
                     "title": "Existing lesson",
@@ -266,7 +270,9 @@ class TestFetchExistingPlaybooksActivity:
             ],
         )
 
-        result = await fetch_existing_playbooks(FetchExistingPlaybooksInput(limit=10))
+        result = await StoreActivities(store_engine).fetch_existing_playbooks(
+            FetchExistingPlaybooksInput(limit=10)
+        )
         assert len(result) == 1
         assert result[0]["title"] == "Existing lesson"
 
@@ -283,15 +289,12 @@ class TestReviewManualPlaybookActivity:
             approved=True,
             suggested_title="Better title",
         )
-        with (
-            patch(
-                "forge.activities.playbook_review.review_playbook_entry",
-                new_callable=AsyncMock,
-                return_value=mock_review,
-            ),
-            patch("forge.activities.playbook_review.get_llm", return_value=MagicMock()),
+        with patch(
+            "forge.activities.roots.review_playbook_entry",
+            new_callable=AsyncMock,
+            return_value=mock_review,
         ):
-            result = await review_manual_playbook(
+            result = await LlmActivities(MagicMock()).review_manual_playbook(
                 ReviewManualPlaybookInput(entry=sample_entry, existing_playbooks=[])
             )
 
@@ -304,15 +307,12 @@ class TestReviewManualPlaybookActivity:
             approved=False,
             rejection_reason="Duplicate entry.",
         )
-        with (
-            patch(
-                "forge.activities.playbook_review.review_playbook_entry",
-                new_callable=AsyncMock,
-                return_value=mock_review,
-            ),
-            patch("forge.activities.playbook_review.get_llm", return_value=MagicMock()),
+        with patch(
+            "forge.activities.roots.review_playbook_entry",
+            new_callable=AsyncMock,
+            return_value=mock_review,
         ):
-            result = await review_manual_playbook(
+            result = await LlmActivities(MagicMock()).review_manual_playbook(
                 ReviewManualPlaybookInput(entry=sample_entry, existing_playbooks=[])
             )
 

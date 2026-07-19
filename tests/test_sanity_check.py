@@ -320,15 +320,12 @@ class TestCallSanityCheck:
     async def test_delegates_to_client_and_returns_result(self) -> None:
         from unittest.mock import MagicMock, patch
 
-        from forge.activities.sanity_check import call_sanity_check
+        from forge.activities.roots import LlmActivities
 
         mock_response = SanityCheckResponse(verdict=SanityCheckVerdict.CONTINUE, explanation="ok")
         llm = build_mock_llm(output=mock_response, model="claude-opus-4-8")
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-        ):
+        with patch("forge.activities.roots.get_tracer") as mock_get_tracer:
             mock_span = MagicMock()
             mock_span.__enter__ = MagicMock(return_value=mock_span)
             mock_span.__exit__ = MagicMock(return_value=False)
@@ -337,7 +334,7 @@ class TestCallSanityCheck:
             mock_get_tracer.return_value = mock_tracer
 
             sanity_input = SanityCheckInput(task_id="t-ok", system_prompt="s", user_prompt="u")
-            result = await call_sanity_check(sanity_input)
+            result = await LlmActivities(llm).call_sanity_check(sanity_input)
 
         assert result.task_id == "t-ok"
         assert result.response.verdict == SanityCheckVerdict.CONTINUE

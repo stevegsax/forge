@@ -4,8 +4,11 @@ Polls LLM providers for completed batch results and signals waiting
 workflows via Temporal.
 
 Design follows Function Core / Imperative Shell:
-- Testable function: execute_poll_batch_results (takes all dependencies as args)
-- Imperative shell: poll_batch_results (activity decorator, wires up real deps)
+- Testable function: execute_poll_batch_results (takes all dependencies as args,
+  including the per-provider ``poll_fn`` dispatch)
+- Imperative shell: the ``poll_batch_results`` bound method on ``BatchActivities``
+  (forge.activities.roots), which wires the composition-root store engine, blob
+  store, Temporal client, and poll dispatch.
 """
 
 from __future__ import annotations
@@ -17,21 +20,19 @@ from typing import TYPE_CHECKING, Any
 from sax_platform.contracts.constants import BATCH_RESULT_SIGNAL
 from sax_platform.contracts.models import dump_batch_result_payload
 from sax_platform.ocr import BatchPollResult, BatchPollStatus, BatchResultEntry
-from sax_platform.temporal.heartbeat import heartbeat_during
-from temporalio import activity
 
 from forge.models import (
     BatchJobStatus,
-    BatchPollerInput,
     BatchPollerResult,
     BatchResult,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from anthropic import AsyncAnthropic
     from sax_platform.llm.batch import BatchRequestFailed
+    from sax_platform.ocr import MistralOcr
     from temporalio.client import Client
 
 logger = logging.getLogger(__name__)
@@ -51,48 +52,6 @@ _POLL_TO_JOB_STATUS = {
 }
 _TERMINAL_FAILURE_STATUSES = frozenset(_POLL_TO_JOB_STATUS)
 
-# ---------------------------------------------------------------------------
-# Module-global Temporal client (set by worker.py before activities run)
-# ---------------------------------------------------------------------------
-
-_temporal_client: Client | None = None
-
-
-def set_temporal_client(client: Client) -> None:
-    """Called by worker startup to inject the Temporal client for signal delivery."""
-    global _temporal_client
-    _temporal_client = client
-
-
-def get_temporal_client() -> Client:
-    """Return the injected Temporal client. Raises if not set."""
-    if _temporal_client is None:
-        msg = "Temporal client not set. Call set_temporal_client() during worker startup."
-        raise RuntimeError(msg)
-    return _temporal_client
-
-
-# ---------------------------------------------------------------------------
-# Module-global AsyncAnthropic client for anthropic batch polling
-# ---------------------------------------------------------------------------
-#
-# The batch lane needs the raw ``AsyncAnthropic`` SDK client (get_batch_status /
-# fetch_batch_result_lines take it as their first argument). This small cache
-# mirrors the identical helper in ``batch_submit.py`` — each batch activity module
-# owns its own client edge, built once per worker process and reused across cycles.
-
-_batch_client: AsyncAnthropic | None = None
-
-
-def _get_batch_client() -> AsyncAnthropic:
-    """Return the process-wide AsyncAnthropic client, building it on first use."""
-    global _batch_client
-    if _batch_client is None:
-        from sax_platform.llm import make_client
-
-        _batch_client = make_client()
-    return _batch_client
-
 
 # ---------------------------------------------------------------------------
 # Testable function
@@ -106,6 +65,7 @@ async def execute_poll_batch_results(
     put_result_blob: Callable[[str, bytes], str],
     *,
     inline_threshold: int = _INLINE_THRESHOLD_BYTES,
+    poll_fn: Callable[[str, str], Awaitable[BatchPollResult]] | None = None,
 ) -> BatchPollerResult:
     """Poll LLM providers for batch results and signal waiting workflows.
 
@@ -121,7 +81,13 @@ async def execute_poll_batch_results(
         update_status_fn: Callable to update batch job status in the store.
         put_result_blob: Uploads ``(custom_id, bytes) -> s3_key`` for pointer delivery.
         inline_threshold: Max inline payload size (bytes) before switching to a pointer.
+        poll_fn: Per-provider poll dispatch ``(provider_name, batch_id) ->
+            BatchPollResult``. The ``BatchActivities`` composition root passes a
+            bound closure over its AsyncAnthropic client + optional MistralOcr;
+            when ``None`` (the module-global ``_poll_batch_for``, which tests
+            patch) is used.
     """
+    poll = _poll_batch_for if poll_fn is None else poll_fn
     batches_checked = 0
     signals_sent = 0
     errors_found = 0
@@ -136,7 +102,7 @@ async def execute_poll_batch_results(
         batches_checked += 1
 
         try:
-            poll_result = await _poll_batch_for(provider_name, batch_id)
+            poll_result = await poll(provider_name, batch_id)
         except Exception:
             logger.warning("Failed to poll batch %s", batch_id, exc_info=True)
             errors_found += 1
@@ -237,22 +203,40 @@ async def execute_poll_batch_results(
     )
 
 
-async def _poll_batch_for(provider_name: str, batch_id: str) -> BatchPollResult:
+async def _poll_batch_for(
+    provider_name: str,
+    batch_id: str,
+    *,
+    client: AsyncAnthropic | None = None,
+    mistral_ocr: MistralOcr | None = None,
+) -> BatchPollResult:
     """Poll ``batch_id`` through the provider for ``provider_name``.
 
-    Mistral routes through the shared lazily-cached ``MistralOcr`` resolver
-    (``forge.activities._mistral``) and returns its native ``sax_platform.ocr``
-    poll result directly. Every other provider is Anthropic's Message Batches API,
-    adapted to the same ``sax_platform.ocr`` poll shape by ``_poll_anthropic_batch``
-    — so every branch in ``execute_poll_batch_results`` stays provider-agnostic,
-    seeing one poll-result type regardless of which provider answered.
+    The AsyncAnthropic *client* and optional *mistral_ocr* are supplied by the
+    ``BatchActivities`` composition root (via the ``poll_fn`` closure passed to
+    ``execute_poll_batch_results``), replacing the former module-global caches.
+    Both are keyword-only with ``None`` defaults so this stays assignable to the
+    ``(provider_name, batch_id)`` poll-dispatch shape; a missing one is a
+    configuration error raised at point of use. Mistral routes through the
+    injected ``MistralOcr``; every other provider is Anthropic's Message Batches
+    API, adapted to the same ``sax_platform.ocr`` poll shape by
+    ``_poll_anthropic_batch`` — so every branch in ``execute_poll_batch_results``
+    stays provider-agnostic, seeing one poll-result type regardless of which
+    provider answered.
     """
     if provider_name == "mistral":
-        from forge.activities._mistral import get_mistral_ocr
+        if mistral_ocr is None:
+            msg = (
+                "mistral batch polling requires MISTRAL_API_KEY to be set at worker "
+                "startup (no MistralOcr was constructed)."
+            )
+            raise RuntimeError(msg)
+        return await mistral_ocr.poll_batch(batch_id)
 
-        return await get_mistral_ocr().poll_batch(batch_id)
-
-    return await _poll_anthropic_batch(_get_batch_client(), batch_id)
+    if client is None:
+        msg = "anthropic batch polling requires an AsyncAnthropic client (none was injected)."
+        raise RuntimeError(msg)
+    return await _poll_anthropic_batch(client, batch_id)
 
 
 async def _poll_anthropic_batch(client: AsyncAnthropic, batch_id: str) -> BatchPollResult:
@@ -379,75 +363,3 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
-
-
-# ---------------------------------------------------------------------------
-# Imperative shell
-# ---------------------------------------------------------------------------
-
-
-@activity.defn
-async def poll_batch_results(_input: BatchPollerInput) -> BatchPollerResult:
-    """Activity wrapper — wires up real dependencies and delegates."""
-    from forge.tracing import get_tracer
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.poll_batch_results") as span:
-        # Get pending jobs from store — let DB errors propagate so Temporal
-        # retries on transient failures and surfaces persistent ones.
-        from forge.store import get_pending_batch_jobs, get_store_engine
-
-        engine = get_store_engine()
-        pending_jobs = get_pending_batch_jobs(engine)
-
-        if not pending_jobs:
-            span.set_attribute("forge.poll.pending_count", 0)
-            return BatchPollerResult()
-
-        span.set_attribute("forge.poll.pending_count", len(pending_jobs))
-
-        # Build update_status closure over the engine
-        from forge.store import update_batch_status
-
-        def update_status_fn(
-            *,
-            request_id: str,
-            status: BatchJobStatus | str,
-            error_message: str | None = None,
-        ) -> None:
-            update_batch_status(
-                engine,
-                request_id=request_id,
-                status=status,
-                error_message=error_message,
-            )
-
-        # Stash large/image-bearing results to S3 for pointer delivery. The key
-        # lands in a reapable namespace (bucket TTL GC); the platform never opens
-        # the blob — the consumer fetches and parses it.
-        from sax_platform.contracts import s3_blobs
-
-        def put_result_blob(custom_id: str, data: bytes) -> str:
-            key: str = s3_blobs.build_key(f"batch-result-{custom_id}")
-            s3_blobs.put(key, data, "application/json")
-            return key
-
-        temporal_client = get_temporal_client()
-
-        async with heartbeat_during():
-            result = await execute_poll_batch_results(
-                pending_jobs=pending_jobs,
-                temporal_client=temporal_client,
-                update_status_fn=update_status_fn,
-                put_result_blob=put_result_blob,
-            )
-
-        span.set_attributes(
-            {
-                "forge.poll.batches_checked": result.batches_checked,
-                "forge.poll.signals_sent": result.signals_sent,
-                "forge.poll.errors_found": result.errors_found,
-            }
-        )
-
-        return result

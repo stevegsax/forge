@@ -2,8 +2,12 @@
 
 Follows Function Core / Imperative Shell:
 - Pure functions: build_review_system_prompt, build_review_user_prompt, apply_suggestions
-- Async shell: review_playbook_entry
-- Temporal activities: validate_playbook_entry, fetch_existing_playbooks, review_manual_playbook
+- Async core (LLM client injected): review_playbook_entry
+- Free Temporal activity: validate_playbook_entry (pure JSON validation). The
+  ``fetch_existing_playbooks`` (StoreActivities) and ``review_manual_playbook``
+  (LlmActivities) bound methods on the composition-root classes
+  (forge.activities.roots) delegate to review_playbook_entry / apply_suggestions
+  and the store helpers.
 """
 
 from __future__ import annotations
@@ -13,11 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
 
-from forge.llm_client import get_llm
 from forge.models import (  # noqa: TC001 — Temporal needs these at runtime for activity deserialization
-    FetchExistingPlaybooksInput,
-    ReviewManualPlaybookInput,
-    ReviewManualPlaybookResult,
     ValidatePlaybookInput,
     ValidatePlaybookResult,
 )
@@ -158,30 +158,3 @@ async def validate_playbook_entry(input: ValidatePlaybookInput) -> ValidatePlayb
         return ValidatePlaybookResult(valid=True, entry=entry)
     except (ValidationError, ValueError) as exc:
         return ValidatePlaybookResult(valid=False, error=str(exc))
-
-
-@activity.defn
-async def fetch_existing_playbooks(input: FetchExistingPlaybooksInput) -> list[dict[str, Any]]:
-    """Query recent playbooks for duplication context."""
-    from forge.store import get_store_engine, list_recent_playbooks
-
-    engine = get_store_engine()
-    return list_recent_playbooks(engine, limit=input.limit)
-
-
-@activity.defn
-async def review_manual_playbook(input: ReviewManualPlaybookInput) -> ReviewManualPlaybookResult:
-    """Review a proposed playbook entry via LLM and apply suggestions."""
-    from forge.models import ReviewManualPlaybookResult
-
-    review = await review_playbook_entry(
-        input.entry, input.existing_playbooks, get_llm(), model_name=input.model_name
-    )
-    if not review.approved:
-        return ReviewManualPlaybookResult(
-            approved=False,
-            rejection_reason=review.rejection_reason,
-            final_entry=input.entry,
-        )
-    final_entry = apply_suggestions(input.entry, review)
-    return ReviewManualPlaybookResult(approved=True, final_entry=final_entry)

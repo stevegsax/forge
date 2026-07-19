@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from forge.logging_config import (
     DEFAULT_BACKUP_COUNT,
@@ -14,47 +13,44 @@ from forge.logging_config import (
     get_log_dir,
 )
 
-if TYPE_CHECKING:
-    import pytest
-
-
 # ---------------------------------------------------------------------------
 # get_log_dir
 # ---------------------------------------------------------------------------
 
 
 class TestGetLogDir:
-    """Tests for XDG-aware log directory resolution."""
+    """Tests for log directory resolution from explicit values (no env reads).
 
-    def test_default_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FORGE_LOG_DIR", raising=False)
-        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    ``get_log_dir`` no longer reads ``FORGE_LOG_DIR``/``XDG_STATE_HOME`` itself
+    (T3.6): those reads moved to ``sax_platform.config.LogSettings`` and the
+    composition root passes the values in as arguments.
+    """
+
+    def test_default_path(self) -> None:
         result = get_log_dir()
         assert result == Path.home() / ".local" / "state" / "forge"
 
-    def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setenv("FORGE_LOG_DIR", str(tmp_path / "custom"))
-        result = get_log_dir()
+    def test_override_param(self, tmp_path: Path) -> None:
+        result = get_log_dir(str(tmp_path / "custom"))
         assert result == tmp_path / "custom"
 
-    def test_empty_string_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_LOG_DIR", "")
-        assert get_log_dir() is None
+    def test_empty_string_disables(self) -> None:
+        assert get_log_dir("") is None
 
-    def test_xdg_state_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.delenv("FORGE_LOG_DIR", raising=False)
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
-        result = get_log_dir()
+    def test_xdg_state_home_param(self, tmp_path: Path) -> None:
+        result = get_log_dir(xdg_state_home=str(tmp_path / "xdg"))
         assert result == tmp_path / "xdg" / "forge"
 
-    def test_explicit_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        """Explicit override takes precedence over env vars."""
-        monkeypatch.setenv("FORGE_LOG_DIR", "/should/be/ignored")
-        result = get_log_dir(log_dir_override=tmp_path / "explicit")
+    def test_explicit_override_wins_over_xdg(self, tmp_path: Path) -> None:
+        """A supplied log-dir override takes precedence over the XDG value."""
+        result = get_log_dir(
+            log_dir_override=tmp_path / "explicit",
+            xdg_state_home="/should/be/ignored",
+        )
         assert result == tmp_path / "explicit"
 
-    def test_explicit_empty_string_disables(self) -> None:
-        assert get_log_dir(log_dir_override="") is None
+    def test_explicit_empty_string_disables_even_with_xdg(self, tmp_path: Path) -> None:
+        assert get_log_dir(log_dir_override="", xdg_state_home=str(tmp_path)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -104,9 +100,8 @@ class TestConfigureFileHandler:
                 root.removeHandler(handler)
                 handler.close()
 
-    def test_disabled_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_LOG_DIR", "")
-        handler = configure_file_handler()
+    def test_disabled_returns_none(self) -> None:
+        handler = configure_file_handler(log_dir_override="")
         assert handler is None
 
     def test_worker_log_name(self, tmp_path: Path) -> None:
@@ -132,11 +127,12 @@ class TestConfigureFileHandler:
                 root.removeHandler(handler)
                 handler.close()
 
-    def test_override_parameter(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        """log_dir_override parameter takes precedence over env."""
-        monkeypatch.setenv("FORGE_LOG_DIR", "/should/be/ignored")
+    def test_override_wins_over_xdg(self, tmp_path: Path) -> None:
+        """log_dir_override takes precedence over the xdg_state_home argument."""
         root = logging.getLogger()
-        handler = configure_file_handler(log_dir_override=tmp_path)
+        handler = configure_file_handler(
+            log_dir_override=tmp_path, xdg_state_home="/should/be/ignored"
+        )
         try:
             assert handler is not None
             assert (tmp_path / "forge.log").exists()

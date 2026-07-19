@@ -1,14 +1,15 @@
 """LLM integration layer for the playbook service.
 
 Defines pbook-specific structured output models (ExtractionResult,
-ReviewResult, ConsolidationResult) and a minimal provider seam for runtime
-injection of a ``sax_platform.llm`` structured-outputs client.
+ReviewResult, ConsolidationResult) and the minimal :class:`SupportsComplete`
+Protocol — the one method ``llm_chat`` needs (``complete``) from a
+``sax_platform.llm`` structured-outputs client.
 
-The seam is a module-global registered via :func:`set_provider`; the
-generic chat activity calls :func:`get_provider`. Only the one method
-``llm_chat`` actually needs — ``complete`` — is captured in the local
-:class:`SupportsComplete` Protocol, so tests can inject a stub without
-constructing the SDK-backed client (and mypy-strict still checks the shape).
+As of T3.6 the module-global provider seam is gone: the worker's composition
+root builds the client and threads it into
+:class:`~pbook.roots.LlmActivities`. The narrow local Protocol lets tests
+inject a fake (`sax_platform.testing.FakeLLM`) without constructing the
+SDK-backed client, and mypy-strict still checks the shape.
 """
 
 from __future__ import annotations
@@ -30,9 +31,6 @@ __all__ = [
     "ExtractionResult",
     "ReviewResult",
     "SupportsComplete",
-    "get_provider",
-    "reset_provider",
-    "set_provider",
 ]
 
 
@@ -75,7 +73,7 @@ class ConsolidationResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Provider seam — minimal Protocol + module global for runtime injection
+# Provider seam — minimal Protocol (injected at the composition root)
 # ---------------------------------------------------------------------------
 
 
@@ -99,34 +97,3 @@ class SupportsComplete(Protocol):
         cache: CacheSpec | None = None,
         thinking: ThinkingPolicy | None = None,
     ) -> Completion[Any]: ...
-
-
-# T3.6 deletes this global in favor of explicit dependency passing; until
-# then the worker registers a provider at startup and activities read it here.
-_provider: SupportsComplete | None = None
-
-
-def set_provider(provider: SupportsComplete) -> None:
-    """Register the LLM provider for pbook activities."""
-    global _provider
-    _provider = provider
-
-
-def get_provider() -> SupportsComplete:
-    """Get the registered LLM provider.
-
-    Raises ``RuntimeError`` if no provider has been registered.
-    """
-    if _provider is None:
-        msg = (
-            "No LLM provider registered. Call pbook.llm.set_provider() "
-            "before running extraction or review activities."
-        )
-        raise RuntimeError(msg)
-    return _provider
-
-
-def reset_provider() -> None:
-    """Clear the registered provider (for testing)."""
-    global _provider
-    _provider = None

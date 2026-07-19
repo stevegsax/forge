@@ -12,27 +12,25 @@ import os
 from typing import TYPE_CHECKING
 
 import pytest
-import pytest_asyncio
+
+# The session-scoped, pydantic-aware time-skipping Temporal environment is shared
+# workspace-wide (D93); this suite requests it under the name ``env``.
+from sax_platform.testing import temporal_env
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
-    from temporalio.testing import WorkflowEnvironment
+    from sax_platform.contracts.s3_blobs import S3Blobs
+    from sqlalchemy import Engine
+
+    from ocr.activities import OcrStoreActivities
+
+env = temporal_env
 
 # In e2e/real-services mode the autouse fixtures defer to the operator's real env
 # (no moto, no sqlite override) so tests reach live Mistral / S3 / DB / platform.
 _REAL_SERVICES = bool(os.environ.get("OCR_E2E_PLATFORM"))
-
-
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def env() -> WorkflowEnvironment:
-    from temporalio.contrib.pydantic import pydantic_data_converter
-    from temporalio.testing import WorkflowEnvironment
-
-    async with await WorkflowEnvironment.start_time_skipping(
-        data_converter=pydantic_data_converter,
-    ) as env:
-        yield env
 
 
 @pytest.fixture(autouse=True)
@@ -98,20 +96,45 @@ def ocr_s3(monkeypatch: pytest.MonkeyPatch, _s3_backend: str) -> str:
     return _s3_backend
 
 
-@pytest.fixture(autouse=True)
-def dispose_store_engines(monkeypatch: pytest.MonkeyPatch):
-    """Dispose SQLAlchemy engines created during a test."""
-    import sqlalchemy as sa
+@pytest.fixture
+def store_engine(migrated: str) -> Iterator[Engine]:
+    """One store engine per test, built from the migrated URL and disposed on teardown.
 
-    original_create_engine = sa.create_engine
-    created = []
+    Replaces the former global engine-disposal monkeypatch (which wrapped
+    ``sa.create_engine`` to catch the fresh engine each ``get_store_engine()``
+    built per call): T3.6 builds the engine once and injects it, so tests own the
+    engine lifecycle explicitly instead.
+    """
+    from sax_platform.db import get_store_engine
 
-    def tracking_create_engine(*args, **kwargs):
-        engine = original_create_engine(*args, **kwargs)
-        created.append(engine)
-        return engine
-
-    monkeypatch.setattr(sa, "create_engine", tracking_create_engine)
-    yield
-    for engine in created:
+    engine = get_store_engine(migrated)
+    try:
+        yield engine
+    finally:
         engine.dispose()
+
+
+@pytest.fixture
+def blobs(ocr_s3: str) -> S3Blobs:
+    """A moto-backed ``S3Blobs`` bound to the test bucket.
+
+    Injected into the ``execute_*`` cores and ``ocr.store`` helpers, which take a
+    required ``S3Blobs`` as of T3.6 (the env fallback is gone).
+    """
+    from sax_platform.contracts.s3_blobs import S3Blobs
+
+    return S3Blobs(ocr_s3)
+
+
+@pytest.fixture
+def store_activities(store_engine: Engine, ocr_s3: str) -> OcrStoreActivities:
+    """An ``OcrStoreActivities`` bound to the test engine + a moto-backed ``S3Blobs``.
+
+    Used by the activity-wrapper tests, which exercise the bound ``@activity.defn``
+    methods (formerly module-level functions) with real dependencies injected.
+    """
+    from sax_platform.contracts.s3_blobs import S3Blobs
+
+    from ocr.activities import OcrStoreActivities
+
+    return OcrStoreActivities(store_engine, S3Blobs(ocr_s3))

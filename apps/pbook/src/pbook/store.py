@@ -8,20 +8,20 @@ cosine-distance operator rather than scored row-by-row in Python.
 
 Design follows Function Core / Imperative Shell:
 
-- Pure functions: get_database_url, build_entry_dict
-- Imperative shell: get_engine, get_store_engine, run_migrations, and
-  every query/mutation helper below.
+- Pure functions: normalize_url, build_entry_dict
+- Imperative shell: build_engine, run_migrations, and every
+  query/mutation helper below.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
+from sax_platform.db import get_store_engine
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from sqlalchemy.sql import Select
 
     from pbook.models import PlaybookEntry
+    from pbook.settings import PbookDbSettings
 
 
 # ---------------------------------------------------------------------------
@@ -267,21 +268,6 @@ _INGESTED_SESSIONS_TABLE: sa.Table = Base.metadata.tables[
 # ---------------------------------------------------------------------------
 
 
-def get_database_url() -> str | None:
-    """Resolve the store's PostgreSQL connection URL from the environment.
-
-    Reads ``PBOOK_DATABASE_URL``. Returns ``None`` when the variable is
-    unset or empty, which disables the store (callers no-op). A bare
-    ``postgresql://`` / ``postgres://`` URL is normalized to the psycopg3
-    driver so we never fall through to psycopg2.
-    """
-    raw = os.environ.get("PBOOK_DATABASE_URL")
-    if not raw:
-        logger.info("Store disabled (PBOOK_DATABASE_URL is unset or empty)")
-        return None
-    return normalize_url(raw)
-
-
 def normalize_url(url: str) -> str:
     """Force the psycopg (v3) driver onto a PostgreSQL URL."""
     for prefix in ("postgresql+", "sqlite"):
@@ -331,50 +317,32 @@ def _dedup_preserving_order(tags: Sequence[str]) -> list[str]:
 # Imperative shell — engine & migrations
 # ---------------------------------------------------------------------------
 
-_engines: dict[str, Engine] = {}
 
+def build_engine(settings: PbookDbSettings) -> Engine | None:
+    """Build the store engine for the configured pbook database.
 
-def _is_pooler(url: str) -> bool:
-    """Heuristic: are we connecting through Supabase's transaction pooler?
+    The pbook composition root (worker/CLI) constructs one of these per
+    process and threads it into :class:`~pbook.roots.StoreActivities`.
 
-    The transaction-mode pooler (PgBouncer) breaks server-side prepared
-    statements; psycopg must be told to skip them. Detected by host or an
-    explicit ``PBOOK_DB_POOLER`` override.
+    Returns ``None`` when no URL is configured (``settings.url`` unset or
+    empty) — the store-disabled semantics the old ``get_store_engine()``
+    exposed via ``get_database_url() is None``.
+
+    Delegates pool construction to :func:`sax_platform.db.get_store_engine`.
+    Note the deliberate behavior change from pbook's former ``get_engine``:
+    the platform factory **caps** the Postgres pool (``pool_size=5 +
+    max_overflow=5``) where pbook's was uncapped — bounding concurrent
+    connections against Supabase's connection cap. Host/port pooler
+    autodetection still applies on top of ``settings.pooler``.
     """
-    if os.environ.get("PBOOK_DB_POOLER", "").lower() in {"1", "true", "yes"}:
-        return True
-    return "pooler.supabase.com" in url or ":6543" in url
-
-
-def get_engine(url: str) -> Engine:
-    """Create (and cache) a SQLAlchemy engine for the given URL.
-
-    Engines are cached per normalized URL so the connection pool is
-    reused across activity calls rather than rebuilt each time.
-    """
-    norm = normalize_url(url)
-    engine = _engines.get(norm)
-    if engine is None:
-        connect_args: dict[str, Any] = {}
-        if _is_pooler(norm):
-            # Disable prepared statements for PgBouncer transaction mode.
-            connect_args["prepare_threshold"] = None
-        logger.debug("Creating engine for %s (pooler=%s)", norm, _is_pooler(norm))
-        engine = sa.create_engine(norm, pool_pre_ping=True, connect_args=connect_args)
-        _engines[norm] = engine
-    return engine
-
-
-def get_store_engine() -> Engine | None:
-    """Return the cached engine for the configured store, or None if disabled."""
-    url = get_database_url()
-    if url is None:
+    if not settings.url:
+        logger.info("Store disabled (PBOOK_DATABASE_URL is unset or empty)")
         return None
-    return get_engine(url)
+    return get_store_engine(normalize_url(settings.url), pooler_override=settings.pooler)
 
 
-def run_migrations(url: str | None = None) -> None:
-    """Run Alembic migrations to head against the configured database.
+def run_migrations(url: str) -> None:
+    """Run Alembic migrations to head against ``url``.
 
     Idempotent and intended to run ONCE per process (worker startup or an
     explicit ``pbook migrate``), never per activity call.
@@ -384,20 +352,16 @@ def run_migrations(url: str | None = None) -> None:
     from alembic import command
     from alembic.config import Config
 
-    if url is None:
-        url = get_database_url()
-    if url is None:
-        msg = "Cannot run migrations: PBOOK_DATABASE_URL is not set."
-        raise RuntimeError(msg)
-
     alembic_dir = Path(__file__).parent / "alembic"
     cfg = Config(str(alembic_dir / "alembic.ini"))
     cfg.set_main_option("script_location", str(alembic_dir))
-    # Pass the URL via the environment rather than the Alembic config:
-    # set_main_option runs the value through ConfigParser's %-interpolation,
-    # which would choke on a percent-encoded password (e.g. %40, %23). env.py
-    # reads PBOOK_DATABASE_URL when sqlalchemy.url is unset.
-    os.environ["PBOOK_DATABASE_URL"] = normalize_url(url)
+    # Pass the URL through Alembic's ``cfg.attributes`` rather than
+    # ``set_main_option("sqlalchemy.url", ...)`` — the latter runs the value
+    # through ConfigParser's %-interpolation, which chokes on a
+    # percent-encoded password (e.g. %40, %23) — and rather than an
+    # ``os.environ`` write (a process-global side effect). ``alembic/env.py``
+    # reads ``cfg.attributes["pbook_url"]`` first.
+    cfg.attributes["pbook_url"] = normalize_url(url)
     logger.info("Running migrations to head")
     command.upgrade(cfg, "head")
 

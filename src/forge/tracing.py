@@ -6,7 +6,8 @@ the root span.
 
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_resource, resolve_exporter_type, llm_call_attributes,
-  validation_attributes — compute plain dicts, no OTel SDK imports.
+  validation_attributes — compute plain values from their arguments, no env
+  reads and no OTel SDK imports.
 - Imperative shell (internal): _create_tracer_provider — builds a provider
   without setting it globally, enabling isolated testing.
 - Imperative shell (public): init_tracing, get_tracer, shutdown_tracing.
@@ -14,7 +15,6 @@ Design follows Function Core / Imperative Shell:
 
 from __future__ import annotations
 
-import os
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -29,8 +29,9 @@ if TYPE_CHECKING:
 SERVICE_NAME = "forge"
 SERVICE_VERSION = "0.1.0"
 
+# The env var name is owned by TracingSettings (FORGE_OTEL_EXPORTER); kept here
+# only to name the source in the invalid-value error message.
 FORGE_OTEL_EXPORTER_ENV = "FORGE_OTEL_EXPORTER"
-FORGE_OTEL_ENDPOINT_ENV = "FORGE_OTEL_ENDPOINT"
 
 
 # ---------------------------------------------------------------------------
@@ -71,31 +72,26 @@ def build_resource(
     return attrs
 
 
-def resolve_exporter_type(exporter: ExporterType | None = None) -> ExporterType:
-    """Determine the exporter type.
+def resolve_exporter_type(value: str | None = None) -> ExporterType:
+    """Map an exporter name string to an :class:`ExporterType` (pure).
 
-    Resolution order:
-
-    1. Explicit *exporter* parameter.
-    2. ``FORGE_OTEL_EXPORTER`` environment variable.
-    3. Default: ``ExporterType.CONSOLE``.
+    The name arrives from ``TracingSettings.exporter`` (which read
+    ``FORGE_OTEL_EXPORTER``); this function performs no environment access of
+    its own. ``None`` — the settings default when the var is unset — resolves
+    to ``ExporterType.CONSOLE``.
 
     Raises:
-        ValueError: If the environment variable contains an unrecognised value.
+        ValueError: If *value* is a non-empty string that names no exporter.
     """
-    if exporter is not None:
-        return exporter
+    if value is None:
+        return ExporterType.CONSOLE
 
-    env_value = os.environ.get(FORGE_OTEL_EXPORTER_ENV)
-    if env_value is not None:
-        try:
-            return ExporterType(env_value)
-        except ValueError:
-            valid = ", ".join(e.value for e in ExporterType)
-            msg = f"Invalid {FORGE_OTEL_EXPORTER_ENV} value {env_value!r}. Valid options: {valid}"
-            raise ValueError(msg) from None
-
-    return ExporterType.CONSOLE
+    try:
+        return ExporterType(value)
+    except ValueError:
+        valid = ", ".join(e.value for e in ExporterType)
+        msg = f"Invalid {FORGE_OTEL_EXPORTER_ENV} value {value!r}. Valid options: {valid}"
+        raise ValueError(msg) from None
 
 
 def llm_call_attributes(
@@ -202,16 +198,19 @@ def _create_tracer_provider(
 
 
 def init_tracing(
-    exporter: ExporterType | None = None,
+    exporter: str | None = None,
     endpoint: str | None = None,
     service_name: str = SERVICE_NAME,
     service_version: str = SERVICE_VERSION,
 ) -> None:
     """Create and globally register a ``TracerProvider``.
 
-    Safe to call multiple times — each call replaces the previous provider
-    (after shutting it down). Resets the OTel set-once guard so the new
-    provider is accepted.
+    Called once at worker startup. *exporter* is the exporter name from
+    ``TracingSettings.exporter`` (``None`` ⇒ console default); it is mapped to
+    an :class:`ExporterType` via :func:`resolve_exporter_type`. Any previously
+    registered SDK provider is shut down first; the OTel ``set_tracer_provider``
+    set-once guard is left in place (a single init per process, so no re-init
+    reset is needed — the private-API reset was removed in T3.6).
     """
     from opentelemetry import trace
 
@@ -223,11 +222,6 @@ def init_tracing(
     current = trace.get_tracer_provider()
     if hasattr(current, "shutdown"):
         current.shutdown()
-
-    # Reset the set-once guard so set_tracer_provider accepts the new provider.
-    once = trace._TRACER_PROVIDER_SET_ONCE
-    with once._lock:
-        once._done = False
 
     trace.set_tracer_provider(provider)
 

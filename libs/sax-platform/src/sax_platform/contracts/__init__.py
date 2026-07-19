@@ -44,24 +44,12 @@ from sax_platform.contracts.persist import (
 )
 
 if TYPE_CHECKING:
-    from sax_platform.contracts.s3_blobs import (
-        S3ConfigError,
-        build_key,
-        delete,
-        get,
-        get_bucket,
-        put,
-    )
+    from sax_platform.contracts.s3_blobs import S3ConfigError
     from sax_platform.contracts.types import UTCDateTime
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "UTCDateTime": ("sax_platform.contracts.types", "UTCDateTime"),
     "S3ConfigError": ("sax_platform.contracts.s3_blobs", "S3ConfigError"),
-    "build_key": ("sax_platform.contracts.s3_blobs", "build_key"),
-    "delete": ("sax_platform.contracts.s3_blobs", "delete"),
-    "get": ("sax_platform.contracts.s3_blobs", "get"),
-    "get_bucket": ("sax_platform.contracts.s3_blobs", "get_bucket"),
-    "put": ("sax_platform.contracts.s3_blobs", "put"),
 }
 
 
@@ -90,13 +78,8 @@ __all__ = [
     "PersistResult",
     "S3ConfigError",
     "UTCDateTime",
-    "build_key",
-    "delete",
     "dump_batch_result_payload",
-    "get",
-    "get_bucket",
     "parse_batch_result_payload",
     "persist_block",
-    "put",
     "resolve_batch_result",
 ]

@@ -202,11 +202,12 @@ class TestExecuteSubmitBatchBlob:
 
 class TestResolveBlobSubmitProvider:
     def test_anthropic_resolves_to_platform_adapter(self) -> None:
-        """The anthropic route no longer goes through sax_llm — it wraps the shared
-        AsyncAnthropic client in the platform-batch adapter."""
+        """The anthropic route wraps the injected AsyncAnthropic client in the
+        platform-batch adapter (client comes from the BatchActivities root)."""
         sentinel_client = object()
-        with patch("forge.activities.batch_submit._get_batch_client", return_value=sentinel_client):
-            result = _resolve_blob_submit_provider("anthropic")
+        result = _resolve_blob_submit_provider(
+            "anthropic", client=sentinel_client, mistral_ocr=None
+        )
 
         assert isinstance(result, _AnthropicBlobSubmit)
         assert result._client is sentinel_client
@@ -224,21 +225,17 @@ class TestResolveBlobSubmitProvider:
         assert batch_id == "batch_via_adapter"
         submit.assert_awaited_once_with(client, requests)
 
-    def test_mistral_resolves_via_sax_platform_ocr(self) -> None:
-        """mistral routes through sax_platform.ocr.MistralOcr, built from
-        make_mistral_client()."""
-        sentinel_client = object()
+    def test_mistral_resolves_to_injected_ocr(self) -> None:
+        """mistral routes through the injected MistralOcr (built once at the
+        BatchActivities root when MISTRAL_API_KEY is set), not built per-call."""
         sentinel_provider = object()
-        with (
-            patch(
-                "sax_platform.ocr.make_mistral_client", return_value=sentinel_client
-            ) as mock_make_client,
-            patch(
-                "sax_platform.ocr.MistralOcr", return_value=sentinel_provider
-            ) as mock_mistral_ocr,
-        ):
-            result = _resolve_blob_submit_provider("mistral")
-
-        mock_make_client.assert_called_once_with()
-        mock_mistral_ocr.assert_called_once_with(sentinel_client)
+        result = _resolve_blob_submit_provider(
+            "mistral", client=object(), mistral_ocr=sentinel_provider
+        )
         assert result is sentinel_provider
+
+    def test_mistral_without_ocr_raises(self) -> None:
+        """A mistral submit with no MistralOcr injected (MISTRAL_API_KEY unset at
+        startup) raises a clear error at point of use."""
+        with pytest.raises(RuntimeError, match="MISTRAL_API_KEY"):
+            _resolve_blob_submit_provider("mistral", client=object(), mistral_ocr=None)

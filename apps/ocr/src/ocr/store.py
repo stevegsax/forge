@@ -23,14 +23,12 @@ from sax_platform.db import (
     get_store_engine as get_store_engine,
 )
 from sax_platform.db import (
-    get_store_url as get_store_url,
-)
-from sax_platform.db import (
     insert_or_ignore,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 if TYPE_CHECKING:
+    from sax_platform.contracts.s3_blobs import S3Blobs
     from sqlalchemy import Engine
 
 
@@ -319,12 +317,11 @@ def save_file_content(
     data: bytes,
     mime_type: str,
     file_size_bytes: int,
+    blobs: S3Blobs,
 ) -> None:
     """Upload file bytes to S3 and record the reference in file_content_blobs."""
-    from sax_platform.contracts import s3_blobs
-
-    s3_key = s3_blobs.build_key(content_id)
-    s3_blobs.put(s3_key, data, mime_type)
+    s3_key = blobs.build_key(content_id)
+    blobs.put(s3_key, data, mime_type)
     insert_or_ignore(
         engine,
         _FILE_CONTENT_BLOBS_TABLE,
@@ -338,10 +335,12 @@ def save_file_content(
     )
 
 
-def get_file_content(engine: Engine, content_id: str) -> dict[str, Any] | None:
+def get_file_content(
+    engine: Engine,
+    content_id: str,
+    blobs: S3Blobs,
+) -> dict[str, Any] | None:
     """Look up file content by ID, fetching the bytes from S3 under ``data``."""
-    from sax_platform.contracts import s3_blobs
-
     t = _FILE_CONTENT_BLOBS_TABLE
     stmt = t.select().where(t.c.id == content_id)
     with engine.connect() as conn:
@@ -349,20 +348,18 @@ def get_file_content(engine: Engine, content_id: str) -> dict[str, Any] | None:
         if row is None:
             return None
         result = dict(row)
-    result["data"] = s3_blobs.get(result["s3_key"])
+    result["data"] = blobs.get(result["s3_key"])
     return result
 
 
-def delete_file_content(engine: Engine, content_id: str) -> None:
+def delete_file_content(engine: Engine, content_id: str, blobs: S3Blobs) -> None:
     """Delete file content by ID, removing both the DB row and the S3 object."""
-    from sax_platform.contracts import s3_blobs
-
     t = _FILE_CONTENT_BLOBS_TABLE
     with engine.begin() as conn:
         s3_key = conn.execute(sa.select(t.c.s3_key).where(t.c.id == content_id)).scalar()
         conn.execute(sa.delete(t).where(t.c.id == content_id))
     if s3_key is not None:
-        s3_blobs.delete(s3_key)
+        blobs.delete(s3_key)
 
 
 # ---------------------------------------------------------------------------
@@ -384,12 +381,11 @@ def save_ocr_image(
     top_left_y: int | None = None,
     bottom_right_x: int | None = None,
     bottom_right_y: int | None = None,
+    blobs: S3Blobs,
 ) -> None:
     """Upload image bytes to S3 and record the reference in ocr_images."""
-    from sax_platform.contracts import s3_blobs
-
-    s3_key = s3_blobs.build_key(image_id)
-    s3_blobs.put(s3_key, data, mime_type)
+    s3_key = blobs.build_key(image_id)
+    blobs.put(s3_key, data, mime_type)
     insert_or_ignore(
         engine,
         _OCR_IMAGES_TABLE,
@@ -462,10 +458,12 @@ def get_ocr_images(engine: Engine, document_id: str) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
-def get_ocr_image(engine: Engine, image_id: str) -> dict[str, Any] | None:
+def get_ocr_image(
+    engine: Engine,
+    image_id: str,
+    blobs: S3Blobs,
+) -> dict[str, Any] | None:
     """Get a single image, fetching its bytes from S3 under the ``data`` key."""
-    from sax_platform.contracts import s3_blobs
-
     t = _OCR_IMAGES_TABLE
     stmt = t.select().where(t.c.id == image_id)
     with engine.connect() as conn:
@@ -473,16 +471,18 @@ def get_ocr_image(engine: Engine, image_id: str) -> dict[str, Any] | None:
         if row is None:
             return None
         result = dict(row)
-    result["data"] = s3_blobs.get(result["s3_key"])
+    result["data"] = blobs.get(result["s3_key"])
     return result
 
 
-def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> None:
+def delete_ocr_images_by_document(
+    engine: Engine,
+    document_ids: list[str],
+    blobs: S3Blobs,
+) -> None:
     """Delete OCR images by document IDs, removing both rows and S3 objects."""
     if not document_ids:
         return
-    from sax_platform.contracts import s3_blobs
-
     t = _OCR_IMAGES_TABLE
     with engine.begin() as conn:
         s3_keys = list(
@@ -490,7 +490,7 @@ def delete_ocr_images_by_document(engine: Engine, document_ids: list[str]) -> No
         )
         conn.execute(sa.delete(t).where(t.c.document_id.in_(document_ids)))
     for s3_key in s3_keys:
-        s3_blobs.delete(s3_key)
+        blobs.delete(s3_key)
 
 
 # ---------------------------------------------------------------------------

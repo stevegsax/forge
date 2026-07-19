@@ -1,13 +1,12 @@
-"""Tests for ocr.worker.
+"""Tests for ocr.worker — the T3.6 composition root.
 
-The ``Worker`` construction plus the signal-handled graceful-drain loop
-(formerly ``_run_until_shutdown``/``_request_shutdown`` here) now live in
-``sax_platform.temporal.worker.run_worker`` (T3.4, ST8) — shared across the
-platform and its consumer apps, and out of scope for this module's own
-tests. What remains ocr's to test: app-specific setup order (store
-migrations, then the Mistral OCR DI seam, before connecting) and that
-``run_worker`` forwards the right task queue / workflows / activities /
-shutdown timeout to the shared runner.
+The ``Worker`` construction plus the signal-handled graceful-drain loop live in
+``sax_platform.temporal.worker.run_worker`` (T3.4) — shared and out of scope
+here. What remains ocr's to test: the composition order and wiring — settings
+read once (fail-fast), migrations, logging configured, the store engine built
+ONCE and injected into ``OcrStoreActivities`` alongside the blob client, and the
+right task queue / workflows / activities / shutdown timeout forwarded to the
+shared runner.
 """
 
 from datetime import timedelta
@@ -16,19 +15,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import ocr.worker as worker_mod
-from ocr.deps import get_mistral_ocr, reset_mistral_ocr
 
 
-@pytest.fixture(autouse=True)
-def _isolate_mistral_ocr_state() -> None:
-    """Ensure a clean ocr.deps registry between tests, regardless of outcome."""
-    reset_mistral_ocr()
-    yield
-    reset_mistral_ocr()
+def _fake_settings(*, bucket: str = "bkt", prefix: str = "pre/", mistral_key: str | None = "k"):
+    settings = MagicMock(name="OcrSettings")
+    settings.db.url = "sqlite:///x.db"
+    settings.blob.bucket = bucket
+    settings.blob.prefix = prefix
+    settings.llm.mistral_api_key = mistral_key
+    settings.temporal.address = "settings-temporal:7233"
+    return settings
 
 
-class TestInitMistralOcr:
-    def test_constructs_client_and_registers_capability(self) -> None:
+class TestBuildMistralOcr:
+    def test_returns_none_when_key_unset(self) -> None:
+        assert worker_mod._build_mistral_ocr(None) is None
+        assert worker_mod._build_mistral_ocr("") is None
+
+    def test_constructs_capability_when_key_set(self) -> None:
         mock_client = MagicMock(name="mistral-client")
         mock_capability = MagicMock(name="mistral-ocr-capability")
         mock_make_client = MagicMock(return_value=mock_client)
@@ -38,71 +42,116 @@ class TestInitMistralOcr:
             patch("sax_platform.ocr.make_mistral_client", mock_make_client),
             patch("sax_platform.ocr.MistralOcr", mock_mistral_ocr_cls),
         ):
-            worker_mod._init_mistral_ocr()
+            result = worker_mod._build_mistral_ocr("real-key")
 
-        mock_make_client.assert_called_once_with()
+        mock_make_client.assert_called_once_with("real-key")
         mock_mistral_ocr_cls.assert_called_once_with(mock_client)
-        assert get_mistral_ocr() is mock_capability
+        assert result is mock_capability
 
 
 class TestRunWorker:
     @pytest.mark.asyncio
-    async def test_bootstraps_worker_and_installs_mistral_ocr_seam(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mock_client = MagicMock()
-        mock_init_store = MagicMock()
-        mock_init_mistral_ocr = MagicMock()
-        mock_run_worker = AsyncMock()
-
-        # A shared parent so call *order* (store, then the Mistral OCR seam,
-        # before the worker connects) is observable, not just call counts.
-        manager = MagicMock()
-        manager.attach_mock(mock_init_store, "init_store")
-        manager.attach_mock(mock_init_mistral_ocr, "init_mistral_ocr")
-
-        monkeypatch.setenv("FORGE_TEMPORAL_ADDRESS", "temporal.example:7233")
+    async def test_composition_root_wires_and_forwards(self) -> None:
+        settings = _fake_settings()
+        engine_sentinel = object()
+        blobs_sentinel = object()
+        store_sentinel = MagicMock(name="store-activities")
+        activities_sentinel = [MagicMock(name="bound-method")]
+        client_sentinel = MagicMock(name="client")
 
         with (
-            patch.object(worker_mod, "_init_store", mock_init_store),
-            patch.object(worker_mod, "_init_mistral_ocr", mock_init_mistral_ocr),
+            patch.object(worker_mod, "OcrSettings", return_value=settings),
+            patch.object(worker_mod, "_init_store") as mock_init_store,
+            patch.object(worker_mod, "setup_logging") as mock_setup_logging,
+            patch.object(worker_mod, "silence_noisy_loggers") as mock_silence,
             patch.object(
-                worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)
+                worker_mod, "get_store_engine", return_value=engine_sentinel
+            ) as mock_get_engine,
+            patch.object(worker_mod, "S3Blobs", return_value=blobs_sentinel) as mock_s3blobs,
+            patch.object(worker_mod, "_build_mistral_ocr", return_value=None),
+            patch.object(worker_mod, "OcrStoreActivities", return_value=store_sentinel) as mock_cls,
+            patch.object(
+                worker_mod, "activity_methods", return_value=activities_sentinel
+            ) as mock_activity_methods,
+            patch.object(
+                worker_mod, "connect_temporal", AsyncMock(return_value=client_sentinel)
             ) as mock_connect,
-            patch.object(worker_mod, "_run_worker", mock_run_worker),
+            patch.object(worker_mod, "_run_worker", AsyncMock()) as mock_run_worker,
         ):
             await worker_mod.run_worker(identity="worker-123")
 
-        mock_init_store.assert_called_once_with()
-        mock_init_mistral_ocr.assert_called_once_with()
-        assert [call[0] for call in manager.mock_calls] == ["init_store", "init_mistral_ocr"]
+        # Settings drive migrations, logging, and the store engine.
+        mock_init_store.assert_called_once_with("sqlite:///x.db")
+        mock_setup_logging.assert_called_once_with("ocr", console=True)
+        mock_silence.assert_called_once_with()
 
-        mock_connect.assert_awaited_once_with("temporal.example:7233", identity="worker-123")
+        # Engine built ONCE from settings.db.url — the load-bearing fix.
+        mock_get_engine.assert_called_once_with("sqlite:///x.db")
+        # Blob client bound to settings.blob bucket + prefix.
+        mock_s3blobs.assert_called_once_with("bkt", "pre/")
+        # Activities constructed with the injected engine + blobs.
+        mock_cls.assert_called_once_with(engine_sentinel, blobs_sentinel)
+        mock_activity_methods.assert_called_once_with(store_sentinel)
 
+        # Connect via settings (address falls back to settings.temporal.address).
+        mock_connect.assert_awaited_once_with(
+            "settings-temporal:7233", identity="worker-123", settings=settings.temporal
+        )
+
+        # The shared runner received the right task queue / workflows / activities.
         mock_run_worker.assert_awaited_once()
         call = mock_run_worker.await_args
-        assert call.args == (mock_client,)
+        assert call.args == (client_sentinel,)
         assert call.kwargs["task_queue"] == worker_mod.OCR_TASK_QUEUE
         assert call.kwargs["workflows"] == worker_mod.workflows()
-        assert call.kwargs["activities"] == worker_mod.activities()
+        assert call.kwargs["activities"] is activities_sentinel
         assert call.kwargs["graceful_shutdown_timeout"] == timedelta(minutes=5)
 
     @pytest.mark.asyncio
-    async def test_uses_default_address_when_env_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mock_client = MagicMock()
-
-        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
+    async def test_address_argument_overrides_settings(self) -> None:
+        settings = _fake_settings()
 
         with (
-            patch.object(worker_mod, "_init_store", MagicMock()),
-            patch.object(worker_mod, "_init_mistral_ocr", MagicMock()),
+            patch.object(worker_mod, "OcrSettings", return_value=settings),
+            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "setup_logging"),
+            patch.object(worker_mod, "silence_noisy_loggers"),
+            patch.object(worker_mod, "get_store_engine", return_value=object()),
+            patch.object(worker_mod, "S3Blobs", return_value=object()),
+            patch.object(worker_mod, "_build_mistral_ocr", return_value=None),
+            patch.object(worker_mod, "OcrStoreActivities", return_value=MagicMock()),
+            patch.object(worker_mod, "activity_methods", return_value=[]),
             patch.object(
-                worker_mod, "connect_temporal", AsyncMock(return_value=mock_client)
+                worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())
             ) as mock_connect,
             patch.object(worker_mod, "_run_worker", AsyncMock()),
         ):
-            await worker_mod.run_worker()
+            await worker_mod.run_worker("override:7233")
 
-        mock_connect.assert_awaited_once_with(worker_mod.DEFAULT_TEMPORAL_ADDRESS, identity=None)
+        mock_connect.assert_awaited_once_with(
+            "override:7233", identity=None, settings=settings.temporal
+        )
+
+    @pytest.mark.asyncio
+    async def test_unset_bucket_fails_fast(self) -> None:
+        """OCR requires S3: the composition root builds the blob client
+        unconditionally, so an unset bucket raises S3ConfigError at startup
+        (from the real ``S3Blobs`` construction guard) rather than deferring the
+        error to the first blob-touching activity."""
+        from sax_platform.contracts.s3_blobs import S3ConfigError
+
+        settings = _fake_settings(bucket="")
+
+        with (  # noqa: SIM117
+            patch.object(worker_mod, "OcrSettings", return_value=settings),
+            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "setup_logging"),
+            patch.object(worker_mod, "silence_noisy_loggers"),
+            patch.object(worker_mod, "get_store_engine", return_value="eng"),
+            patch.object(worker_mod, "_build_mistral_ocr", return_value=None),
+            patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())),
+            patch.object(worker_mod, "_run_worker", AsyncMock()),
+        ):
+            # S3Blobs is NOT patched here: the real construction guard fires.
+            with pytest.raises(S3ConfigError, match="bucket"):
+                await worker_mod.run_worker()

@@ -21,7 +21,6 @@ from sax_platform.db.migrations import advisory_lock_key, run_migrations
 from sax_platform.db.ops import (
     StoreConfigError,
     ensure_sqlite_parent,
-    get_store_url,
     insert_or_ignore,
 )
 
@@ -31,7 +30,6 @@ __all__ = [
     "configure_migration_context",
     "ensure_sqlite_parent",
     "get_store_engine",
-    "get_store_url",
     "insert_or_ignore",
     "is_pooler_url",
     "run_migrations",

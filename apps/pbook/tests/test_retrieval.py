@@ -5,20 +5,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 import pytest
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from pbook.activities.retrieval import (
-    compute_similarities_by_id,
-    fetch_candidates,
     pack_within_budget,
     rank_meta,
-    record_retrieval_event,
-    score_and_pack,
     score_entry,
 )
 from pbook.embeddings import encode_embedding
 from pbook.models import PlaybookEntry, RetrievalInput, RetrievalMode
+from pbook.roots import StoreActivities
 from pbook.store import (
     build_entry_dict,
     get_entry_by_id,
@@ -31,21 +27,28 @@ from tests.conftest import make_embedding, setup_db
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from temporalio.testing import WorkflowEnvironment
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-async def env():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        yield env
-
-
 def _setup_db(_tmp_path: Path | None = None):
     """Return the session test engine (migrations already applied)."""
     return setup_db()[0]
+
+
+def _retrieval_activities(engine):
+    """The four RetrievalWorkflow store activities, bound to one engine."""
+    store = StoreActivities(engine)
+    return [
+        store.fetch_candidates,
+        store.compute_similarities_by_id,
+        store.score_and_pack,
+        store.record_retrieval_event,
+    ]
 
 
 def _make_entry(title: str, tags: list[str], entry_type: str = "curated") -> dict:
@@ -330,7 +333,7 @@ class TestComputeSimilaritiesByID:
 
         # Query embedding aligned with A.
         query = make_embedding(1.0, 0.0, 0.0, 0.0)
-        result = await compute_similarities_by_id(
+        result = await StoreActivities(engine).compute_similarities_by_id(
             _json.dumps(
                 {
                     "query_embedding_b64": encode_embedding(query),
@@ -363,7 +366,7 @@ class TestComputeSimilaritiesByID:
         )
 
         query = make_embedding(1.0, 0.0, 0.0, 0.0)
-        result = await compute_similarities_by_id(
+        result = await StoreActivities(engine).compute_similarities_by_id(
             _json.dumps(
                 {
                     "query_embedding_b64": encode_embedding(query),
@@ -378,10 +381,10 @@ class TestComputeSimilaritiesByID:
     async def test_empty_ids_returns_empty_dict(self, tmp_path: Path):
         import json as _json
 
-        _setup_db(tmp_path)
+        engine = _setup_db(tmp_path)
 
         query = make_embedding(1.0, 0.0, 0.0, 0.0)
-        result = await compute_similarities_by_id(
+        result = await StoreActivities(engine).compute_similarities_by_id(
             _json.dumps(
                 {
                     "query_embedding_b64": encode_embedding(query),
@@ -440,7 +443,7 @@ class TestFetchCandidatesWireFormat:
             ],
         )
 
-        result = await fetch_candidates(
+        result = await StoreActivities(engine).fetch_candidates(
             RetrievalInput(query="anything", token_budget=5000).model_dump_json(),
         )
 
@@ -479,7 +482,7 @@ class TestFetchCandidatesWireFormat:
             ],
         )
 
-        result = await fetch_candidates(
+        result = await StoreActivities(engine).fetch_candidates(
             RetrievalInput(
                 tags=["lang:python"],
                 token_budget=5000,
@@ -494,14 +497,6 @@ class TestFetchCandidatesWireFormat:
 # ---------------------------------------------------------------------------
 # RetrievalWorkflow
 # ---------------------------------------------------------------------------
-
-
-_WORKFLOW_ACTIVITIES = [
-    fetch_candidates,
-    compute_similarities_by_id,
-    score_and_pack,
-    record_retrieval_event,
-]
 
 
 class TestRetrievalWorkflow:
@@ -525,7 +520,7 @@ class TestRetrievalWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=_WORKFLOW_ACTIVITIES,
+            activities=_retrieval_activities(engine),
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,
@@ -559,7 +554,7 @@ class TestRetrievalWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=_WORKFLOW_ACTIVITIES,
+            activities=_retrieval_activities(engine),
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,
@@ -579,13 +574,13 @@ class TestRetrievalWorkflow:
         tmp_path: Path,
         monkeypatch,
     ) -> None:
-        _setup_db(tmp_path)
+        engine = _setup_db(tmp_path)
 
         async with Worker(
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=_WORKFLOW_ACTIVITIES,
+            activities=_retrieval_activities(engine),
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,
@@ -616,7 +611,7 @@ class TestRetrievalWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=_WORKFLOW_ACTIVITIES,
+            activities=_retrieval_activities(engine),
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,
@@ -685,7 +680,7 @@ class TestRetrievalWorkflow:
             env.client,
             task_queue=PBOOK_TASK_QUEUE,
             workflows=[RetrievalWorkflow],
-            activities=[*_WORKFLOW_ACTIVITIES, mock_embed],
+            activities=[*_retrieval_activities(engine), mock_embed],
         ):
             result = await env.client.execute_workflow(
                 RetrievalWorkflow.run,

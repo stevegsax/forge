@@ -9,21 +9,20 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
-import pytest_asyncio
+
+# Shared session Temporal fixture (T3.6, D93): the time-skipping,
+# pydantic-aware environment lives in ``sax_platform.testing`` and is imported
+# explicitly (no pytest11 plugin). ``env = temporal_env`` re-exports it under the
+# name this suite requests; request only ``env`` (one name per session) so the
+# time-skipping server starts once.
+from sax_platform.testing import temporal_env
 
 if TYPE_CHECKING:
-    from temporalio.testing import WorkflowEnvironment
+    from collections.abc import Iterator
 
+    from sqlalchemy import Engine
 
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def env() -> WorkflowEnvironment:
-    from temporalio.contrib.pydantic import pydantic_data_converter
-    from temporalio.testing import WorkflowEnvironment
-
-    async with await WorkflowEnvironment.start_time_skipping(
-        data_converter=pydantic_data_converter,
-    ) as env:
-        yield env
+env = temporal_env
 
 
 def build_mock_llm(
@@ -114,23 +113,6 @@ def _s3_backend():
 
 
 @pytest.fixture(autouse=True)
-def _reset_mistral_ocr_cache():
-    """Clear the shared lazily-cached MistralOcr between tests.
-
-    forge.activities._mistral caches one MistralOcr/client pair at module
-    scope (2026-07 Phase 3 code review, item 5a) so real workers reuse it
-    across poll cycles. Tests that patch ``sax_platform.ocr.MistralOcr`` /
-    ``make_mistral_client`` need a clean cache each time, or a stale instance
-    from an earlier test would shadow the freshly patched constructor.
-    """
-    from forge.activities._mistral import reset_mistral_ocr_cache
-
-    reset_mistral_ocr_cache()
-    yield
-    reset_mistral_ocr_cache()
-
-
-@pytest.fixture(autouse=True)
 def forge_ocr_s3(monkeypatch: pytest.MonkeyPatch, _s3_backend: str) -> str:
     """Point every test at the mocked OCR blob bucket via ``FORGE_OCR_S3_BUCKET``.
 
@@ -141,24 +123,22 @@ def forge_ocr_s3(monkeypatch: pytest.MonkeyPatch, _s3_backend: str) -> str:
     return _s3_backend
 
 
-@pytest.fixture(autouse=True)
-def dispose_store_engines(monkeypatch: pytest.MonkeyPatch):
-    """Dispose SQLAlchemy engines created via forge.store.get_engine after each test."""
-    import forge.store as store_module
+@pytest.fixture
+def store_engine(forge_db_url: str) -> Iterator[Engine]:
+    """A real store engine for the test's isolated SQLite DB, disposed on teardown.
 
-    original_create_engine = store_module.sa.create_engine
-    created_engines = []
+    T3.6: ``StoreActivities``/``ContextActivities`` and the store-touching tests
+    own their engine lifecycle explicitly (the former autouse engine-disposal
+    monkeypatch of ``sa.create_engine`` is gone). Construct the engine from the
+    autouse ``forge_db_url`` fixture's URL so it points at the same throwaway
+    database the rest of the test uses.
+    """
+    from sax_platform.db import get_store_engine
 
-    def tracking_create_engine(*args, **kwargs):
-        engine = original_create_engine(*args, **kwargs)
-        created_engines.append(engine)
-        return engine
-
-    monkeypatch.setattr(store_module.sa, "create_engine", tracking_create_engine)
-
-    yield
-
-    for engine in created_engines:
+    engine = get_store_engine(forge_db_url)
+    try:
+        yield engine
+    finally:
         engine.dispose()
 
 

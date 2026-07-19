@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
 
 from pbook.models import PlaybookEntry
+
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +56,14 @@ async def validate_entry(raw_json: str) -> str:
         )
 
 
-@activity.defn
-async def fetch_existing_entries(limit: int = 50) -> list[dict[str, Any]]:
+async def fetch_existing_entries(engine: Engine | None, limit: int = 50) -> list[dict[str, Any]]:
     """Query recent entries for duplication context.
 
     Embeddings are stripped before crossing the wire — the review prompt
     only needs titles and tags, and vectors would bloat the payload.
     """
-    from pbook.store import get_store_engine, list_recent_entries
+    from pbook.store import list_recent_entries
 
-    engine = get_store_engine()
     if engine is None:
         return []
 
@@ -70,20 +71,18 @@ async def fetch_existing_entries(limit: int = 50) -> list[dict[str, Any]]:
     return [{k: v for k, v in row.items() if k != "embedding"} for row in rows]
 
 
-@activity.defn
-async def find_duplicates(input_json: str) -> list[dict[str, Any]]:
+async def find_duplicates(engine: Engine | None, input_json: str) -> list[dict[str, Any]]:
     """Find semantic duplicates for a proposed entry.
 
     Accepts JSON with keys: embedding (base64 float32 string), threshold (float).
     """
     from pbook.embeddings import decode_embedding
-    from pbook.store import find_semantic_duplicates, get_store_engine
+    from pbook.store import find_semantic_duplicates
 
     data = json.loads(input_json)
     embedding = decode_embedding(data["embedding"])
     threshold = data.get("threshold", 0.85)
 
-    engine = get_store_engine()
     if engine is None:
         return []
 

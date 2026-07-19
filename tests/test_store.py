@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
-
 import forge.store as _store
 from forge.models import (
     AssembledContext,
@@ -19,14 +17,12 @@ from forge.models import (
 )
 from forge.store import (
     InteractionRow,
-    StoreConfigError,
     build_interaction_dict,
     build_playbook_dict,
     get_interactions,
     get_playbooks_by_tags,
     get_run,
     get_store_engine,
-    get_store_url,
     get_unextracted_runs,
     list_recent_playbooks,
     list_recent_runs,
@@ -44,10 +40,9 @@ if TYPE_CHECKING:
 
 
 def _migrate(db_path: Path) -> Engine:
-    """Test helper: migrate a throwaway SQLite store and open a tracked engine.
+    """Test helper: migrate a throwaway SQLite store and open an engine.
 
-    Uses ``forge.store``'s ``create_engine`` so the autouse ``dispose_store_engines``
-    fixture tracks and disposes the engine after the test.
+    Uses ``forge.store``'s ``create_engine`` directly against the throwaway URL.
     """
     url = f"sqlite:///{db_path}"
     run_migrations(url)
@@ -55,56 +50,29 @@ def _migrate(db_path: Path) -> Engine:
 
 
 # ---------------------------------------------------------------------------
-# get_store_url / get_store_engine
+# get_store_engine (re-exported from sax_platform.db; url is required config)
 # ---------------------------------------------------------------------------
 
 
-class TestGetStoreUrl:
-    def test_returns_configured_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_URL", "sqlite:///tmp/x.db")
-        assert get_store_url() == "sqlite:///tmp/x.db"
-
-    def test_unset_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FORGE_DB_URL", raising=False)
-        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
-            get_store_url()
-
-    def test_empty_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_DB_URL", "")
-        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
-            get_store_url()
-
-
 class TestGetStoreEngine:
-    def test_sqlite_url_enables_wal(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_sqlite_url_enables_wal(self, tmp_path: Path) -> None:
         import sqlalchemy as sa
 
         db_path = tmp_path / "wal.db"
-        monkeypatch.setenv("FORGE_DB_URL", f"sqlite:///{db_path}")
-        engine = get_store_engine()
+        engine = get_store_engine(f"sqlite:///{db_path}")
         assert engine.dialect.name == "sqlite"
         with engine.connect() as conn:
             mode = conn.execute(sa.text("PRAGMA journal_mode")).scalar()
         assert mode == "wal"
 
-    def test_postgres_url_builds_pooled_engine_without_wal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_postgres_url_builds_pooled_engine_without_wal(self) -> None:
         # Building the engine imports the driver but never connects, so no
         # Postgres server is needed — only the psycopg2 DBAPI module.
         import pytest as _pytest
 
         _pytest.importorskip("psycopg2")
-        monkeypatch.setenv(
-            "FORGE_DB_URL", "postgresql+psycopg2://user:pw@localhost:5432/forge_test"
-        )
-        engine = get_store_engine()
+        engine = get_store_engine("postgresql+psycopg2://user:pw@localhost:5432/forge_test")
         assert engine.dialect.name == "postgresql"
-
-    def test_unset_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FORGE_DB_URL", raising=False)
-        with pytest.raises(StoreConfigError, match="FORGE_DB_URL"):
-            get_store_engine()
 
 
 # ---------------------------------------------------------------------------

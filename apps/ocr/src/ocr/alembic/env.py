@@ -45,16 +45,19 @@ def run_migrations_online() -> None:
     if url is None:
         raise RuntimeError("sqlalchemy.url is not configured for Alembic")
     connectable = create_engine(url)
-    with connectable.connect() as connection:
-        configure_migration_context(
-            context,
-            target_metadata=target_metadata,
-            version_table=VERSION_TABLE,
-            include_object=_include_object,
-            connection=connection,
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+    try:
+        with connectable.connect() as connection:
+            configure_migration_context(
+                context,
+                target_metadata=target_metadata,
+                version_table=VERSION_TABLE,
+                include_object=_include_object,
+                connection=connection,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():

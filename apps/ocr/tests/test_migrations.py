@@ -30,8 +30,11 @@ def test_metadata_owns_only_ocr_tables() -> None:
 
 def test_chain_creates_ocr_tables_with_own_version_table(forge_db_url: str) -> None:
     run_migrations(forge_db_url)
-    insp = sa.inspect(sa.create_engine(forge_db_url))
-    names = set(insp.get_table_names())
+    engine = sa.create_engine(forge_db_url)
+    try:
+        names = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
     assert names >= _OCR_TABLES
     assert "alembic_version_ocr" in names
     assert "alembic_version" not in names  # not the default table name
@@ -42,15 +45,18 @@ def test_coexists_with_platform_batch_jobs(forge_db_url: str) -> None:
     from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
     engine = sa.create_engine(forge_db_url)
-    # Simulate the platform side already present in the shared DB.
-    bj_metadata.create_all(engine)
-    with engine.begin() as conn:
-        conn.execute(sa.text(_FORGE_VERSION_DDL))
+    try:
+        # Simulate the platform side already present in the shared DB.
+        bj_metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(sa.text(_FORGE_VERSION_DDL))
 
-    run_migrations(forge_db_url)
-    run_migrations(forge_db_url)  # rerun is a clean no-op
+        run_migrations(forge_db_url)
+        run_migrations(forge_db_url)  # rerun is a clean no-op
 
-    names = set(sa.inspect(engine).get_table_names())
+        names = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
     assert "batch_jobs" in names  # platform table not dropped
     assert names >= _OCR_TABLES
     assert {"alembic_version_forge", "alembic_version_ocr"} <= names

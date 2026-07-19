@@ -7,9 +7,11 @@ Design follows Function Core / Imperative Shell:
 - Pure functions: classify_file_conflicts, build_conflict_resolution_system_prompt,
   build_conflict_resolution_user_prompt
 - I/O wrapper: detect_file_conflicts (calls classify + reads originals from disk)
-- Temporal activities: detect_file_conflicts_activity, assemble_conflict_resolution_context,
-  call_conflict_resolution
-- Testable function: execute_conflict_resolution_call (takes client as argument)
+- Free Temporal activities: detect_file_conflicts_activity,
+  assemble_conflict_resolution_context
+- Testable function: execute_conflict_resolution_call (takes the LLM client as an
+  argument); the ``call_conflict_resolution`` bound method on ``LlmActivities``
+  (forge.activities.roots) delegates to it.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
 from forge.activities.context import (
@@ -318,39 +319,3 @@ async def assemble_conflict_resolution_context(
         model_name=input.model_name,
         thinking=input.thinking,
     )
-
-
-@activity.defn
-async def call_conflict_resolution(
-    input: ConflictResolutionCallInput,
-) -> ConflictResolutionCallResult:
-    """Activity wrapper -- obtains the LLM client and delegates to the call.
-
-    The former ``stop_reason == "max_tokens"`` warning branch is gone: on the
-    structured-outputs path a truncated response raises `LLMTruncated` from
-    inside `AnthropicLLM.complete` (non-retryable via LLM_RETRY), so this shell
-    never sees a truncated `ConflictResolutionCallResult` to warn about.
-    """
-    from forge.llm_client import get_llm
-    from forge.tracing import get_tracer, llm_call_attributes
-
-    tracer = get_tracer()
-    with tracer.start_as_current_span("forge.call_conflict_resolution") as span:
-        logger.info("Conflict resolution call: task_id=%s", input.task_id)
-        llm = get_llm()
-        async with heartbeat_during():
-            result = await execute_conflict_resolution_call(input, llm)
-
-        span.set_attributes(
-            llm_call_attributes(
-                model_name=result.model_name,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                latency_ms=result.latency_ms,
-                task_id=input.task_id,
-                cache_creation_input_tokens=result.cache_creation_input_tokens,
-                cache_read_input_tokens=result.cache_read_input_tokens,
-            )
-        )
-
-        return result

@@ -42,17 +42,15 @@ def _strip_binary(row: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in row.items() if k not in _BINARY_FIELDS}
 
 
-def _engine() -> Engine:
-    """Return the worker's cached store engine.
+def _require_engine(engine: Engine | None) -> Engine:
+    """Return ``engine``, or raise if the store isn't configured.
 
-    The worker resolves ``PBOOK_DATABASE_URL`` once and caches the engine
-    (migrations run once at worker startup, not per call). If the store
-    isn't configured, raise — callers should see a clear error rather
-    than a confusing silent fallback.
+    The worker builds the engine once at its composition root and threads
+    it into :class:`~pbook.roots.StoreActivities`. When no
+    ``PBOOK_DATABASE_URL`` was configured the engine is ``None``; these
+    CLI-op activities must fail loudly rather than silently no-op, so the
+    operator sees a clear error.
     """
-    from pbook.store import get_store_engine
-
-    engine = get_store_engine()
     if engine is None:
         msg = (
             "Worker has no DB configured. Set PBOOK_DATABASE_URL on the worker process and restart."
@@ -96,22 +94,22 @@ def group_review_by_experience(
 # ---------------------------------------------------------------------------
 
 
-@activity.defn
-async def get_entry_activity(input: dict[str, Any]) -> dict[str, Any] | None:
+async def get_entry_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any] | None:
     """Fetch a single entry by id; return None if missing."""
     from pbook.store import get_entry_by_id
 
-    engine = _engine()
+    engine = _require_engine(engine)
     row = get_entry_by_id(engine, int(input["entry_id"]))
     return _strip_binary(row) if row else None
 
 
-@activity.defn
-async def list_entries_activity(input: dict[str, Any]) -> list[dict[str, Any]]:
+async def list_entries_activity(
+    engine: Engine | None, input: dict[str, Any]
+) -> list[dict[str, Any]]:
     """List entries with optional tag/type/project/needs-review filters."""
     from pbook.store import get_entries_by_tags, list_recent_entries
 
-    engine = _engine()
+    engine = _require_engine(engine)
     tags = input.get("tags") or []
     if tags:
         entries = get_entries_by_tags(
@@ -141,14 +139,13 @@ async def list_entries_activity(input: dict[str, Any]) -> list[dict[str, Any]]:
     return [_strip_binary(e) for e in entries]
 
 
-@activity.defn
-async def list_sources_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def list_sources_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """List entry_sources rows for an entry; return ``{"found": False}``
     when the entry id is not present so the workflow can surface a
     not_found error."""
     from pbook.store import get_entry_by_id, list_entry_sources_for_entry
 
-    engine = _engine()
+    engine = _require_engine(engine)
     entry_id = int(input["entry_id"])
     if get_entry_by_id(engine, entry_id) is None:
         return {"found": False, "rows": []}
@@ -156,13 +153,12 @@ async def list_sources_activity(input: dict[str, Any]) -> dict[str, Any]:
     return {"found": True, "rows": [_strip_binary(r) for r in rows]}
 
 
-@activity.defn
-async def list_tags_activity(_input: dict[str, Any]) -> dict[str, Any]:
+async def list_tags_activity(engine: Engine | None, _input: dict[str, Any]) -> dict[str, Any]:
     """Return canonical tag namespaces plus the values currently in use."""
     from pbook.store import list_tag_values_in_use
     from pbook.tags import EXTRACTED_NAMESPACES, GENERAL_NAMESPACES
 
-    engine = _engine()
+    engine = _require_engine(engine)
     return {
         "namespaces": {
             "general": sorted(GENERAL_NAMESPACES),
@@ -172,8 +168,7 @@ async def list_tags_activity(_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def review_queue_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def review_queue_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """Return either a flat list (default) or a clustered view (when
     ``by_experience=True``) of the review queue."""
     from pbook.store import list_recent_entries, list_review_queue_with_sources
@@ -183,7 +178,7 @@ async def review_queue_activity(input: dict[str, Any]) -> dict[str, Any]:
         # list_review_queue_with_sources) and the binary embedding columns.
         return _strip_binary({k: v for k, v in e.items() if k != "sources"})
 
-    engine = _engine()
+    engine = _require_engine(engine)
     limit = input.get("limit", 20)
     if input.get("by_experience"):
         entries = list_review_queue_with_sources(engine)[:limit]
@@ -210,12 +205,13 @@ async def review_queue_activity(input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def list_sessions_activity(input: dict[str, Any]) -> list[dict[str, Any]]:
+async def list_sessions_activity(
+    engine: Engine | None, input: dict[str, Any]
+) -> list[dict[str, Any]]:
     """List ingested_sessions rows, optionally filtered by project."""
     from pbook.store import list_ingested_sessions
 
-    engine = _engine()
+    engine = _require_engine(engine)
     return list_ingested_sessions(
         engine,
         project=input.get("project") or None,
@@ -263,12 +259,13 @@ async def get_session_text_activity(input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def check_duplicate_activity(input: dict[str, Any]) -> list[dict[str, Any]]:
+async def check_duplicate_activity(
+    engine: Engine | None, input: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Return entries whose title matches the input string (and tags, if given)."""
     from pbook.store import check_duplicate
 
-    engine = _engine()
+    engine = _require_engine(engine)
     matches = check_duplicate(engine, input["title"], tags=input.get("tags"))
     return [_strip_binary(m) for m in matches]
 
@@ -278,8 +275,7 @@ async def check_duplicate_activity(input: dict[str, Any]) -> list[dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
-@activity.defn
-async def add_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def add_entry_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """Insert a new playbook entry. Returns ``{id, title, needs_review,
     rejected}`` on success, or ``{error: 'tag_invalid', messages: [...]}``
     on tag validation failure.
@@ -303,7 +299,7 @@ async def add_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     if needs_review:
         entry_model = entry_model.model_copy(update={"needs_review": True})
 
-    engine = _engine()
+    engine = _require_engine(engine)
     new_id = insert_entry(engine, build_entry_dict(entry_model), entry_model.tags)
     return {
         "id": new_id,
@@ -313,12 +309,11 @@ async def add_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def approve_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def approve_entry_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """Clear ``needs_review`` on an entry; return the resulting status dict."""
     from pbook.store import get_entry_by_id, update_entry
 
-    engine = _engine()
+    engine = _require_engine(engine)
     entry_id = int(input["entry_id"])
     if get_entry_by_id(engine, entry_id) is None:
         return {"error": "not_found", "id": entry_id}
@@ -336,12 +331,11 @@ async def approve_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def reject_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def reject_entry_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """Soft-mark an entry as rejected with an optional reason."""
     from pbook.store import get_entry_by_id, mark_rejected
 
-    engine = _engine()
+    engine = _require_engine(engine)
     entry_id = int(input["entry_id"])
     if get_entry_by_id(engine, entry_id) is None:
         return {"error": "not_found", "id": entry_id}
@@ -359,12 +353,11 @@ async def reject_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def update_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def update_entry_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """Update arbitrary entry columns (validated against the entries table)."""
     from pbook.store import get_entry_by_id, update_entry
 
-    engine = _engine()
+    engine = _require_engine(engine)
     entry_id = int(input["entry_id"])
     updates = input.get("updates") or {}
     if get_entry_by_id(engine, entry_id) is None:
@@ -383,15 +376,14 @@ async def update_entry_activity(input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def record_feedback_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def record_feedback_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """Record helpful/harmful feedback. Returns the updated counters and
     a guidance flag noting whether the 3-retrieval threshold has been
     met (so the CLI can warn the user when feedback won't immediately
     move ranking)."""
     from pbook.store import get_entry_by_id, record_feedback
 
-    engine = _engine()
+    engine = _require_engine(engine)
     entry_id = int(input["entry_id"])
     if get_entry_by_id(engine, entry_id) is None:
         return {"error": "not_found", "id": entry_id}
@@ -413,14 +405,15 @@ async def record_feedback_activity(input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@activity.defn
-async def filter_already_ingested_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def filter_already_ingested_activity(
+    engine: Engine | None, input: dict[str, Any]
+) -> dict[str, Any]:
     """Given a list of session_ids, return the subset that has not been
     ingested yet. Used by ``pbook ingest`` to skip duplicates.
     """
     from pbook.store import get_ingested_session_ids
 
-    engine = _engine()
+    engine = _require_engine(engine)
     ingested = get_ingested_session_ids(engine)
     candidate_ids = input.get("session_ids", [])
     return {
@@ -429,14 +422,15 @@ async def filter_already_ingested_activity(input: dict[str, Any]) -> dict[str, A
     }
 
 
-@activity.defn
-async def record_started_sessions_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def record_started_sessions_activity(
+    engine: Engine | None, input: dict[str, Any]
+) -> dict[str, Any]:
     """Seed ``ingested_sessions`` rows in 'running' state for the given
     sessions. Called after the BatchIngestionWorkflow has been submitted
     so ``pbook sessions`` shows them mid-flight."""
     from pbook.store import record_ingested_session_started
 
-    engine = _engine()
+    engine = _require_engine(engine)
     for s in input["sessions"]:
         record_ingested_session_started(
             engine,
@@ -448,13 +442,12 @@ async def record_started_sessions_activity(input: dict[str, Any]) -> dict[str, A
     return {"recorded_count": len(input["sessions"])}
 
 
-@activity.defn
-async def prune_activity(input: dict[str, Any]) -> dict[str, Any]:
+async def prune_activity(engine: Engine | None, input: dict[str, Any]) -> dict[str, Any]:
     """Identify (and optionally apply) prune candidates."""
     from pbook.activities.maintenance import identify_prune_candidates
     from pbook.store import add_entry_tag, list_all_entries, update_entry
 
-    engine = _engine()
+    engine = _require_engine(engine)
     all_entries = list_all_entries(engine)
     candidates = identify_prune_candidates(
         all_entries,

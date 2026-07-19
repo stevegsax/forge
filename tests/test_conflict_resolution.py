@@ -482,7 +482,7 @@ class TestCallConflictResolution:
     async def test_delegates_to_client_and_returns_result(self) -> None:
         from unittest.mock import MagicMock, patch
 
-        from forge.activities.conflict_resolution import call_conflict_resolution
+        from forge.activities.roots import LlmActivities
 
         mock_response = ConflictResolutionResponse(
             resolved_files=[FileOutput(file_path="shared.py", content="# merged")],
@@ -490,10 +490,7 @@ class TestCallConflictResolution:
         )
         llm = build_mock_llm(output=mock_response, model="claude-opus-4-8")
 
-        with (
-            patch("forge.llm_client.get_llm", return_value=llm),
-            patch("forge.tracing.get_tracer") as mock_get_tracer,
-        ):
+        with patch("forge.activities.roots.get_tracer") as mock_get_tracer:
             mock_span = MagicMock()
             mock_span.__enter__ = MagicMock(return_value=mock_span)
             mock_span.__exit__ = MagicMock(return_value=False)
@@ -504,7 +501,7 @@ class TestCallConflictResolution:
             call_input = ConflictResolutionCallInput(
                 task_id="t-ok", step_id="s", system_prompt="sys", user_prompt="usr"
             )
-            result = await call_conflict_resolution(call_input)
+            result = await LlmActivities(llm).call_conflict_resolution(call_input)
 
         assert result.task_id == "t-ok"
         assert result.resolved_files == {"shared.py": "# merged"}

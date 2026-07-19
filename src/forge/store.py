@@ -4,9 +4,8 @@ Persists full LLM interaction data and run results to a local SQLite database.
 
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_interaction_dict, build_playbook_dict
-- Imperative shell: get_store_url, get_store_engine, run_migrations,
-  insert_or_ignore, save_interaction, save_run, get_interactions, get_run,
-  list_recent_runs
+- Imperative shell: get_store_engine, run_migrations, insert_or_ignore,
+  save_interaction, save_run, get_interactions, get_run, list_recent_runs
 """
 
 from __future__ import annotations
@@ -26,9 +25,6 @@ from sax_platform.db import (
 )
 from sax_platform.db import (
     get_store_engine as get_store_engine,
-)
-from sax_platform.db import (
-    get_store_url as get_store_url,
 )
 from sax_platform.db import (
     insert_or_ignore,

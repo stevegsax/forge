@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from sax_platform.config import TemporalSettings
 from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
 from sax_platform.temporal.client import (
     TemporalTLSConfigError,
@@ -38,25 +39,21 @@ def _clear_tls_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
-class TestBuildTlsConfig:
-    def test_disabled_by_default(self) -> None:
-        assert build_tls_config() is False
+class TestBuildTlsConfigFromSettings:
+    """``build_tls_config`` takes an explicit ``TemporalSettings`` as its single
+    source. The autouse ``_clear_tls_env`` fixture guarantees the ambient env
+    cannot leak into fields left unset, so a ``TemporalSettings`` built with
+    explicit fields is fully in control."""
 
-    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
-    def test_enabled_server_only_uses_system_roots(
-        self, monkeypatch: pytest.MonkeyPatch, value: str
-    ) -> None:
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS", value)
-        assert build_tls_config() is True
+    def test_disabled_when_tls_false(self) -> None:
+        settings = TemporalSettings(tls=False)
+        assert build_tls_config(settings) is False
 
-    @pytest.mark.parametrize("value", ["0", "false", "no", ""])
-    def test_falsey_value_is_plaintext(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS", value)
-        assert build_tls_config() is False
+    def test_enabled_server_only_uses_system_roots(self) -> None:
+        settings = TemporalSettings(tls=True)
+        assert build_tls_config(settings) is True
 
-    def test_mtls_builds_tlsconfig_from_files(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_mtls_builds_tlsconfig_from_files(self, tmp_path: Path) -> None:
         from temporalio.service import TLSConfig
 
         ca = tmp_path / "ca.pem"
@@ -66,48 +63,51 @@ class TestBuildTlsConfig:
         key = tmp_path / "client.key"
         key.write_bytes(b"KEY-PEM")
 
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_CA", str(ca))
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS_CLIENT_CERT", str(cert))
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS_CLIENT_KEY", str(key))
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_NAME", "temporal.example.com")
+        settings = TemporalSettings(
+            tls=True,
+            tls_server_ca=str(ca),
+            tls_client_cert=str(cert),
+            tls_client_key=str(key),
+            tls_server_name="temporal.example.com",
+        )
 
-        cfg = build_tls_config()
+        cfg = build_tls_config(settings)
         assert isinstance(cfg, TLSConfig)
         assert cfg.server_root_ca_cert == b"CA-PEM"
         assert cfg.client_cert == b"CERT-PEM"
         assert cfg.client_private_key == b"KEY-PEM"
         assert cfg.domain == "temporal.example.com"
 
-    def test_server_ca_only_without_client_cert(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_server_ca_only_without_client_cert(self, tmp_path: Path) -> None:
         from temporalio.service import TLSConfig
 
         ca = tmp_path / "ca.pem"
         ca.write_bytes(b"CA-PEM")
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_CA", str(ca))
+        settings = TemporalSettings(tls=True, tls_server_ca=str(ca))
 
-        cfg = build_tls_config()
+        cfg = build_tls_config(settings)
         assert isinstance(cfg, TLSConfig)
         assert cfg.server_root_ca_cert == b"CA-PEM"
         assert cfg.client_cert is None
         assert cfg.client_private_key is None
 
-    def test_half_mtls_pair_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_half_mtls_pair_raises(self, tmp_path: Path) -> None:
         cert = tmp_path / "client.pem"
         cert.write_bytes(b"CERT-PEM")
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS_CLIENT_CERT", str(cert))
+        settings = TemporalSettings(tls=True, tls_client_cert=str(cert))
         with pytest.raises(TemporalTLSConfigError, match="both"):
-            build_tls_config()
+            build_tls_config(settings)
 
-    def test_missing_pem_file_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS", "1")
-        monkeypatch.setenv("FORGE_TEMPORAL_TLS_SERVER_CA", str(tmp_path / "nope.pem"))
+    def test_missing_pem_file_raises(self, tmp_path: Path) -> None:
+        settings = TemporalSettings(tls=True, tls_server_ca=str(tmp_path / "nope.pem"))
         with pytest.raises(TemporalTLSConfigError, match="Cannot read"):
-            build_tls_config()
+            build_tls_config(settings)
+
+    def test_settings_win_over_ambient_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Env says plaintext; the explicit settings object says TLS-on and wins.
+        monkeypatch.setenv("FORGE_TEMPORAL_TLS", "0")
+        settings = TemporalSettings(tls=True)
+        assert build_tls_config(settings) is True
 
 
 class TestConnectTemporal:
@@ -155,3 +155,22 @@ class TestConnectTemporal:
         await connect_temporal("temporal.example.com:7233", namespace="ocr-namespace")
 
         assert captured["kwargs"]["namespace"] == "ocr-namespace"
+
+    @pytest.mark.asyncio
+    async def test_settings_thread_through_to_tls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicit TemporalSettings reaches build_tls_config even when the
+        ambient env would otherwise force plaintext."""
+        import temporalio.client
+
+        captured: dict = {}
+
+        async def fake_connect(address: str, **kwargs: object) -> str:
+            captured["kwargs"] = kwargs
+            return "FAKE_CLIENT"
+
+        monkeypatch.setattr(temporalio.client.Client, "connect", staticmethod(fake_connect))
+        monkeypatch.setenv("FORGE_TEMPORAL_TLS", "0")
+
+        await connect_temporal("temporal.example.com:7233", settings=TemporalSettings(tls=True))
+
+        assert captured["kwargs"]["tls"] is True
