@@ -133,6 +133,7 @@ forge run --task-file task.json
 | Option | Default | Description |
 | -------- | --------- | ------------- |
 | `--sync/--no-sync` | `--no-sync` | Use synchronous Messages API (`--sync`) or batch mode (`--no-sync`, default) |
+| `--batch-poll-interval` | `600` | Seconds between batch status polls, min 300 (D88). Batch mode only |
 | `--verbose` | off | Show detailed LLM stats and interactions |
 | `--log-messages` | off | Save full API request/response JSON to `messages/` in the worktree |
 
@@ -157,7 +158,6 @@ forge worker --temporal-address temporal.example.com:7233
 | Option | Default | Description |
 | -------- | --------- | ------------- |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
-| `--batch-poll-interval` | `600` | Seconds between batch polling runs |
 | `--worker-identity` | `{pid}@{hostname}` | Custom worker identity reported to Temporal (env: `FORGE_WORKER_IDENTITY`) |
 
 ### `forge status`
@@ -283,11 +283,11 @@ Requires pbook to be installed. Sessions already recorded in pbook's `ingested_s
 
 ### `forge start`
 
-Start an arbitrary registered Temporal workflow by name, without a Python script. Workflows registered on `forge-task-queue`: `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`, `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, and `BatchPollerWorkflow`. (OCR workflows live in the `apps/ocr` workspace member, on `ocr-task-queue` with its own CLI: `uv run --package ocr ocr <cmd>`.)
+Start an arbitrary registered Temporal workflow by name, without a Python script. Workflows registered on `forge-task-queue`: `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`, `ExportPlaybookWorkflow`, and `ManualPlaybookWorkflow`. (OCR workflows live in the `apps/ocr` workspace member, on `ocr-task-queue` with its own CLI: `uv run --package ocr ocr <cmd>`.)
 
 ```bash
-forge start BatchPollerWorkflow --wait                 # one poll pass over pending batch jobs
 forge start <WorkflowName> '{"field": "value"}' --wait # any registered workflow taking JSON input
+forge start <WorkflowName> --input-file input.json      # read JSON input from a file instead
 ```
 
 **Options:**

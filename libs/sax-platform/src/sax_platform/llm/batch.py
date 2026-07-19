@@ -18,13 +18,12 @@ list. This is the opposite tradeoff from the sync lane, where a single
 in-flight call has nothing else to preserve and can afford to raise.
 
 `fetch_batch_result_lines` and `classify_result_json` are the raw-bytes,
-store-then-parse split of that same pipeline, for the pre-T4.1 signal
-transport: the poller stores each succeeded line's verbatim serialized
-`Message` (never classifying at poll time), and the workflow classifies it
-later via `classify_result_json` — reusing the exact same classification core
-as `fetch_batch_results`, so a stored line and a freshly fetched one resolve
-identically. This whole raw-bytes path exists only until the T4.1 timer-loop
-transport lands.
+store-then-parse split of that same pipeline — the fetch/classify seam of the
+T4.1 timer-loop transport: the fetch activity relays each succeeded line's
+verbatim serialized `Message` (never classifying at fetch time, so fetch stays
+plain I/O), and the parse activity classifies it later via `classify_result_json`
+— reusing the exact same classification core as `fetch_batch_results`, so a
+stored/relayed line and a freshly fetched one resolve identically.
 """
 
 from collections.abc import Mapping, Sequence
@@ -269,12 +268,12 @@ def classify_result_json(
     `fetch_batch_result_lines`). Pure: no I/O.
 
     The store-then-parse counterpart to a live `fetch_batch_results` item:
-    the pre-T4.1 signal transport stores a succeeded line's raw serialized
-    `Message` at poll time and classifies it later, here, via the exact same
-    `_classify_message` core — so a stored line and a freshly fetched one
-    yield identical outcomes (refusal/truncation as value outcomes, a
-    validated instance when `output_type` is given, a text `Completion[Any]`
-    otherwise).
+    the T4.1 timer-loop transport's fetch activity relays a succeeded line's
+    raw serialized `Message` and the parse activity classifies it later, here,
+    via the exact same `_classify_message` core — so a relayed line and a
+    freshly fetched one yield identical outcomes (refusal/truncation as value
+    outcomes, a validated instance when `output_type` is given, a text
+    `Completion[Any]` otherwise).
 
     `raw` must be a serialized `anthropic.types.Message` (as produced by
     `Message.model_dump_json()`). A `raw` that cannot be parsed into a
@@ -368,12 +367,11 @@ async def fetch_batch_result_lines(
     maps them. No `stop_reason` classification, no schema validation happens
     here.
 
-    This exists so the pre-T4.1 signal transport can persist raw result bytes
-    at poll time and defer classification to `classify_result_json` when the
-    workflow reconciles them — keeping poll-time work to plain I/O and out of
-    the classification core. Results are not guaranteed to arrive in request
-    order; callers must key off `custom_id`, not list position. Retired with
-    the raw-bytes path when T4.1's timer-loop transport lands.
+    This exists so the T4.1 timer-loop transport's fetch activity can relay raw
+    result bytes (returned inline or stashed by pointer) and defer classification
+    to `classify_result_json` in the parse activity — keeping the fetch to plain
+    I/O and out of the classification core. Results are not guaranteed to arrive
+    in request order; callers must key off `custom_id`, not list position.
     """
     lines: list[tuple[str, str | BatchRequestFailed]] = []
     decoder = await client.messages.batches.results(batch_id)

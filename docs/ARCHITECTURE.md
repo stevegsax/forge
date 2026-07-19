@@ -338,7 +338,7 @@ The plan can override the tier for individual steps via `capability_tier`, so a 
 
 Every LLM call in Forge can run in two modes:
 
-- **Batch mode** (default) — The activity submits the request to the Anthropic Batch API; the workflow then waits for a signal. A separate batch poller workflow, run on a Temporal Schedule, periodically checks batch status and delivers results back via Temporal signals. *(Signal-based delivery plus a shared poller is interim: Phase 4, per D88, replaces it with per-workflow timer-loop polling.)* (Mistral batch is reached only through the opaque-blob OCR SPI — `sax_platform.ocr.MistralOcr` — not forge's own LLM calls.)
+- **Batch mode** (default) — The activity submits the request to the Anthropic Batch API; the workflow then polls `batch_status` on a `workflow.sleep` loop until the batch ends and fetches its own result line via `fetch_batch_result` (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal). (Mistral batch is reached only through the opaque-blob OCR SPI — `sax_platform.ocr.MistralOcr` — not forge's own LLM calls.)
 - **Sync mode** (opt-in via `--sync`) — The activity calls the provider's messages API directly and waits for the response.
 
 `ForgeTaskInput.sync_mode` defaults to `False`, so batch is the default path. The prompt construction is identical in both modes. The workflow dispatch methods (`_call_generation`, `_call_planner_llm`, `_call_exploration`, `_call_sanity_check_llm`, `_call_conflict_resolution`) check `self._sync_mode` and route accordingly. This is why every LLM call must be a self-contained document completion—batch APIs don't support multi-turn conversations.
@@ -351,9 +351,9 @@ flowchart TD
     Direct --> Result["Parse response"]
 
     Mode -->|Batch| Submit["Submit to Batch API"]
-    Submit --> Wait["Workflow waits for signal"]
-    Wait --> Poller["Batch poller delivers result"]
-    Poller --> Parse["Parse response"]
+    Submit --> Poll["Workflow polls batch_status (sleep loop)"]
+    Poll --> Fetch["fetch_batch_result"]
+    Fetch --> Parse["Parse response"]
 ```
 
 ---
@@ -385,8 +385,7 @@ These are the core Pydantic models that flow through the system:
 ```text
 src/forge/
 ├── workflows.py               # Temporal workflows (main orchestration)
-├── workflow_blocks.py         # Shared workflow building blocks
-├── batch_poller_workflow.py   # Batch status polling workflow (scheduled)
+├── workflow_blocks.py         # Shared workflow building blocks (incl. batch submit + timer-loop wait)
 ├── ingestion_workflow.py      # Transcript ingestion → pbook (cross-queue)
 ├── manual_playbook_workflow.py # Manual playbook add with LLM review
 ├── export_playbook_workflow.py # Playbook export
@@ -508,11 +507,11 @@ The universal workflow step is the spine, but several shipped subsystems run alo
 
 ### Batch execution (default path)
 
-All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to the Anthropic Batch API by default (`sync_mode=False`); the scheduled `BatchPollerWorkflow` polls and delivers each result back to the waiting workflow via signal. Submission/parse/poll: `activities/batch_submit.py`, `activities/batch_parse.py`, `activities/batch_poll.py`; lifecycle states: `models.py::BatchJobStatus`. The wait is signal-based (D77) rather than terminate-and-restart — Temporal's [durable signals](https://docs.temporal.io/develop/python/workflows/message-passing) keep all workflow state alive across the wait (SDK [signal sample](https://github.com/temporalio/samples-python/blob/4d453de6adce21be822a02e2dc553138b684945d/hello/hello_signal.py)). The shared poller and the `batch_result_received` signal are interim: Phase 4 (D88) replaces both with per-workflow timer-loop polling.
+All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to the Anthropic Batch API by default (`sync_mode=False`). Each workflow then runs its own timer loop: it records the submission in `batch_jobs`, polls `batch_status` on a `workflow.sleep` interval (min 300s, D88) until the batch ends or the 25h ceiling passes, fetches its own result line via `fetch_batch_result`, and records the final outcome. Submit/status/fetch/parse: `activities/batch_submit.py`, `activities/batch_fetch.py`, `activities/batch_parse.py`; the wait loop lives in `workflow_blocks.py`; lifecycle states: `models.py::BatchJobStatus`. Durable `workflow.sleep` timers keep all workflow state alive across the wait rather than terminate-and-restart (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal).
 
 ### Batch SPI (OCR-agnostic) and the OCR consumer
 
-Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the poller returns provider results verbatim to a consumer workflow cross-queue (`activities/batch_submit.py`, `batch_poller_workflow.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` (`activities/_mistral.py`) rather than the retired sax-llm registry (rerouted at T3.3; sax-llm deleted at T3.5). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `sax_platform` only (never `forge`; the former `forge_contracts` package it used to import was absorbed into `sax_platform.contracts` at T3.4).
+Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the consumer workflow polls `batch_status` and fetches its own verbatim provider result cross-queue via `fetch_batch_result` (`activities/batch_submit.py`, `activities/batch_fetch.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` rather than the retired sax-llm registry (rerouted at T3.3; sax-llm deleted at T3.5). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `sax_platform` only (never `forge`; the former `forge_contracts` package it used to import was absorbed into `sax_platform.contracts` at T3.4).
 
 ### Transcript ingestion
 

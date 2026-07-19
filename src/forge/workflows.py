@@ -22,12 +22,12 @@ with workflow.unsafe.imports_passed_through():
     from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
     from forge.models import (
+        BATCH_WAIT_CEILING,
         AssembleContextInput,
         AssembledContext,
         AssembleSanityCheckContextInput,
         AssembleStepContextInput,
         AssembleSubTaskContextInput,
-        BatchResult,
         CapabilityTier,
         CommitChangesInput,
         CommitChangesOutput,
@@ -132,13 +132,32 @@ _CHILD_BASE_MINUTES = 15
 _CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
 
 
-def _child_timeout(depth: int, max_depth: int) -> timedelta:
-    """Scale child workflow timeout by remaining depth.
+def _child_timeout(depth: int, max_depth: int, *, sync_mode: bool, max_attempts: int) -> timedelta:
+    """Execution timeout for a spawned child workflow, derived from its wait budget.
 
-    Base 15 min for leaves, +5 min per nesting level for orchestration overhead.
+    ``remaining = max_depth - depth`` is the number of nesting levels below the child.
+    The orchestration margin (non-batch git/context/write/validate activity time
+    accumulated across the child's subtree) is the pre-T4.1 sync formula:
+    ``15 + 5*remaining`` minutes.
+
+    - **sync mode** → the orchestration margin alone; no batch waits. Unchanged from
+      pre-T4.1 behavior.
+    - **batch mode** → the child performs up to ``max_attempts`` sequential generation
+      waits at a leaf, and each nesting level below it adds one conflict-resolution wait
+      after its children gather, so the child's own sequential batch-wait budget is
+      ``max_attempts + remaining`` waits, each bounded by the 25h ``BATCH_WAIT_CEILING``
+      (T4.1 ST3c — closes the timeout tree so a slow batch no longer kills the child)::
+
+          (max_attempts + remaining) * BATCH_WAIT_CEILING  +  (15 + 5*remaining) min
     """
     remaining = max_depth - depth
-    return timedelta(minutes=_CHILD_BASE_MINUTES + _CHILD_OVERHEAD_MINUTES_PER_LEVEL * remaining)
+    orchestration = timedelta(
+        minutes=_CHILD_BASE_MINUTES + _CHILD_OVERHEAD_MINUTES_PER_LEVEL * remaining
+    )
+    if sync_mode:
+        return orchestration
+    waits = max_attempts + remaining
+    return waits * BATCH_WAIT_CEILING + orchestration
 
 
 async def _assemble_conflict_resolution(
@@ -194,6 +213,7 @@ with workflow.unsafe.imports_passed_through():
     from forge.persist_models import build_interaction_idempotency_key as _build_interaction_key
     from forge.persist_models import build_persist_interaction as _build_persist_interaction
     from forge.workflow_blocks import (
+        _BATCH_POLL_INTERVAL,
         BATCH_WAIT_FAILURES,
         THINKING_MAX_TOKENS,
     )
@@ -245,9 +265,11 @@ class ForgeTaskWorkflow:
     """
 
     def __init__(self) -> None:
-        self._batch_results: dict[str, BatchResult] = {}
         self._sync_mode: bool = True
         self._log_messages: bool = False
+        # Timer-loop batch poll cadence (D88); overridden from the workflow input
+        # in run(). Held in workflow state so it replays identically.
+        self._poll_interval: timedelta = _BATCH_POLL_INTERVAL
         # Per-role occurrence counters for deterministic, replay-stable
         # interaction idempotency keys (Phase C survivable writes). Held in
         # workflow state so they replay identically; per-role so a repeated
@@ -287,17 +309,11 @@ class ForgeTaskWorkflow:
         )
         await _persist_block(req)
 
-    @workflow.signal
-    async def batch_result_received(self, result: BatchResult) -> None:
-        # Correlate by request_id and keep the first delivery: at-least-once
-        # signalling can redeliver a result, and a stale/duplicate must not
-        # overwrite or be mistaken for another call's (INTERIM; deleted Phase 4).
-        self._batch_results.setdefault(result.request_id, result)
-
     @workflow.run
     async def run(self, input: ForgeTaskInput) -> TaskResult:
         self._sync_mode = input.sync_mode
         self._log_messages = input.log_messages
+        self._poll_interval = timedelta(seconds=input.batch_poll_interval_seconds)
         workflow.logger.info(
             "Workflow started: task_id=%s plan=%s sync=%s",
             input.task.task_id,
@@ -310,9 +326,10 @@ class ForgeTaskWorkflow:
             else:
                 result = await self._run_single_step(input)
         except BATCH_WAIT_FAILURES as exc:
-            # The batch wait timed out (25h) or delivered an error/body-less result
-            # (T1.3). Clean the worktree and record a terminal failure so the run
-            # never crashes out leaving no row and an orphaned worktree (T1.6b).
+            # The batch wait gave up at the 25h ceiling, or the provider reported a
+            # terminal status, or the fetch carried an error (T4.1). Clean the
+            # worktree and record a terminal failure so the run never crashes out
+            # leaving no row and an orphaned worktree (T1.6b).
             await _cleanup_worktree_after_failure(input.repo_root, input.task.task_id, exc)
             result = TaskResult(
                 task_id=input.task.task_id,
@@ -346,15 +363,17 @@ class ForgeTaskWorkflow:
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
         return await _call_llm_batch_dispatch(
-            self._batch_results,
             context,
             output_type_name,
             thinking=thinking,
             max_tokens=max_tokens,
+            poll_interval=self._poll_interval,
         )
 
     async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
-        result = await _call_generation_dispatch(self._batch_results, self._sync_mode, context)
+        result = await _call_generation_dispatch(
+            self._sync_mode, context, poll_interval=self._poll_interval
+        )
         await self._persist_interaction(
             role="llm",
             task_id=context.task_id,
@@ -487,7 +506,7 @@ class ForgeTaskWorkflow:
         self, call_input: ConflictResolutionCallInput
     ) -> ConflictResolutionCallResult:
         result = await _call_conflict_resolution_dispatch(
-            self._batch_results, self._sync_mode, call_input
+            self._sync_mode, call_input, poll_interval=self._poll_interval
         )
         await self._persist_interaction(
             role="conflict_resolution",
@@ -1238,7 +1257,12 @@ class ForgeTaskWorkflow:
 
         # --- Start child workflows in parallel ---
         workflow.logger.info("Fan-out: step_id=%s sub_tasks=%d", step.step_id, len(sub_tasks))
-        child_timeout = _child_timeout(0, input.max_fan_out_depth)
+        child_timeout = _child_timeout(
+            0,
+            input.max_fan_out_depth,
+            sync_mode=input.sync_mode,
+            max_attempts=input.max_sub_task_attempts,
+        )
         handles = []
         for st in sub_tasks:
             child_input = SubTaskInput(
@@ -1258,6 +1282,7 @@ class ForgeTaskWorkflow:
                 thinking=input.thinking,
                 sync_mode=input.sync_mode,
                 log_messages=self._log_messages,
+                batch_poll_interval_seconds=input.batch_poll_interval_seconds,
             )
             compound_id = f"{task.task_id}.sub.{st.sub_task_id}"
             handle = await workflow.start_child_workflow(
@@ -1470,9 +1495,11 @@ class ForgeSubTaskWorkflow:
     """
 
     def __init__(self) -> None:
-        self._batch_results: dict[str, BatchResult] = {}
         self._sync_mode: bool = True
         self._log_messages: bool = False
+        # Timer-loop batch poll cadence (D88); overridden from the workflow input
+        # in run(). Held in workflow state so it replays identically.
+        self._poll_interval: timedelta = _BATCH_POLL_INTERVAL
         # Per-role occurrence counters for replay-stable interaction keys (T1.6a).
         self._persist_occurrences: dict[str, int] = {}
 
@@ -1509,17 +1536,11 @@ class ForgeSubTaskWorkflow:
         )
         await _persist_block(req)
 
-    @workflow.signal
-    async def batch_result_received(self, result: BatchResult) -> None:
-        # Correlate by request_id and keep the first delivery: at-least-once
-        # signalling can redeliver a result, and a stale/duplicate must not
-        # overwrite or be mistaken for another call's (INTERIM; deleted Phase 4).
-        self._batch_results.setdefault(result.request_id, result)
-
     @workflow.run
     async def run(self, input: SubTaskInput) -> SubTaskResult:
         self._sync_mode = input.sync_mode
         self._log_messages = input.log_messages
+        self._poll_interval = timedelta(seconds=input.batch_poll_interval_seconds)
         workflow.logger.info(
             "Sub-task started: sub_task_id=%s depth=%d/%d",
             input.sub_task.sub_task_id,
@@ -1556,15 +1577,17 @@ class ForgeSubTaskWorkflow:
         max_tokens: int = 4096,
     ) -> ParsedLLMResponse:
         return await _call_llm_batch_dispatch(
-            self._batch_results,
             context,
             output_type_name,
             thinking=thinking,
             max_tokens=max_tokens,
+            poll_interval=self._poll_interval,
         )
 
     async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
-        result = await _call_generation_dispatch(self._batch_results, self._sync_mode, context)
+        result = await _call_generation_dispatch(
+            self._sync_mode, context, poll_interval=self._poll_interval
+        )
         await self._persist_interaction(
             role="llm",
             task_id=context.task_id,
@@ -1581,7 +1604,7 @@ class ForgeSubTaskWorkflow:
         self, call_input: ConflictResolutionCallInput
     ) -> ConflictResolutionCallResult:
         result = await _call_conflict_resolution_dispatch(
-            self._batch_results, self._sync_mode, call_input
+            self._sync_mode, call_input, poll_interval=self._poll_interval
         )
         await self._persist_interaction(
             role="conflict_resolution",
@@ -1755,7 +1778,12 @@ class ForgeSubTaskWorkflow:
             )
 
         # --- Start child workflows in parallel ---
-        child_timeout = _child_timeout(input.depth + 1, input.max_depth)
+        child_timeout = _child_timeout(
+            input.depth + 1,
+            input.max_depth,
+            sync_mode=input.sync_mode,
+            max_attempts=input.max_attempts,
+        )
         handles = []
         for st in nested_sub_tasks:
             child_input = SubTaskInput(
@@ -1775,6 +1803,7 @@ class ForgeSubTaskWorkflow:
                 thinking=input.thinking,
                 sync_mode=input.sync_mode,
                 log_messages=self._log_messages,
+                batch_poll_interval_seconds=input.batch_poll_interval_seconds,
             )
             child_compound_id = f"{compound_id}.sub.{st.sub_task_id}"
             handle = await workflow.start_child_workflow(

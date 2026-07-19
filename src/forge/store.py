@@ -523,23 +523,30 @@ def update_batch_status(
     status: BatchJobStatus | str,
     error_message: str | None = None,
 ) -> None:
-    """Update batch job status and timestamp.
+    """Monotonically advance a batch job's status and timestamp.
 
     Accepts either a ``BatchJobStatus`` member or its string value. Unknown
     strings raise ``ValueError`` — this is the system-boundary validation
     point that prevents garbage statuses from reaching the DB.
+
+    The UPDATE only matches rows still in ``SUBMITTED`` (the sole non-terminal
+    state), so terminal statuses (``ENDED``/``FAILED``/``EXPIRED``/``MISSING``)
+    absorb all later updates: a delayed or duplicate retry arriving after the row
+    is already terminal matches zero rows and is silently skipped — it can never
+    regress a terminal status. ``error_message`` is written only when non-``None``,
+    so clearing it can never clobber an error recorded by an earlier update.
     """
     validated = BatchJobStatus(status)
     t = _BATCH_JOBS_TABLE
+    values: dict[str, Any] = {"status": validated, "updated_at": datetime.now(UTC)}
+    if error_message is not None:
+        values["error_message"] = error_message
     with engine.begin() as conn:
         conn.execute(
             sa.update(BatchJob)
             .where(t.c.id == request_id)
-            .values(
-                status=validated,
-                error_message=error_message,
-                updated_at=datetime.now(UTC),
-            )
+            .where(t.c.status == BatchJobStatus.SUBMITTED)
+            .values(**values)
         )
 
 

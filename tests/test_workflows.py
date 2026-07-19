@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,7 +15,9 @@ from forge.models import (
     AssembleSanityCheckContextInput,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
-    BatchResult,
+    BatchFetchResult,
+    BatchStatusInput,
+    BatchStatusResult,
     BatchSubmitInput,
     BatchSubmitResult,
     CommitChangesInput,
@@ -29,6 +30,7 @@ from forge.models import (
     CreateWorktreeOutput,
     DetectFileConflictsInput,
     DetectFileConflictsOutput,
+    FetchBatchResultInput,
     FileOutput,
     ForgeTaskInput,
     LLMCallResult,
@@ -72,7 +74,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from pydantic import BaseModel
-    from temporalio.client import Client
     from temporalio.testing import WorkflowEnvironment
 
 
@@ -103,41 +104,42 @@ _LLM_RESPONSE = LLMResponse(
 # Shared batch mock infrastructure
 # ---------------------------------------------------------------------------
 
-_test_client: Client | None = None
 _parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
 # Captured submit_batch_request inputs, keyed by output_type_name — opt-in
 # regression coverage for the shared thinking fallback and the
 # thinking-enabled max_tokens bump (workflow_blocks.THINKING_MAX_TOKENS).
 # Additive only: tests that don't read this incur no behavior change.
-_SELF_SIGNAL_SUBMIT_LOG: dict[str, BatchSubmitInput] = {}
+_CAPTURED_SUBMIT_INPUTS: dict[str, BatchSubmitInput] = {}
+
+# Recorded request_id → output_type_name, populated by the submit mock. The
+# timer-loop fetch input carries only request_id, so the fetch mock recovers
+# the output type from here (kept for symmetry with the real transport; the
+# canned parse handler dispatches on output_type regardless).
+_SUBMIT_OUTPUT_TYPES: dict[str, str] = {}
 
 
 @activity.defn(name="submit_batch_request")
-async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResult:
-    """Self-signaling submit: immediately signal the workflow with a batch result.
-
-    Mints a fresh request_id per call (as the real submit_batch_request does),
-    so a workflow that makes several batch calls correlates each result to its
-    own call — a single constant id would let the second call read the first
-    call's result now that the buffer is keyed by request_id.
-    """
-    assert _test_client is not None
-    _SELF_SIGNAL_SUBMIT_LOG[input.output_type_name] = input
-    request_id = uuid.uuid4().hex
-    handle = _test_client.get_workflow_handle(input.workflow_id)
-    await handle.signal(
-        "batch_result_received",
-        BatchResult(
-            request_id=request_id,
-            batch_id="msgbatch_mock123",
-            raw_response_json='{"mock": true}',
-            result_type=input.output_type_name,
-        ),
-    )
+async def mock_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
+    """Echo the workflow-minted request_id (T4.1: the workflow always passes it)."""
+    _CAPTURED_SUBMIT_INPUTS[input.output_type_name] = input
+    _SUBMIT_OUTPUT_TYPES[input.request_id] = input.output_type_name
     return BatchSubmitResult(
-        request_id=request_id,
+        request_id=input.request_id,
         batch_id="msgbatch_mock123",
+        provider="anthropic",
     )
+
+
+@activity.defn(name="batch_status")
+async def mock_batch_status_ended(input: BatchStatusInput) -> BatchStatusResult:
+    """Report the batch as immediately ended — the timer loop breaks to fetch."""
+    return BatchStatusResult(batch_id=input.batch_id, state="ended")
+
+
+@activity.defn(name="fetch_batch_result")
+async def mock_fetch_batch(input: FetchBatchResultInput) -> BatchFetchResult:
+    """Return this waiter's inline canned body; parse dispatches on output_type."""
+    return BatchFetchResult(raw_response_json='{"mock": true}')
 
 
 @activity.defn(name="persist_to_store")
@@ -293,7 +295,9 @@ _MOCK_ACTIVITIES = [
     mock_write_output,
     mock_validate_output,
     mock_evaluate_transition,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -303,8 +307,6 @@ async def _run_workflow(
     input: ForgeTaskInput = _FORGE_INPUT,
 ) -> TaskResult:
     """Helper to run the workflow with mock activities."""
-    global _test_client
-    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -620,7 +622,9 @@ _PLAN_MOCK_ACTIVITIES = [
     mock_plan_evaluate_transition,
     mock_plan_commit_changes,
     mock_reset_worktree,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -643,8 +647,6 @@ async def _run_planned_workflow(
     input: ForgeTaskInput = _PLANNED_INPUT,
 ) -> TaskResult:
     """Helper to run the planned workflow with mock activities."""
-    global _test_client
-    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -963,7 +965,9 @@ _SUBTASK_MOCK_ACTIVITIES = [
     mock_subtask_write_output,
     mock_subtask_validate_output,
     mock_subtask_evaluate_transition,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -973,8 +977,6 @@ async def _run_subtask_workflow(
     input: SubTaskInput,
 ) -> SubTaskResult:
     """Helper to run the sub-task workflow with mock activities."""
-    global _test_client
-    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -1366,7 +1368,9 @@ _FANOUT_MOCK_ACTIVITIES = [
     mock_fanout_assemble_cr_context,
     mock_fanout_call_conflict_resolution,
     mock_detect_file_conflicts,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -1390,8 +1394,6 @@ async def _run_fanout_workflow(
     input: ForgeTaskInput = _FANOUT_INPUT,
 ) -> TaskResult:
     """Helper to run the fan-out workflow with mock activities."""
-    global _test_client
-    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -1884,7 +1886,9 @@ _MIXED_MOCK_ACTIVITIES = [
     mock_fanout_commit_changes,
     mock_fanout_reset_worktree,
     mock_detect_file_conflicts,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -1894,11 +1898,10 @@ class TestMixedPlan:
 
     @pytest.mark.asyncio
     async def test_mixed_plan_succeeds(self, env: WorkflowEnvironment) -> None:
-        global _MIXED_LLM_CALL_COUNT, _MIXED_PARSE_COUNT, _test_client, _parse_handler
+        global _MIXED_LLM_CALL_COUNT, _MIXED_PARSE_COUNT, _parse_handler
         _MIXED_LLM_CALL_COUNT = 0
         _MIXED_PARSE_COUNT = 0
         _reset_fanout_mock_state()
-        _test_client = env.client
         _parse_handler = _mixed_parse_handler
 
         async with Worker(
@@ -2062,7 +2065,9 @@ _P8_MOCK_ACTIVITIES = [
     mock_p8_write_output,
     mock_p8_validate_output,
     mock_p8_evaluate_transition,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -2072,9 +2077,7 @@ class TestSingleStepErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_first_attempt_has_no_prior_errors(self, env: WorkflowEnvironment) -> None:
-        global _test_client
         _reset_p8_state(transitions=[TransitionSignal.SUCCESS.value])
-        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -2099,7 +2102,6 @@ class TestSingleStepErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
-        global _test_client
         lint_errors = [
             ValidationResult(
                 check_name="ruff_lint",
@@ -2118,7 +2120,6 @@ class TestSingleStepErrorAwareRetry:
                 [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")],
             ],
         )
-        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -2310,7 +2311,9 @@ _P8_STEP_MOCK_ACTIVITIES = [
     mock_p8s_evaluate_transition,
     mock_p8s_commit,
     mock_p8s_reset_worktree,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -2320,7 +2323,6 @@ class TestPlannedStepErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_step_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
-        global _test_client
         lint_errors = [
             ValidationResult(
                 check_name="ruff_format",
@@ -2347,7 +2349,6 @@ class TestPlannedStepErrorAwareRetry:
             max_step_attempts=2,
             max_exploration_rounds=0,
         )
-        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -2493,7 +2494,9 @@ _P8_ST_MOCK_ACTIVITIES = [
     mock_p8st_write_output,
     mock_p8st_validate_output,
     mock_p8st_evaluate_transition,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -2503,7 +2506,6 @@ class TestSubTaskErrorAwareRetry:
 
     @pytest.mark.asyncio
     async def test_subtask_retry_passes_prior_errors(self, env: WorkflowEnvironment) -> None:
-        global _test_client
         test_errors = [
             ValidationResult(
                 check_name="tests",
@@ -2534,7 +2536,6 @@ class TestSubTaskErrorAwareRetry:
             parent_branch="forge/parent-task",
             max_attempts=2,
         )
-        _test_client = env.client
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
@@ -2645,7 +2646,8 @@ def _reset_recursive_mock_state(
     _RECURSIVE_CONFLICT_RESPONSES.clear()
     _RECURSIVE_PARSE_LLM_COUNT = 0
     _parse_handler = _recursive_parse_handler
-    _SELF_SIGNAL_SUBMIT_LOG.clear()
+    _CAPTURED_SUBMIT_INPUTS.clear()
+    _SUBMIT_OUTPUT_TYPES.clear()
     if transitions:
         _RECURSIVE_TRANSITION_SEQUENCE.extend(transitions)
     if llm_responses:
@@ -2788,7 +2790,9 @@ _RECURSIVE_MOCK_ACTIVITIES = [
     mock_recursive_assemble_cr_context,
     mock_recursive_call_conflict_resolution,
     mock_detect_file_conflicts,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -2803,8 +2807,6 @@ async def _run_recursive_subtask_workflow(
     Pass ``activities`` to override the default mock set (e.g. to swap in a
     capturing closure for one activity) while reusing the client wiring.
     """
-    global _test_client
-    _test_client = env.client
     async with Worker(
         env.client,
         task_queue=FORGE_TASK_QUEUE,
@@ -3265,6 +3267,12 @@ class TestRecursiveFanOutPropagatesThinkingAndRouting:
             model_name="anthropic:sub-generation-model",
             model_routing=ModelConfig(reasoning="anthropic:custom-reasoning-model"),
             thinking=ThinkingPolicy(enabled=True, effort="max"),
+            # Runs at the default 600s poll interval: the mode-aware batch
+            # _child_timeout (T4.1 ST3c) now sizes the depth-1 ``mid`` node from its
+            # permitted batch-wait budget ((max_attempts + remaining) * 25h), so the
+            # two sequential batch phases (await grandchildren, then conflict
+            # resolution) fit comfortably. This is the natural regression proof for
+            # the ST3a fixture pin removal.
         )
 
     @pytest.mark.asyncio
@@ -3338,7 +3346,7 @@ class TestRecursiveFanOutPropagatesThinkingAndRouting:
         # Conflict resolution is thinking-enabled here, so its batch submit
         # must carry the explicit adaptive-thinking cap, not the generic
         # batch_submit_and_wait default (4096).
-        submitted = _SELF_SIGNAL_SUBMIT_LOG["ConflictResolutionResponse"]
+        submitted = _CAPTURED_SUBMIT_INPUTS["ConflictResolutionResponse"]
         assert submitted.thinking == ThinkingPolicy(enabled=True, effort="max")
         assert submitted.max_tokens == THINKING_MAX_TOKENS
 
@@ -3456,7 +3464,8 @@ def _reset_sc_mock_state(
     _SC_LLM_CALL_COUNT = 0
     _SC_SANITY_RESPONSES.clear()
     _parse_handler = _sc_parse_handler
-    _SELF_SIGNAL_SUBMIT_LOG.clear()
+    _CAPTURED_SUBMIT_INPUTS.clear()
+    _SUBMIT_OUTPUT_TYPES.clear()
     if transitions:
         _SC_TRANSITION_SEQUENCE.extend(transitions)
     if sanity_responses:
@@ -3604,7 +3613,9 @@ _SC_MOCK_ACTIVITIES = [
     mock_sc_reset_worktree,
     mock_assemble_sanity_check_context,
     mock_call_sanity_check,
-    mock_self_signaling_submit,
+    mock_submit_batch,
+    mock_batch_status_ended,
+    mock_fetch_batch,
     mock_parse_response,
 ]
 
@@ -3619,8 +3630,6 @@ async def _run_sc_workflow(
     input: ForgeTaskInput | None = None,
 ) -> TaskResult:
     """Helper to run the planned workflow with sanity check mock activities."""
-    global _test_client
-    _test_client = env.client
     if input is None:
         input = ForgeTaskInput(
             task=_SC_TASK,
@@ -3682,7 +3691,7 @@ class TestSanityCheckContinue:
         # Sanity-check is thinking-enabled, so its batch submit must carry the
         # explicit adaptive-thinking cap, not the generic
         # batch_submit_and_wait default (4096).
-        assert _SELF_SIGNAL_SUBMIT_LOG["SanityCheckResponse"].max_tokens == THINKING_MAX_TOKENS
+        assert _CAPTURED_SUBMIT_INPUTS["SanityCheckResponse"].max_tokens == THINKING_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -4007,10 +4016,51 @@ async def mock_batch_assemble_context(input: AssembleContextInput) -> AssembledC
 async def mock_batch_submit(input: BatchSubmitInput) -> BatchSubmitResult:
     _BATCH_CALL_LOG.append("submit_batch_request")
     _BATCH_SUBMIT_INPUTS.append(input)
+    # Echo the workflow-minted request_id (T4.1: the workflow always passes it).
     return BatchSubmitResult(
-        request_id="req-test-123",
+        request_id=input.request_id,
         batch_id="msgbatch_test123",
+        provider="anthropic",
     )
+
+
+@activity.defn(name="batch_status")
+async def mock_batch_status(input: BatchStatusInput) -> BatchStatusResult:
+    """Report the batch ended — the timer loop breaks straight to fetch."""
+    _BATCH_CALL_LOG.append("batch_status")
+    return BatchStatusResult(batch_id=input.batch_id, state="ended")
+
+
+@activity.defn(name="batch_status")
+async def mock_batch_status_pending(input: BatchStatusInput) -> BatchStatusResult:
+    """Never end: the batch stays in_progress so the poll loop runs to the 25h
+    ceiling (fast-forwarded by the time-skipping env) and gives up with MISSING."""
+    _BATCH_CALL_LOG.append("batch_status")
+    return BatchStatusResult(batch_id=input.batch_id, state="in_progress")
+
+
+@activity.defn(name="batch_status")
+async def mock_batch_status_failed(input: BatchStatusInput) -> BatchStatusResult:
+    """Report a provider-terminal failure — the poll loop persists FAILED and
+    raises a non-retryable ApplicationError (the terminal-status fast-fail path)."""
+    _BATCH_CALL_LOG.append("batch_status")
+    return BatchStatusResult(batch_id=input.batch_id, state="failed")
+
+
+@activity.defn(name="fetch_batch_result")
+async def mock_batch_fetch(input: FetchBatchResultInput) -> BatchFetchResult:
+    """Return this waiter's inline body; the parse mock produces the parsed result."""
+    _BATCH_CALL_LOG.append("fetch_batch_result")
+    return BatchFetchResult(raw_response_json='{"dummy": "json"}')
+
+
+@activity.defn(name="fetch_batch_result")
+async def mock_batch_fetch_error(input: FetchBatchResultInput) -> BatchFetchResult:
+    """Return an error-bearing fetch — a failed result line / absent custom_id. The
+    waiter turns it into a non-retryable ApplicationError (T4.1) that run()'s
+    failure-symmetry handler catches instead of crashing the workflow."""
+    _BATCH_CALL_LOG.append("fetch_batch_result")
+    return BatchFetchResult(error="Batch expired")
 
 
 @activity.defn(name="parse_llm_response")
@@ -4063,6 +4113,57 @@ _BATCH_MOCK_ACTIVITIES = [
     mock_batch_commit_changes,
     mock_batch_assemble_context,
     mock_batch_submit,
+    mock_batch_status,
+    mock_batch_fetch,
+    mock_batch_parse,
+    mock_batch_write_output,
+    mock_batch_validate_output,
+    mock_batch_evaluate_transition,
+]
+
+# Same as above but the batch never ends, so the poll loop runs to the 25h
+# ceiling (fast-forwarded by the time-skipping env) — the wait-timeout path.
+_BATCH_TIMEOUT_ACTIVITIES = [
+    mock_batch_persist_to_store,
+    mock_batch_create_worktree,
+    mock_batch_remove_worktree,
+    mock_batch_commit_changes,
+    mock_batch_assemble_context,
+    mock_batch_submit,
+    mock_batch_status_pending,
+    mock_batch_fetch,
+    mock_batch_parse,
+    mock_batch_write_output,
+    mock_batch_validate_output,
+    mock_batch_evaluate_transition,
+]
+
+# The batch ends but the fetch returns an error — the fast-failure path.
+_BATCH_FETCH_ERROR_ACTIVITIES = [
+    mock_batch_persist_to_store,
+    mock_batch_create_worktree,
+    mock_batch_remove_worktree,
+    mock_batch_commit_changes,
+    mock_batch_assemble_context,
+    mock_batch_submit,
+    mock_batch_status,
+    mock_batch_fetch_error,
+    mock_batch_parse,
+    mock_batch_write_output,
+    mock_batch_validate_output,
+    mock_batch_evaluate_transition,
+]
+
+# The provider reports the batch FAILED — the terminal-status fast-fail path.
+_BATCH_FAILED_STATUS_ACTIVITIES = [
+    mock_batch_persist_to_store,
+    mock_batch_create_worktree,
+    mock_batch_remove_worktree,
+    mock_batch_commit_changes,
+    mock_batch_assemble_context,
+    mock_batch_submit,
+    mock_batch_status_failed,
+    mock_batch_fetch,
     mock_batch_parse,
     mock_batch_write_output,
     mock_batch_validate_output,
@@ -4101,23 +4202,14 @@ class TestBatchSingleStep:
             workflows=[ForgeTaskWorkflow],
             activities=_BATCH_MOCK_ACTIVITIES,
         ):
-            handle = await env.client.start_workflow(
+            # The timer loop polls batch_status (mocked "ended") then fetches the
+            # result — no signal needed.
+            result = await env.client.execute_workflow(
                 ForgeTaskWorkflow.run,
                 input,
                 id="test-batch-single",
                 task_queue=FORGE_TASK_QUEUE,
             )
-
-            # Send signal with batch result
-            batch_result = BatchResult(
-                request_id="req-test-123",
-                batch_id="msgbatch_test123",
-                raw_response_json='{"dummy": "json"}',
-                result_type="LLMResponse",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, batch_result)
-
-            result = await handle.result()
 
         assert result.status == TransitionSignal.SUCCESS
         assert "submit_batch_request" in _BATCH_CALL_LOG
@@ -4179,20 +4271,12 @@ class TestBatchSingleStep:
             workflows=[ForgeTaskWorkflow],
             activities=_BATCH_MOCK_ACTIVITIES,
         ):
-            handle = await env.client.start_workflow(
+            result = await env.client.execute_workflow(
                 ForgeTaskWorkflow.run,
                 input,
                 id="test-batch-token-check",
                 task_queue=FORGE_TASK_QUEUE,
             )
-            batch_result = BatchResult(
-                request_id="req-test-123",
-                batch_id="msgbatch_test123",
-                raw_response_json='{"dummy": "json"}',
-                result_type="LLMResponse",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, batch_result)
-            result = await handle.result()
 
         assert result.status == TransitionSignal.SUCCESS
         interactions = [r for r in _BATCH_PERSISTED if r.kind == "interaction" and r.role == "llm"]
@@ -4205,8 +4289,8 @@ class TestBatchSingleStep:
         assert row.stop_reason == "end_turn"
 
     @pytest.mark.asyncio
-    async def test_batch_error_in_signal_records_failure(self, env: WorkflowEnvironment) -> None:
-        """An error-payload BatchResult (T1.3 fast failure) ends in a graceful
+    async def test_batch_fetch_error_records_failure(self, env: WorkflowEnvironment) -> None:
+        """An error-bearing fetch (T4.1 fast failure) ends in a graceful
         FAILURE_TERMINAL run row + cleaned worktree, not a raw workflow crash (T1.6b)."""
         _reset_batch_mock_state()
 
@@ -4227,27 +4311,17 @@ class TestBatchSingleStep:
             env.client,
             task_queue=FORGE_TASK_QUEUE,
             workflows=[ForgeTaskWorkflow],
-            activities=_BATCH_MOCK_ACTIVITIES,
+            activities=_BATCH_FETCH_ERROR_ACTIVITIES,
         ):
-            handle = await env.client.start_workflow(
+            # The batch ends but its fetch carries an error; the waiter raises a
+            # non-retryable ApplicationError that run()'s failure-symmetry handler
+            # catches instead of letting it crash the workflow.
+            result = await env.client.execute_workflow(
                 ForgeTaskWorkflow.run,
                 input,
                 id="test-batch-error",
                 task_queue=FORGE_TASK_QUEUE,
             )
-
-            # Send signal with error — the waiter turns result.error into an
-            # ApplicationError (T1.3), which the run() failure-symmetry handler
-            # catches instead of letting it crash the workflow.
-            batch_result = BatchResult(
-                request_id="req-test-123",
-                batch_id="msgbatch_test123",
-                error="Batch expired",
-                result_type="LLMResponse",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, batch_result)
-
-            result = await handle.result()
 
         assert result.status == TransitionSignal.FAILURE_TERMINAL
         assert "ApplicationError" in (result.error or "")
@@ -4260,87 +4334,14 @@ class TestBatchSingleStep:
         assert len(runs) == 1
         assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
 
-    @pytest.mark.asyncio
-    async def test_batch_result_correlated_by_request_id(self, env: WorkflowEnvironment) -> None:
-        """A stale/duplicate signal must not be taken as this call's result.
-
-        The submit mock waits on request_id ``req-test-123``. A different call's
-        error result and a re-delivered duplicate arrive around the correct one;
-        with the buffer keyed by request_id the waiter still reads its own valid
-        result and succeeds. Under the old count-based buffer the wrong result
-        would be popped and the workflow would fail.
-        """
-        _reset_batch_mock_state(transitions=[TransitionSignal.SUCCESS.value])
-
-        task = TaskDefinition(
-            task_id="batch-corr",
-            description="Write a hello module.",
-            target_files=["hello.py"],
-        )
-        input = ForgeTaskInput(
-            task=task,
-            repo_root="/tmp/repo",
-            max_attempts=2,
-            max_exploration_rounds=0,
-            sync_mode=False,
-        )
-
-        async with Worker(
-            env.client,
-            task_queue=FORGE_TASK_QUEUE,
-            workflows=[ForgeTaskWorkflow],
-            activities=_BATCH_MOCK_ACTIVITIES,
-        ):
-            handle = await env.client.start_workflow(
-                ForgeTaskWorkflow.run,
-                input,
-                id="test-batch-correlation",
-                task_queue=FORGE_TASK_QUEUE,
-            )
-
-            # A different call's failing result arrives first — and again as an
-            # at-least-once duplicate. Neither matches this call's request_id, so
-            # both must be ignored (not popped as this call's result).
-            wrong = BatchResult(
-                request_id="req-other-999",
-                batch_id="msgbatch_other",
-                error="wrong call — must not be misattributed",
-                result_type="LLMResponse",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, wrong)
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, wrong)
-
-            # This call's real result.
-            correct = BatchResult(
-                request_id="req-test-123",
-                batch_id="msgbatch_test123",
-                raw_response_json='{"dummy": "json"}',
-                result_type="LLMResponse",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, correct)
-
-            # A re-delivered duplicate of this call's id, carrying an error: first
-            # delivery wins (setdefault), so this stale copy is a no-op.
-            stale_dup = BatchResult(
-                request_id="req-test-123",
-                batch_id="msgbatch_test123",
-                error="stale duplicate — must be ignored",
-                result_type="LLMResponse",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, stale_dup)
-
-            result = await handle.result()
-
-        assert result.status == TransitionSignal.SUCCESS
-        assert result.output_files == {"hello.py": "print('hello')\n"}
-
 
 # ---------------------------------------------------------------------------
 # Tests — batch-wait failure symmetry (T1.6b)
 # ---------------------------------------------------------------------------
 
-# Sub-task workflow batch activities with a NON-signaling submit, so the 25h
-# batch wait times out (skipped by the time-skipping env) inside the sub-task.
+# Sub-task workflow batch activities whose batch never ends, so the 25h batch
+# wait runs to the ceiling (fast-forwarded by the time-skipping env) inside the
+# sub-task and gives up with MISSING.
 _SUBTASK_TIMEOUT_ACTIVITIES = [
     mock_persist_to_store,
     mock_subtask_create_worktree,
@@ -4349,7 +4350,9 @@ _SUBTASK_TIMEOUT_ACTIVITIES = [
     mock_subtask_write_output,
     mock_subtask_validate_output,
     mock_subtask_evaluate_transition,
-    mock_batch_submit,  # returns req-test-123 and never signals
+    mock_batch_submit,  # echoes request_id
+    mock_batch_status_pending,  # in_progress forever → 25h ceiling
+    mock_fetch_batch,  # never reached
     mock_parse_response,
 ]
 
@@ -4361,8 +4364,9 @@ class TestBatchWaitFailure:
     async def test_wait_timeout_records_failure_and_cleans_worktree(
         self, env: WorkflowEnvironment
     ) -> None:
-        """The 25h wait raises the builtin TimeoutError; run() records a terminal
-        row and removes the worktree instead of crashing out with an orphan."""
+        """The batch never ends, so the poll loop runs to the 25h ceiling and gives
+        up with a non-retryable ApplicationError; run() records a terminal row and
+        removes the worktree instead of crashing out with an orphan."""
         _reset_batch_mock_state()
 
         task = TaskDefinition(
@@ -4382,11 +4386,11 @@ class TestBatchWaitFailure:
             env.client,
             task_queue=FORGE_TASK_QUEUE,
             workflows=[ForgeTaskWorkflow],
-            activities=_BATCH_MOCK_ACTIVITIES,
+            activities=_BATCH_TIMEOUT_ACTIVITIES,
         ):
-            # Never signal: mock_batch_submit returns req-test-123 but the result
-            # never arrives, so wait_condition times out (the time-skipping env
-            # fast-forwards the 25h timer).
+            # batch_status returns in_progress forever, so the poll loop runs to
+            # the 25h ceiling (the time-skipping env fast-forwards every sleep) and
+            # gives up.
             result = await env.client.execute_workflow(
                 ForgeTaskWorkflow.run,
                 input,
@@ -4395,7 +4399,7 @@ class TestBatchWaitFailure:
             )
 
         assert result.status == TransitionSignal.FAILURE_TERMINAL
-        assert "TimeoutError" in (result.error or "")
+        assert "ApplicationError" in (result.error or "")
         # Worktree was cleaned — no orphan.
         assert "remove_worktree" in _BATCH_CALL_LOG
         # Exactly one FAILURE_TERMINAL run row was persisted (same PersistRun the
@@ -4403,6 +4407,58 @@ class TestBatchWaitFailure:
         runs = [r for r in _BATCH_PERSISTED if r.kind == "run"]
         assert len(runs) == 1
         assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
+        # The waiter recorded a terminal MISSING outcome before giving up.
+        outcomes = [
+            r for r in _BATCH_PERSISTED if r.kind == "batch_outcome" and r.status == "missing"
+        ]
+        assert len(outcomes) == 1
+
+    @pytest.mark.asyncio
+    async def test_provider_terminal_status_records_failure_and_cleans_worktree(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """A provider-terminal batch status (FAILED) records a terminal FAILED
+        outcome and raises a non-retryable ApplicationError; run() records a
+        terminal row and removes the worktree instead of crashing (T1.6b)."""
+        _reset_batch_mock_state()
+
+        task = TaskDefinition(
+            task_id="batch-provider-fail",
+            description="Provider-failure test.",
+            target_files=["x.py"],
+        )
+        input = ForgeTaskInput(
+            task=task,
+            repo_root="/tmp/repo",
+            max_attempts=1,
+            max_exploration_rounds=0,
+            sync_mode=False,
+        )
+
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_BATCH_FAILED_STATUS_ACTIVITIES,
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                input,
+                id="test-batch-provider-fail",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert "ApplicationError" in (result.error or "")
+        assert "remove_worktree" in _BATCH_CALL_LOG
+        runs = [r for r in _BATCH_PERSISTED if r.kind == "run"]
+        assert len(runs) == 1
+        assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
+        # The waiter recorded a terminal FAILED outcome before raising.
+        outcomes = [
+            r for r in _BATCH_PERSISTED if r.kind == "batch_outcome" and r.status == "failed"
+        ]
+        assert len(outcomes) == 1
 
     @pytest.mark.asyncio
     async def test_subtask_wait_timeout_returns_terminal_and_cleans_worktree(
@@ -4410,8 +4466,6 @@ class TestBatchWaitFailure:
     ) -> None:
         """A sub-task batch wait timing out returns a FAILURE_TERMINAL SubTaskResult
         (so the parent records the run row) and removes its own worktree (T1.6b)."""
-        global _test_client
-        _test_client = env.client
         _reset_subtask_mock_state()
 
         input = SubTaskInput(
@@ -4443,7 +4497,7 @@ class TestBatchWaitFailure:
 
         assert result.status == TransitionSignal.FAILURE_TERMINAL
         assert result.sub_task_id == "st1"
-        assert "TimeoutError" in (result.error or "")
+        assert "ApplicationError" in (result.error or "")
         # The sub-task's own compound-id worktree was removed — no orphan.
         assert "remove_worktree:parent-task.sub.st1" in _SUBTASK_CALL_LOG
 
@@ -4506,12 +4560,21 @@ async def mock_bp_assemble_planner(input: AssembleContextInput) -> PlannerInput:
 async def mock_bp_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
     _BATCH_PLAN_CALL_LOG.append(f"submit_batch:{input.output_type_name}")
     _BATCH_PLAN_SUBMIT_INPUTS[input.output_type_name] = input
-    # A fresh request_id per submission (keyed off the output type so the two
-    # calls — planner then generation — get distinct correlation ids that the
-    # test's signals match).
+    # Echo the workflow-minted request_id (T4.1). The planner and generation
+    # calls run sequentially, so their fetch/parse pairs stay ordered.
     return BatchSubmitResult(
-        request_id=f"req-bp-{input.output_type_name}", batch_id="msgbatch_bp123"
+        request_id=input.request_id, batch_id="msgbatch_bp123", provider="anthropic"
     )
+
+
+@activity.defn(name="batch_status")
+async def mock_bp_batch_status(input: BatchStatusInput) -> BatchStatusResult:
+    return BatchStatusResult(batch_id=input.batch_id, state="ended")
+
+
+@activity.defn(name="fetch_batch_result")
+async def mock_bp_fetch(input: FetchBatchResultInput) -> BatchFetchResult:
+    return BatchFetchResult(raw_response_json='{"mock": true}')
 
 
 @activity.defn(name="parse_llm_response")
@@ -4574,6 +4637,8 @@ _BATCH_PLAN_MOCK_ACTIVITIES = [
     mock_bp_create_worktree,
     mock_bp_assemble_planner,
     mock_bp_submit_batch,
+    mock_bp_batch_status,
+    mock_bp_fetch,
     mock_bp_parse,
     mock_bp_assemble_step,
     mock_bp_write_output,
@@ -4635,32 +4700,14 @@ class TestBatchPlanned:
             workflows=[ForgeTaskWorkflow],
             activities=_BATCH_PLAN_MOCK_ACTIVITIES,
         ):
-            handle = await env.client.start_workflow(
+            # Two sequential batch calls (planner then generation); each polls
+            # batch_status (mocked "ended") and fetches — no signals.
+            result = await env.client.execute_workflow(
                 ForgeTaskWorkflow.run,
                 input,
                 id="test-batch-planned",
                 task_queue=FORGE_TASK_QUEUE,
             )
-
-            # Signal for planner batch (request_id matches the planner submit)
-            planner_signal = BatchResult(
-                request_id="req-bp-Plan",
-                batch_id="msgbatch_bp123",
-                raw_response_json='{"dummy": "plan"}',
-                result_type="Plan",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, planner_signal)
-
-            # Signal for generation batch (request_id matches the generation submit)
-            gen_signal = BatchResult(
-                request_id="req-bp-LLMResponse",
-                batch_id="msgbatch_bp123",
-                raw_response_json='{"dummy": "gen"}',
-                result_type="LLMResponse",
-            )
-            await handle.signal(ForgeTaskWorkflow.batch_result_received, gen_signal)
-
-            result = await handle.result()
 
         assert result.status == TransitionSignal.SUCCESS
         assert "submit_batch:Plan" in _BATCH_PLAN_CALL_LOG
@@ -4704,3 +4751,272 @@ class TestSyncModeDefaultBatchMode:
             parent_branch="main",
         )
         assert input.sync_mode is False
+
+
+# ===========================================================================
+# T4.1 ST3c — batch-mode fan-out child execution-timeout derivation
+# ===========================================================================
+#
+# A real ForgeTaskWorkflow (planned, one single-child fan-out step) spawns a real
+# ForgeSubTaskWorkflow child, in batch mode. The mode-aware _child_timeout now sizes
+# the child from its permitted batch-wait budget, so:
+#   (a) a child survives a multi-poll (>20 min) batch turnaround the old fixed
+#       15-20 min ceiling would have killed; and
+#   (b) a child whose batch never ends still hits its own 25h wait ceiling, cleans its
+#       worktree, and returns FAILURE_TERMINAL, so the live parent records a run row
+#       (T1.6b failure symmetry extended to a spawned child).
+#
+# The planner batch always ends immediately, so the workflow reaches the fan-out step;
+# only the child's generation batch ("LLMResponse") is delayed/stalled. The status mock
+# recovers the waiter's output type from the request_id the submit mock encodes into the
+# batch_id, and mutates module-level scenario dicts (no ``global`` statements).
+
+_ST3C_CALL_LOG: list[str] = []
+_ST3C_PERSISTED: list[PersistRequest] = []
+# request_id -> output_type_name, recorded at submit so the status mock decides per
+# waiter whether (and how long) its batch stays in_progress.
+_ST3C_REQUEST_TYPES: dict[str, str] = {}
+# batch_id -> number of batch_status polls seen so far.
+_ST3C_STATUS_POLLS: dict[str, int] = {}
+# Scenario knob: how many in_progress polls the child's generation batch returns before
+# ``ended``. A value larger than 25h / 600s (= 150) stalls the child to its 25h ceiling.
+_ST3C_CONFIG: dict[str, int] = {"gen_in_progress_polls": 0}
+
+_ST3C_STALL_POLLS = 10_000  # >> 150, so the generation batch never ends within 25h
+
+
+def _reset_st3c_mock_state(gen_in_progress_polls: int) -> None:
+    _ST3C_CALL_LOG.clear()
+    _ST3C_PERSISTED.clear()
+    _ST3C_REQUEST_TYPES.clear()
+    _ST3C_STATUS_POLLS.clear()
+    _ST3C_CONFIG["gen_in_progress_polls"] = gen_in_progress_polls
+
+
+@activity.defn(name="persist_to_store")
+async def mock_st3c_persist(req: PersistRequest) -> PersistResult:
+    _ST3C_PERSISTED.append(req)
+    return PersistResult(kind=req.kind, applied=True)
+
+
+@activity.defn(name="create_worktree_activity")
+async def mock_st3c_create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+    _ST3C_CALL_LOG.append(f"create_worktree:{input.task_id}")
+    return CreateWorktreeOutput(
+        worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+        branch_name=f"forge/{input.task_id}",
+    )
+
+
+@activity.defn(name="remove_worktree_activity")
+async def mock_st3c_remove_worktree(input: RemoveWorktreeInput) -> None:
+    _ST3C_CALL_LOG.append(f"remove_worktree:{input.task_id}")
+
+
+@activity.defn(name="commit_changes_activity")
+async def mock_st3c_commit(input: CommitChangesInput) -> CommitChangesOutput:
+    _ST3C_CALL_LOG.append(f"commit:{input.status}")
+    return CommitChangesOutput(commit_sha="c" * 40)
+
+
+@activity.defn(name="assemble_planner_context")
+async def mock_st3c_assemble_planner(input: AssembleContextInput) -> PlannerInput:
+    return PlannerInput(
+        task_id=input.task_id,
+        system_prompt="planner system",
+        user_prompt="planner user",
+    )
+
+
+@activity.defn(name="assemble_sub_task_context")
+async def mock_st3c_assemble_sub_task(input: AssembleSubTaskContextInput) -> AssembledContext:
+    return AssembledContext(
+        task_id=input.parent_task_id,
+        system_prompt=f"sub-task prompt for {input.sub_task.sub_task_id}",
+        user_prompt=f"execute {input.sub_task.sub_task_id}",
+    )
+
+
+@activity.defn(name="submit_batch_request")
+async def mock_st3c_submit(input: BatchSubmitInput) -> BatchSubmitResult:
+    _ST3C_REQUEST_TYPES[input.request_id] = input.output_type_name
+    # Encode the request_id in the batch_id so the thin batch_status input (batch_id
+    # only) can recover this waiter's output type.
+    return BatchSubmitResult(
+        request_id=input.request_id,
+        batch_id=f"batch-{input.request_id}",
+        provider="anthropic",
+    )
+
+
+@activity.defn(name="batch_status")
+async def mock_st3c_batch_status(input: BatchStatusInput) -> BatchStatusResult:
+    request_id = input.batch_id.removeprefix("batch-")
+    output_type = _ST3C_REQUEST_TYPES.get(request_id, "")
+    seen = _ST3C_STATUS_POLLS.get(input.batch_id, 0)
+    _ST3C_STATUS_POLLS[input.batch_id] = seen + 1
+    # Only the child's generation batch is delayed; the planner batch ends at once so
+    # the workflow reaches the fan-out step.
+    if output_type == "LLMResponse" and seen < _ST3C_CONFIG["gen_in_progress_polls"]:
+        return BatchStatusResult(batch_id=input.batch_id, state="in_progress")
+    return BatchStatusResult(batch_id=input.batch_id, state="ended")
+
+
+@activity.defn(name="fetch_batch_result")
+async def mock_st3c_fetch(input: FetchBatchResultInput) -> BatchFetchResult:
+    return BatchFetchResult(raw_response_json='{"mock": true}')
+
+
+@activity.defn(name="parse_llm_response")
+async def mock_st3c_parse(input: ParseResponseInput) -> ParsedLLMResponse:
+    if input.output_type_name == "Plan":
+        plan = Plan(
+            task_id=input.task_id,
+            steps=[
+                PlanStep(
+                    step_id="fan-step",
+                    description="Single-child fan-out step.",
+                    target_files=[],
+                    sub_tasks=[
+                        SubTask(
+                            sub_task_id="st1",
+                            description="Do the thing.",
+                            target_files=["a.py"],
+                        ),
+                    ],
+                ),
+            ],
+            explanation="One fan-out step.",
+        )
+        return _make_parsed(plan, model_name="mock-planner")
+    return _make_parsed(
+        LLMResponse(
+            files=[FileOutput(file_path="a.py", content="# child\n")],
+            explanation="Child output.",
+        )
+    )
+
+
+@activity.defn(name="write_output")
+async def mock_st3c_write_output(input: WriteOutputInput) -> WriteResult:
+    files = input.llm_result.response.files
+    return WriteResult(
+        task_id=input.llm_result.task_id,
+        files_written=[f.file_path for f in files],
+        output_files={f.file_path: f.content for f in files},
+    )
+
+
+@activity.defn(name="write_files")
+async def mock_st3c_write_files(input: WriteFilesInput) -> WriteResult:
+    return WriteResult(task_id=input.task_id, files_written=list(input.files.keys()))
+
+
+@activity.defn(name="validate_output")
+async def mock_st3c_validate(input: ValidateOutputInput) -> list[ValidationResult]:
+    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
+
+
+@activity.defn(name="evaluate_transition")
+async def mock_st3c_transition(input: TransitionInput) -> str:
+    return TransitionSignal.SUCCESS.value
+
+
+_ST3C_MOCK_ACTIVITIES = [
+    mock_st3c_persist,
+    mock_st3c_create_worktree,
+    mock_st3c_remove_worktree,
+    mock_st3c_commit,
+    mock_st3c_assemble_planner,
+    mock_st3c_assemble_sub_task,
+    mock_st3c_submit,
+    mock_st3c_batch_status,
+    mock_st3c_fetch,
+    mock_st3c_parse,
+    mock_st3c_write_output,
+    mock_st3c_write_files,
+    mock_st3c_validate,
+    mock_st3c_transition,
+    mock_detect_file_conflicts,
+]
+
+
+async def _run_st3c_workflow(env: WorkflowEnvironment, task_id: str) -> TaskResult:
+    """Run a planned, single-fan-out-step ForgeTaskWorkflow (batch mode) that spawns a
+    real ForgeSubTaskWorkflow child, with the child execution timeout derived by the
+    mode-aware _child_timeout — no execution_timeout override on the parent."""
+    task = TaskDefinition(task_id=task_id, description="Build a thing.")
+    task_input = ForgeTaskInput(
+        task=task,
+        repo_root="/tmp/repo",
+        plan=True,
+        max_exploration_rounds=0,
+        sync_mode=False,  # batch mode
+    )
+    async with Worker(
+        env.client,
+        task_queue=FORGE_TASK_QUEUE,
+        workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
+        activities=_ST3C_MOCK_ACTIVITIES,
+    ):
+        return await env.client.execute_workflow(
+            ForgeTaskWorkflow.run,
+            task_input,
+            id=f"test-{task_id}",
+            task_queue=FORGE_TASK_QUEUE,
+        )
+
+
+class TestBatchFanOutChildTimeoutDerivation:
+    """The child execution timeout is derived from its batch-wait budget (T4.1 ST3c)."""
+
+    @pytest.mark.asyncio
+    async def test_child_survives_slow_batch_turnaround(self, env: WorkflowEnvironment) -> None:
+        """AC (a): the child's generation batch stays in_progress for 3 polls (>20 min
+        of workflow time at the 600s default) before ending. The old fixed 15-20-min
+        _child_timeout would have killed the child; the derived batch budget lets it
+        finish, so the fan-out step and the workflow succeed."""
+        _reset_st3c_mock_state(gen_in_progress_polls=3)
+
+        result = await _run_st3c_workflow(env, "st3c-slow")
+
+        assert result.status == TransitionSignal.SUCCESS
+        # The single fan-out step succeeded.
+        assert len(result.step_results) == 1
+        assert result.step_results[0].status == TransitionSignal.SUCCESS
+        assert result.step_results[0].sub_task_results[0].status == TransitionSignal.SUCCESS
+        # The slow path really engaged: the child's generation batch was polled at
+        # least 4 times (3 in_progress + 1 ended) — >20 min at the 600s poll floor.
+        assert max(_ST3C_STATUS_POLLS.values()) >= 4
+
+    @pytest.mark.asyncio
+    async def test_child_ceiling_expiry_cleans_worktree_and_records_run(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """AC (b): the child's generation batch never ends, so the child hits its own
+        25h wait ceiling, cleans its compound-id worktree, and returns FAILURE_TERMINAL
+        to the parent; the live parent then records a terminal run row (T1.6b symmetry
+        extended to a spawned child)."""
+        _reset_st3c_mock_state(gen_in_progress_polls=_ST3C_STALL_POLLS)
+
+        result = await _run_st3c_workflow(env, "st3c-stall")
+
+        # 1) The parent workflow ended terminally...
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        # 2) ...because the child returned FAILURE_TERMINAL from the fan-out step.
+        assert len(result.step_results) == 1
+        assert result.step_results[0].status == TransitionSignal.FAILURE_TERMINAL
+        child_results = result.step_results[0].sub_task_results
+        assert len(child_results) == 1
+        assert child_results[0].status == TransitionSignal.FAILURE_TERMINAL
+        # 3) The child cleaned its own compound-id worktree — no orphan.
+        assert "remove_worktree:st3c-stall.sub.st1" in _ST3C_CALL_LOG
+        # 4) The live parent persisted exactly one FAILURE_TERMINAL run row.
+        runs = [r for r in _ST3C_PERSISTED if r.kind == "run"]
+        assert len(runs) == 1
+        assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
+        # The child recorded a terminal MISSING batch outcome before giving up.
+        missing = [
+            r for r in _ST3C_PERSISTED if r.kind == "batch_outcome" and r.status == "missing"
+        ]
+        assert len(missing) == 1

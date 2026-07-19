@@ -17,39 +17,48 @@ if TYPE_CHECKING:
 
 
 class BatchJobStatus(StrEnum):
-    """Provider-batch lifecycle state of a ``batch_jobs`` row (platform single-writer).
+    """Provider-batch lifecycle state of a ``batch_jobs`` row (audit/spend ledger).
 
-    This tracks ONLY the provider batch lifecycle. The downstream consumer's
-    processing/terminal lifecycle (stored/failed) lives in the consumer's own
-    status table, joined to this on ``request_id``; the user-facing status is the
-    join of the two.
+    Under the timer-loop batch transport (D88, T4.1) the waiting workflow is the
+    recipient of its own batch result, so ``batch_jobs`` is a forge-internal
+    audit/spend ledger written at two points only — submit and terminal outcome.
+    This still tracks ONLY the provider batch lifecycle; a consumer's own
+    processing/terminal lifecycle lives in the consumer's status table, joined on
+    ``request_id``.
 
-    Happy path: SUBMITTED -> PROCESSING (handed to the consumer).
-    Failure paths: FAILED / EXPIRED (terminal provider states), MISSING (gave up).
+    Happy path: SUBMITTED -> ENDED (the waiter fetched the finished batch's
+    result). Failure paths: FAILED / EXPIRED (terminal provider states) and
+    MISSING (the waiter gave up at its 25h ceiling). SUBMITTED is the only
+    non-terminal state; every terminal status absorbs all later updates (the
+    monotonic ``WHERE status = 'submitted'`` guard in ``update_batch_status``).
     """
 
     SUBMITTED = "submitted"
-    """Row created; batch in flight at the provider, waiting for completion.
-    Only rows in this state are polled."""
+    """Row created at submit; batch in flight at the provider, waiting for
+    completion. The only non-terminal state — every terminal update transitions
+    from here."""
+
+    ENDED = "ended"
+    """Terminal success: the waiter fetched the finished batch's result. Written at
+    final fetch by the timer-loop transport (T4.1)."""
 
     PROCESSING = "processing"
-    """Provider reported the batch complete and the poller delivered the result
-    signal to the waiting consumer workflow. From the platform's view this is the
-    terminal provider state — the poller stops re-polling it. The consumer tracks
-    its own processing/terminal lifecycle in its own status table."""
+    """Legacy member. Written only by the retired shared poller (pre-T4.1), which
+    set it after delivering a result signal to the waiting consumer. Kept so old
+    rows remain readable; the timer-loop transport never writes it."""
 
     FAILED = "failed"
     """Terminal provider failure: the API refused the submission before returning
-    a batch_id (``record_batch_failure``), reported the batch FAILED/CANCELED, or a
-    per-entry error came back. CANCELED maps here (the coarse status needs no
-    cancel/fail distinction)."""
+    a batch_id (``record_batch_failure``), or the provider reported the batch
+    FAILED/CANCELED. CANCELED maps here (the coarse status needs no cancel/fail
+    distinction)."""
 
     EXPIRED = "expired"
-    """Provider marked the batch as expired (TIMEOUT_EXCEEDED). Terminal."""
+    """Terminal: the provider marked the batch expired (TIMEOUT_EXCEEDED)."""
 
     MISSING = "missing"
-    """Batch unretrievable after 24h. The poller gave up and marked the row
-    so it stops being re-polled."""
+    """Terminal: the waiter gave up at its 25h ceiling — it stopped waiting for a
+    batch it never saw complete."""
 
 
 class BatchResult(BaseModel):

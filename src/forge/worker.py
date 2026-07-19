@@ -12,19 +12,6 @@ from typing import TYPE_CHECKING, Any
 
 from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from sax_platform.temporal.worker import run_worker as _run_platform_worker
-from temporalio.client import (
-    Client,
-    Schedule,
-    ScheduleActionStartWorkflow,
-    ScheduleAlreadyRunningError,
-    ScheduleIntervalSpec,
-    ScheduleOverlapPolicy,
-    SchedulePolicy,
-    ScheduleSpec,
-    ScheduleState,
-    ScheduleUpdate,
-    ScheduleUpdateInput,
-)
 
 from forge.activities import (
     BatchActivities,
@@ -46,7 +33,6 @@ from forge.activities import (
     write_files,
     write_output,
 )
-from forge.batch_poller_workflow import BatchPollerWorkflow
 from forge.export_playbook_workflow import ExportPlaybookWorkflow
 
 try:
@@ -61,19 +47,11 @@ except ImportError:
     TranscriptIngestionWorkflow = None  # type: ignore[assignment,misc]
 
 from forge.manual_playbook_workflow import ManualPlaybookWorkflow
-from forge.models import BatchPollerInput
 from forge.temporal_client import connect_temporal
 from forge.workflows import ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-# INTERIM (Phase 4 deletes the schedules): execution-timeout backstop for the
-# scheduled batch-poller run. A run that exceeds its timeout is terminated by
-# Temporal so the overlap=SKIP schedule can fire the next run — guarding against a
-# single wedged run starving every later cycle. The poller activity's
-# start_to_close is 5 min, so the schedule gets a wider 10-minute budget.
-_POLLER_EXECUTION_TIMEOUT = timedelta(minutes=10)
 
 logger = logging.getLogger(__name__)
 
@@ -96,64 +74,9 @@ def _init_store(url: str) -> None:
     )
 
 
-async def _ensure_schedule(
-    client: Client,
-    schedule_id: str,
-    workflow_name: str,
-    workflow_arg: object,
-    interval: timedelta,
-    execution_timeout: timedelta = _POLLER_EXECUTION_TIMEOUT,
-) -> None:
-    """Create or update a Temporal schedule (idempotent).
-
-    On first run, creates the schedule. On subsequent runs, updates the spec,
-    action, and policy so an existing schedule picks up config changes. Handles
-    the "already exists" case gracefully.
-
-    ``execution_timeout`` caps each run and ``overlap=SKIP`` skips a new run while
-    one is in flight — together the interim guard against a wedged run starving
-    every later cycle (see T1.3; Phase 4 deletes these schedules).
-    """
-    schedule = Schedule(
-        action=ScheduleActionStartWorkflow(
-            workflow_name,
-            workflow_arg,
-            id=f"{schedule_id}-run",
-            task_queue=FORGE_TASK_QUEUE,
-            execution_timeout=execution_timeout,
-        ),
-        spec=ScheduleSpec(
-            intervals=[ScheduleIntervalSpec(every=interval)],
-        ),
-        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
-        state=ScheduleState(
-            note=f"Forge schedule: {schedule_id}",
-        ),
-    )
-
-    try:
-        await client.create_schedule(schedule_id, schedule)
-        logger.info("Created schedule %s (interval=%s)", schedule_id, interval)
-    except ScheduleAlreadyRunningError:
-        # Reconcile the existing schedule: apply the current spec, action (with
-        # the execution-timeout backstop), and policy (overlap=SKIP) so a running
-        # schedule created before T1.3 picks up the wedge guard.
-        handle = client.get_schedule_handle(schedule_id)
-
-        async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
-            input.description.schedule.spec = schedule.spec
-            input.description.schedule.action = schedule.action
-            input.description.schedule.policy = schedule.policy
-            return ScheduleUpdate(schedule=input.description.schedule)
-
-        await handle.update(_updater)
-        logger.info("Updated schedule %s (interval=%s)", schedule_id, interval)
-
-
 async def run_worker(
     address: str | None = None,
     *,
-    batch_poll_interval: int = 600,
     identity: str | None = None,
 ) -> None:
     """Connect to Temporal and run the Forge worker.
@@ -204,18 +127,7 @@ async def run_worker(
         output_types=OUTPUT_TYPES,
         engine=engine,
         blob_store=blobs,
-        temporal_client=client,
         mistral_ocr=mistral,
-    )
-
-    # Create/update schedules — if these fail, the worker is useless
-    await _ensure_schedule(
-        client,
-        schedule_id="forge-batch-poller",
-        workflow_name="BatchPollerWorkflow",
-        workflow_arg=BatchPollerInput(),
-        interval=timedelta(seconds=batch_poll_interval),
-        execution_timeout=_POLLER_EXECUTION_TIMEOUT,
     )
 
     workflows: list[type] = [
@@ -223,7 +135,6 @@ async def run_worker(
         ForgeSubTaskWorkflow,
         ExportPlaybookWorkflow,
         ManualPlaybookWorkflow,
-        BatchPollerWorkflow,
     ]
     if _INGESTION_AVAILABLE:
         assert TranscriptIngestionWorkflow is not None
@@ -268,8 +179,9 @@ async def run_worker(
         llm_activities.review_manual_playbook,
         batch_activities.submit_batch_request,
         batch_activities.submit_batch_blob,
-        batch_activities.poll_batch_results,
         batch_activities.parse_llm_response,
+        batch_activities.batch_status,
+        batch_activities.fetch_batch_result,
     ]
     if _INGESTION_AVAILABLE:
         assert prepare_transcript is not None
@@ -277,7 +189,7 @@ async def run_worker(
 
     # Worker construction and the signal-handled graceful-drain loop now live in
     # sax_platform.temporal.worker.run_worker (T3.4, ST7) — forge keeps only its
-    # own setup (store, output types, tracing, schedules) and the activity/workflow
+    # own setup (store, output types, tracing) and the activity/workflow
     # registration lists. graceful_shutdown_timeout is explicit here (it matches
     # the platform default) so the 5-minute drain — long enough to never cancel an
     # in-flight LLM call, unlike the prior hardcoded 30s — stays visible in forge.

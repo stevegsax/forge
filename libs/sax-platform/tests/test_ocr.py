@@ -486,37 +486,42 @@ class TestSubmitBatch:
 
 
 # ---------------------------------------------------------------------------
-# MistralOcr.poll_batch
+# MistralOcr.get_batch_status  (status-only poll; never downloads)
 # ---------------------------------------------------------------------------
 
 
-class TestPollBatchNonTerminalStatuses:
+class TestGetBatchStatus:
     @pytest.mark.parametrize(
         ("mistral_status", "expected"),
         [
             ("QUEUED", BatchPollStatus.PENDING),
             ("RUNNING", BatchPollStatus.IN_PROGRESS),
+            ("SUCCESS", BatchPollStatus.ENDED),
+            ("FAILED", BatchPollStatus.FAILED),
             ("TIMEOUT_EXCEEDED", BatchPollStatus.EXPIRED),
             ("CANCELLATION_REQUESTED", BatchPollStatus.CANCELED),
             ("CANCELLED", BatchPollStatus.CANCELED),
+            # An unrecognized status is treated as "keep waiting".
+            ("SOME_FUTURE_STATUS", BatchPollStatus.IN_PROGRESS),
         ],
     )
-    async def test_status_maps_and_entries_are_empty(
+    async def test_status_maps_and_never_downloads(
         self, mistral_status: str, expected: BatchPollStatus
     ) -> None:
         client = MagicMock()
+        # An output_file is present even on SUCCESS — proving the status read
+        # never reaches for it.
         client.batch.jobs.get_async = AsyncMock(
-            return_value=_make_mock_batch_job(mistral_status, output_file=None)
+            return_value=_make_mock_batch_job(mistral_status, output_file="file-out")
         )
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        status = await ocr.get_batch_status("batch-1")
 
-        assert result.status == expected
-        assert result.entries == []
+        assert status == expected
         client.files.download_async.assert_not_called()
 
-    async def test_failed_status_logs_errors(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_logs_errors_and_failed_requests(self, caplog: pytest.LogCaptureFixture) -> None:
         client = MagicMock()
         err = MagicMock()
         err.message = "context length exceeded"
@@ -529,14 +534,20 @@ class TestPollBatchNonTerminalStatuses:
         ocr = MistralOcr(client)
 
         with caplog.at_level(logging.WARNING):
-            result = await ocr.poll_batch("batch-1")
+            status = await ocr.get_batch_status("batch-1")
 
-        assert result.status == BatchPollStatus.FAILED
+        assert status == BatchPollStatus.FAILED
         assert "context length exceeded (x3)" in caplog.text
         assert "3 failed request" in caplog.text
+        client.files.download_async.assert_not_called()
 
 
-class TestPollBatchSuccess:
+# ---------------------------------------------------------------------------
+# MistralOcr.fetch_batch_results  (download + parse; call only after ENDED)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchBatchResults:
     async def test_parses_jsonl_results(self) -> None:
         client = MagicMock()
         client.batch.jobs.get_async = AsyncMock(
@@ -551,13 +562,12 @@ class TestPollBatchSuccess:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert result.status == BatchPollStatus.ENDED
-        assert len(result.entries) == 2
-        assert [e.custom_id for e in result.entries] == ["req-1", "req-2"]
-        assert all(e.succeeded for e in result.entries)
-        assert all(e.raw_response_json is not None for e in result.entries)
+        assert len(entries) == 2
+        assert [e.custom_id for e in entries] == ["req-1", "req-2"]
+        assert all(e.succeeded for e in entries)
+        assert all(e.raw_response_json is not None for e in entries)
 
     async def test_null_response_entry_in_output_file_does_not_crash(self) -> None:
         # Same defect class as the error-file path: "response": null is a
@@ -575,10 +585,9 @@ class TestPollBatchSuccess:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert result.status == BatchPollStatus.ENDED
-        by_id = {e.custom_id: e for e in result.entries}
+        by_id = {e.custom_id: e for e in entries}
         assert by_id["req-null"].succeeded is False
         assert by_id["req-ok"].succeeded is True
 
@@ -591,7 +600,7 @@ class TestPollBatchSuccess:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(line))
         ocr = MistralOcr(client)
 
-        await ocr.poll_batch("batch-1")
+        await ocr.fetch_batch_results("batch-1")
 
         client.files.download_async.assert_called_once_with(file_id="file-abc-789")
 
@@ -611,35 +620,47 @@ class TestPollBatchSuccess:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(jsonl))
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert len(result.entries) == 1
-        assert result.entries[0].succeeded is False
-        assert result.entries[0].error is not None
+        assert len(entries) == 1
+        assert entries[0].succeeded is False
+        assert entries[0].error is not None
 
-    async def test_null_output_file_returns_failed_without_download(self) -> None:
+    async def test_null_output_file_returns_empty_without_download(self) -> None:
         client = MagicMock()
         client.batch.jobs.get_async = AsyncMock(
             return_value=_make_mock_batch_job("SUCCESS", output_file=None)
         )
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert result.status == BatchPollStatus.FAILED
-        assert result.entries == []
+        # No output_file and no error_file: nothing to download, no entries.
+        assert entries == []
         client.files.download_async.assert_not_called()
 
-    async def test_unset_sentinel_output_file_returns_failed(self) -> None:
+    async def test_missing_output_file_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        client = MagicMock()
+        client.batch.jobs.get_async = AsyncMock(
+            return_value=_make_mock_batch_job("SUCCESS", output_file=None)
+        )
+        ocr = MistralOcr(client)
+
+        with caplog.at_level(logging.WARNING):
+            await ocr.fetch_batch_results("batch-1")
+
+        assert "output_file is not set" in caplog.text
+
+    async def test_unset_sentinel_output_file_returns_empty(self) -> None:
         client = MagicMock()
         client.batch.jobs.get_async = AsyncMock(
             return_value=_make_mock_batch_job("SUCCESS", output_file=_Unset())
         )
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert result.status == BatchPollStatus.FAILED
+        assert entries == []
 
     async def test_skips_blank_lines(self) -> None:
         client = MagicMock()
@@ -656,9 +677,9 @@ class TestPollBatchSuccess:
         )
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert len(result.entries) == 2
+        assert len(entries) == 2
 
     async def test_extracts_images_from_ocr_response(self) -> None:
         client = MagicMock()
@@ -671,9 +692,9 @@ class TestPollBatchSuccess:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(line))
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-img-1")
+        entries = await ocr.fetch_batch_results("batch-img-1")
 
-        entry = result.entries[0]
+        entry = entries[0]
         assert entry.succeeded is True
         assert len(entry.extracted_images) == 1
         assert entry.extracted_images[0].original_image_id == "img-0.jpeg"
@@ -681,7 +702,7 @@ class TestPollBatchSuccess:
         assert "image_base64" not in entry.raw_response_json
 
 
-class TestPollBatchErrorFileMerging:
+class TestFetchBatchResultsErrorFileMerging:
     async def test_error_file_entries_merge_with_output_file_entries(self) -> None:
         client = MagicMock()
         client.batch.jobs.get_async = AsyncMock(
@@ -700,9 +721,9 @@ class TestPollBatchErrorFileMerging:
         client.files.download_async = AsyncMock(side_effect=_download)
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        by_id = {e.custom_id: e for e in result.entries}
+        by_id = {e.custom_id: e for e in entries}
         assert set(by_id) == {"req-1", "req-2"}
         assert by_id["req-1"].succeeded is True
         assert by_id["req-2"].succeeded is False
@@ -724,10 +745,10 @@ class TestPollBatchErrorFileMerging:
         client.files.download_async = AsyncMock(side_effect=_download)
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert len(result.entries) == 1
-        assert result.entries[0].succeeded is True
+        assert len(entries) == 1
+        assert entries[0].succeeded is True
 
     async def test_error_file_download_failure_propagates(self) -> None:
         client = MagicMock()
@@ -746,7 +767,7 @@ class TestPollBatchErrorFileMerging:
         ocr = MistralOcr(client)
 
         with pytest.raises(OSError, match="download failed"):
-            await ocr.poll_batch("batch-1")
+            await ocr.fetch_batch_results("batch-1")
 
     async def test_entries_returned_when_output_file_missing_but_error_file_present(self) -> None:
         client = MagicMock()
@@ -760,11 +781,12 @@ class TestPollBatchErrorFileMerging:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(error_jsonl))
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert result.status == BatchPollStatus.FAILED
-        assert len(result.entries) == 1
-        assert result.entries[0].succeeded is False
+        # Output file missing but error-file entries survive: a waiter whose id
+        # is absent here surfaces its own per-request error at the forge seam.
+        assert len(entries) == 1
+        assert entries[0].succeeded is False
         client.files.download_async.assert_called_once_with(file_id="file-errors")
 
     async def test_unset_error_file_is_not_downloaded(self) -> None:
@@ -776,9 +798,9 @@ class TestPollBatchErrorFileMerging:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(line))
         ocr = MistralOcr(client)
 
-        result = await ocr.poll_batch("batch-1")
+        entries = await ocr.fetch_batch_results("batch-1")
 
-        assert result.status == BatchPollStatus.ENDED
+        assert len(entries) == 1
         client.files.download_async.assert_called_once_with(file_id="file-ok")
 
     async def test_none_error_file_is_not_downloaded(self) -> None:
@@ -790,7 +812,7 @@ class TestPollBatchErrorFileMerging:
         client.files.download_async = AsyncMock(return_value=_make_mock_file(line))
         ocr = MistralOcr(client)
 
-        await ocr.poll_batch("batch-1")
+        await ocr.fetch_batch_results("batch-1")
 
         client.files.download_async.assert_called_once_with(file_id="file-ok")
 

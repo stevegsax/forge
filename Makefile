@@ -12,7 +12,7 @@
 # Per-package suites run from each package's own directory so its own config
 # applies (workspace command discipline — see CLAUDE.md).
 
-.PHONY: help lint typecheck lint-imports test gates \
+.PHONY: help lint typecheck lint-imports test gates replay-histories \
 	stack-up stack-down stack-logs stack-psql db-migrate \
 	workers-restart workers-status
 
@@ -42,6 +42,13 @@ test:
 
 gates: lint typecheck lint-imports test
 
+# Regenerate the committed workflow histories tests/test_replay.py replays
+# (T4.1 ST4). Runs on the time-skipping test server with mocked activities — no
+# real Temporal/DB/S3 — so it is safe against the production-pointing ambient env.
+# Regenerate only after a deliberate change to workflow logic.
+replay-histories:
+	uv run python -m tests.replay.regenerate
+
 COMPOSE_DIR := deploy/local-stack
 
 # Host directories for the Postgres + MinIO data volumes. XDG-conformant by
@@ -62,6 +69,7 @@ help:
 	@echo "  make typecheck    mypy strict across all four packages"
 	@echo "  make lint-imports import-linter DAG contracts (root pyproject)"
 	@echo "  make test         all four package suites, each from its own directory"
+	@echo "  make replay-histories  regenerate tests/replay/histories/*.json (workflow replay fixtures)"
 	@echo ""
 	@echo "Local stack (deploy/local-stack): Postgres + MinIO + Temporal"
 	@echo "  data dirs: $(PG_DATA_DIR) | $(MINIO_DATA_DIR)"

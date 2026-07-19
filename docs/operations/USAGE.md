@@ -281,23 +281,15 @@ forge status --workflow-id forge-task-background-task
 
 ## Starting Arbitrary Workflows
 
-The `forge start` command launches any registered Temporal workflow by name, without needing a Python script. The worker's `pydantic_data_converter` handles deserialization into the correct Pydantic model on the receiving end. It targets `forge-task-queue` by default, so it can start any workflow the forge worker registers — `BatchPollerWorkflow`, `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`. Pass `--task-queue` to reach a workflow registered on another worker's queue.
-
-### No input
-
-Some workflows take no arguments — an empty dict is passed as the workflow argument:
-
-```bash
-forge start BatchPollerWorkflow --wait
-```
+The `forge start` command launches any registered Temporal workflow by name, without needing a Python script. The worker's `pydantic_data_converter` handles deserialization into the correct Pydantic model on the receiving end. It targets `forge-task-queue` by default, so it can start any workflow the forge worker registers — `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`. Pass `--task-queue` to reach a workflow registered on another worker's queue.
 
 ### Start and return immediately
 
 ```bash
-forge start BatchPollerWorkflow
+forge start ExportPlaybookWorkflow --input-file input.json
 ```
 
-Prints the workflow ID and exits immediately. The workflow runs to completion on the worker.
+Prints the workflow ID and exits immediately. The workflow runs to completion on the worker. Add `--wait` to block until it finishes.
 
 ### Input from file
 

@@ -1,34 +1,40 @@
 """The platform's Mistral OCR capability (D88 / T3.3).
 
-Ported from `sax_llm.mistral.MistralProvider`, OCR-only: sync single-document
-calls (`MistralOcr.process`) and file-based batch submit/poll for the
-`/v1/ocr` endpoint. Mistral **chat** support (`build_request_params`, `call`,
-message/content translation, the tool-call output-type registry) was
-deleted, not ported — verified zero production callers (all forge tier
-defaults are Anthropic; see `development-plans/tasks/T3.3-mistral-ocr-chat-deleted.md`).
+Ported from `sax_llm.mistral.MistralProvider`, OCR-only: a sync single-document
+call (`MistralOcr.process`) and file-based batch submit (`submit_batch`) plus
+two narrow batch-result primitives — `get_batch_status` (a status-only poll,
+never a download) and `fetch_batch_results` (download + parse the result files)
+— against the `/v1/ocr` endpoint. This mirrors the anthropic lane's
+`get_batch_status`/`fetch_batch_result_lines` split in `sax_platform.llm.batch`:
+the timer-loop transport asks the cheap status question every tick and pays for
+the download exactly once, after the batch has ended. Mistral **chat** support
+(`build_request_params`, `call`, message/content translation, the tool-call
+output-type registry) was deleted, not ported — verified zero production callers
+(all forge tier defaults are Anthropic; see
+`development-plans/tasks/T3.3-mistral-ocr-chat-deleted.md`).
 
 Provenance note on `process`: sax_llm's `mistral.py` has no sync OCR call to
 port. Its only sync entry point, `call()`, is chat-only
 (`client.chat.complete_async`); every OCR code path in that module is batch
-(`submit_batch`'s `/v1/ocr` file-upload branch, `poll_batch`'s image
-extraction). `process` below is therefore new code, not a port: a thin
+(`submit_batch`'s `/v1/ocr` file-upload branch, the batch result-fetch path's
+image extraction). `process` below is therefore new code, not a port: a thin
 wrapper around the Mistral SDK's own `client.ocr.process_async`, built to
 share `extract_images`/`parse_batch_result` with the batch lane so a
-sync-call result has the same (body, images) shape as a polled one.
+sync-call result has the same (body, images) shape as a batch-fetched one.
 
 The Mistral SDK client is a constructor parameter (`MistralOcr.__init__`) —
 no module global, no env reading inside the class. Build one with
 `make_mistral_client`.
 
 This module keeps the `mistralai` SDK out of module import time (T3.5):
-the frozen poll-result models here (`BatchPollStatus`, `BatchResultEntry`,
-`BatchPollResult`, `ExtractedImage`) are the shared batch-poll shapes that
-consumers import at module level — including modules that are chain-imported
-inside the Temporal workflow sandbox — so `import sax_platform.ocr` must not
-drag in an HTTP stack. SDK types are annotation-only (`TYPE_CHECKING` +
-deferred annotations) and the two runtime touch points (`make_mistral_client`,
-`MistralOcr.submit_batch`'s `UnrecognizedStr`) import locally, mirroring the
-PEP-562 lazy-export discipline `sax_platform.llm` uses.
+the frozen batch-result models here (`BatchPollStatus`, `BatchResultEntry`,
+`ExtractedImage`) are the shared batch-result shapes that consumers import at
+module level — including modules that are chain-imported inside the Temporal
+workflow sandbox — so `import sax_platform.ocr` must not drag in an HTTP stack.
+SDK types are annotation-only (`TYPE_CHECKING` + deferred annotations) and the
+two runtime touch points (`make_mistral_client`, `MistralOcr.submit_batch`'s
+`UnrecognizedStr`) import locally, mirroring the PEP-562 lazy-export discipline
+`sax_platform.llm` uses.
 """
 
 from __future__ import annotations
@@ -45,7 +51,6 @@ if TYPE_CHECKING:
     from mistralai.models import BatchError, DocumentTypedDict, FileTypedDict
 
 __all__ = [
-    "BatchPollResult",
     "BatchPollStatus",
     "BatchResultEntry",
     "ExtractedImage",
@@ -62,11 +67,13 @@ _OCR_ENDPOINT = "/v1/ocr"
 # ---------------------------------------------------------------------------
 # Result models — structurally identical (field names + types) to the
 # OCR-relevant subset of sax_llm.models: BatchPollStatus, ExtractedImage,
-# BatchResultEntry, BatchPollResult. A consumer (forge) adapts by import-path
-# swap alone. Frozen per this repo's value-type convention (see
-# sax_platform.llm.models) — sax_llm's originals were plain, unfrozen
-# BaseModels; freezing here doesn't change field names/types/behavior as
-# observed by a caller that only reads attributes.
+# BatchResultEntry. A consumer (forge) adapts by import-path swap alone. Frozen
+# per this repo's value-type convention (see sax_platform.llm.models) —
+# sax_llm's originals were plain, unfrozen BaseModels; freezing here doesn't
+# change field names/types/behavior as observed by a caller that only reads
+# attributes. (sax_llm's combined status+entries poll-result envelope is gone:
+# the status-only and result-fetch primitives return `BatchPollStatus` and
+# `list[BatchResultEntry]` directly.)
 # ---------------------------------------------------------------------------
 
 
@@ -108,13 +115,18 @@ class BatchResultEntry(BaseModel):
     extracted_images: list[ExtractedImage] = Field(default_factory=list)
 
 
-class BatchPollResult(BaseModel):
-    """Result of polling a batch job."""
-
-    model_config = ConfigDict(frozen=True)
-
-    status: BatchPollStatus
-    entries: list[BatchResultEntry] = Field(default_factory=list)
+# Mistral's raw batch-job statuses, mapped onto the platform's normalized set.
+# An unrecognized status falls back to IN_PROGRESS — "keep waiting" is the safe
+# default for a state the timer loop can't classify as terminal.
+_MISTRAL_JOB_STATUS: dict[str, BatchPollStatus] = {
+    "QUEUED": BatchPollStatus.PENDING,
+    "RUNNING": BatchPollStatus.IN_PROGRESS,
+    "SUCCESS": BatchPollStatus.ENDED,
+    "FAILED": BatchPollStatus.FAILED,
+    "TIMEOUT_EXCEEDED": BatchPollStatus.EXPIRED,
+    "CANCELLATION_REQUESTED": BatchPollStatus.CANCELED,
+    "CANCELLED": BatchPollStatus.CANCELED,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +276,9 @@ def extract_images(response_body: dict[str, Any]) -> list[ExtractedImage]:
 
 class MistralOcr:
     """Mistral OCR capability: a sync single-document call plus file-based
-    batch submit/poll against the `/v1/ocr` endpoint.
+    batch submit and the two batch-result primitives — `get_batch_status`
+    (status only, no download) and `fetch_batch_results` (download + parse) —
+    against the `/v1/ocr` endpoint.
 
     The SDK client is injected (constructor argument) — this class holds no
     other state and reads no environment variables itself. Callers own the
@@ -341,37 +355,54 @@ class MistralOcr:
         )
         return job.id
 
-    async def poll_batch(self, batch_id: str) -> BatchPollResult:
-        """Poll a batch job.
+    async def get_batch_status(self, batch_id: str) -> BatchPollStatus:
+        """Fetch one batch job's normalized lifecycle status. No download, ever.
 
-        Port of sax_llm's `poll_batch`, including error-file merging (an
-        `error_file` entry is dropped in favor of a same-`custom_id` entry
-        from `output_file`, matching the original exactly) and the
-        `output_file`-missing-on-SUCCESS degrade-to-FAILED path. The
-        success-branch dispatch on `response_body.get("choices") or
-        response_body.get("pages")` narrows to `"pages"` only — `"choices"`
-        was the chat-batch response shape, and chat support isn't ported.
+        A single `batch.jobs.get_async`: Mistral's `jobs.get` returns status
+        metadata and file IDs only — result content lives behind the Files
+        endpoint — so a status-only poll never touches file storage and is
+        natively cheap to call every timer tick. The raw Mistral status maps
+        through `_MISTRAL_JOB_STATUS` (an unrecognized status falls back to
+        `IN_PROGRESS`, i.e. "keep waiting"). `job.errors` and a non-zero
+        `job.failed_requests` are logged as warnings here — once per poll —
+        exactly as the old all-in-one poll did before the split.
+
+        Mirrors the anthropic lane's `sax_platform.llm.batch.get_batch_status`:
+        a thin status read that classifies no results and downloads nothing.
+        The terminal result download is `fetch_batch_results`' job.
         """
         job = await self._client.batch.jobs.get_async(job_id=batch_id)
-
-        status_map: dict[str, BatchPollStatus] = {
-            "QUEUED": BatchPollStatus.PENDING,
-            "RUNNING": BatchPollStatus.IN_PROGRESS,
-            "SUCCESS": BatchPollStatus.ENDED,
-            "FAILED": BatchPollStatus.FAILED,
-            "TIMEOUT_EXCEEDED": BatchPollStatus.EXPIRED,
-            "CANCELLATION_REQUESTED": BatchPollStatus.CANCELED,
-            "CANCELLED": BatchPollStatus.CANCELED,
-        }
-        poll_status = status_map.get(job.status, BatchPollStatus.IN_PROGRESS)
 
         if job.errors:
             logger.warning("Batch %s errors: %s", batch_id, _format_batch_errors(job.errors))
         if job.failed_requests > 0:
             logger.warning("Batch %s has %d failed request(s)", batch_id, job.failed_requests)
 
-        if poll_status != BatchPollStatus.ENDED:
-            return BatchPollResult(status=poll_status)
+        return _MISTRAL_JOB_STATUS.get(job.status, BatchPollStatus.IN_PROGRESS)
+
+    async def fetch_batch_results(self, batch_id: str) -> list[BatchResultEntry]:
+        """Download and parse a finished batch's result files into per-request entries.
+
+        Precondition: call only after `get_batch_status` has reported `ENDED`.
+        This method does not re-check status — it goes straight for the files.
+
+        One `batch.jobs.get_async` to obtain the `error_file`/`output_file` IDs,
+        then the download/parse logic ported verbatim from sax_llm's old
+        all-in-one poll: error-file entries first, then each `output_file` line,
+        with an `output_file` entry replacing any same-`custom_id` error-file
+        entry (the success record wins). Image data is stripped out of each
+        succeeded body into `extracted_images` via `extract_images`. The
+        success-branch dispatch narrows to `"pages"` only — `"choices"` was the
+        chat-batch shape, and chat support isn't ported.
+
+        A SUCCESS job with no `output_file` is a partial failure: the current
+        warning is logged and whatever error-file entries exist are returned
+        (possibly none). Callers key results by `custom_id`; a request whose id
+        is absent from the returned list surfaces to that one waiter as a
+        per-request error, which is the correct signal for a request that
+        produced no output.
+        """
+        job = await self._client.batch.jobs.get_async(job_id=batch_id)
 
         entries: list[BatchResultEntry] = []
         if _is_set(job.error_file):
@@ -385,7 +416,7 @@ class MistralOcr:
                 batch_id,
                 error_detail,
             )
-            return BatchPollResult(status=BatchPollStatus.FAILED, entries=entries)
+            return entries
 
         content = await _download_file_content(self._client, cast("str", job.output_file))
         error_ids = {e.custom_id for e in entries}
@@ -396,7 +427,7 @@ class MistralOcr:
             custom_id = entry_data.get("custom_id", "")
             # `or {}` on both hops: .get's default only applies when the key is
             # absent — a present "response": null would otherwise crash the
-            # whole poll (same defect class as _parse_error_file_entries).
+            # whole fetch (same defect class as _parse_error_file_entries).
             response_body = (entry_data.get("response") or {}).get("body") or {}
             if custom_id in error_ids:
                 entries = [e for e in entries if e.custom_id != custom_id]
@@ -420,7 +451,7 @@ class MistralOcr:
                     )
                 )
 
-        return BatchPollResult(status=BatchPollStatus.ENDED, entries=entries)
+        return entries
 
     def parse_batch_result(self, raw_json: str) -> tuple[dict[str, Any], list[ExtractedImage]]:
         """Parse a raw OCR response body into `(body, extracted_images)`.
@@ -429,7 +460,7 @@ class MistralOcr:
         looked up a registered pydantic model to decode chat tool-call
         arguments — chat-only machinery, not ported. What OCR actually
         needs from a raw response body is the same image extraction
-        `poll_batch` already does inline for each batch entry; this method
+        `fetch_batch_results` does inline for each batch entry; this method
         exposes that as a standalone step so `process` (the sync lane) can
         share it instead of duplicating the body-parsing logic.
         """

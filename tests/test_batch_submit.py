@@ -24,6 +24,7 @@ def _make_input(
     output_type_name: str = "LLMResponse",
     thinking: ThinkingPolicy | None = None,
     max_tokens: int = 4096,
+    request_id: str = "req-default",
 ) -> BatchSubmitInput:
     """Build a BatchSubmitInput with sensible defaults."""
     context = AssembledContext(
@@ -38,6 +39,7 @@ def _make_input(
         workflow_id="wf-test-123",
         thinking=thinking or ThinkingPolicy(),
         max_tokens=max_tokens,
+        request_id=request_id,
     )
 
 
@@ -67,19 +69,10 @@ class TestExecuteBatchSubmit:
             result = await execute_batch_submit(_make_input(), client)
 
         assert result.batch_id == "msgbatch_test123"
-        assert result.request_id  # non-empty UUID
+        assert result.request_id == "req-default"  # the workflow-minted id, echoed
         called_client, requests = submit.await_args.args
         assert called_client is client
         assert requests[0]["custom_id"] == result.request_id
-
-    @pytest.mark.asyncio
-    async def test_request_id_is_uuid_format(self) -> None:
-        client = MagicMock()
-        with patch("sax_platform.llm.batch.submit_batch", _submit_mock()):
-            result = await execute_batch_submit(_make_input(), client)
-
-        parts = result.request_id.split("-")
-        assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
 
     @pytest.mark.asyncio
     async def test_resolves_output_type_into_structured_format(self) -> None:
@@ -134,6 +127,33 @@ class TestExecuteBatchSubmit:
         params = _submitted_params(submit)
         assert "thinking" not in params
         assert "effort" not in params.get("output_config", {})
+
+    @pytest.mark.asyncio
+    async def test_caller_request_id_used_verbatim(self) -> None:
+        # D88: the workflow mints the custom_id (workflow.uuid4()) and threads it in.
+        # A non-empty request_id is used verbatim as the provider custom_id.
+        client = MagicMock()
+        submit = _submit_mock()
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            result = await execute_batch_submit(_make_input(request_id="wf-minted-id"), client)
+
+        assert result.request_id == "wf-minted-id"
+        _client, requests = submit.await_args.args
+        assert requests[0]["custom_id"] == "wf-minted-id"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_submit_retry_reuses_custom_id(self) -> None:
+        # AC (duplicate-submit-retry): two submits with the same workflow-minted
+        # request_id produce the same provider custom_id — one paid batch identity,
+        # so a retried submit cannot orphan a second batch.
+        client = MagicMock()
+        submit = _submit_mock()
+        input_data = _make_input(request_id="stable-id")
+        with patch("sax_platform.llm.batch.submit_batch", submit):
+            first = await execute_batch_submit(input_data, client)
+            second = await execute_batch_submit(input_data, client)
+
+        assert first.request_id == second.request_id == "stable-id"
 
     @pytest.mark.asyncio
     async def test_passes_max_tokens_and_prompts_through(self) -> None:

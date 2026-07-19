@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-# BatchResult and BatchJobStatus are the cross-queue wire contract; they now live
-# in sax-platform (T3.4, ST7) and are re-exported here so existing `from
-# forge.models import ...` call sites keep working.
+# BatchJobStatus is the cross-queue wire contract; it now lives in sax-platform
+# (T3.4, ST7) and is re-exported here so existing `from forge.models import ...`
+# call sites keep working.
 from sax_platform.contracts.models import (
     BatchJobStatus as BatchJobStatus,
-)
-from sax_platform.contracts.models import (
-    BatchResult as BatchResult,
 )
 from sax_platform.contracts.models import (
     BatchSubmitResult as BatchSubmitResult,
@@ -43,6 +41,32 @@ from sax_platform.llm.tiers import (
 from sax_platform.llm.tiers import (
     resolve_model as resolve_model,
 )
+
+# ---------------------------------------------------------------------------
+# Execution-timeout derivation constants (T4.1 ST3c)
+# ---------------------------------------------------------------------------
+
+# The per-wait batch ceiling: a single batch wait may legally block a workflow up
+# to this long before the timer loop gives up. This is the one source of truth for
+# the 25h number — ``workflow_blocks._BATCH_WAIT_TIMEOUT`` references it rather than
+# duplicating the literal, and both ``_child_timeout`` and ``derive_execution_timeout``
+# derive their budgets from it.
+BATCH_WAIT_CEILING: timedelta = timedelta(hours=25)
+
+# Hard cap on planner-produced plan length. An oversized plan becomes a validation
+# failure at the parse seam (retryable there) instead of an unbounded execution
+# timeout; it is what lets ``derive_execution_timeout`` close the timeout tree for
+# planned mode. Enforced as ``max_length`` on ``Plan.steps``.
+MAX_PLAN_STEPS: int = 25
+
+# Flat 48h execution timeout for sync mode (no batch waits) — the pre-T4.1 default.
+_SYNC_EXECUTION_TIMEOUT: timedelta = timedelta(hours=48)
+
+# Orchestration headroom added on top of the pure batch-wait budget in batch mode:
+# non-batch git/context/write/validate/transition activity time surrounds each wait
+# (per-wait), plus one-time worktree/planner setup and scheduling slack (base).
+_PER_WAIT_ORCHESTRATION: timedelta = timedelta(minutes=10)
+_EXECUTION_TIMEOUT_BASE: timedelta = timedelta(hours=1)
 
 
 class MatchLevel(StrEnum):
@@ -221,7 +245,10 @@ class Plan(BaseModel):
     """A decomposed plan for a task."""
 
     task_id: str
-    steps: list[PlanStep] = Field(min_length=1)
+    # ``max_length`` caps the plan at MAX_PLAN_STEPS: an oversized LLM-produced plan
+    # is rejected at the parse seam (retryable there) rather than yielding an
+    # unbounded workflow execution timeout (T4.1 ST3c).
+    steps: list[PlanStep] = Field(min_length=1, max_length=MAX_PLAN_STEPS)
     explanation: str = Field(description="Brief explanation of the decomposition strategy.")
 
 
@@ -775,6 +802,62 @@ class ForgeTaskInput(BaseModel):
         default=False,
         description="Save full API request/response JSON to messages/ in the worktree.",
     )
+    batch_poll_interval_seconds: int = Field(
+        default=600,
+        ge=300,
+        description=(
+            "Seconds between batch status polls in the timer-loop transport (D88: "
+            "configurable, never below 300 to protect the provider batch API)."
+        ),
+    )
+
+
+def _batch_execution_timeout(waits: int) -> timedelta:
+    """Wall-clock ceiling for ``waits`` sequential 25h batch waits, plus orchestration.
+
+    Each wait may block up to :data:`BATCH_WAIT_CEILING`; the surrounding non-batch
+    activities add a per-wait allowance, and one-time setup adds a flat base.
+    """
+    return waits * BATCH_WAIT_CEILING + waits * _PER_WAIT_ORCHESTRATION + _EXECUTION_TIMEOUT_BASE
+
+
+def derive_execution_timeout(task_input: ForgeTaskInput) -> timedelta:
+    """Derive a workflow execution timeout from the permitted batch-wait budget.
+
+    Pure: no Temporal imports, importable by the CLI and by tests (T4.1 ST3c). The
+    flat sync default is preserved; batch mode is derived from the maximum number of
+    sequential 25h batch waits a run can legally perform under its input knobs, so a
+    legitimately slow batch is never killed by the execution timeout.
+
+    - **sync mode** → flat 48h (no batch waits).
+    - **batch single-step** → ``max_attempts * (max_exploration_rounds + 1)`` waits:
+      each attempt runs the exploration loop (≤ ``max_exploration_rounds`` waits) then
+      one generation wait.
+    - **batch planned** → one planner phase (``max_exploration_rounds + 1`` waits),
+      then ≤ :data:`MAX_PLAN_STEPS` steps. A step is either a regular step
+      (≤ ``max_step_attempts`` generation waits) or a fan-out step whose parent-side
+      budget is the depth-0 child budget (``max_sub_task_attempts + max_fan_out_depth``
+      waits, which the parent blocks on inside its own execution timeout) plus one
+      conflict-resolution wait. Sanity checks add ≤ one wait per interval.
+    """
+    if task_input.sync_mode:
+        return _SYNC_EXECUTION_TIMEOUT
+    if not task_input.plan:
+        waits = task_input.max_attempts * (task_input.max_exploration_rounds + 1)
+        return _batch_execution_timeout(waits)
+    planner_waits = task_input.max_exploration_rounds + 1
+    # Depth-0 child budget: max_sub_task_attempts leaf waits + one wait per nesting
+    # level (remaining = max_fan_out_depth - 0). The parent adds one conflict-resolution
+    # wait after the child gathers.
+    child_budget = task_input.max_sub_task_attempts + task_input.max_fan_out_depth
+    per_step_waits = max(task_input.max_step_attempts, child_budget + 1)
+    sanity_waits = (
+        MAX_PLAN_STEPS // task_input.sanity_check_interval
+        if task_input.sanity_check_interval > 0
+        else 0
+    )
+    waits = planner_waits + MAX_PLAN_STEPS * per_step_waits + sanity_waits
+    return _batch_execution_timeout(waits)
 
 
 # ---------------------------------------------------------------------------
@@ -871,6 +954,13 @@ class SubTaskInput(BaseModel):
         description="Use synchronous Messages API. Inherited from parent workflow.",
     )
     log_messages: bool = False
+    batch_poll_interval_seconds: int = Field(
+        default=600,
+        ge=300,
+        description=(
+            "Seconds between batch status polls (D88); inherited from the parent workflow."
+        ),
+    )
 
 
 class WriteFilesInput(BaseModel):
@@ -1053,6 +1143,72 @@ class BatchSubmitInput(BaseModel):
     workflow_id: str = Field(description="Temporal workflow ID for audit linkage.")
     thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     max_tokens: int = Field(default=4096, description="Max output tokens.")
+    request_id: str = Field(
+        description=(
+            "Workflow-minted custom_id for the batch request (D88: "
+            "``workflow.uuid4()`` in the workflow closes the submit-retry orphan "
+            "window). A retried submit reuses the same custom_id, so the provider "
+            "dedupes to one paid batch."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Timer-loop batch transport models (T4.1, D88) — forge-internal activity I/O.
+# These are NOT cross-workflow signal payloads: the requester is the recipient,
+# so status/fetch results travel as ordinary activity returns.
+# ---------------------------------------------------------------------------
+
+
+class BatchStatusInput(BaseModel):
+    """Input to the batch_status activity — one provider status poll."""
+
+    batch_id: str = Field(description="Provider batch ID to poll.")
+    provider: str = Field(
+        description=(
+            "Provider name, threaded from ``BatchSubmitResult.provider`` (no "
+            "default — the caller always knows which provider it submitted to)."
+        ),
+    )
+
+
+class BatchStatusResult(BaseModel):
+    """Normalized, provider-agnostic snapshot of a batch's lifecycle state."""
+
+    batch_id: str
+    state: Literal["in_progress", "ended", "failed", "expired", "canceled"] = Field(
+        description="Normalized lifecycle state, mapped from the provider's own status.",
+    )
+
+
+class FetchBatchResultInput(BaseModel):
+    """Input to the fetch_batch_result activity — download one waiter's result line."""
+
+    batch_id: str = Field(description="Provider batch ID to fetch results from.")
+    request_id: str = Field(
+        description="This waiter's custom_id; selects its line among the batch's results.",
+    )
+    provider: str = Field(
+        description=(
+            "Provider name, threaded from ``BatchSubmitResult.provider`` (no "
+            "default — required, matching BatchStatusInput)."
+        ),
+    )
+
+
+class BatchFetchResult(BaseModel):
+    """Claim-check result of fetch_batch_result: exactly one field is set.
+
+    ``raw_response_json`` carries the result body inline when it is small
+    (<=256KB) and image-free; ``s3_key`` points at a stashed result envelope when
+    the body is large or carries images; ``error`` is set when this waiter's line
+    failed at the provider or its custom_id was absent from the finished batch.
+    Mutually exclusive by construction.
+    """
+
+    raw_response_json: str | None = None
+    s3_key: str | None = None
+    error: str | None = None
 
 
 class ParseResponseInput(BaseModel):
@@ -1084,15 +1240,3 @@ class ParsedLLMResponse(LLMStats):
 
     parsed_json: str = Field(description="JSON of the parsed Pydantic model (tool_use input).")
     latency_ms: float = 0.0
-
-
-class BatchPollerInput(BaseModel):
-    """Input to the batch poller workflow (14c)."""
-
-
-class BatchPollerResult(BaseModel):
-    """Output of the batch poller workflow (14c)."""
-
-    batches_checked: int = 0
-    signals_sent: int = 0
-    errors_found: int = 0

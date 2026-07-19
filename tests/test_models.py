@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from forge.models import (
+    _EXECUTION_TIMEOUT_BASE,
+    _PER_WAIT_ORCHESTRATION,
+    _SYNC_EXECUTION_TIMEOUT,
+    BATCH_WAIT_CEILING,
+    MAX_PLAN_STEPS,
     AssembledContext,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
@@ -35,6 +42,7 @@ from forge.models import (
     WriteFilesInput,
     WriteResult,
     build_llm_stats,
+    derive_execution_timeout,
 )
 
 # ---------------------------------------------------------------------------
@@ -58,6 +66,10 @@ class TestPlanStep:
         assert rebuilt == step
 
 
+def _steps(n: int) -> list[PlanStep]:
+    return [PlanStep(step_id=f"s{i}", description="d", target_files=[f"f{i}.py"]) for i in range(n)]
+
+
 class TestPlan:
     def test_min_one_step(self) -> None:
         with pytest.raises(ValueError):
@@ -71,6 +83,129 @@ class TestPlan:
         )
         rebuilt = Plan.model_validate_json(plan.model_dump_json())
         assert rebuilt == plan
+
+    def test_max_plan_steps_at_cap_ok(self) -> None:
+        # Exactly MAX_PLAN_STEPS (25) steps validates.
+        plan = Plan(task_id="t1", steps=_steps(MAX_PLAN_STEPS), explanation="At the cap.")
+        assert len(plan.steps) == MAX_PLAN_STEPS
+
+    def test_max_plan_steps_over_cap_rejected(self) -> None:
+        # One over the cap is a validation failure at the parse seam (T4.1 ST3c).
+        with pytest.raises(ValueError):
+            Plan(task_id="t1", steps=_steps(MAX_PLAN_STEPS + 1), explanation="Over the cap.")
+
+
+# ---------------------------------------------------------------------------
+# Execution-timeout derivation (T4.1 ST3c)
+# ---------------------------------------------------------------------------
+
+
+def _timeout_input(**kwargs: object) -> ForgeTaskInput:
+    return ForgeTaskInput(
+        task=TaskDefinition(task_id="t", description="d"),
+        repo_root="/repo",
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def _expected_batch(waits: int) -> timedelta:
+    """Mirror derive_execution_timeout's batch budget, pinning the formula shape."""
+    return waits * BATCH_WAIT_CEILING + waits * _PER_WAIT_ORCHESTRATION + _EXECUTION_TIMEOUT_BASE
+
+
+class TestDeriveExecutionTimeout:
+    def test_sync_mode_is_flat_48h(self) -> None:
+        # Sync mode ignores the batch knobs entirely and stays flat.
+        out = derive_execution_timeout(
+            _timeout_input(sync_mode=True, plan=True, max_attempts=9, max_exploration_rounds=9)
+        )
+        assert out == _SYNC_EXECUTION_TIMEOUT
+        assert out == timedelta(hours=48)
+
+    def test_batch_single_step_formula(self) -> None:
+        # waits = max_attempts * (max_exploration_rounds + 1).
+        out = derive_execution_timeout(
+            _timeout_input(sync_mode=False, plan=False, max_attempts=2, max_exploration_rounds=3)
+        )
+        assert out == _expected_batch(2 * (3 + 1))
+
+    def test_batch_planned_formula_uses_max_plan_steps(self) -> None:
+        # planner (rounds+1) + MAX_PLAN_STEPS * per_step + sanity; per_step is the
+        # worst of a regular step and a fan-out step's depth-0 child budget + 1.
+        out = derive_execution_timeout(
+            _timeout_input(
+                sync_mode=False,
+                plan=True,
+                max_exploration_rounds=0,
+                max_step_attempts=2,
+                max_sub_task_attempts=2,
+                max_fan_out_depth=1,
+                sanity_check_interval=0,
+            )
+        )
+        per_step = max(2, (2 + 1) + 1)  # max(max_step_attempts, child_budget + 1)
+        expected_waits = (0 + 1) + MAX_PLAN_STEPS * per_step + 0
+        assert out == _expected_batch(expected_waits)
+
+    def test_batch_planned_counts_sanity_checks(self) -> None:
+        out = derive_execution_timeout(
+            _timeout_input(
+                sync_mode=False,
+                plan=True,
+                max_exploration_rounds=0,
+                max_step_attempts=2,
+                max_sub_task_attempts=2,
+                max_fan_out_depth=1,
+                sanity_check_interval=5,
+            )
+        )
+        per_step = max(2, (2 + 1) + 1)
+        expected_waits = (0 + 1) + MAX_PLAN_STEPS * per_step + (MAX_PLAN_STEPS // 5)
+        assert out == _expected_batch(expected_waits)
+
+    def test_monotone_in_single_step_attempts(self) -> None:
+        fewer = derive_execution_timeout(
+            _timeout_input(sync_mode=False, plan=False, max_attempts=2, max_exploration_rounds=1)
+        )
+        more = derive_execution_timeout(
+            _timeout_input(sync_mode=False, plan=False, max_attempts=4, max_exploration_rounds=1)
+        )
+        assert more > fewer
+
+    def test_monotone_in_exploration_rounds(self) -> None:
+        fewer = derive_execution_timeout(
+            _timeout_input(sync_mode=False, plan=False, max_attempts=2, max_exploration_rounds=1)
+        )
+        more = derive_execution_timeout(
+            _timeout_input(sync_mode=False, plan=False, max_attempts=2, max_exploration_rounds=5)
+        )
+        assert more > fewer
+
+    def test_monotone_in_planned_step_attempts(self) -> None:
+        fewer = derive_execution_timeout(
+            _timeout_input(
+                sync_mode=False, plan=True, max_step_attempts=2, max_exploration_rounds=0
+            )
+        )
+        more = derive_execution_timeout(
+            _timeout_input(
+                sync_mode=False, plan=True, max_step_attempts=10, max_exploration_rounds=0
+            )
+        )
+        assert more > fewer
+
+    def test_monotone_in_fan_out_depth(self) -> None:
+        fewer = derive_execution_timeout(
+            _timeout_input(
+                sync_mode=False, plan=True, max_fan_out_depth=1, max_exploration_rounds=0
+            )
+        )
+        more = derive_execution_timeout(
+            _timeout_input(
+                sync_mode=False, plan=True, max_fan_out_depth=3, max_exploration_rounds=0
+            )
+        )
+        assert more > fewer
 
 
 class TestStepResult:

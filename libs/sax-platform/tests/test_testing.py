@@ -14,7 +14,6 @@ from pydantic import BaseModel
 
 from sax_platform.llm import Completion, LLMRefused, Telemetry
 from sax_platform.ocr import (
-    BatchPollResult,
     BatchPollStatus,
     BatchResultEntry,
     ExtractedImage,
@@ -193,22 +192,27 @@ class TestFakeLLM:
 
 
 class TestFakeMistralOcr:
-    async def test_submit_then_poll_round_trip(self) -> None:
-        poll = BatchPollResult(
-            status=BatchPollStatus.ENDED,
-            entries=[BatchResultEntry(custom_id="c1", succeeded=True, raw_response_json="{}")],
+    async def test_submit_status_then_fetch_round_trip(self) -> None:
+        entry = BatchResultEntry(custom_id="c1", succeeded=True, raw_response_json="{}")
+        ocr = FakeMistralOcr(
+            submit_batch_id="batch-7", status=BatchPollStatus.ENDED, entries=[entry]
         )
-        ocr = FakeMistralOcr(submit_batch_id="batch-7", poll_result=poll)
 
         batch_id = await ocr.submit_batch([{"custom_id": "c1"}], "mistral-ocr-latest")
         assert batch_id == "batch-7"
 
-        result = await ocr.poll_batch(batch_id)
-        assert result is poll
-        assert result.status is BatchPollStatus.ENDED
-        assert result.entries[0].custom_id == "c1"
+        status = await ocr.get_batch_status(batch_id)
+        assert status is BatchPollStatus.ENDED
 
-        assert [c.method for c in ocr.calls] == ["submit_batch", "poll_batch"]
+        entries = await ocr.fetch_batch_results(batch_id)
+        assert entries == [entry]
+        assert entries[0].custom_id == "c1"
+
+        assert [c.method for c in ocr.calls] == [
+            "submit_batch",
+            "get_batch_status",
+            "fetch_batch_results",
+        ]
 
     async def test_submit_batch_records_args_and_endpoint(self) -> None:
         ocr = FakeMistralOcr()
@@ -239,10 +243,26 @@ class TestFakeMistralOcr:
         assert call.kwargs["model"] == "m"
         assert call.kwargs["include_image_base64"] is True
 
-    async def test_poll_batch_records_batch_id(self) -> None:
+    async def test_get_batch_status_records_batch_id(self) -> None:
+        ocr = FakeMistralOcr(status=BatchPollStatus.IN_PROGRESS)
+        status = await ocr.get_batch_status("batch-xyz")
+        assert status is BatchPollStatus.IN_PROGRESS
+        assert ocr.calls[-1] == RecordedCall("get_batch_status", ("batch-xyz",), {})
+
+    async def test_fetch_batch_results_records_batch_id(self) -> None:
+        entry = BatchResultEntry(custom_id="c1", succeeded=True, raw_response_json="{}")
+        ocr = FakeMistralOcr(entries=[entry])
+        entries = await ocr.fetch_batch_results("batch-xyz")
+        assert entries == [entry]
+        assert ocr.calls[-1] == RecordedCall("fetch_batch_results", ("batch-xyz",), {})
+
+    async def test_get_batch_status_never_calls_fetch(self) -> None:
+        """The status path is independent of the download path: polling status
+        records only ``get_batch_status`` and never ``fetch_batch_results`` —
+        the fake's proof that a status check performs no download."""
         ocr = FakeMistralOcr()
-        await ocr.poll_batch("batch-xyz")
-        assert ocr.calls[-1] == RecordedCall("poll_batch", ("batch-xyz",), {})
+        await ocr.get_batch_status("b")
+        assert [c.method for c in ocr.calls] == ["get_batch_status"]
 
     def test_parse_batch_result_falls_back_to_process_result(self) -> None:
         body = {"pages": []}
@@ -262,17 +282,16 @@ class TestFakeMistralOcr:
 
     async def test_defaults_are_usable_with_no_arguments(self) -> None:
         ocr = FakeMistralOcr()
-        poll = await ocr.poll_batch("b")
-        assert poll.status is BatchPollStatus.ENDED
-        assert poll.entries == []
+        assert await ocr.get_batch_status("b") is BatchPollStatus.ENDED
+        assert await ocr.fetch_batch_results("b") == []
         assert await ocr.submit_batch([], "m") == "batch-fake"
         assert await ocr.process(document={}, model="m") == ({}, [])
         assert ocr.parse_batch_result("{}") == ({}, [])
 
     def test_exposes_the_mistral_ocr_method_surface(self) -> None:
-        """FakeMistralOcr is a duck-typed drop-in for MistralOcr: three async
+        """FakeMistralOcr is a duck-typed drop-in for MistralOcr: four async
         methods plus the sync ``parse_batch_result``."""
         ocr = FakeMistralOcr()
-        for name in ("process", "submit_batch", "poll_batch"):
+        for name in ("process", "submit_batch", "get_batch_status", "fetch_batch_results"):
             assert inspect.iscoroutinefunction(getattr(ocr, name))
         assert not inspect.iscoroutinefunction(ocr.parse_batch_result)

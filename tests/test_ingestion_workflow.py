@@ -24,9 +24,12 @@ from forge.ingestion_workflow import (
     TranscriptIngestionWorkflow,
 )
 from forge.models import (
-    BatchResult,
+    BatchFetchResult,
+    BatchStatusInput,
+    BatchStatusResult,
     BatchSubmitInput,
     BatchSubmitResult,
+    FetchBatchResultInput,
     ParsedLLMResponse,
     ParseResponseInput,
     ThinkingPolicy,
@@ -109,7 +112,24 @@ async def mock_prepare_transcript(input_json: str) -> str:
 async def mock_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
     _CALL_LOG.append(f"submit_batch:{input.output_type_name}")
     _SUBMIT_BATCH_INPUTS.append(input)
-    return BatchSubmitResult(request_id="req-ingest-1", batch_id="msgbatch_ingest1")
+    # Echo the workflow-minted request_id (T4.1: the workflow always passes it).
+    return BatchSubmitResult(
+        request_id=input.request_id, batch_id="msgbatch_ingest1", provider="anthropic"
+    )
+
+
+@activity.defn(name="batch_status")
+async def mock_batch_status(input: BatchStatusInput) -> BatchStatusResult:
+    """Report the batch ended — the timer loop breaks straight to fetch."""
+    _CALL_LOG.append("batch_status")
+    return BatchStatusResult(batch_id=input.batch_id, state="ended")
+
+
+@activity.defn(name="fetch_batch_result")
+async def mock_fetch_batch(input: FetchBatchResultInput) -> BatchFetchResult:
+    """Return an inline body; the parse mock produces the analysis result."""
+    _CALL_LOG.append("fetch_batch_result")
+    return BatchFetchResult(raw_response_json=_ANALYSIS_JSON)
 
 
 @activity.defn(name="parse_llm_response")
@@ -133,6 +153,8 @@ async def mock_persist_to_store(req: PersistRequest) -> PersistResult:
 _FORGE_MOCK_ACTIVITIES = [
     mock_prepare_transcript,
     mock_submit_batch,
+    mock_batch_status,
+    mock_fetch_batch,
     mock_parse_response,
     mock_persist_to_store,
 ]
@@ -205,9 +227,13 @@ async def _drive_transcript_workflow(
     *,
     input_json: str,
     workflow_id: str,
-    expect_batch_call: bool,
 ) -> dict:
-    """Start TranscriptIngestionWorkflow, deliver batch signal if expected, return result."""
+    """Run TranscriptIngestionWorkflow to completion and return its result.
+
+    When the transcript is non-empty the workflow makes a batch call, which polls
+    batch_status (mocked "ended") and fetches its own result — no signal needed
+    under the T4.1 timer-loop transport.
+    """
     async with (
         Worker(
             env.client,
@@ -222,23 +248,12 @@ async def _drive_transcript_workflow(
             activities=_PBOOK_MOCK_ACTIVITIES,
         ),
     ):
-        handle = await env.client.start_workflow(
+        return await env.client.execute_workflow(
             TranscriptIngestionWorkflow.run,
             input_json,
             id=workflow_id,
             task_queue=FORGE_TASK_QUEUE,
         )
-        if expect_batch_call:
-            await handle.signal(
-                TranscriptIngestionWorkflow.batch_result_received,
-                BatchResult(
-                    request_id="req-ingest-1",
-                    batch_id="msgbatch_ingest1",
-                    raw_response_json=_ANALYSIS_JSON,
-                    result_type="TranscriptAnalysisResult",
-                ),
-            )
-        return await handle.result()
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +280,6 @@ class TestTranscriptIngestionEarlyExit:
             env,
             input_json=json.dumps({"path": "/tmp/fake", "session_id": "s1"}),
             workflow_id="test-ingest-empty",
-            expect_batch_call=False,
         )
 
         assert result == {
@@ -295,7 +309,6 @@ class TestTranscriptIngestionEarlyExit:
             env,
             input_json=json.dumps({"path": "/tmp/fake", "session_id": "s-small"}),
             workflow_id="test-ingest-small",
-            expect_batch_call=False,
         )
 
         assert result["experiences_found"] == 0
@@ -326,7 +339,6 @@ class TestTranscriptIngestionNoExperiences:
             env,
             input_json=json.dumps({"path": "/tmp/fake", "session_id": "s-empty"}),
             workflow_id="test-ingest-no-exp",
-            expect_batch_call=True,
         )
 
         assert result["experiences_found"] == 0
@@ -379,7 +391,6 @@ class TestTranscriptIngestionHappyPath:
             env,
             input_json=json.dumps({"path": "/tmp/fake", "session_id": "s-happy"}),
             workflow_id="test-ingest-happy",
-            expect_batch_call=True,
         )
 
         assert result["experiences_found"] == 2
@@ -428,7 +439,6 @@ class TestTranscriptIngestionMalformedResponse:
             env,
             input_json=json.dumps({"path": "/tmp/fake", "session_id": "s-bad"}),
             workflow_id="test-ingest-bad-json",
-            expect_batch_call=True,
         )
 
         assert result["experiences_found"] == 0

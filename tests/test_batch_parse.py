@@ -223,7 +223,6 @@ class TestParseLlmResponseActivity:
             output_types=OUTPUT_TYPES,
             engine=MagicMock(),
             blob_store=None,
-            temporal_client=MagicMock(),
             mistral_ocr=None,
         )
         with patch("forge.activities.roots.get_tracer", return_value=mock_tracer):

@@ -20,7 +20,6 @@ with workflow.unsafe.imports_passed_through():
 
     from forge.models import (
         AssembledContext,
-        BatchResult,
         CapabilityTier,
         ModelConfig,
         ParsedLLMResponse,
@@ -53,16 +52,6 @@ class TranscriptIngestionWorkflow:
     Input JSON: {"path": str, "project": str, "session_id": str}
     Output: {"experiences_found": int, "entries_created": int, "session_id": str}
     """
-
-    def __init__(self) -> None:
-        self._batch_results: dict[str, BatchResult] = {}
-
-    @workflow.signal
-    async def batch_result_received(self, result: BatchResult) -> None:
-        # Correlate by request_id, first delivery wins: at-least-once signalling
-        # can redeliver a result, and a stale/duplicate must not be mistaken for
-        # another call's (INTERIM; this whole path moves to pbook in Phase 6).
-        self._batch_results.setdefault(result.request_id, result)
 
     @workflow.run
     async def run(self, input_json: str) -> dict[str, object]:
@@ -103,7 +92,6 @@ class TranscriptIngestionWorkflow:
         # `thinking` relies on the shared batch dispatch fallback (disabled
         # by default).
         parsed: ParsedLLMResponse = await batch_submit_and_wait(
-            self._batch_results,
             context,
             "TranscriptAnalysisResult",
             max_tokens=4096,

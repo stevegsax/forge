@@ -2,7 +2,7 @@
 
 Temporal's sanctioned dependency-injection pattern: each activity that carries a
 process-wide dependency (the store engine, the LLM client, the batch SDK client,
-the blob store, the Temporal client, the OCR client) is a ``@activity.defn``
+the blob store, the OCR client) is a ``@activity.defn``
 **method** on a small class constructed ONCE in ``forge.worker`` with the
 dependencies the composition root built. The worker registers the *bound
 methods*; because a bound method proxies ``__name__`` to the underlying
@@ -21,7 +21,7 @@ chain-imported into the Temporal workflow sandbox via ``forge.activities``, so i
 must not eagerly import an HTTP stack. The SDK-loading imports
 (``sax_platform.llm.batch`` etc.) stay function-local inside the ``execute_*``
 cores; ``forge.store`` is imported inside the methods. The dependency *types*
-(AsyncAnthropic, MistralOcr, S3Blobs, Client, AnthropicLLM, Engine) are
+(AsyncAnthropic, MistralOcr, S3Blobs, AnthropicLLM, Engine) are
 TYPE_CHECKING-only.
 """
 
@@ -35,8 +35,8 @@ from typing import TYPE_CHECKING, Any
 from sax_platform.temporal.heartbeat import heartbeat_during
 from temporalio import activity
 
+from forge.activities.batch_fetch import execute_batch_status, execute_fetch_batch_result
 from forge.activities.batch_parse import execute_parse_llm_response
-from forge.activities.batch_poll import _poll_batch_for, execute_poll_batch_results
 from forge.activities.batch_submit import (
     DEFAULT_MODEL,
     _resolve_blob_submit_provider,
@@ -72,8 +72,9 @@ from forge.models import (
     AssembledContext,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
-    BatchPollerInput,
-    BatchPollerResult,
+    BatchFetchResult,
+    BatchStatusInput,
+    BatchStatusResult,
     BatchSubmitInput,
     BatchSubmitResult,
     BatchSubmitSpiInput,
@@ -85,6 +86,7 @@ from forge.models import (
     ExportSinglePlaybookInput,
     ExtractionCallResult,
     ExtractionInput,
+    FetchBatchResultInput,
     FetchExistingPlaybooksInput,
     FetchExtractionInput,
     FetchPlaybookIdsInput,
@@ -113,7 +115,6 @@ if TYPE_CHECKING:
     from sax_platform.llm import AnthropicLLM
     from sax_platform.ocr import MistralOcr
     from sqlalchemy import Engine
-    from temporalio.client import Client
 
 __all__ = [
     "BatchActivities",
@@ -486,11 +487,13 @@ class LlmActivities:
 class BatchActivities:
     """Batch-lane activities bound to the composition root's shared dependencies.
 
-    Replaces the two per-module batch-client caches, the module-global
-    Temporal-client seam, the OCR client cache, and the module S3-blob
-    functions. ``blob_store`` / ``mistral_ocr`` are optional: when their
-    configuration is absent at startup they are ``None`` and a code path that
-    needs one raises a clear ``RuntimeError`` at point of use.
+    Replaces the two per-module batch-client caches, the OCR client cache, and
+    the module S3-blob functions. The retired signal-path poller also held the
+    Temporal client to signal waiting workflows; the timer-loop transport (T4.1)
+    has each workflow poll and fetch its own result, so no client is held here.
+    ``blob_store`` / ``mistral_ocr`` are optional: when their configuration is
+    absent at startup they are ``None`` and a code path that needs one raises a
+    clear ``RuntimeError`` at point of use.
     """
 
     def __init__(
@@ -499,14 +502,12 @@ class BatchActivities:
         output_types: Mapping[str, type[BaseModel]],
         engine: Engine,
         blob_store: S3Blobs | None,
-        temporal_client: Client,
         mistral_ocr: MistralOcr | None,
     ) -> None:
         self._client = client
         self._output_types = output_types
         self._engine = engine
         self._blob_store = blob_store
-        self._temporal_client = temporal_client
         self._mistral_ocr = mistral_ocr
 
     @activity.defn
@@ -563,73 +564,6 @@ class BatchActivities:
             return result
 
     @activity.defn
-    async def poll_batch_results(self, _input: BatchPollerInput) -> BatchPollerResult:
-        """Poll pending batches and signal waiting workflows."""
-        from forge.models import BatchJobStatus
-        from forge.store import get_pending_batch_jobs, update_batch_status
-
-        tracer = get_tracer()
-        with tracer.start_as_current_span("forge.poll_batch_results") as span:
-            # Let DB errors propagate so Temporal retries on transient failures.
-            pending_jobs = get_pending_batch_jobs(self._engine)
-
-            if not pending_jobs:
-                span.set_attribute("forge.poll.pending_count", 0)
-                return BatchPollerResult()
-
-            span.set_attribute("forge.poll.pending_count", len(pending_jobs))
-
-            def update_status_fn(
-                *,
-                request_id: str,
-                status: BatchJobStatus | str,
-                error_message: str | None = None,
-            ) -> None:
-                update_batch_status(
-                    self._engine,
-                    request_id=request_id,
-                    status=status,
-                    error_message=error_message,
-                )
-
-            def put_result_blob(custom_id: str, data: bytes) -> str:
-                if self._blob_store is None:
-                    msg = (
-                        "poll_batch_results: S3 blob store not configured "
-                        "(FORGE_OCR_S3_BUCKET unset) but a result requires pointer delivery."
-                    )
-                    raise RuntimeError(msg)
-                key = self._blob_store.build_key(f"batch-result-{custom_id}")
-                self._blob_store.put(key, data, "application/json")
-                return key
-
-            async def poll_fn(provider_name: str, batch_id: str) -> Any:
-                return await _poll_batch_for(
-                    provider_name,
-                    batch_id,
-                    client=self._client,
-                    mistral_ocr=self._mistral_ocr,
-                )
-
-            async with heartbeat_during():
-                result = await execute_poll_batch_results(
-                    pending_jobs=pending_jobs,
-                    temporal_client=self._temporal_client,
-                    update_status_fn=update_status_fn,
-                    put_result_blob=put_result_blob,
-                    poll_fn=poll_fn,
-                )
-
-            span.set_attributes(
-                {
-                    "forge.poll.batches_checked": result.batches_checked,
-                    "forge.poll.signals_sent": result.signals_sent,
-                    "forge.poll.errors_found": result.errors_found,
-                }
-            )
-            return result
-
-    @activity.defn
     async def parse_llm_response(self, input: ParseResponseInput) -> ParsedLLMResponse:
         """Classify a delivered batch result line into a typed ParsedLLMResponse."""
         from forge.message_log import write_message_log
@@ -678,3 +612,66 @@ class BatchActivities:
                 }
             )
             return result
+
+    @activity.defn
+    async def batch_status(self, input: BatchStatusInput) -> BatchStatusResult:
+        """Poll one batch's normalized lifecycle state (timer-loop transport, T4.1)."""
+        tracer = get_tracer()
+        with tracer.start_as_current_span("forge.batch_status") as span:
+            result = await execute_batch_status(
+                input, client=self._client, mistral_ocr=self._mistral_ocr
+            )
+            logger.info("Batch status: batch_id=%s state=%s", input.batch_id, result.state)
+            span.set_attributes(
+                {
+                    "forge.batch.batch_id": input.batch_id,
+                    "forge.batch.provider": input.provider,
+                    "forge.batch.state": result.state,
+                }
+            )
+            return result
+
+    @activity.defn
+    async def fetch_batch_result(self, input: FetchBatchResultInput) -> BatchFetchResult:
+        """Fetch this waiter's batch result line, claim-checked (timer-loop transport, T4.1)."""
+        tracer = get_tracer()
+        with tracer.start_as_current_span("forge.fetch_batch_result") as span:
+            logger.info(
+                "Fetch batch result: batch_id=%s request_id=%s",
+                input.batch_id,
+                input.request_id,
+            )
+            async with heartbeat_during():
+                result = await execute_fetch_batch_result(
+                    input,
+                    client=self._client,
+                    mistral_ocr=self._mistral_ocr,
+                    put_result_blob=self._put_result_blob,
+                )
+            delivery = "error" if result.error else ("pointer" if result.s3_key else "inline")
+            span.set_attributes(
+                {
+                    "forge.batch.batch_id": input.batch_id,
+                    "forge.batch.request_id": input.request_id,
+                    "forge.batch.provider": input.provider,
+                    "forge.batch.delivery": delivery,
+                }
+            )
+            return result
+
+    def _put_result_blob(self, custom_id: str, data: bytes) -> str:
+        """Upload a batch-result envelope and return its S3 key (pointer delivery).
+
+        Used by the ``fetch_batch_result`` activity: a RuntimeError is raised at
+        point of use when the blob store is unconfigured (``FORGE_OCR_S3_BUCKET``
+        unset) but a result requires pointer delivery.
+        """
+        if self._blob_store is None:
+            msg = (
+                "fetch_batch_result: S3 blob store not configured "
+                "(FORGE_OCR_S3_BUCKET unset) but a result requires pointer delivery."
+            )
+            raise RuntimeError(msg)
+        key = self._blob_store.build_key(f"batch-result-{custom_id}")
+        self._blob_store.put(key, data, "application/json")
+        return key

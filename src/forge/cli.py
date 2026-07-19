@@ -39,6 +39,7 @@ from forge.models import (
     ThinkingPolicy,
     TransitionSignal,
     ValidationConfig,
+    derive_execution_timeout,
 )
 from forge.temporal_client import connect_temporal
 
@@ -64,8 +65,6 @@ if TYPE_CHECKING:
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_INFRASTRUCTURE_ERROR = 3
-
-_WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=48)
 
 
 def _require_store_engine() -> Engine:
@@ -396,13 +395,17 @@ async def _submit(
     client = await connect_temporal(temporal_address)
     workflow_id = f"forge-task-{task_input.task.task_id}"
 
+    # Derive the execution timeout from the permitted batch-wait budget so a
+    # legitimately slow batch is never killed (T4.1 ST3c). Sync mode stays flat 48h.
+    execution_timeout = derive_execution_timeout(task_input)
+
     if wait:
         result: TaskResult = await client.execute_workflow(
             ForgeTaskWorkflow.run,
             task_input,
             id=workflow_id,
             task_queue=FORGE_TASK_QUEUE,
-            execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
+            execution_timeout=execution_timeout,
         )
         return result
 
@@ -411,7 +414,7 @@ async def _submit(
         task_input,
         id=workflow_id,
         task_queue=FORGE_TASK_QUEUE,
-        execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
+        execution_timeout=execution_timeout,
     )
     return handle.id
 
@@ -667,6 +670,13 @@ def _validate_model_provider(
     help="Save full API request/response JSON to messages/ in the worktree.",
 )
 @click.option(
+    "--batch-poll-interval",
+    type=click.IntRange(min=300),
+    default=600,
+    show_default=True,
+    help="Seconds between batch status polls (min 300, D88). Batch mode only.",
+)
+@click.option(
     "--domain",
     type=click.Choice(["code_generation", "research", "code_review", "documentation", "generic"]),
     default="code_generation",
@@ -715,6 +725,7 @@ def run(
     no_resolve_conflicts: bool,
     sync_mode: bool,
     log_messages: bool,
+    batch_poll_interval: int,
     domain: str,
     temporal_address: str,
 ) -> None:
@@ -819,6 +830,7 @@ def run(
         thinking=thinking,
         sync_mode=sync_mode,
         log_messages=log_messages,
+        batch_poll_interval_seconds=batch_poll_interval,
     )
 
     # --- Submit ---
@@ -854,13 +866,6 @@ def run(
     help="Temporal server address.",
 )
 @click.option(
-    "--batch-poll-interval",
-    type=int,
-    default=600,
-    show_default=True,
-    help="Seconds between batch polling runs.",
-)
-@click.option(
     "--worker-identity",
     envvar="FORGE_WORKER_IDENTITY",
     default=None,
@@ -868,7 +873,6 @@ def run(
 )
 def worker(
     temporal_address: str,
-    batch_poll_interval: int,
     worker_identity: str | None,
 ) -> None:
     """Start the Temporal worker."""
@@ -882,7 +886,6 @@ def worker(
     asyncio.run(
         run_worker(
             address=temporal_address,
-            batch_poll_interval=batch_poll_interval,
             identity=worker_identity,
         )
     )
@@ -1746,7 +1749,7 @@ def start(
 ) -> None:
     """Start an arbitrary Temporal workflow by name.
 
-    WORKFLOW is the workflow class name (e.g. BatchPollerWorkflow).
+    WORKFLOW is the workflow class name (e.g. ExportPlaybookWorkflow).
     INPUT_JSON is an optional JSON object passed as the workflow argument.
     """
     import json

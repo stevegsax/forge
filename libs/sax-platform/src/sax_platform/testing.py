@@ -50,7 +50,7 @@ import pytest_asyncio
 from pydantic import BaseModel
 
 from sax_platform.llm import Completion
-from sax_platform.ocr import BatchPollResult, BatchPollStatus, ExtractedImage
+from sax_platform.ocr import BatchPollStatus, BatchResultEntry, ExtractedImage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
@@ -294,27 +294,34 @@ class FakeMistralOcr:
     """Recording fake for ``sax_platform.ocr.MistralOcr``.
 
     Mirrors ``MistralOcr``'s public surface exactly — ``process``,
-    ``submit_batch``, ``poll_batch`` (all async) and ``parse_batch_result``
-    (sync) — so it drops in anywhere a ``MistralOcr`` instance is expected. It
-    holds no SDK client; instead it returns the canned values passed to the
-    constructor and records every call on ``self.calls``.
+    ``submit_batch``, ``get_batch_status``, ``fetch_batch_results`` (all async)
+    and ``parse_batch_result`` (sync) — so it drops in anywhere a ``MistralOcr``
+    instance is expected. It holds no SDK client; instead it returns the canned
+    values passed to the constructor and records every call on ``self.calls``.
 
-    Defaults keep it usable with no arguments: ``poll_batch`` returns an
-    ``ENDED`` result with no entries, ``submit_batch`` returns ``"batch-fake"``,
-    and ``process``/``parse_batch_result`` return ``({}, [])``.
+    The batch-result surface is split the same way the real class is: ``status``
+    is the canned ``BatchPollStatus`` returned by ``get_batch_status`` and
+    ``entries`` is the canned ``list[BatchResultEntry]`` returned by
+    ``fetch_batch_results``. Because they are separate methods (and separate
+    recorded calls), a test can prove the status path performs no download by
+    asserting ``fetch_batch_results`` was never called.
+
+    Defaults keep it usable with no arguments: ``get_batch_status`` returns
+    ``ENDED``, ``fetch_batch_results`` returns ``[]``, ``submit_batch`` returns
+    ``"batch-fake"``, and ``process``/``parse_batch_result`` return ``({}, [])``.
     """
 
     def __init__(
         self,
         *,
-        poll_result: BatchPollResult | None = None,
+        status: BatchPollStatus = BatchPollStatus.ENDED,
+        entries: list[BatchResultEntry] | None = None,
         submit_batch_id: str = "batch-fake",
         process_result: tuple[dict[str, Any], list[ExtractedImage]] | None = None,
         parse_result: tuple[dict[str, Any], list[ExtractedImage]] | None = None,
     ) -> None:
-        if poll_result is None:
-            poll_result = BatchPollResult(status=BatchPollStatus.ENDED)
-        self._poll_result = poll_result
+        self._status = status
+        self._entries: list[BatchResultEntry] = entries if entries is not None else []
         self._submit_batch_id = submit_batch_id
         self._process_result: tuple[dict[str, Any], list[ExtractedImage]] = (
             process_result if process_result is not None else ({}, [])
@@ -358,10 +365,15 @@ class FakeMistralOcr:
         self.calls.append(RecordedCall("submit_batch", (requests, model), {"endpoint": endpoint}))
         return self._submit_batch_id
 
-    async def poll_batch(self, batch_id: str) -> BatchPollResult:
-        """Record the call and return the canned poll result."""
-        self.calls.append(RecordedCall("poll_batch", (batch_id,), {}))
-        return self._poll_result
+    async def get_batch_status(self, batch_id: str) -> BatchPollStatus:
+        """Record the call and return the canned status. No download."""
+        self.calls.append(RecordedCall("get_batch_status", (batch_id,), {}))
+        return self._status
+
+    async def fetch_batch_results(self, batch_id: str) -> list[BatchResultEntry]:
+        """Record the call and return the canned result entries."""
+        self.calls.append(RecordedCall("fetch_batch_results", (batch_id,), {}))
+        return self._entries
 
     def parse_batch_result(self, raw_json: str) -> tuple[dict[str, Any], list[ExtractedImage]]:
         """Record the call and return the canned ``(body, images)`` result."""

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, assert_never
 
 from forge.persist_models import (
     PersistBatchFailure,
+    PersistBatchOutcome,
     PersistBatchStatus,
     PersistBatchSubmission,
     PersistInteraction,
@@ -93,6 +94,17 @@ async def execute_persist(req: PersistRequest, engine: Engine) -> PersistResult:
             )
         case PersistBatchStatus():
             # A status transition is a plain UPDATE (no dedupe); always "applied".
+            update_batch_status(
+                engine,
+                request_id=req.request_id,
+                status=req.status,
+                error_message=req.error_message,
+            )
+            applied = True
+        case PersistBatchOutcome():
+            # Terminal provider-lifecycle outcome: a monotonic UPDATE guarded to
+            # SUBMITTED rows, so a stale/duplicate re-apply is a silent no-op that
+            # never regresses a terminal status. Always reported as "applied".
             update_batch_status(
                 engine,
                 request_id=req.request_id,

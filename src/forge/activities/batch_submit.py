@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from typing import TYPE_CHECKING
 
 from sax_platform.llm.tiers import split_provider
@@ -79,6 +78,10 @@ async def execute_batch_submit(
     the ``BatchActivities`` composition root (``output_types`` defaults to the
     frozen ``OUTPUT_TYPES`` for direct callers); separated from the imperative
     shell so tests can inject the client and a mocked ``submit_batch``.
+
+    The provider custom_id is ``input.request_id``, minted in the workflow via
+    ``workflow.uuid4()`` (D88): a retried submit reuses the same custom_id and the
+    provider dedupes to one paid batch, closing the submit-retry orphan window.
     """
     output_type = (
         resolve_output_type(input.output_type_name, output_types)
@@ -100,7 +103,7 @@ async def execute_batch_submit(
     # the platform builder emit an adaptive/disabled shape haiku would 400 on.
     thinking = None if "haiku" in model else input.thinking
 
-    request_id = str(uuid.uuid4())
+    request_id = input.request_id
     request = build_batch_request(
         request_id,
         model=model,

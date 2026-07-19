@@ -23,6 +23,7 @@ from temporalio.worker import Worker
 from forge.activities.roots import StoreActivities
 from forge.models import PlaybookEntry, TaskResult, TransitionSignal
 from forge.persist_models import (
+    PersistBatchOutcome,
     PersistBatchStatus,
     PersistBatchSubmission,
     PersistInteraction,
@@ -203,6 +204,25 @@ class TestPersistIdempotency:
             PersistBatchStatus(request_id="req-s", status="processing")
         )
         assert result.applied is True
+
+    @pytest.mark.asyncio
+    async def test_batch_outcome_updates_row(
+        self, store_acts: StoreActivities, migrated: str
+    ) -> None:
+        """PersistBatchOutcome drives a monotonic terminal update through the store."""
+        await store_acts.persist_to_store(
+            PersistBatchSubmission(request_id="req-out", batch_id="b", workflow_id="wf")
+        )
+        result = await store_acts.persist_to_store(
+            PersistBatchOutcome(request_id="req-out", status="ended")
+        )
+        assert result.applied is True
+
+        from forge.store import get_batch_job
+
+        job = get_batch_job(get_store_engine(migrated), "req-out")
+        assert job is not None
+        assert job["status"] == "ended"
 
     @pytest.mark.asyncio
     async def test_interaction_row_carries_tokens_and_stop_reason(

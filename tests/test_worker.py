@@ -43,73 +43,6 @@ class TestForgeSettingsFailFast:
             ForgeSettings()
 
 
-class TestEnsureSchedule:
-    @pytest.mark.asyncio
-    async def test_creates_schedule_with_expected_interval(self) -> None:
-        client = MagicMock()
-        client.create_schedule = AsyncMock()
-
-        await worker_mod._ensure_schedule(
-            client,
-            schedule_id="forge-batch-poller",
-            workflow_name="BatchPollerWorkflow",
-            workflow_arg=worker_mod.BatchPollerInput(),
-            interval=timedelta(seconds=300),
-            execution_timeout=timedelta(minutes=10),
-        )
-
-        client.create_schedule.assert_awaited_once()
-        schedule_id, schedule = client.create_schedule.await_args.args
-        assert schedule_id == "forge-batch-poller"
-        assert schedule.action.id == "forge-batch-poller-run"
-        assert schedule.action.task_queue == worker_mod.FORGE_TASK_QUEUE
-        assert schedule.spec.intervals[0].every == timedelta(seconds=300)
-        assert schedule.state.note == "Forge schedule: forge-batch-poller"
-        assert schedule.action.execution_timeout == timedelta(minutes=10)
-        assert schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
-
-    @pytest.mark.asyncio
-    async def test_updates_existing_schedule_when_already_running(self) -> None:
-        handle = MagicMock()
-        handle.update = AsyncMock()
-        client = MagicMock()
-        client.create_schedule = AsyncMock(side_effect=worker_mod.ScheduleAlreadyRunningError())
-        client.get_schedule_handle.return_value = handle
-
-        await worker_mod._ensure_schedule(
-            client,
-            schedule_id="forge-batch-poller",
-            workflow_name="BatchPollerWorkflow",
-            workflow_arg=worker_mod.BatchPollerInput(),
-            interval=timedelta(minutes=10),
-            execution_timeout=timedelta(minutes=10),
-        )
-
-        client.get_schedule_handle.assert_called_once_with("forge-batch-poller")
-        handle.update.assert_awaited_once()
-
-        updater = handle.update.await_args.args[0]
-        existing_schedule = worker_mod.Schedule(
-            action=worker_mod.ScheduleActionStartWorkflow(
-                "OldWorkflow",
-                {},
-                id="old-run",
-                task_queue="old-queue",
-            ),
-            spec=worker_mod.ScheduleSpec(
-                intervals=[worker_mod.ScheduleIntervalSpec(every=timedelta(minutes=5))]
-            ),
-            state=worker_mod.ScheduleState(note="old"),
-        )
-        update_input = SimpleNamespace(description=SimpleNamespace(schedule=existing_schedule))
-
-        update = await updater(update_input)
-        assert update.schedule.spec.intervals[0].every == timedelta(minutes=10)
-        assert update.schedule.action.id == "forge-batch-poller-run"
-        assert update.schedule.action.execution_timeout == timedelta(minutes=10)
-        assert update.schedule.policy.overlap == worker_mod.ScheduleOverlapPolicy.SKIP
-
-
 # ---------------------------------------------------------------------------
 # Composition root: run_worker builds each dependency once and injects it into
 # the four activity classes. run_worker's SDK/settings imports are function-local,
@@ -157,7 +90,6 @@ class _Composition:
         patches = [
             patch("forge.settings.ForgeSettings", return_value=self.settings),
             patch.object(worker_mod, "_init_store", self.init_store),
-            patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
             patch.object(worker_mod, "connect_temporal", self.connect),
             patch.object(worker_mod, "_run_platform_worker", self.run_platform_worker),
             patch("forge.tracing.init_tracing", self.init_tracing),
@@ -218,11 +150,10 @@ class TestRunWorkerComposition:
         assert comp.bound("assemble_context").__self__._engine is comp.engine
         assert comp.bound("call_llm").__self__._llm is comp.llm
 
-        batch = comp.bound("poll_batch_results").__self__
+        batch = comp.bound("submit_batch_request").__self__
         assert batch._client is comp.sdk_client
         assert batch._engine is comp.engine
         assert batch._blob_store is comp.blobs
-        assert batch._temporal_client is comp.client
         assert batch._mistral_ocr is comp.mistral
 
     @pytest.mark.asyncio
@@ -266,14 +197,11 @@ class TestRunWorkerComposition:
             "review_manual_playbook",
             "submit_batch_request",
             "submit_batch_blob",
-            "poll_batch_results",
             "parse_llm_response",
+            "batch_status",
+            "fetch_batch_result",
         }
         assert expected <= names
-        assert (
-            worker_mod.BatchPollerWorkflow
-            in comp.run_platform_worker.await_args.kwargs["workflows"]
-        )
 
     @pytest.mark.asyncio
     async def test_explicit_address_overrides_settings(self) -> None:
@@ -292,7 +220,7 @@ class TestRunWorkerComposition:
             await worker_mod.run_worker()
 
         comp.mistral_cls.assert_not_called()
-        assert comp.bound("poll_batch_results").__self__._mistral_ocr is None
+        assert comp.bound("submit_batch_request").__self__._mistral_ocr is None
 
     @pytest.mark.asyncio
     async def test_no_bucket_leaves_blob_store_none(self) -> None:
@@ -301,7 +229,7 @@ class TestRunWorkerComposition:
             await worker_mod.run_worker()
 
         comp.s3blobs_cls.assert_not_called()
-        assert comp.bound("poll_batch_results").__self__._blob_store is None
+        assert comp.bound("submit_batch_request").__self__._blob_store is None
 
     @pytest.mark.asyncio
     async def test_shutdown_tracing_runs_when_worker_fails(self) -> None:

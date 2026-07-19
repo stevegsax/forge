@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 
 from forge.store import (
+    BatchJob,
     get_batch_job,
     get_pending_batch_jobs,
     record_batch_failure,
@@ -163,6 +164,74 @@ class TestUpdateBatchStatus:
         job_after = get_batch_job(engine, "req-012")
         assert job_after is not None
         assert job_after["updated_at"] >= job_before["updated_at"]
+
+
+# ---------------------------------------------------------------------------
+# update_batch_status — monotonic guard + error-message preservation (T4.1 ST1)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateBatchStatusMonotonic:
+    def test_submitted_to_ended_applies(self, tmp_path: Path) -> None:
+        """SUBMITTED is the sole non-terminal state; the ENDED transition applies."""
+        engine, _ = _setup_db(tmp_path)
+        record_batch_submission(engine, request_id="req-e", batch_id="b", workflow_id="wf")
+
+        update_batch_status(engine, request_id="req-e", status="ended")
+
+        job = get_batch_job(engine, "req-e")
+        assert job is not None
+        assert job["status"] == "ended"
+
+    def test_ended_to_failed_is_a_noop(self, tmp_path: Path) -> None:
+        """A stale retry against an already-terminal (ENDED) row cannot regress it."""
+        engine, _ = _setup_db(tmp_path)
+        record_batch_submission(engine, request_id="req-n", batch_id="b", workflow_id="wf")
+        update_batch_status(engine, request_id="req-n", status="ended")
+
+        update_batch_status(engine, request_id="req-n", status="failed", error_message="late")
+
+        job = get_batch_job(engine, "req-n")
+        assert job is not None
+        assert job["status"] == "ended"
+        assert job["error_message"] is None
+
+    def test_terminal_status_absorbs_delayed_duplicate(self, tmp_path: Path) -> None:
+        """AC interleaving: a row reaches terminal, then a delayed duplicate arrives
+        and must not regress the recorded outcome."""
+        engine, _ = _setup_db(tmp_path)
+        record_batch_submission(engine, request_id="req-d", batch_id="b", workflow_id="wf")
+
+        # First update wins and records the terminal failure with its error.
+        update_batch_status(engine, request_id="req-d", status="failed", error_message="boom")
+        # A delayed duplicate of an earlier transition arrives after the row is
+        # already terminal — it matches zero rows and is silently skipped.
+        update_batch_status(engine, request_id="req-d", status="ended")
+
+        job = get_batch_job(engine, "req-d")
+        assert job is not None
+        assert job["status"] == "failed"
+        assert job["error_message"] == "boom"
+
+    def test_error_message_none_does_not_clobber_recorded_error(self, tmp_path: Path) -> None:
+        """error_message=None must not overwrite an error already on a matched row."""
+        engine, _ = _setup_db(tmp_path)
+        record_batch_submission(engine, request_id="req-p", batch_id="b", workflow_id="wf")
+        # Seed an error on the still-SUBMITTED row so the next update actually matches
+        # the monotonic guard and would clobber the error if it wrote error_message.
+        with engine.begin() as conn:
+            conn.execute(
+                sa.update(BatchJob)
+                .where(BatchJob.__table__.c.id == "req-p")
+                .values(error_message="recorded earlier")
+            )
+
+        update_batch_status(engine, request_id="req-p", status="ended")
+
+        job = get_batch_job(engine, "req-p")
+        assert job is not None
+        assert job["status"] == "ended"
+        assert job["error_message"] == "recorded earlier"
 
 
 # ---------------------------------------------------------------------------

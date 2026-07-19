@@ -7,7 +7,6 @@ validation — only mocking the LLM call — to prove Phase 1 Definition of Done
 from __future__ import annotations
 
 import subprocess
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,9 +29,12 @@ from forge.activities.roots import ContextActivities
 from forge.models import (
     AssembleContextInput,
     AssembledContext,
-    BatchResult,
+    BatchFetchResult,
+    BatchStatusInput,
+    BatchStatusResult,
     BatchSubmitInput,
     BatchSubmitResult,
+    FetchBatchResultInput,
     FileOutput,
     ForgeTaskInput,
     LLMCallResult,
@@ -56,7 +58,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from pydantic import BaseModel
-    from temporalio.client import Client
     from temporalio.testing import WorkflowEnvironment
 
 
@@ -94,34 +95,29 @@ def names() -> list[str]:
 # Shared batch mock infrastructure
 # ---------------------------------------------------------------------------
 
-_test_client: Client | None = None
 _parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
 
 
 @activity.defn(name="submit_batch_request")
-async def mock_self_signaling_submit(input: BatchSubmitInput) -> BatchSubmitResult:
-    """Self-signaling submit: immediately signal the workflow with a batch result.
-
-    Mints a fresh request_id per call (as the real submit_batch_request does),
-    so multi-call workflows (planner + generation, retries) correlate each
-    result to its own call now that the buffer is keyed by request_id.
-    """
-    assert _test_client is not None
-    request_id = uuid.uuid4().hex
-    handle = _test_client.get_workflow_handle(input.workflow_id)
-    await handle.signal(
-        "batch_result_received",
-        BatchResult(
-            request_id=request_id,
-            batch_id="msgbatch_mock123",
-            raw_response_json='{"mock": true}',
-            result_type=input.output_type_name,
-        ),
-    )
+async def mock_submit_batch(input: BatchSubmitInput) -> BatchSubmitResult:
+    """Echo the workflow-minted request_id (T4.1: the workflow always passes it)."""
     return BatchSubmitResult(
-        request_id=request_id,
+        request_id=input.request_id,
         batch_id="msgbatch_mock123",
+        provider="anthropic",
     )
+
+
+@activity.defn(name="batch_status")
+async def mock_batch_status(input: BatchStatusInput) -> BatchStatusResult:
+    """Report the batch ended — the timer loop breaks straight to fetch."""
+    return BatchStatusResult(batch_id=input.batch_id, state="ended")
+
+
+@activity.defn(name="fetch_batch_result")
+async def mock_fetch_batch(input: FetchBatchResultInput) -> BatchFetchResult:
+    """Return this waiter's inline canned body; parse dispatches on output_type."""
+    return BatchFetchResult(raw_response_json='{"mock": true}')
 
 
 @activity.defn(name="parse_llm_response")
@@ -271,7 +267,7 @@ def _context_bound(name: str) -> object:
     return getattr(ctx, name)
 
 
-_BATCH_ACTIVITIES = [mock_self_signaling_submit, mock_parse_response]
+_BATCH_ACTIVITIES = [mock_submit_batch, mock_batch_status, mock_fetch_batch, mock_parse_response]
 
 _ACTIVITIES_VALID = [*_REAL_ACTIVITIES, mock_call_llm_valid, *_BATCH_ACTIVITIES]
 _ACTIVITIES_INVALID = [*_REAL_ACTIVITIES, mock_call_llm_invalid, *_BATCH_ACTIVITIES]
@@ -293,8 +289,7 @@ async def _run_e2e_workflow(
     parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None,
 ) -> TaskResult:
     """Run the ForgeTaskWorkflow with real activities and a mock LLM."""
-    global _test_client, _parse_handler
-    _test_client = env.client
+    global _parse_handler
     if task is None:
         task = TaskDefinition(
             task_id="e2e-task",
@@ -639,8 +634,7 @@ async def _run_planned_e2e(
     max_step_attempts: int = 2,
 ) -> TaskResult:
     """Run the planned workflow with real git/validation and mock LLM+planner."""
-    global _test_client, _parse_handler
-    _test_client = env.client
+    global _parse_handler
     _parse_handler = _e2e_planned_parse_handler
     if task is None:
         task = TaskDefinition(
@@ -990,8 +984,7 @@ async def _run_fanout_e2e(
     max_sub_task_attempts: int = 2,
 ) -> TaskResult:
     """Run the fan-out workflow with real git/validation and mock LLM+planner."""
-    global _test_client, _parse_handler
-    _test_client = env.client
+    global _parse_handler
     _parse_handler = _e2e_fanout_parse_handler
     if task is None:
         task = TaskDefinition(
