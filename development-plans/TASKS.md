@@ -14,16 +14,26 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 
 ### Phase 0 — Standalone fixes (no phase dependency; added 2026-07-08)
 
-- [ ] [T0.1 — Observability defaults](tasks/T0.1-observability-defaults.md)
-- [ ] [T0.2 — CLI helper fixes](tasks/T0.2-cli-helper-fixes.md)
-- [ ] [T0.3 — Dead code and stale artifact deletion](tasks/T0.3-dead-code-stale-artifacts.md)
-- [ ] [T0.4 — Docs truth sweep (pre-migration)](tasks/T0.4-docs-truth-sweep.md)
-- [ ] [T0.5 — Idempotent, path-safe edit application](tasks/T0.5-idempotent-edit-application.md) *(added 2026-07-08 sweep)*
-- [ ] [T0.6 — Eval judge integrity](tasks/T0.6-eval-judge-integrity.md) *(added 2026-07-08 sweep)*
+- [x] [T0.1 — Observability defaults](tasks/T0.1-observability-defaults.md)
+- [x] [T0.2 — CLI helper fixes](tasks/T0.2-cli-helper-fixes.md)
+- [x] [T0.3 — Dead code and stale artifact deletion](tasks/T0.3-dead-code-stale-artifacts.md)
+- [x] [T0.4 — Docs truth sweep (pre-migration)](tasks/T0.4-docs-truth-sweep.md)
+- [x] [T0.5 — Idempotent, path-safe edit application](tasks/T0.5-idempotent-edit-application.md) *(added 2026-07-08 sweep)*
+- [x] [T0.6 — Eval judge integrity](tasks/T0.6-eval-judge-integrity.md) *(added 2026-07-08 sweep)*
 - [x] [T0.7 — Local deployment: retire EC2 (D99)](tasks/T0.7-deploy-hardening.md) *(added 2026-07-08 sweep; rewritten 2026-07-16 per D99 — most original findings mooted by EC2 removal)*
-- [ ] [T0.8 — Record the pre-migration operating decision](tasks/T0.8-operating-decision.md) *(added 2026-07-08 sweep)*
+- [x] [T0.8 — Record the pre-migration operating decision](tasks/T0.8-operating-decision.md) *(added 2026-07-08 sweep)*
 
 ### Phase 1 — Stop the bleeding (current repos)
+
+> **Operating decision (T0.8, recorded 2026-07-19, retrospective):** forge
+> **did operate unattended** before Phase 4 — D99's local-first deployment
+> runs the workers under launchd on an always-on desktop — so the interim
+> tasks were the right call, not deletable waste. T1.2 and T1.3 shipped
+> (DONE below) and did their job; their deletion is owned by Phase 4
+> (T4.1), which removes the signal transport that makes both criticals
+> constructible. No reorder was needed: by the time this decision was
+> recorded, Phases 1–3 had completed in order. The "if no, drop the
+> interims" branch of the original question is dead.
 
 - [x] [T1.0 — Uniform editable sibling sources](tasks/T1.0-uniform-editable-sibling-sources.md)
 - [x] [T1.1 — Delete the dead provider stack; repatriate sax-llm's tests](tasks/T1.1-delete-dead-provider-stack.md)
@@ -103,9 +113,9 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 
 ### Beyond the roadmap
 
-- [x] **Store externalization** — Postgres backend + S3 OCR blobs + survivable writes ([externalize-store-postgres-s3.md](externalize-store-postgres-s3.md)).
+- [x] **Store externalization** — Postgres backend + S3 OCR blobs + survivable writes ([externalize-store-postgres-s3.md](archive/externalize-store-postgres-s3.md)).
 - [x] **OCR pipeline** — Mistral OCR sync + batch, S3 blobs, PDF chunking (since extracted to the sibling `ocr` repo).
-- [x] **OCR separation** — OCR extracted into the sibling `ocr` repo as a `forge-contracts` consumer; Forge is an OCR-agnostic batch platform ([separate-ocr-into-its-own-repo.md](separate-ocr-into-its-own-repo.md)).
+- [x] **OCR separation** — OCR extracted into the sibling `ocr` repo as a `forge-contracts` consumer; Forge is an OCR-agnostic batch platform ([separate-ocr-into-its-own-repo.md](archive/separate-ocr-into-its-own-repo.md)).
 - [x] **Transcript ingestion** — `forge ingest` → pbook `ExtractionWorkflow` cross-queue.
 - [x] **Planner evaluation framework** — `eval/` (corpus, deterministic checks, LLM-as-judge, baseline/candidate comparison).
 - [x] **Secure remote access** — mTLS Temporal access + EC2 deploy package.

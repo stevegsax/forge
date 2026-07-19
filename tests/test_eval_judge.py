@@ -10,6 +10,8 @@ from forge.eval.judge import (
     build_judge_system_prompt,
     build_judge_user_prompt,
     execute_judge_call,
+    format_repo_context,
+    judge_plan,
 )
 from forge.eval.models import (
     EvalCase,
@@ -33,6 +35,14 @@ _PLAN = Plan(
     ],
     explanation="Single step auth implementation.",
 )
+
+
+def _full_verdict(*, overall: str = "OK.") -> JudgeVerdict:
+    """A JudgeVerdict scoring every criterion — the shape validation requires."""
+    return JudgeVerdict(
+        scores=[JudgeScore(criterion=crit, score=4, rationale="ok") for crit in JudgeCriterion],
+        overall_assessment=overall,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -117,16 +127,7 @@ class TestBuildJudgeUserPrompt:
 class TestExecuteJudgeCall:
     @pytest.mark.asyncio
     async def test_returns_verdict(self) -> None:
-        verdict = JudgeVerdict(
-            scores=[
-                JudgeScore(
-                    criterion=JudgeCriterion.COMPLETENESS,
-                    score=5,
-                    rationale="Covers all targets.",
-                ),
-            ],
-            overall_assessment="Solid plan.",
-        )
+        verdict = _full_verdict(overall="Solid plan.")
 
         llm = FakeLLM(verdict, input_tokens=500, output_tokens=200)
 
@@ -136,10 +137,7 @@ class TestExecuteJudgeCall:
 
     @pytest.mark.asyncio
     async def test_passes_prompts_to_llm(self) -> None:
-        verdict = JudgeVerdict(
-            scores=[],
-            overall_assessment="OK.",
-        )
+        verdict = _full_verdict()
 
         llm = FakeLLM(verdict, input_tokens=0, output_tokens=0)
 
@@ -175,3 +173,56 @@ class TestExecuteJudgeCall:
 
         with pytest.raises(LLMTruncated):
             await execute_judge_call("sys", "usr", llm)
+
+
+# ---------------------------------------------------------------------------
+# format_repo_context
+# ---------------------------------------------------------------------------
+
+
+class TestFormatRepoContext:
+    def test_lists_sorted_files_with_count(self) -> None:
+        out = format_repo_context({"b.py", "a.py"})
+        assert "2 tracked file(s)" in out
+        assert out.index("a.py") < out.index("b.py")
+
+    def test_caps_large_listing(self) -> None:
+        files = {f"src/mod_{i:04d}.py" for i in range(50)}
+        out = format_repo_context(files, max_files=10)
+        assert "50 tracked file(s)" in out
+        assert "40 more file(s) not shown" in out
+        # Only the capped number of "- <path>" listing lines appear.
+        assert out.count("\n- ") == 10
+
+    def test_no_truncation_line_when_within_cap(self) -> None:
+        out = format_repo_context({"a.py", "b.py"}, max_files=10)
+        assert "not shown" not in out
+
+
+# ---------------------------------------------------------------------------
+# judge_plan — repo context wiring (T0.6)
+# ---------------------------------------------------------------------------
+
+
+class TestJudgePlanRepoContext:
+    @pytest.mark.asyncio
+    async def test_repo_context_reaches_judge_system_prompt(self) -> None:
+        """When a repo context is supplied, it rides in the judge's system prompt."""
+        llm = FakeLLM(_full_verdict())
+        repo_ctx = format_repo_context({"src/auth.py", "src/models.py"})
+
+        await judge_plan(_CASE, _PLAN, llm, repo_context=repo_ctx)
+
+        assert len(llm.calls) == 1
+        system = llm.calls[-1].kwargs["system"]
+        assert "Repository Context" in system
+        assert "src/auth.py" in system
+
+    @pytest.mark.asyncio
+    async def test_no_repo_context_omits_section(self) -> None:
+        llm = FakeLLM(_full_verdict())
+
+        await judge_plan(_CASE, _PLAN, llm)
+
+        system = llm.calls[-1].kwargs["system"]
+        assert "Repository Context" not in system

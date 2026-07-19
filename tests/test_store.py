@@ -6,18 +6,11 @@ from typing import TYPE_CHECKING
 
 import forge.store as _store
 from forge.models import (
-    AssembledContext,
-    ContextStats,
-    FileOutput,
-    LLMCallResult,
-    LLMResponse,
-    PlanCallResult,
     TaskResult,
     TransitionSignal,
 )
 from forge.store import (
     InteractionRow,
-    build_interaction_dict,
     build_playbook_dict,
     get_interactions,
     get_playbooks_by_tags,
@@ -76,160 +69,25 @@ class TestGetStoreEngine:
 
 
 # ---------------------------------------------------------------------------
-# build_interaction_dict
+# interaction-row factory (shared by the roundtrip/migration tests)
 # ---------------------------------------------------------------------------
 
 
-def _make_context(
-    *,
-    step_id: str | None = None,
-    sub_task_id: str | None = None,
-) -> AssembledContext:
-    return AssembledContext(
-        task_id="test-task",
-        system_prompt="You are a code generator.",
-        user_prompt="Generate code.",
-        step_id=step_id,
-        sub_task_id=sub_task_id,
-    )
-
-
-def _make_llm_result() -> LLMCallResult:
-    return LLMCallResult(
-        task_id="test-task",
-        response=LLMResponse(
-            files=[FileOutput(file_path="a.py", content="pass")],
-            explanation="Created file.",
-        ),
-        model_name="test-model",
-        input_tokens=100,
-        output_tokens=50,
-        latency_ms=250.0,
-    )
-
-
-class TestBuildInteractionDict:
-    def test_basic(self) -> None:
-        context = _make_context()
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        assert data["task_id"] == "test-task"
-        assert data["role"] == "llm"
-        assert data["model_name"] == "test-model"
-        assert data["input_tokens"] == 100
-        assert data["output_tokens"] == 50
-        assert data["latency_ms"] == 250.0
-        assert data["explanation"] == "Created file."
-        assert data["system_prompt"] == "You are a code generator."
-        assert data["user_prompt"] == "Generate code."
-        assert data["context_stats_json"] is None
-
-    def test_with_step_id(self) -> None:
-        context = _make_context(step_id="step-1")
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id="step-1",
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        assert data["step_id"] == "step-1"
-
-    def test_with_context_stats(self) -> None:
-        context = AssembledContext(
-            task_id="test-task",
-            system_prompt="sys",
-            user_prompt="usr",
-            context_stats=ContextStats(files_discovered=5),
-        )
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        assert data["context_stats_json"] is not None
-        assert "files_discovered" in data["context_stats_json"]
-
-    def test_includes_cache_fields(self) -> None:
-        context = _make_context()
-        result = LLMCallResult(
-            task_id="test-task",
-            response=LLMResponse(
-                files=[FileOutput(file_path="a.py", content="pass")],
-                explanation="Created file.",
-            ),
-            model_name="test-model",
-            input_tokens=100,
-            output_tokens=50,
-            latency_ms=250.0,
-            cache_creation_input_tokens=500,
-            cache_read_input_tokens=1000,
-        )
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        assert data["cache_creation_input_tokens"] == 500
-        assert data["cache_read_input_tokens"] == 1000
-
-    def test_cache_fields_default_zero(self) -> None:
-        context = _make_context()
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        assert data["cache_creation_input_tokens"] == 0
-        assert data["cache_read_input_tokens"] == 0
-
-    def test_with_planner_result(self) -> None:
-        from forge.models import Plan, PlanStep
-
-        context = _make_context()
-        plan = Plan(
-            task_id="t",
-            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"])],
-            explanation="Plan explanation.",
-        )
-        planner_result = PlanCallResult(
-            task_id="t",
-            plan=plan,
-            model_name="planner-model",
-            input_tokens=200,
-            output_tokens=100,
-            latency_ms=500.0,
-        )
-        data = build_interaction_dict(
-            task_id="t",
-            step_id=None,
-            sub_task_id=None,
-            role="planner",
-            context=context,
-            llm_result=planner_result,
-        )
-        assert data["model_name"] == "planner-model"
-        assert data["explanation"] == "Plan explanation."
+def _interaction_row(**overrides: object) -> InteractionRow:
+    """Build an interactions-table row with defaults, overridable per field."""
+    fields: dict[str, object] = {
+        "task_id": "test-task",
+        "role": "llm",
+        "system_prompt": "You are a code generator.",
+        "user_prompt": "Generate code.",
+        "model_name": "test-model",
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "latency_ms": 250.0,
+        "explanation": "Created file.",
+    }
+    fields.update(overrides)
+    return InteractionRow(**fields)
 
 
 # ---------------------------------------------------------------------------
@@ -242,17 +100,7 @@ class TestInteractionRoundtrip:
         db_path = tmp_path / "test.db"
         engine = _migrate(db_path)
 
-        context = _make_context(step_id="step-1")
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id="step-1",
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, InteractionRow(**data))
+        save_interaction(engine, _interaction_row(step_id="step-1"))
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -265,17 +113,7 @@ class TestInteractionRoundtrip:
         engine = _migrate(db_path)
 
         for step in ["step-1", "step-2"]:
-            context = _make_context(step_id=step)
-            result = _make_llm_result()
-            data = build_interaction_dict(
-                task_id="test-task",
-                step_id=step,
-                sub_task_id=None,
-                role="llm",
-                context=context,
-                llm_result=result,
-            )
-            save_interaction(engine, InteractionRow(**data))
+            save_interaction(engine, _interaction_row(step_id=step))
 
         rows = get_interactions(engine, "test-task", step_id="step-1")
         assert len(rows) == 1
@@ -359,17 +197,7 @@ class TestRunMigrations:
         engine = _migrate(db_path)
 
         # Should be able to insert and query
-        context = _make_context()
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="t",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, InteractionRow(**data))
+        save_interaction(engine, _interaction_row(task_id="t"))
         rows = get_interactions(engine, "t")
         assert len(rows) == 1
 
@@ -652,29 +480,10 @@ class TestMigration003:
         db_path = tmp_path / "test.db"
         engine = _migrate(db_path)
 
-        context = _make_context()
-        result = LLMCallResult(
-            task_id="test-task",
-            response=LLMResponse(
-                files=[FileOutput(file_path="a.py", content="pass")],
-                explanation="Created.",
-            ),
-            model_name="test-model",
-            input_tokens=100,
-            output_tokens=50,
-            latency_ms=250.0,
-            cache_creation_input_tokens=500,
-            cache_read_input_tokens=1000,
+        save_interaction(
+            engine,
+            _interaction_row(cache_creation_input_tokens=500, cache_read_input_tokens=1000),
         )
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, InteractionRow(**data))
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -685,17 +494,7 @@ class TestMigration003:
         db_path = tmp_path / "test.db"
         engine = _migrate(db_path)
 
-        context = _make_context()
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, InteractionRow(**data))
+        save_interaction(engine, _interaction_row())
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -713,17 +512,7 @@ class TestStopReasonColumn:
         db_path = tmp_path / "test.db"
         engine = _migrate(db_path)
 
-        context = _make_context()
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        save_interaction(engine, InteractionRow(**data))
+        save_interaction(engine, _interaction_row())
 
         rows = get_interactions(engine, "test-task")
         assert len(rows) == 1
@@ -733,18 +522,7 @@ class TestStopReasonColumn:
         db_path = tmp_path / "test.db"
         engine = _migrate(db_path)
 
-        context = _make_context()
-        result = _make_llm_result()
-        data = build_interaction_dict(
-            task_id="test-task",
-            step_id=None,
-            sub_task_id=None,
-            role="llm",
-            context=context,
-            llm_result=result,
-        )
-        data["stop_reason"] = "max_tokens"
-        save_interaction(engine, InteractionRow(**data))
+        save_interaction(engine, _interaction_row(stop_reason="max_tokens"))
 
         rows = get_interactions(engine, "test-task")
         assert rows[0]["stop_reason"] == "max_tokens"

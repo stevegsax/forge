@@ -9,7 +9,7 @@ Follows Function Core / Imperative Shell:
   build_task_definition, load_task_definition, format_eval_result,
   format_deterministic_result, format_playbook_entry,
   load_workflow_input
-- Async shell: _submit_and_wait, _submit_no_wait, _run_eval, _start_workflow,
+- Async shell: _submit, _run_eval, _start_workflow,
   _start_workflow_and_wait
 - Click commands: main, run, worker, status, eval_planner, playbooks, start
 """
@@ -21,7 +21,7 @@ import logging
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import click
 from click.core import ParameterSource
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from sax_platform.llm import AnthropicLLM
     from sqlalchemy import Engine
 
-    from forge.eval.models import DeterministicResult, PlanEvalResult
+    from forge.eval.models import DeterministicResult, EvalCase, PlanEvalResult
     from forge.models import (
         ExportPlaybookResult,
         LLMStats,
@@ -366,107 +366,54 @@ def load_workflow_input(
 # ---------------------------------------------------------------------------
 
 
-async def _submit_and_wait(
-    task_def: TaskDefinition,
-    repo_root: str,
-    temporal_address: str,
-    max_attempts: int,
-    *,
-    plan: bool = False,
-    max_step_attempts: int = 2,
-    max_sub_task_attempts: int = 2,
-    max_fan_out_depth: int = 1,
-    max_exploration_rounds: int = 10,
-    sanity_check_interval: int = 0,
-    resolve_conflicts: bool = True,
-    model_routing: ModelConfig | None = None,
-    thinking: ThinkingPolicy | None = None,
-    sync_mode: bool = True,
-    log_messages: bool = False,
-) -> TaskResult:
-    """Submit a task to Temporal and wait for completion."""
+@overload
+async def _submit(
+    task_input: ForgeTaskInput, temporal_address: str, *, wait: Literal[True]
+) -> TaskResult: ...
 
+
+@overload
+async def _submit(
+    task_input: ForgeTaskInput, temporal_address: str, *, wait: Literal[False]
+) -> str: ...
+
+
+async def _submit(
+    task_input: ForgeTaskInput, temporal_address: str, *, wait: bool
+) -> TaskResult | str:
+    """Submit ``ForgeTaskWorkflow`` to Temporal.
+
+    A single helper for both submission modes: with ``wait=True`` it runs the
+    workflow to completion and returns its :class:`TaskResult`; with
+    ``wait=False`` it starts the workflow and returns its ID immediately. The
+    caller builds the :class:`ForgeTaskInput` (the workflow's whole argument),
+    so there is no per-field parameter mirror to drift against the model.
+    """
     from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 
     from forge.workflows import ForgeTaskWorkflow
 
     client = await connect_temporal(temporal_address)
+    workflow_id = f"forge-task-{task_input.task.task_id}"
 
-    result: TaskResult = await client.execute_workflow(
-        ForgeTaskWorkflow.run,
-        ForgeTaskInput(
-            task=task_def,
-            repo_root=repo_root,
-            max_attempts=max_attempts,
-            plan=plan,
-            max_step_attempts=max_step_attempts,
-            max_sub_task_attempts=max_sub_task_attempts,
-            max_fan_out_depth=max_fan_out_depth,
-            max_exploration_rounds=max_exploration_rounds,
-            sanity_check_interval=sanity_check_interval,
-            resolve_conflicts=resolve_conflicts,
-            model_routing=model_routing or ModelConfig(),
-            thinking=thinking or ThinkingPolicy(),
-            sync_mode=sync_mode,
-            log_messages=log_messages,
-        ),
-        id=f"forge-task-{task_def.task_id}",
-        task_queue=FORGE_TASK_QUEUE,
-        execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
-    )
-    return result
-
-
-async def _submit_no_wait(
-    task_def: TaskDefinition,
-    repo_root: str,
-    temporal_address: str,
-    max_attempts: int,
-    *,
-    plan: bool = False,
-    max_step_attempts: int = 2,
-    max_sub_task_attempts: int = 2,
-    max_fan_out_depth: int = 1,
-    max_exploration_rounds: int = 10,
-    sanity_check_interval: int = 0,
-    resolve_conflicts: bool = True,
-    model_routing: ModelConfig | None = None,
-    thinking: ThinkingPolicy | None = None,
-    sync_mode: bool = True,
-    log_messages: bool = False,
-) -> str:
-    """Submit a task to Temporal and return the workflow ID without waiting."""
-
-    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
-
-    from forge.workflows import ForgeTaskWorkflow
-
-    client = await connect_temporal(temporal_address)
+    if wait:
+        result: TaskResult = await client.execute_workflow(
+            ForgeTaskWorkflow.run,
+            task_input,
+            id=workflow_id,
+            task_queue=FORGE_TASK_QUEUE,
+            execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
+        )
+        return result
 
     handle = await client.start_workflow(
         ForgeTaskWorkflow.run,
-        ForgeTaskInput(
-            task=task_def,
-            repo_root=repo_root,
-            max_attempts=max_attempts,
-            plan=plan,
-            max_step_attempts=max_step_attempts,
-            max_sub_task_attempts=max_sub_task_attempts,
-            max_fan_out_depth=max_fan_out_depth,
-            max_exploration_rounds=max_exploration_rounds,
-            sanity_check_interval=sanity_check_interval,
-            resolve_conflicts=resolve_conflicts,
-            model_routing=model_routing or ModelConfig(),
-            thinking=thinking or ThinkingPolicy(),
-            sync_mode=sync_mode,
-            log_messages=log_messages,
-        ),
-        id=f"forge-task-{task_def.task_id}",
+        task_input,
+        id=workflow_id,
         task_queue=FORGE_TASK_QUEUE,
         execution_timeout=_WORKFLOW_EXECUTION_TIMEOUT,
     )
-    workflow_id: str = handle.id
-    return workflow_id
+    return handle.id
 
 
 # ---------------------------------------------------------------------------
@@ -521,10 +468,21 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
         )
         root.addHandler(stream_handler)
 
+    # Level policy (T0.1): the file handler sits at DEBUG, and Python re-checks
+    # only *handler* levels — not ancestor *logger* levels — on records that
+    # propagate up from a child logger. So keep the ROOT logger at INFO (which
+    # gates any NOTSET third-party logger's effective level, dropping its DEBUG
+    # before it can reach the file — SDK payloads at DEBUG can carry prompts)
+    # while raising the ``forge`` logger to DEBUG so forge's own DEBUG records
+    # still reach the file. Without a file handler there is nothing to leak
+    # into, so keep the prior console-level behavior and let ``forge`` inherit.
+    forge_logger = logging.getLogger("forge")
     if file_handler is not None:
-        root.setLevel(logging.DEBUG)
+        root.setLevel(logging.INFO)
+        forge_logger.setLevel(logging.DEBUG)
     else:
         root.setLevel(console_level)
+        forge_logger.setLevel(logging.NOTSET)
 
 
 @click.group()
@@ -845,49 +803,31 @@ def run(
                 err=True,
             )
 
+    # --- Build the workflow input (the whole ForgeTaskWorkflow argument) ---
+    task_input = ForgeTaskInput(
+        task=task_def,
+        repo_root=repo_root,
+        max_attempts=max_attempts,
+        plan=use_plan,
+        max_step_attempts=max_step_attempts,
+        max_sub_task_attempts=max_sub_task_attempts,
+        max_fan_out_depth=max_fan_out_depth,
+        max_exploration_rounds=effective_exploration_rounds,
+        sanity_check_interval=sanity_check_interval,
+        resolve_conflicts=not no_resolve_conflicts,
+        model_routing=model_routing or ModelConfig(),
+        thinking=thinking,
+        sync_mode=sync_mode,
+        log_messages=log_messages,
+    )
+
     # --- Submit ---
     try:
         if no_wait:
-            workflow_id = asyncio.run(
-                _submit_no_wait(
-                    task_def,
-                    repo_root,
-                    temporal_address,
-                    max_attempts,
-                    plan=use_plan,
-                    max_step_attempts=max_step_attempts,
-                    max_sub_task_attempts=max_sub_task_attempts,
-                    max_fan_out_depth=max_fan_out_depth,
-                    max_exploration_rounds=effective_exploration_rounds,
-                    sanity_check_interval=sanity_check_interval,
-                    resolve_conflicts=not no_resolve_conflicts,
-                    model_routing=model_routing,
-                    thinking=thinking,
-                    sync_mode=sync_mode,
-                    log_messages=log_messages,
-                )
-            )
+            workflow_id = asyncio.run(_submit(task_input, temporal_address, wait=False))
             click.echo(workflow_id)
         else:
-            result = asyncio.run(
-                _submit_and_wait(
-                    task_def,
-                    repo_root,
-                    temporal_address,
-                    max_attempts,
-                    plan=use_plan,
-                    max_step_attempts=max_step_attempts,
-                    max_sub_task_attempts=max_sub_task_attempts,
-                    max_fan_out_depth=max_fan_out_depth,
-                    max_exploration_rounds=effective_exploration_rounds,
-                    sanity_check_interval=sanity_check_interval,
-                    resolve_conflicts=not no_resolve_conflicts,
-                    model_routing=model_routing,
-                    thinking=thinking,
-                    sync_mode=sync_mode,
-                    log_messages=log_messages,
-                )
-            )
+            result = asyncio.run(_submit(task_input, temporal_address, wait=True))
 
             # The run result is persisted survivably inside ForgeTaskWorkflow.
 
@@ -1534,19 +1474,23 @@ def format_eval_result(result: PlanEvalResult) -> str:
 
 
 async def _run_eval(
-    corpus_dir: str,
+    cases: list[EvalCase],
     plans_dir: str | None,
     *,
     run_judge: bool,
     judge_model: str | None,
 ) -> list[PlanEvalResult]:
-    """Load corpus, discover plans, and run evaluation."""
-    from forge.eval.corpus import discover_eval_cases, list_repo_files
+    """Discover plans and run evaluation over already-loaded *cases*.
+
+    The corpus is discovered once by ``eval_planner`` and the case list is
+    passed in here — no second ``discover_eval_cases`` scan (T0.2).
+    """
+    from forge.eval.corpus import list_repo_files
     from forge.eval.deterministic import run_deterministic_checks
+    from forge.eval.judge import format_repo_context
     from forge.eval.runner import build_eval_result
     from forge.models import Plan
 
-    cases = discover_eval_cases(Path(corpus_dir))
     if not cases:
         return []
 
@@ -1590,7 +1534,13 @@ async def _run_eval(
             from forge.eval.judge import judge_plan
 
             assert llm is not None  # built above whenever run_judge is True
-            verdict = await judge_plan(case, plan, llm, model_name=judge_model)
+            # Give the judge the same repo file listing the deterministic
+            # checks used, so its completeness/context criteria are scored
+            # against what the repo actually contains (T0.6).
+            repo_context = format_repo_context(known_files) if known_files else None
+            verdict = await judge_plan(
+                case, plan, llm, repo_context=repo_context, model_name=judge_model
+            )
 
         result = build_eval_result(case.case_id, plan, det, verdict)
         results.append(result)
@@ -1654,9 +1604,7 @@ def eval_planner(
             click.echo(f"  {case.case_id}: {case.task.description}{tags}")
         return
 
-    results = asyncio.run(
-        _run_eval(corpus_dir, plans_dir, run_judge=judge, judge_model=judge_model)
-    )
+    results = asyncio.run(_run_eval(cases, plans_dir, run_judge=judge, judge_model=judge_model))
 
     if not results:
         click.echo("No results produced.", err=True)

@@ -18,6 +18,8 @@ from forge.eval.models import EvalCase, JudgeCriterion, JudgeVerdict
 from forge.models import CapabilityTier, ModelConfig, resolve_model
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from sax_platform.llm import AnthropicLLM
 
     from forge.models import Plan
@@ -30,10 +32,39 @@ logger = logging.getLogger(__name__)
 DEFAULT_JUDGE_MODEL = resolve_model(CapabilityTier.REASONING, ModelConfig())
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 
+# Cap on how many repo files the judge context lists. A repo file listing can
+# be thousands of paths; this bounds the judge prompt (T0.6) so a large repo
+# does not blow the context. When the listing is longer it is truncated and a
+# trailing line names the omitted count.
+DEFAULT_REPO_CONTEXT_MAX_FILES = 200
+
 
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
+
+
+def format_repo_context(
+    files: Iterable[str],
+    *,
+    max_files: int = DEFAULT_REPO_CONTEXT_MAX_FILES,
+) -> str:
+    """Render a repo file listing as judge context, capped at *max_files*.
+
+    Files are sorted for a deterministic prompt. When the listing exceeds
+    *max_files*, only the first *max_files* (after sorting) are shown and a
+    trailing line names how many were omitted, so the judge knows the list is
+    partial. Pure — no I/O; the caller supplies the file set.
+    """
+    ordered = sorted(files)
+    total = len(ordered)
+    shown = ordered[:max_files]
+
+    lines = [f"Repository contains {total} tracked file(s):"]
+    lines.extend(f"- {path}" for path in shown)
+    if total > max_files:
+        lines.append(f"... and {total - max_files} more file(s) not shown.")
+    return "\n".join(lines)
 
 
 def build_judge_system_prompt(

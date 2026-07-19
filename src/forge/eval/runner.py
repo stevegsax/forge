@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from forge.eval.deterministic import run_deterministic_checks
-from forge.eval.judge import judge_plan
+from forge.eval.judge import format_repo_context, judge_plan
 from forge.eval.models import (
     EvalComparison,
     EvalRunRecord,
@@ -27,6 +27,14 @@ if TYPE_CHECKING:
     from forge.models import Plan
 
 logger = logging.getLogger(__name__)
+
+# Minimum gap between two runs' average judge scores (on the 1-5 scale) for a
+# difference to count as a regression/improvement rather than judge noise
+# (T0.6). Judge scores are single-sample, so a smaller gap is not evidence of a
+# real change. Widening the evidence base — n-sample averaging with variance,
+# significance testing, a larger corpus — is deferred to the operator-optional
+# "Eval as CI release gate" backlog item, not built here.
+JUDGE_SCORE_SIGNIFICANCE_BAND = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +89,15 @@ def compare_runs(baseline: EvalRunRecord, candidate: EvalRunRecord) -> EvalCompa
             improvements.append(case_id)
             continue
 
-        # If both have judge verdicts, compare average scores
+        # If both have judge verdicts, compare average scores. Validation on
+        # JudgeVerdict guarantees each side scored the same complete criterion
+        # set, so the averages are over matched criteria (T0.6).
         if b.judge and c.judge:
             b_avg = sum(s.score for s in b.judge.scores) / max(len(b.judge.scores), 1)
             c_avg = sum(s.score for s in c.judge.scores) / max(len(c.judge.scores), 1)
-            if c_avg < b_avg - 0.5:
+            if c_avg < b_avg - JUDGE_SCORE_SIGNIFICANCE_BAND:
                 regressions.append(case_id)
-            elif c_avg > b_avg + 0.5:
+            elif c_avg > b_avg + JUDGE_SCORE_SIGNIFICANCE_BAND:
                 improvements.append(case_id)
 
     summary_parts = [
@@ -101,6 +111,14 @@ def compare_runs(baseline: EvalRunRecord, candidate: EvalRunRecord) -> EvalCompa
         summary_parts.append(f"Only in baseline: {', '.join(sorted(only_baseline))}.")
     if only_candidate:
         summary_parts.append(f"Only in candidate: {', '.join(sorted(only_candidate))}.")
+    # Standing methodology caveat (T0.6): judge comparisons are single-sample on
+    # a 1-5 scale (±band) over what is typically a small corpus, so treat these
+    # results as indicative, not statistically conclusive.
+    summary_parts.append(
+        "Caveat: single-sample judge scores "
+        f"(±{JUDGE_SCORE_SIGNIFICANCE_BAND} significance band) over a small "
+        "corpus — treat differences as indicative, not statistically conclusive."
+    )
 
     return EvalComparison(
         baseline_run_id=baseline.run_id,
@@ -138,7 +156,12 @@ async def evaluate_plan(
         if llm is None:
             msg = "run_judge=True requires an llm client"
             raise ValueError(msg)
-        verdict = await judge_plan(case, plan, llm, model_name=judge_model)
+        # Feed the judge the same known-file listing the deterministic checks
+        # used, so its completeness/context criteria see the repo (T0.6).
+        repo_context = format_repo_context(known_repo_files) if known_repo_files else None
+        verdict = await judge_plan(
+            case, plan, llm, repo_context=repo_context, model_name=judge_model
+        )
 
     return build_eval_result(case.case_id, plan, deterministic, verdict)
 

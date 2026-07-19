@@ -184,7 +184,7 @@ def build_persist_interaction(
 ) -> PersistInteraction:
     """Build a ``PersistInteraction`` from an LLM-family result (pure; sandbox-safe).
 
-    Mirrors the historical ``build_interaction_dict`` explanation rule exactly:
+    Explanation-field rule (inherited from the deleted ``build_interaction_dict``):
     explanation comes from ``result.response.explanation`` (LLM/sanity), else
     ``result.plan.explanation`` (planner), else "" (conflict-resolution/extraction).
     """

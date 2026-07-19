@@ -317,17 +317,57 @@ def _fuzzy_match(
 # ---------------------------------------------------------------------------
 
 
+def _edit_already_applied(content: str, search: str, replace: str) -> bool:
+    """Return True when ``content`` already reflects (search -> replace) applied.
+
+    Used only under retry idempotency (``idempotent=True``). A Temporal retry of
+    ``write_output`` re-reads a file that a prior attempt may have already
+    edited, so re-applying the edit would either duplicate an insertion or fail
+    outright on the now-consumed search text. This detects the already-applied
+    state so the edit can be skipped instead.
+
+    Two shapes:
+
+    * **Insert-style** (``search in replace`` — the replacement embeds the
+      search text, e.g. adding an import above an existing line). After a
+      legitimate application the search text is still present (inside the
+      replacement), so "search is gone" cannot be the signal; the tell is that
+      the full replacement block is already present. *Residual ambiguity:* a
+      first application whose target file already contained the verbatim
+      replacement block is indistinguishable from an already-applied retry and
+      would be false-skipped. This requires the file to already hold the exact
+      replacement, which is unusual for a genuine insert.
+    * **Plain replace** (``search not in replace``). After a legitimate
+      application the search text is gone and the replacement is present. The
+      ``replace in content`` half keeps a genuine "search not found" (a typo)
+      raising rather than silently skipping -- *except* for a delete edit
+      (``replace == ""``), where the replacement is trivially present and the
+      rule reduces to "search absent". A completed delete is then correctly
+      skipped on retry, at the cost of not distinguishing it from a delete whose
+      search never matched (documented residual ambiguity).
+    """
+    if search in replace:
+        return replace in content
+    return search not in content and replace in content
+
+
 def apply_edits_detailed(
     original: str,
     edits: list[SearchReplaceEdit],
     *,
     similarity_threshold: float = 0.6,
+    idempotent: bool = False,
 ) -> EditApplicationResult:
     """Apply edits with a fallback matching chain (D55).
 
     Tries: exact -> whitespace-normalized -> indentation-normalized -> fuzzy.
     Each level only activates if the previous found zero matches. Ambiguity
     at any level raises ``EditApplicationError``.
+
+    When ``idempotent`` is True, an edit whose effect is already present in the
+    content (see :func:`_edit_already_applied`) is skipped rather than
+    re-applied or raised on -- the retry-safety path used by ``write_output``.
+    Skipped edits produce no entry in ``match_results``.
 
     Returns an ``EditApplicationResult`` with the final content and per-edit
     match metadata.
@@ -339,6 +379,10 @@ def apply_edits_detailed(
         if not edit.search:
             msg = f"Edit {i}: empty search string"
             raise EditApplicationError(msg)
+
+        if idempotent and _edit_already_applied(content, edit.search, edit.replace):
+            logger.info("Edit %d: already applied, skipping (idempotent retry)", i)
+            continue
 
         try:
             result = _apply_single_edit(content, edit, i, similarity_threshold)
@@ -403,6 +447,7 @@ def apply_edits(
     edits: list[SearchReplaceEdit],
     *,
     similarity_threshold: float = 0.6,
+    idempotent: bool = False,
 ) -> str:
     """Apply a sequence of search/replace edits to a string.
 
@@ -411,10 +456,16 @@ def apply_edits(
     discrepancies. Edits are applied sequentially — later edits see the
     result of earlier ones.
 
+    When ``idempotent`` is True, an edit already reflected in ``original`` is
+    skipped instead of re-applied or raised on (retry safety; see
+    :func:`apply_edits_detailed`).
+
     Raises:
         EditApplicationError: If a search string is empty, not found, or ambiguous.
     """
-    result = apply_edits_detailed(original, edits, similarity_threshold=similarity_threshold)
+    result = apply_edits_detailed(
+        original, edits, similarity_threshold=similarity_threshold, idempotent=idempotent
+    )
     return result.content
 
 
@@ -434,8 +485,15 @@ async def write_output(input: WriteOutputInput) -> WriteResult:
     """Write LLM-generated files to the worktree.
 
     Handles both new files (response.files) and edits (response.edits).
-    Validates no file path appears in both lists.
+    Rejects any path that appears in both lists — compared on the *resolved*
+    paths, so ``a.py`` and ``./a.py`` cannot slip past the guard (T0.5 defect 2).
     Populates output_files with final content for all written files.
+
+    Retry-safe (T0.5 defect 1): every output — new-file content and edit results
+    alike — is resolved and computed in memory *before* the first disk write, and
+    edits apply idempotently. A Temporal retry after a partial write (e.g. a
+    transient ``OSError`` mid-batch) therefore reproduces the same bytes rather
+    than double-applying an insertion or failing on an already-consumed search.
     """
     response = input.llm_result.response
     logger.info(
@@ -444,34 +502,44 @@ async def write_output(input: WriteOutputInput) -> WriteResult:
         len(response.edits),
     )
 
-    # Validate no overlap between files and edits
-    new_file_paths = {f.file_path for f in response.files}
-    edit_file_paths = {e.file_path for e in response.edits}
-    overlap = new_file_paths & edit_file_paths
+    wt = Path(input.worktree_path).resolve()
+
+    # 1. Resolve all paths up front (path-traversal checks; edit targets must
+    #    exist). No disk writes happen in this phase.
+    resolved_new = resolve_file_paths(input.worktree_path, response.files)
+    resolved_edits = resolve_edit_paths(input.worktree_path, response.edits)
+
+    # 2. Mutual-exclusion on RESOLVED paths, before any write. Comparing the
+    #    resolved Path values (not the raw LLM strings) closes the ``a.py`` vs
+    #    ``./a.py`` / ``sub/../a.py`` bypass — otherwise a new file would be
+    #    written and then an edit applied on top of the just-generated content.
+    #    Residual: on a case-insensitive filesystem (APFS default) ``A.py`` and
+    #    ``a.py`` resolve to distinct Path values yet name the same file, so a
+    #    case-only spelling difference is not caught here.
+    new_paths = {path for path, _ in resolved_new}
+    edit_paths = {path for path, _ in resolved_edits}
+    overlap = new_paths & edit_paths
     if overlap:
-        msg = f"File paths appear in both files and edits: {sorted(overlap)}"
+        msg = f"File paths appear in both files and edits: {sorted(str(p) for p in overlap)}"
         raise OutputWriteError(msg)
 
-    files_written: list[str] = []
-    output_files: dict[str, str] = {}
-
-    # Write new files
-    resolved_new = resolve_file_paths(input.worktree_path, response.files)
-    for path, content in resolved_new:
-        _write_file(path, content)
-        files_written.append(str(path))
-        rel_path = str(path.relative_to(Path(input.worktree_path).resolve()))
-        output_files[rel_path] = content
-
-    # Apply edits to existing files
-    resolved_edits = resolve_edit_paths(input.worktree_path, response.edits)
+    # 3. Compute every final file content in memory before touching disk. Reads
+    #    and edit application all happen here; edits apply idempotently so a
+    #    retry that re-reads an already-edited file skips rather than
+    #    double-applying.
+    staged: list[tuple[Path, str]] = list(resolved_new)
     for path, file_edit in resolved_edits:
         original = path.read_text()
-        updated = apply_edits(original, file_edit.edits)
-        _write_file(path, updated)
+        updated = apply_edits(original, file_edit.edits, idempotent=True)
+        staged.append((path, updated))
+
+    # 4. Only now write. New files precede edit targets (preserves prior order).
+    files_written: list[str] = []
+    output_files: dict[str, str] = {}
+    for path, content in staged:
+        _write_file(path, content)
         files_written.append(str(path))
-        rel_path = str(path.relative_to(Path(input.worktree_path).resolve()))
-        output_files[rel_path] = updated
+        output_files[str(path.relative_to(wt))] = content
 
     return WriteResult(
         task_id=input.llm_result.task_id,

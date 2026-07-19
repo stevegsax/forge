@@ -55,11 +55,6 @@ sample-flows/**/*.svg
 forge.db
 .firecrawl/
 
-# Diataxis generated output
-diataxis/public/
-diataxis/resources/
-diataxis/.hugo_build.lock
-
 # Local stack: machine-specific overrides + compose-direct data fallback
 deploy/local-stack/.env
 deploy/local-stack/data/

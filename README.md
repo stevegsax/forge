@@ -9,7 +9,7 @@ Git and worktrees serve as the general-purpose data store and isolation mechanis
 ## Prerequisites
 
 - The local stack running: `make stack-up` brings up [Temporal](https://temporal.io/), Postgres, and MinIO under podman (see [deploy/local-stack/](deploy/local-stack/)). Any Temporal server reachable at `FORGE_TEMPORAL_ADDRESS` works; the default is `localhost:7233`.
-- The workspace synced: `uv sync --all-packages` from the repo root. The root is a uv workspace (`apps/pbook`, `apps/ocr`, `libs/sax-llm`, `libs/forge-contracts`, `libs/sax-platform`) and is self-contained — a bare clone resolves with no sibling checkouts.
+- The workspace synced: `uv sync --all-packages` from the repo root. The root is a uv workspace (`apps/pbook`, `apps/ocr`, `libs/sax-platform`) and is self-contained — a bare clone resolves with no sibling checkouts.
 
 ## Architecture
 

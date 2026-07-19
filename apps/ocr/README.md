@@ -20,5 +20,5 @@ uv run --package ocr ocr worker
 uv run --package ocr ocr submit <file.pdf>
 ```
 
-Design history: `development-plans/separate-ocr-into-its-own-repo.md`
+Design history: `development-plans/archive/separate-ocr-into-its-own-repo.md`
 at the workspace root.

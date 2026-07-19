@@ -3,7 +3,7 @@
 Persists full LLM interaction data and run results to a local SQLite database.
 
 Design follows Function Core / Imperative Shell:
-- Pure functions: build_interaction_dict, build_playbook_dict
+- Pure functions: build_playbook_dict
 - Imperative shell: get_store_engine, run_migrations, insert_or_ignore,
   save_interaction, save_run, get_interactions, get_run, list_recent_runs
 """
@@ -40,24 +40,8 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
 
     from forge.models import (
-        AssembledContext,
-        ConflictResolutionCallResult,
-        ExtractionCallResult,
-        LLMCallResult,
-        PlanCallResult,
         PlaybookEntry,
-        SanityCheckCallResult,
         TaskResult,
-    )
-
-    # Union of all LLM result types that share model_name, input_tokens,
-    # output_tokens, latency_ms, and optional cache token fields.
-    _AnyLLMResult = (
-        LLMCallResult
-        | PlanCallResult
-        | SanityCheckCallResult
-        | ConflictResolutionCallResult
-        | ExtractionCallResult
     )
 
 logger = logging.getLogger(__name__)
@@ -214,52 +198,6 @@ class InteractionRow(BaseModel):
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
-
-
-def build_interaction_dict(
-    *,
-    task_id: str,
-    step_id: str | None,
-    sub_task_id: str | None,
-    role: str,
-    context: AssembledContext,
-    llm_result: _AnyLLMResult,
-) -> dict[str, Any]:
-    """Assemble a dict from activity data for insertion.
-
-    Works with any LLM result type. Extracts explanation via duck typing:
-    response.explanation for LLMCallResult/SanityCheckCallResult,
-    plan.explanation for PlanCallResult.
-    """
-    explanation = ""
-    if hasattr(llm_result, "response"):
-        explanation = llm_result.response.explanation
-    elif hasattr(llm_result, "plan"):
-        explanation = llm_result.plan.explanation
-
-    context_stats_json = None
-    if context.context_stats is not None:
-        context_stats_json = context.context_stats.model_dump_json()
-
-    cache_creation = getattr(llm_result, "cache_creation_input_tokens", 0) or 0
-    cache_read = getattr(llm_result, "cache_read_input_tokens", 0) or 0
-
-    return {
-        "task_id": task_id,
-        "step_id": step_id,
-        "sub_task_id": sub_task_id,
-        "role": role,
-        "system_prompt": context.system_prompt,
-        "user_prompt": context.user_prompt,
-        "model_name": llm_result.model_name,
-        "input_tokens": llm_result.input_tokens,
-        "output_tokens": llm_result.output_tokens,
-        "latency_ms": llm_result.latency_ms,
-        "explanation": explanation,
-        "context_stats_json": context_stats_json,
-        "cache_creation_input_tokens": cache_creation,
-        "cache_read_input_tokens": cache_read,
-    }
 
 
 def playbook_idempotency_key(extraction_workflow_id: str, title: str) -> str:

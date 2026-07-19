@@ -125,7 +125,6 @@ Map scenarios to system capabilities:
 | `batch_processing.feature` | Batch submission, polling, multi-provider | `batch_poller_workflow.py`, `activities/batch_poll.py` |
 | `git_operations.feature` | Worktree lifecycle, branch naming | `git.py`, `activities/git_activities.py` |
 | `model_routing.feature` | Capability tiers, model resolution | `models.py` |
-| `llm_providers.feature` | Provider abstraction, degradation | `sax_llm` (`libs/sax-llm/`) |
 | `knowledge_management.feature` | Extraction, playbooks, injection | `extraction_workflow.py`, `activities/extraction.py` |
 | `ocr_pipeline.feature` | OCR workflows, PDF chunking, blobs | `apps/ocr/` |
 | `ocr_cli.feature` | OCR job listing/status CLI | `apps/ocr/src/ocr/cli.py` (`ocr list`), `apps/ocr/src/ocr/workflow_list_jobs.py` |
@@ -133,7 +132,7 @@ Map scenarios to system capabilities:
 | `cli.feature` | CLI commands, flags, exit codes | `cli.py` |
 | `observability.feature` | SQLite store, 7 tables, migrations | `store.py` |
 
-> **Implementation status:** 16 of these 18 specs are implemented. `ocr_web_api.feature` and `human_in_the_loop.feature` describe capabilities that are **not yet built** — see [../OVERVIEW.md](../OVERVIEW.md).
+> **Implementation status:** 15 of these 17 specs are implemented. `ocr_web_api.feature` and `human_in_the_loop.feature` describe capabilities that are **not yet built** — see [../OVERVIEW.md](../OVERVIEW.md).
 
 ## Conventions
 

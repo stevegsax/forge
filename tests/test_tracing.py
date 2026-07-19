@@ -92,11 +92,16 @@ class TestResolveExporterType:
     def test_explicit_name_maps(self) -> None:
         assert resolve_exporter_type("otlp_grpc") is ExporterType.OTLP_GRPC
 
-    def test_none_defaults_to_console(self) -> None:
-        assert resolve_exporter_type(None) is ExporterType.CONSOLE
+    def test_none_defaults_to_none(self) -> None:
+        # T0.1: unset (None) resolves to NONE — export is opt-in.
+        assert resolve_exporter_type(None) is ExporterType.NONE
 
-    def test_no_arg_defaults_to_console(self) -> None:
-        assert resolve_exporter_type() is ExporterType.CONSOLE
+    def test_no_arg_defaults_to_none(self) -> None:
+        assert resolve_exporter_type() is ExporterType.NONE
+
+    def test_console_still_selectable(self) -> None:
+        # Console is still available, but only when explicitly requested.
+        assert resolve_exporter_type("console") is ExporterType.CONSOLE
 
     def test_invalid_name_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid FORGE_OTEL_EXPORTER"):
@@ -232,6 +237,14 @@ class TestInitTracing:
         init_tracing(exporter="none")
         provider = trace.get_tracer_provider()
         assert isinstance(provider, TracerProvider)
+
+    def test_bare_init_has_no_span_processors(self) -> None:
+        """A bare worker run (exporter unset → None → NONE) emits no per-span
+        stdout: the registered provider carries zero span processors (T0.1)."""
+        init_tracing()  # no exporter arg — the worker's default path
+        provider = trace.get_tracer_provider()
+        assert isinstance(provider, TracerProvider)
+        assert len(provider._active_span_processor._span_processors) == 0
 
     def test_get_tracer_returns_working_tracer(self) -> None:
         init_tracing(exporter="none")

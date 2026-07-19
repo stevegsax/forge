@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from sax_platform.testing import FakeLLM
 
 from forge.eval.models import (
     CheckStatus,
@@ -35,6 +36,16 @@ _PLAN = Plan(
 )
 
 
+def _full_verdict(score: int = 4, *, overall: str = "Fine.") -> JudgeVerdict:
+    """A JudgeVerdict scoring every criterion (T0.6 validation requires all)."""
+    return JudgeVerdict(
+        scores=[
+            JudgeScore(criterion=crit, score=score, rationale="Test.") for crit in JudgeCriterion
+        ],
+        overall_assessment=overall,
+    )
+
+
 # ---------------------------------------------------------------------------
 # build_eval_result
 # ---------------------------------------------------------------------------
@@ -49,7 +60,7 @@ class TestBuildEvalResult:
 
     def test_with_judge(self) -> None:
         det = DeterministicResult(checks=[], all_passed=True)
-        verdict = JudgeVerdict(scores=[], overall_assessment="Fine.")
+        verdict = _full_verdict()
         result = build_eval_result("case-1", _PLAN, det, verdict)
         assert result.judge is not None
 
@@ -84,6 +95,24 @@ class TestEvaluatePlan:
         )
         result = await evaluate_plan(_CASE, plan, known_repo_files=known)
         assert result.deterministic.all_passed is True
+
+    @pytest.mark.asyncio
+    async def test_judge_receives_repo_context(self) -> None:
+        """T0.6: evaluate_plan (the runner-side caller) feeds the judge the
+        known repo files as context."""
+        llm = FakeLLM(_full_verdict())
+        result = await evaluate_plan(
+            _CASE, _PLAN, known_repo_files={"a.py", "b.py"}, run_judge=True, llm=llm
+        )
+        assert result.judge is not None
+        system = llm.calls[-1].kwargs["system"]
+        assert "Repository Context" in system
+        assert "a.py" in system
+
+    @pytest.mark.asyncio
+    async def test_judge_requires_llm(self) -> None:
+        with pytest.raises(ValueError, match="requires an llm"):
+            await evaluate_plan(_CASE, _PLAN, known_repo_files=set(), run_judge=True)
 
 
 # ---------------------------------------------------------------------------
@@ -157,16 +186,9 @@ class TestCompareRuns:
             det = DeterministicResult(checks=[], all_passed=all_passed)
             judge = None
             if avg_score is not None:
-                judge = JudgeVerdict(
-                    scores=[
-                        JudgeScore(
-                            criterion=JudgeCriterion.COMPLETENESS,
-                            score=int(avg_score),
-                            rationale="Test.",
-                        )
-                    ],
-                    overall_assessment="Test.",
-                )
+                # Score every criterion the same so the average equals avg_score
+                # while satisfying JudgeVerdict's full-criteria invariant (T0.6).
+                judge = _full_verdict(score=int(avg_score), overall="Test.")
             results.append(
                 PlanEvalResult(
                     case_id=case_id,
@@ -214,3 +236,11 @@ class TestCompareRuns:
         comp = compare_runs(baseline, candidate)
         assert "only-base" in comp.summary
         assert "only-cand" in comp.summary
+
+    def test_summary_carries_sample_size_caveat(self) -> None:
+        # T0.6: the comparison summary always names the single-sample caveat.
+        baseline = self._make_record("r1", [("c1", True, None)])
+        candidate = self._make_record("r2", [("c1", True, None)])
+        comp = compare_runs(baseline, candidate)
+        assert "Caveat" in comp.summary
+        assert "single-sample" in comp.summary

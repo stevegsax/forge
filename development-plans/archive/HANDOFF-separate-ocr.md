@@ -9,7 +9,7 @@ forge-contracts → 10 passed; ruff clean across all three. Postgres (podman): f
 ocr 1 postgres-marked tests pass, and a manual both-real-chains `run_migrations` against
 ONE Postgres shows both chains' tables + `alembic_version_forge`/`alembic_version_ocr`
 coexisting with a slim `batch_jobs`. See the Progress log in
-`development-plans/separate-ocr-into-its-own-repo.md` (entry dated 2026-06-04
+`development-plans/archive/separate-ocr-into-its-own-repo.md` (entry dated 2026-06-04
 "CUT COMPLETE") for the per-increment detail and the residual follow-ups (AWS cred
 rotation, env-name generalization, connection-pressure review). Merges to `main` remain
 human-gated.
@@ -21,7 +21,7 @@ Read these two first — they are the authority; this handoff is the navigation 
 - **Design / decision basis:** `grill-me-sessions/separate-ocr-modules.grill.md`
   (full DECIDED log, the B1–B6 adversarial blockers, and the **SOUNDNESS INVARIANT**
   paragraph = acceptance criteria).
-- **Implementation plan + running progress log:** `development-plans/separate-ocr-into-its-own-repo.md`
+- **Implementation plan + running progress log:** `development-plans/archive/separate-ocr-into-its-own-repo.md`
   (phases, per-phase changes/acceptance, and a dated Progress log of every increment
   landed so far, including discovered sequencing corrections).
 

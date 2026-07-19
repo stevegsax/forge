@@ -5,10 +5,9 @@
   // - MD036 punctuation extended with ")" so the development-plans
   //   task-file template's "*(Append dated entries here during
   //   implementation.)*" placeholder lines are not flagged as headings.
-  // Ignored paths: third-party (.venv), generated output (diataxis),
-  // historical records (archive, grill-me-sessions — verbatim transcripts
-  // whose list numbers are semantic thread IDs), example corpus
-  // (docs/requirements/examples).
+  // Ignored paths: third-party (.venv), historical records (archive,
+  // grill-me-sessions — verbatim transcripts whose list numbers are
+  // semantic thread IDs), example corpus (docs/requirements/examples).
   "config": {
     "MD013": false,
     "MD024": {
@@ -23,7 +22,6 @@
   },
   "ignores": [
     ".venv/**",
-    "diataxis/**",
     "archive/**",
     "grill-me-sessions/**",
     "docs/requirements/examples/**"

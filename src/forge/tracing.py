@@ -78,13 +78,15 @@ def resolve_exporter_type(value: str | None = None) -> ExporterType:
     The name arrives from ``TracingSettings.exporter`` (which read
     ``FORGE_OTEL_EXPORTER``); this function performs no environment access of
     its own. ``None`` — the settings default when the var is unset — resolves
-    to ``ExporterType.CONSOLE``.
+    to ``ExporterType.NONE`` (T0.1): tracing is off unless an operator opts in
+    to ``console`` or an ``otlp_*`` exporter, so a bare worker run emits no
+    per-span stdout.
 
     Raises:
         ValueError: If *value* is a non-empty string that names no exporter.
     """
     if value is None:
-        return ExporterType.CONSOLE
+        return ExporterType.NONE
 
     try:
         return ExporterType(value)
@@ -206,8 +208,9 @@ def init_tracing(
     """Create and globally register a ``TracerProvider``.
 
     Called once at worker startup. *exporter* is the exporter name from
-    ``TracingSettings.exporter`` (``None`` ⇒ console default); it is mapped to
-    an :class:`ExporterType` via :func:`resolve_exporter_type`. Any previously
+    ``TracingSettings.exporter`` (``None`` ⇒ none/off default, T0.1); it is
+    mapped to an :class:`ExporterType` via :func:`resolve_exporter_type`. Any
+    previously
     registered SDK provider is shut down first; the OTel ``set_tracer_provider``
     set-once guard is left in place (a single init per process, so no re-init
     reset is needed — the private-API reset was removed in T3.6).

@@ -17,7 +17,7 @@ runtime failover.
 NOTE: the ``FORGE_OCR_S3_*`` env names and the flat key scheme are retained from
 the pre-split layout. Generalizing the names and adding a per-kind key namespace
 (separate TTLs for reapable request/result blobs vs durable image/file blobs) is
-a tracked follow-up — see development-plans/separate-ocr-into-its-own-repo.md.
+a tracked follow-up — see development-plans/archive/separate-ocr-into-its-own-repo.md.
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from forge.models import Plan, TaskDefinition
 
@@ -57,10 +57,32 @@ class JudgeScore(BaseModel):
 
 
 class JudgeVerdict(BaseModel):
-    """Full verdict from the LLM judge."""
+    """Full verdict from the LLM judge.
 
-    scores: list[JudgeScore] = Field(description="One score per criterion.")
+    Invariant (T0.6): exactly one score per :class:`JudgeCriterion` — every
+    criterion present, none duplicated. This makes an averaged score a
+    like-for-like measure across runs. In production the verdict is parsed from
+    the model via ``llm.complete(output_type=JudgeVerdict)``, so a violation
+    surfaces as a retryable ``LLMSchemaMismatch`` at the parse seam rather than
+    a silently lopsided comparison.
+    """
+
+    scores: list[JudgeScore] = Field(description="Exactly one score per criterion.")
     overall_assessment: str = Field(description="Summary assessment of plan quality.")
+
+    @model_validator(mode="after")
+    def _require_one_score_per_criterion(self) -> JudgeVerdict:
+        """Reject duplicate criteria and require all of them."""
+        seen = [score.criterion for score in self.scores]
+        duplicates = sorted({crit.value for crit in seen if seen.count(crit) > 1})
+        if duplicates:
+            msg = f"Duplicate judge scores for criteria: {', '.join(duplicates)}"
+            raise ValueError(msg)
+        missing = sorted(crit.value for crit in JudgeCriterion if crit not in seen)
+        if missing:
+            msg = f"Missing judge scores for criteria: {', '.join(missing)}"
+            raise ValueError(msg)
+        return self
 
 
 class EvalCase(BaseModel):

@@ -135,5 +135,4 @@ temporal workflow describe --workflow-id <workflow-id>
 | `FORGE_DB_URL` | **Required.** Store URL: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://...` (prod). Unset → hard error | _unset_ |
 | `FORGE_LOG_DIR` | Override log file directory (empty string disables file logging) | `~/.local/state/forge/` |
 | `FORGE_OTEL_EXPORTER` | OTel trace exporter type | `console` |
-| `FORGE_OTEL_ENDPOINT` | OTel exporter endpoint URL | Per exporter default |
 | `XDG_STATE_HOME` | Base directory for logs and database | `~/.local/state` |

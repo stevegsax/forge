@@ -346,7 +346,7 @@ class TestRunCommandValidation:
 class TestRunCommandExecution:
     """Tests for ``forge run`` execution paths."""
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_success_exit_code(
         self,
@@ -374,7 +374,7 @@ class TestRunCommandExecution:
         assert "Task: test-task" in result.output
         assert "Status: success" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_failure_exit_code(
         self,
@@ -400,7 +400,7 @@ class TestRunCommandExecution:
         )
         assert result.exit_code == EXIT_FAILURE
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_json_output(
         self,
@@ -430,7 +430,7 @@ class TestRunCommandExecution:
         assert parsed["task_id"] == "test-task"
         assert parsed["status"] == "success"
 
-    @patch("forge.cli._submit_no_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_no_wait_mode(
         self,
@@ -481,7 +481,7 @@ class TestRunCommandExecution:
         )
         assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_temporal_connection_error(
         self,
@@ -507,7 +507,7 @@ class TestRunCommandExecution:
         assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
         assert "Connection refused" in result.stderr
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_task_file_mode(
         self,
@@ -532,10 +532,10 @@ class TestRunCommandExecution:
         assert result.exit_code == 0
 
         call_args = mock_submit.call_args
-        task_def = call_args[0][0]
-        assert task_def.task_id == "file-task"
+        task_input = call_args[0][0]
+        assert task_input.task.task_id == "file-task"
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_validation_flags_passed(
         self,
@@ -567,11 +567,11 @@ class TestRunCommandExecution:
         assert result.exit_code == 0
 
         call_args = mock_submit.call_args
-        task_def = call_args[0][0]
-        assert task_def.validation.run_ruff_lint is False
-        assert task_def.validation.run_ruff_format is False
-        assert task_def.validation.run_tests is True
-        assert task_def.validation.test_command == "pytest -x"
+        task_input = call_args[0][0]
+        assert task_input.task.validation.run_ruff_lint is False
+        assert task_input.task.validation.run_ruff_format is False
+        assert task_input.task.validation.run_tests is True
+        assert task_input.task.validation.test_command == "pytest -x"
 
 
 class TestWorkerCommand:
@@ -655,17 +655,23 @@ class TestConfigureLogging:
         assert stream_handlers
         assert stream_handlers[0].level == logging.DEBUG
 
-    def test_file_handler_active_sets_root_debug(
+    def test_file_handler_active_root_info_forge_debug(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When file logging is active, root level is DEBUG regardless of console level."""
+        """With file logging active, root stays INFO while ``forge`` is DEBUG (T0.1).
+
+        Root at INFO gates third-party (NOTSET) DEBUG before it can reach the
+        DEBUG file handler; the ``forge`` logger opts into DEBUG so forge's own
+        detail still reaches the file.
+        """
         import logging
 
         monkeypatch.setenv("FORGE_LOG_DIR", str(tmp_path))
         configure_logging(0)  # console=WARNING
         root = logging.getLogger()
         try:
-            assert root.level == logging.DEBUG
+            assert root.level == logging.INFO
+            assert logging.getLogger("forge").level == logging.DEBUG
             # At verbosity 0 with file logging active, no stream handler is added.
             stream_handlers = [
                 h
@@ -679,6 +685,7 @@ class TestConfigureLogging:
                 if hasattr(h, "maxBytes"):
                     root.removeHandler(h)
                     h.close()
+            logging.getLogger("forge").setLevel(logging.NOTSET)
 
     def test_file_handler_with_verbosity_keeps_console(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -690,7 +697,8 @@ class TestConfigureLogging:
         configure_logging(1)  # console=INFO
         root = logging.getLogger()
         try:
-            assert root.level == logging.DEBUG
+            assert root.level == logging.INFO
+            assert logging.getLogger("forge").level == logging.DEBUG
             stream_handlers = [
                 h
                 for h in root.handlers
@@ -703,6 +711,38 @@ class TestConfigureLogging:
                 if hasattr(h, "maxBytes"):
                     root.removeHandler(h)
                     h.close()
+            logging.getLogger("forge").setLevel(logging.NOTSET)
+
+    def test_third_party_debug_excluded_forge_debug_kept(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """File logs carry forge DEBUG but drop third-party DEBUG (T0.1 AC).
+
+        A noisy SDK that logs payloads at DEBUG would otherwise leak prompts
+        into forge.log/worker.log. Root at INFO drops its records at the
+        logger; forge's own DEBUG still lands in the file.
+        """
+        import logging
+
+        monkeypatch.setenv("FORGE_LOG_DIR", str(tmp_path))
+        configure_logging(0)
+        root = logging.getLogger()
+        try:
+            logging.getLogger("noisy_sdk_client").debug("LEAKED_PROMPT_PAYLOAD")
+            logging.getLogger("forge.subsystem").debug("forge internal detail")
+
+            for h in root.handlers:
+                h.flush()
+
+            log_text = (tmp_path / "forge.log").read_text()
+            assert "forge internal detail" in log_text
+            assert "LEAKED_PROMPT_PAYLOAD" not in log_text
+        finally:
+            for h in list(root.handlers):
+                if hasattr(h, "maxBytes"):
+                    root.removeHandler(h)
+                    h.close()
+            logging.getLogger("forge").setLevel(logging.NOTSET)
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +797,7 @@ class TestPlanFlag:
         # This will fail at the submit stage, but the validation should pass
         with (
             patch("forge.cli.discover_repo_root") as mock_discover,
-            patch("forge.cli._submit_and_wait") as mock_submit,
+            patch("forge.cli._submit") as mock_submit,
         ):
             mock_discover.return_value = "/repo"
             mock_submit.side_effect = _async_result(
@@ -791,7 +831,7 @@ class TestPlanFlag:
         assert result.exit_code != 0
         assert "--target-file is required" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_plan_flag_passed_to_submit(
         self,
@@ -816,9 +856,9 @@ class TestPlanFlag:
                 "3",
             ],
         )
-        call_kwargs = mock_submit.call_args
-        assert call_kwargs[1]["plan"] is True
-        assert call_kwargs[1]["max_step_attempts"] == 3
+        task_input = mock_submit.call_args[0][0]
+        assert task_input.plan is True
+        assert task_input.max_step_attempts == 3
 
 
 # ---------------------------------------------------------------------------
@@ -832,7 +872,7 @@ class TestThinkingCliFlags:
         assert "--effort" in result.output
         assert "--no-thinking" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_thinking_policy_built_from_effort_flag(
         self,
@@ -857,12 +897,12 @@ class TestThinkingCliFlags:
                 "xhigh",
             ],
         )
-        call_kwargs = mock_submit.call_args
-        thinking = call_kwargs[1]["thinking"]
+        task_input = mock_submit.call_args[0][0]
+        thinking = task_input.thinking
         assert thinking.enabled is True
         assert thinking.effort == "xhigh"
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_no_thinking_flag_disables_policy(
         self,
@@ -886,11 +926,11 @@ class TestThinkingCliFlags:
                 "--no-thinking",
             ],
         )
-        call_kwargs = mock_submit.call_args
-        thinking = call_kwargs[1]["thinking"]
+        task_input = mock_submit.call_args[0][0]
+        thinking = task_input.thinking
         assert thinking.enabled is False
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_warns_when_effort_passed_without_plan(
         self,
@@ -918,7 +958,7 @@ class TestThinkingCliFlags:
         )
         assert "no effect without --plan" in result.stderr
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_warns_when_no_thinking_passed_without_plan(
         self,
@@ -945,7 +985,7 @@ class TestThinkingCliFlags:
         )
         assert "no effect without --plan" in result.stderr
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_no_warning_when_flags_default_without_plan(
         self,
@@ -971,7 +1011,7 @@ class TestThinkingCliFlags:
         )
         assert "no effect without --plan" not in result.stderr
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_no_warning_when_effort_passed_with_plan(
         self,
@@ -1043,7 +1083,7 @@ class TestModelProviderValidation:
         assert "Unsupported provider 'mistral'" in result.output
         assert "anthropic" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_anthropic_provider_accepted(
         self,
@@ -1070,10 +1110,10 @@ class TestModelProviderValidation:
             ],
         )
         assert result.exit_code == 0
-        call_kwargs = mock_submit.call_args
-        assert call_kwargs[1]["model_routing"].reasoning == "anthropic:claude-opus-4-6"
+        task_input = mock_submit.call_args[0][0]
+        assert task_input.model_routing.reasoning == "anthropic:claude-opus-4-6"
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_bare_model_name_accepted(
         self,
@@ -1100,8 +1140,8 @@ class TestModelProviderValidation:
             ],
         )
         assert result.exit_code == 0
-        call_kwargs = mock_submit.call_args
-        assert call_kwargs[1]["model_routing"].generation == "claude-sonnet-4-5-20250929"
+        task_input = mock_submit.call_args[0][0]
+        assert task_input.model_routing.generation == "claude-sonnet-4-5-20250929"
 
 
 # ---------------------------------------------------------------------------
@@ -1148,7 +1188,7 @@ class TestMaxSubTaskAttemptsFlag:
         result = cli_runner.invoke(main, ["run", "--help"])
         assert "--max-sub-task-attempts" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_flag_passed_to_submit(
         self,
@@ -1173,8 +1213,8 @@ class TestMaxSubTaskAttemptsFlag:
                 "3",
             ],
         )
-        call_kwargs = mock_submit.call_args
-        assert call_kwargs[1]["max_sub_task_attempts"] == 3
+        task_input = mock_submit.call_args[0][0]
+        assert task_input.max_sub_task_attempts == 3
 
 
 # ---------------------------------------------------------------------------
@@ -1308,7 +1348,7 @@ class TestContextDiscoveryFlags:
         assert "--max-import-depth" in result.output
         assert "--include-deps" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_no_auto_discover_flag(
         self,
@@ -1334,10 +1374,10 @@ class TestContextDiscoveryFlags:
             ],
         )
         call_args = mock_submit.call_args
-        task_def = call_args[0][0]
-        assert task_def.context.auto_discover is False
+        task_input = call_args[0][0]
+        assert task_input.task.context.auto_discover is False
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_token_budget_flag(
         self,
@@ -1364,10 +1404,10 @@ class TestContextDiscoveryFlags:
             ],
         )
         call_args = mock_submit.call_args
-        task_def = call_args[0][0]
-        assert task_def.context.token_budget == 50_000
+        task_input = call_args[0][0]
+        assert task_input.task.context.token_budget == 50_000
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_include_deps_flag(
         self,
@@ -1393,10 +1433,10 @@ class TestContextDiscoveryFlags:
             ],
         )
         call_args = mock_submit.call_args
-        task_def = call_args[0][0]
-        assert task_def.context.include_dependencies is True
+        task_input = call_args[0][0]
+        assert task_input.task.context.include_dependencies is True
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_max_import_depth_flag(
         self,
@@ -1423,8 +1463,8 @@ class TestContextDiscoveryFlags:
             ],
         )
         call_args = mock_submit.call_args
-        task_def = call_args[0][0]
-        assert task_def.context.max_import_depth == 3
+        task_input = call_args[0][0]
+        assert task_input.task.context.max_import_depth == 3
 
 
 # ---------------------------------------------------------------------------
@@ -1628,7 +1668,7 @@ class TestVerboseFlag:
         result = cli_runner.invoke(main, ["run", "--help"])
         assert "--verbose" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_verbose_flag_shows_stats(
         self,
@@ -2096,7 +2136,7 @@ class TestSanityCheckIntervalFlag:
         result = cli_runner.invoke(main, ["run", "--help"])
         assert "--sanity-check-interval" in result.output
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_flag_passed_to_submit(
         self,
@@ -2121,10 +2161,10 @@ class TestSanityCheckIntervalFlag:
                 "3",
             ],
         )
-        call_kwargs = mock_submit.call_args
-        assert call_kwargs[1]["sanity_check_interval"] == 3
+        task_input = mock_submit.call_args[0][0]
+        assert task_input.sanity_check_interval == 3
 
-    @patch("forge.cli._submit_and_wait")
+    @patch("forge.cli._submit")
     @patch("forge.cli.discover_repo_root")
     def test_default_is_zero(
         self,
@@ -2147,8 +2187,8 @@ class TestSanityCheckIntervalFlag:
                 "--plan",
             ],
         )
-        call_kwargs = mock_submit.call_args
-        assert call_kwargs[1]["sanity_check_interval"] == 0
+        task_input = mock_submit.call_args[0][0]
+        assert task_input.sanity_check_interval == 0
 
 
 class TestFormatVerboseResultSanityCheckCount:

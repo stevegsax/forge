@@ -6,10 +6,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from forge.activities import output as output_mod
 from forge.activities.output import (
     EditApplicationError,
     EditApplicationResult,
     OutputWriteError,
+    _edit_already_applied,
     _exact_match,
     _fuzzy_match,
     _indentation_normalized_match,
@@ -726,3 +728,186 @@ class TestWriteOutputWithEdits:
         input_data = _make_write_input_with_edits(str(tmp_path), edits=edits)
         with pytest.raises(OutputWriteError, match="does not exist"):
             await write_output(input_data)
+
+
+# ---------------------------------------------------------------------------
+# _edit_already_applied + idempotent skip (T0.5 defect 1, pure)
+# ---------------------------------------------------------------------------
+
+
+class TestEditAlreadyApplied:
+    def test_insert_style_not_yet_applied(self) -> None:
+        # Insert-style: replace embeds search; before application the full
+        # replacement block is absent.
+        assert (
+            _edit_already_applied("import os\n", "import os\n", "import os\nimport sys\n") is False
+        )
+
+    def test_insert_style_already_applied(self) -> None:
+        # After application the replacement block is present -> already applied.
+        applied = "import os\nimport sys\n"
+        assert _edit_already_applied(applied, "import os\n", "import os\nimport sys\n") is True
+
+    def test_plain_not_yet_applied(self) -> None:
+        assert _edit_already_applied("old = 1", "old", "new") is False
+
+    def test_plain_already_applied(self) -> None:
+        # search gone, replace present -> already applied.
+        assert _edit_already_applied("new = 1", "old", "new") is True
+
+    def test_plain_genuine_not_found_is_not_a_skip(self) -> None:
+        # replace absent too -> a real "not found", must NOT be treated as applied.
+        assert _edit_already_applied("unrelated content", "old", "new") is False
+
+    def test_delete_already_applied(self) -> None:
+        # Empty replace: rule reduces to "search absent".
+        assert _edit_already_applied("line1\nline3\n", "line2\n", "") is True
+
+
+class TestIdempotentSkip:
+    def test_insert_style_apply_twice_equals_once(self) -> None:
+        edit = SearchReplaceEdit(search="import os\n", replace="import os\nimport sys\n")
+        once = apply_edits("import os\n", [edit], idempotent=True)
+        twice = apply_edits(once, [edit], idempotent=True)
+        assert once == "import os\nimport sys\n"
+        assert twice == once  # not duplicated
+
+    def test_plain_reapply_does_not_raise(self) -> None:
+        edit = SearchReplaceEdit(search="old_func", replace="new_func")
+        once = apply_edits("def old_func():\n    pass\n", [edit], idempotent=True)
+        # Re-running against the already-edited content skips instead of raising
+        # EditApplicationError("not found").
+        twice = apply_edits(once, [edit], idempotent=True)
+        assert twice == once == "def new_func():\n    pass\n"
+
+    def test_default_is_not_idempotent(self) -> None:
+        # The flag gates the behavior: default (idempotent=False) still re-applies
+        # an insert-style edit (silent duplication — the pre-T0.5 behavior).
+        edit = SearchReplaceEdit(search="import os\n", replace="import os\nimport sys\n")
+        applied = "import os\nimport sys\n"
+        assert apply_edits(applied, [edit]) == "import os\nimport sys\nimport sys\n"
+
+    def test_default_plain_reapply_raises(self) -> None:
+        edit = SearchReplaceEdit(search="old_func", replace="new_func")
+        with pytest.raises(EditApplicationError, match="not found"):
+            apply_edits("def new_func():\n    pass\n", [edit])
+
+    def test_skipped_edit_produces_no_match_result(self) -> None:
+        edit = SearchReplaceEdit(search="import os\n", replace="import os\nimport sys\n")
+        result = apply_edits_detailed("import os\nimport sys\n", [edit], idempotent=True)
+        assert result.content == "import os\nimport sys\n"
+        assert result.match_results == []
+
+
+# ---------------------------------------------------------------------------
+# write_output retry idempotency (T0.5 defect 1, activity — AC 1)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteOutputRetryIdempotency:
+    @staticmethod
+    def _seed(root: Path) -> None:
+        (root / "mod_insert.py").write_text("import os\n")
+        (root / "mod_plain.py").write_text("value = 1\n")
+        (root / "mod_fail.py").write_text("keep = 0\n")
+
+    @staticmethod
+    def _edits() -> list[FileEdit]:
+        return [
+            FileEdit(
+                file_path="mod_insert.py",
+                edits=[SearchReplaceEdit(search="import os\n", replace="import os\nimport sys\n")],
+            ),
+            FileEdit(
+                file_path="mod_plain.py",
+                edits=[SearchReplaceEdit(search="value = 1", replace="value = 2")],
+            ),
+            FileEdit(
+                file_path="mod_fail.py",
+                edits=[SearchReplaceEdit(search="keep = 0", replace="keep = 9")],
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_partial_write_failure_then_retry_matches_clean_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        names = ("mod_insert.py", "mod_plain.py", "mod_fail.py")
+        clean = tmp_path / "clean"
+        retry = tmp_path / "retry"
+        clean.mkdir()
+        retry.mkdir()
+        self._seed(clean)
+        self._seed(retry)
+
+        # Single clean run — the reference bytes.
+        await write_output(_make_write_input_with_edits(str(clean), edits=self._edits()))
+        expected = {name: (clean / name).read_text() for name in names}
+
+        # Retry run: fail the first write of mod_fail.py — the other two edit
+        # targets are already written to disk by then — then re-run the activity.
+        real_write = output_mod._write_file
+        failed_once = {"done": False}
+
+        def flaky(path: Path, content: str) -> None:
+            if path.name == "mod_fail.py" and not failed_once["done"]:
+                failed_once["done"] = True
+                raise OSError("simulated transient disk error")
+            real_write(path, content)
+
+        monkeypatch.setattr(output_mod, "_write_file", flaky)
+
+        with pytest.raises(OSError, match="simulated transient"):
+            await write_output(_make_write_input_with_edits(str(retry), edits=self._edits()))
+        assert failed_once["done"] is True
+        # The two earlier edit targets are already applied on disk at this point.
+        assert (retry / "mod_insert.py").read_text() == "import os\nimport sys\n"
+
+        # Retry must not double-apply the insert nor raise EditApplicationError.
+        await write_output(_make_write_input_with_edits(str(retry), edits=self._edits()))
+
+        for name, want in expected.items():
+            assert (retry / name).read_text() == want
+        assert (retry / "mod_insert.py").read_text() == "import os\nimport sys\n"
+
+
+# ---------------------------------------------------------------------------
+# write_output path-spelling mutual exclusion (T0.5 defect 2, activity — AC 2)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteOutputPathSpelling:
+    @pytest.mark.asyncio
+    async def test_same_file_dot_slash_spelling_rejected_before_write(self, tmp_path: Path) -> None:
+        # Pre-create the target so resolve_edit_paths' is_file gate passes and the
+        # resolved-path overlap guard is what rejects (raw-string check would miss
+        # ``a.py`` vs ``./a.py``).
+        (tmp_path / "a.py").write_text("original\n")
+        files = [FileOutput(file_path="a.py", content="generated\n")]
+        edits = [
+            FileEdit(
+                file_path="./a.py",
+                edits=[SearchReplaceEdit(search="original", replace="tampered")],
+            )
+        ]
+        input_data = _make_write_input_with_edits(str(tmp_path), files=files, edits=edits)
+        with pytest.raises(OutputWriteError, match="both files and edits"):
+            await write_output(input_data)
+        # Worktree untouched: neither the new-file write nor the edit landed.
+        assert (tmp_path / "a.py").read_text() == "original\n"
+
+    @pytest.mark.asyncio
+    async def test_same_file_dotdot_spelling_rejected_before_write(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "a.py").write_text("original\n")
+        files = [FileOutput(file_path="sub/a.py", content="generated\n")]
+        edits = [
+            FileEdit(
+                file_path="sub/../sub/a.py",
+                edits=[SearchReplaceEdit(search="original", replace="tampered")],
+            )
+        ]
+        input_data = _make_write_input_with_edits(str(tmp_path), files=files, edits=edits)
+        with pytest.raises(OutputWriteError, match="both files and edits"):
+            await write_output(input_data)
+        assert (tmp_path / "sub" / "a.py").read_text() == "original\n"

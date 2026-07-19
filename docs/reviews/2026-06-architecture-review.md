@@ -472,7 +472,7 @@ Migration: 47 tasks across 8 phases —
 
 Task files: [development-plans/tasks/](../../development-plans/tasks/),
 sourced one-for-one from
-[HANDOFF-architecture-review-2026-06-10-tasks.md](../../development-plans/HANDOFF-architecture-review-2026-06-10-tasks.md).
+[HANDOFF-architecture-review-2026-06-10-tasks.md](../../development-plans/archive/HANDOFF-architecture-review-2026-06-10-tasks.md).
 Phase ordering is load-bearing: Phases 5 and 6 are serialized (both touch
 forge worker registration and OUTPUT_TYPES); Phase 4 needs Phase 3's
 platform batch helpers; T1.2/T1.3 are explicitly interim and are deleted by

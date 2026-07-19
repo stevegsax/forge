@@ -18,7 +18,7 @@
 
 It contains: the agreement matrix (10 points of independent convergence), the conflict table (10 adjudications with cross-review evidence), verified findings (5 criticals, ~20 majors per side), the merged target architecture, and 8 migration phases.
 
-**The detailed task list:** [HANDOFF-architecture-review-2026-06-10-tasks.md](HANDOFF-architecture-review-2026-06-10-tasks.md) — all 47 tasks with scope, dependencies, and acceptance criteria (including every judge/attack-flagged criterion), ready to be converted one-for-one into `development-plans/tasks/` files per PROCESS.md on approval.
+**The detailed task list:** [HANDOFF-architecture-review-2026-06-10-tasks.md](archive/HANDOFF-architecture-review-2026-06-10-tasks.md) — all 47 tasks with scope, dependencies, and acceptance criteria (including every judge/attack-flagged criterion), ready to be converted one-for-one into `development-plans/tasks/` files per PROCESS.md on approval.
 
 ## Evidence base (all durable copies in `~/.claude/projects/-Users-stevengreenberg-repos-sax-forge/review-artifacts-2026-06-10/`)
 

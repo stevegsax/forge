@@ -21,6 +21,12 @@ from forge.eval.models import (
 )
 from forge.models import Plan, PlanStep, TaskDefinition
 
+
+def _all_criteria_scores(score: int = 4) -> list[JudgeScore]:
+    """One JudgeScore per criterion — the shape JudgeVerdict now requires."""
+    return [JudgeScore(criterion=crit, score=score, rationale="ok") for crit in JudgeCriterion]
+
+
 # ---------------------------------------------------------------------------
 # CheckStatus
 # ---------------------------------------------------------------------------
@@ -132,14 +138,29 @@ class TestJudgeScore:
 
 
 class TestJudgeVerdict:
-    def test_verdict(self) -> None:
-        scores = [
-            JudgeScore(criterion=JudgeCriterion.COMPLETENESS, score=5, rationale="Good."),
-            JudgeScore(criterion=JudgeCriterion.GRANULARITY, score=3, rationale="OK."),
-        ]
-        v = JudgeVerdict(scores=scores, overall_assessment="Solid plan.")
-        assert len(v.scores) == 2
+    def test_verdict_full_criteria(self) -> None:
+        v = JudgeVerdict(scores=_all_criteria_scores(), overall_assessment="Solid plan.")
+        assert len(v.scores) == len(JudgeCriterion)
         assert v.overall_assessment == "Solid plan."
+
+    def test_missing_criterion_rejected(self) -> None:
+        # T0.6: every criterion is required.
+        scores = _all_criteria_scores()[:-1]
+        with pytest.raises(ValidationError, match="Missing judge scores"):
+            JudgeVerdict(scores=scores, overall_assessment="x")
+
+    def test_empty_scores_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Missing judge scores"):
+            JudgeVerdict(scores=[], overall_assessment="x")
+
+    def test_duplicate_criterion_rejected(self) -> None:
+        # T0.6: no criterion may be scored twice.
+        scores = [
+            *_all_criteria_scores(),
+            JudgeScore(criterion=JudgeCriterion.COMPLETENESS, score=2, rationale="dup"),
+        ]
+        with pytest.raises(ValidationError, match="Duplicate judge scores"):
+            JudgeVerdict(scores=scores, overall_assessment="x")
 
 
 # ---------------------------------------------------------------------------
@@ -196,10 +217,7 @@ class TestPlanEvalResult:
             explanation="Simple.",
         )
         det = DeterministicResult(checks=[], all_passed=True)
-        verdict = JudgeVerdict(
-            scores=[JudgeScore(criterion=JudgeCriterion.COMPLETENESS, score=5, rationale="Good.")],
-            overall_assessment="Fine.",
-        )
+        verdict = JudgeVerdict(scores=_all_criteria_scores(score=5), overall_assessment="Fine.")
         result = PlanEvalResult(case_id="case-1", plan=plan, deterministic=det, judge=verdict)
         assert result.judge is not None
 

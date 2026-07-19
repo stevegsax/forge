@@ -38,7 +38,8 @@ class TracingSettings(BaseSettings):
 
     Forge-local (no platform sibling): the exporter name is read from
     ``FORGE_OTEL_EXPORTER`` and handed to ``forge.tracing.init_tracing``.
-    ``None`` means "unset" — tracing falls back to its console default.
+    ``None`` means "unset" — tracing resolves to the ``none`` exporter (off),
+    so console/OTLP export is strictly opt-in (T0.1).
     """
 
     model_config = SettingsConfigDict(frozen=True, extra="ignore", populate_by_name=True)

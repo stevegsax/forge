@@ -4,6 +4,8 @@ This document captures key design decisions and their rationale. Decisions are n
 
 ## D1: Batch Mode Over Conversational Streaming
 
+> **Amended by D76 and D79** — the "batch mode enables true parallelism" rationale is stale: batch is a cost lever (D76), submitted as single-request batches (D79), and parallelism comes from Temporal fan-out, not the batch API.
+
 **Decision:** Forge uses LLM batch mode with document completion rather than iterative streaming (REPL-style) interaction.
 
 **Rationale:** Batch mode enables true parallelism. Each request is self-contained with no dependency on conversation history, allowing multiple requests to execute simultaneously. The system invests in upfront planning to identify parallelizable work, then submits independent requests. Temporal provides the execution loop rather than a chat-style REPL.
@@ -47,6 +49,8 @@ This document captures key design decisions and their rationale. Decisions are n
 **Rationale:** Safety. Until the system has proven its planning and conflict resolution capabilities, a human in the loop at the merge point prevents compounding errors. This is a conservative choice for v1 that can be relaxed later.
 
 ## D8: Conflict Avoidance Through Planning, Not Locking
+
+> **Amended by D69 and D71** — the "sequential execution / parallelism deferred" stance is superseded for fan-out: recursive parallel sub-tasks (D69) with LLM conflict resolution (D71) ship; D74 still defers parallel execution of independent top-level tasks.
 
 **Decision:** The primary conflict avoidance mechanism is task ordering and explicit write-scope boundaries in the plan, not file locks or branch coordination.
 
@@ -578,7 +582,7 @@ Each sub-phase is independently committable with all tests passing. 14a is pure 
 
 ## D86: Merged Architecture Redesign Plan Approved
 
-**Decision:** The merged platform architecture redesign plan — produced by an adversarial cross-review of two independently written plans (Plan A, the 10-dimension forge platform review; Plan B, the pbook design docs of 2026-06-09/10) — is approved as of 2026-06-10, including its ten conflict adjudications (batch transport, library topology, structured outputs, pbook ingestion transport, forge knowledge consumption, ocr batch waiting, monorepo mechanics, Python version, pbook migration sequencing, Supabase posture) and the two owner-decision reversals: R1, the signal-based batch SPI is replaced by per-workflow timer-loop polling (D88), and R2, pbook ingestion runs sync rather than batch (D91). The consolidated review — findings with file:line evidence, the adjudication table, and rejected-idea dispositions — lives at [docs/reviews/2026-06-architecture-review.md](reviews/2026-06-architecture-review.md); the 47-task migration list is [development-plans/HANDOFF-architecture-review-2026-06-10-tasks.md](../development-plans/HANDOFF-architecture-review-2026-06-10-tasks.md).
+**Decision:** The merged platform architecture redesign plan — produced by an adversarial cross-review of two independently written plans (Plan A, the 10-dimension forge platform review; Plan B, the pbook design docs of 2026-06-09/10) — is approved as of 2026-06-10, including its ten conflict adjudications (batch transport, library topology, structured outputs, pbook ingestion transport, forge knowledge consumption, ocr batch waiting, monorepo mechanics, Python version, pbook migration sequencing, Supabase posture) and the two owner-decision reversals: R1, the signal-based batch SPI is replaced by per-workflow timer-loop polling (D88), and R2, pbook ingestion runs sync rather than batch (D91). The consolidated review — findings with file:line evidence, the adjudication table, and rejected-idea dispositions — lives at [docs/reviews/2026-06-architecture-review.md](reviews/2026-06-architecture-review.md); the 47-task migration list is [development-plans/archive/HANDOFF-architecture-review-2026-06-10-tasks.md](../development-plans/archive/HANDOFF-architecture-review-2026-06-10-tasks.md).
 
 **Rationale:** The two plans converged independently on ten points (monorepo, singleton and registry elimination, dead provider-copy deletion, ingestion inversion to pbook, playbook supersession, deterministic idempotency, status-machine lifecycle, one tier registry, namespaced tags, rejection of speculative hardening) and genuinely collided only on batch transport and library topology. A final adversarial cross-review — four fact-check panels plus each plan attacked from the other's perspective — adjudicated every conflict on verified evidence (API capabilities, Temporal history arithmetic, measured volumes, wheel availability) rather than preference. D87–D97 record the individual decisions; this entry records the umbrella approval and scope: repo `sax`, one platform library, apps forge/ocr/pbook, eight migration phases.
 

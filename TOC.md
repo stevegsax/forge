@@ -10,13 +10,15 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 - [PHASES.md](docs/PHASES.md) — the 14-phase roadmap (1–12 + 14 done with module map; 13 deferred).
 - [development-plans/TASKS.md](development-plans/TASKS.md) — live task list (completed vs uncompleted).
 - [development-plans/PROCESS.md](development-plans/PROCESS.md) — how to pick up and work a task.
-- [development-plans/HANDOFF-2026-07-17-phase3.md](development-plans/HANDOFF-2026-07-17-phase3.md) — current state: Phase 2 close (root gates/CI, mypy strict) and Phase 3 T3.1–T3.3 (the `libs/sax-platform` platform library, one tier registry, MistralOcr); next task is T3.4.
-- [development-plans/HANDOFF-2026-07-16-monorepo-deployment.md](development-plans/HANDOFF-2026-07-16-monorepo-deployment.md) — prior handoff: the monorepo consolidation (D98) and local-first deployment (D99).
+- [development-plans/HANDOFF-2026-07-19-phase4-start.md](development-plans/HANDOFF-2026-07-19-phase4-start.md) — current state: Phases 0–3 complete; Phase 0 closeout details; next task is T4.1 (read the parked T4.2 owner proposal first).
+- [development-plans/HANDOFF-2026-07-18-phase3-complete.md](development-plans/HANDOFF-2026-07-18-phase3-complete.md) — the Phase 3 record: the platform library as it stands, composition roots (D93), the four-package workspace; its "What to know" section still applies.
+- [development-plans/HANDOFF-2026-07-17-phase3.md](development-plans/HANDOFF-2026-07-17-phase3.md) — lead-up: Phase 2 close (root gates/CI, mypy strict) and Phase 3 T3.1–T3.3.
+- [development-plans/HANDOFF-2026-07-16-monorepo-deployment.md](development-plans/HANDOFF-2026-07-16-monorepo-deployment.md) — lead-up: the monorepo consolidation (D98) and local-first deployment (D99).
 
 ## Architecture & Decisions
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — how Forge works: universal workflow step, execution modes, context assembly, batch-vs-sync, key data models, module map, and subsystems beyond the core loop.
-- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D98, with supersession/stale markers.
+- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D99, with supersession/stale markers.
 
 ## Requirements
 
@@ -59,4 +61,4 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 
 ## Archive
 
-Superseded and exploratory material, **not authoritative** — see [archive/README.md](archive/README.md). Contains the original `DESIGN.md`, completed phase specs (`PHASE1`–`PHASE12`, `PHASE14`), `research/`, and the unmerged `to-merge/` reports.
+Superseded and exploratory material, **not authoritative** — see [archive/README.md](archive/README.md). Contains the original `DESIGN.md`, completed phase specs (`PHASE1`–`PHASE12`, `PHASE14`), `research/`, and the dispositioned `merged/` reports.
