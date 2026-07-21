@@ -1,10 +1,15 @@
-# Handoff — Phase 4 complete; start Phase 5
+# Handoff — Phase 4 complete; start T4.4 or Phase 5
 
-**Date:** 2026-07-21
-**Status:** Landed. **Phases 0–4 are all complete** (T0.1–T0.8, T1.0–T4.3).
-`make gates` was EXIT=0 at the T4.2 close (forge **1348** / pbook **353** /
-ocr **152** / sax-platform **439**); T4.3 and this handoff are docs-only on
-top. Nothing is in flight. Next task: **T5.1**.
+**Date:** 2026-07-21 (updated later the same day; see the Addendum)
+**Status:** Landed. **Phases 0–4 are complete** (T0.1–T0.8, T1.0–T4.3) —
+except **T4.4 (ocr Mistral status tracker)**, added 2026-07-21 by owner
+adoption of the parked T4.2 proposal, NOT STARTED, fully specced in
+[tasks/T4.4-mistral-status-tracker.md](tasks/T4.4-mistral-status-tracker.md).
+`make gates` is EXIT=0 (forge **1348** / pbook **353** / ocr **152** /
+sax-platform **439**; re-verified 2026-07-21); everything after the T4.2
+close is docs-only. Nothing is in flight; local main is pushed and level
+with origin/main. Next task: **T4.4 or T5.1 — owner's choice** (they are
+file-disjoint; see the Addendum).
 
 This is a state-of-the-world note for the next session. It does not restate
 the work queue ([TASKS.md](TASKS.md)), the decisions
@@ -163,7 +168,28 @@ Phase 5 rewrites the workflow layer (`workflows.py` monolith → shared
   signal poller. The specs are frozen; T8.4 or T8.2 owns their disposition —
   informational, no action now.
 
+## Addendum (2026-07-21, later)
+
+**T4.4 was added after this handoff was written** — owner adoption of the
+parked T4.2 batch-tracker proposal in its stateless-broadcast form (a
+2-minute list-endpoint sweep signaling status hints to signal-wait store
+children; design settled and recorded in
+[tasks/T4.4-mistral-status-tracker.md](tasks/T4.4-mistral-status-tracker.md)).
+It is ocr-local and disjoint from Phase 5's forge files; sequencing
+(T4.4 first vs parallel with T5.1) is the owner's call. The "parked
+cache-refresher" item below is thereby resolved — superseded by T4.4's
+design; the Mistral admin-console rate numbers are no longer gating.
+
 ## Where to start
+
+**Either T4.4 or T5.1 — the owner sequences.** For **T4.4** (ocr Mistral
+status tracker): the design is fully settled in the task file — a
+stateless 2-minute tracker sweeping the Mistral list endpoint and
+broadcasting status hints to signal-wait store children; read its Design
+section, then write the Plan per [PROCESS.md](PROCESS.md). It is ocr-local
+(plus one new `MistralOcr` method and one platform retirement) and cannot
+collide with Phase 5's forge files. Its D101/banner obligations land in
+the same change-set per PROCESS.md's "Specification Changes".
 
 **T5.1 — pure step logic.** Read the T5.1 task file's Problem/Scope/amendment
 notes first (it deletes the `evaluate_transition` activity and fixes the

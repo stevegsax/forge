@@ -69,6 +69,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T4.1 — forge: submit → poll-loop → fetch](tasks/T4.1-forge-timer-loop-transport.md)
 - [x] [T4.2 — ocr: own polling + gather restructure](tasks/T4.2-ocr-own-polling-gather-restructure.md)
 - [x] [T4.3 — Transport decisions sweep](tasks/T4.3-transport-decisions-sweep.md)
+- [ ] [T4.4 — ocr: Mistral status tracker](tasks/T4.4-mistral-status-tracker.md) *(added 2026-07-21 — owner adoption of the parked T4.2 batch-tracker proposal in its stateless-broadcast form; ocr-local and disjoint from Phase 5's forge files, so it may run before or parallel to Phase 5; 57 tasks total)*
 
 ### Phase 5 — Workflow consolidation (forge)
 
