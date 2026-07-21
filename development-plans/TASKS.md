@@ -68,7 +68,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 
 - [x] [T4.1 — forge: submit → poll-loop → fetch](tasks/T4.1-forge-timer-loop-transport.md)
 - [x] [T4.2 — ocr: own polling + gather restructure](tasks/T4.2-ocr-own-polling-gather-restructure.md)
-- [ ] [T4.3 — Transport decisions sweep](tasks/T4.3-transport-decisions-sweep.md)
+- [x] [T4.3 — Transport decisions sweep](tasks/T4.3-transport-decisions-sweep.md)
 
 ### Phase 5 — Workflow consolidation (forge)
 

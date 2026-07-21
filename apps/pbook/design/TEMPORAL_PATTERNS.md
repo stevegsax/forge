@@ -71,6 +71,17 @@ events — about 3% of the 51.2k-event cap — and the worst observed case (~30 
 is ≈ 24k events, still safe. If wait counts grow beyond that, continue-as-new is the
 documented escape hatch.
 
+**Amended 2026-07-20 (Phase 4 shipped) — shared implementation.** The timer loop is now a
+platform primitive: `sax_platform.temporal.polling` supplies `wait_batch_ended` (the
+deadline/sleep/status-dispatch skeleton), the 25h `BATCH_WAIT_CEILING`, and two pure poll
+schedules — `FixedInterval` (forge's steady cadence, default 600s, floor 300s) and
+`BackoffSchedule` (300s for the first hour, then doubling to an 1800s cap with per-waiter
+jitter, for burst waiter counts such as ocr's one-batch-per-chunk submissions). forge and ocr
+are the two consumers, and no shared poller remains anywhere — ocr's chunk gather became
+parent-awaited children. The scaling envelope above is unchanged: the ≥300s floor and the
+~11-events-per-poll history budget still bound a single wait, and continue-as-new stays the
+escape hatch if concurrent wait counts ever outgrow the 51.2k-event cap.
+
 ## 9. Cross-service boundaries
 
 Services do not call each other's activities or child workflows cross-queue, and do not import
