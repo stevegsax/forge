@@ -1,12 +1,14 @@
-"""OCR activities — file IO, request-blob build, result parse/store, status, listing.
+"""OCR activities — file IO, request-blob build, batch submit/poll/fetch, status, listing.
 
-Consumes the Forge platform purely through ``sax_platform.contracts`` + Temporal
-string-name cross-queue calls. The provider submit itself is the platform's job (the
-opaque-blob submit SPI); OCR builds the request body, hands the platform a pointer,
-and owns all image storage / markdown rewriting / status projection.
+OCR owns its Mistral batches end-to-end (T4.2): it builds the /v1/ocr request,
+submits the batch, polls its status, and fetches + stores the result through the
+injected ``MistralOcr`` capability. It consumes the platform only for the
+cross-queue ``batch_jobs`` ledger (via ``sax_platform.contracts`` + Temporal
+string-name calls) and owns all image storage / markdown rewriting / status
+projection.
 
 Function Core / Imperative Shell: pure helpers (body build, markdown rewrite, page
-parse) are separated from the Temporal activities that do IO.
+parse, status derivation) are separated from the Temporal activities that do IO.
 """
 
 from __future__ import annotations
@@ -18,31 +20,57 @@ import mimetypes
 import re
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
-from sax_platform.contracts.models import resolve_batch_result
+from sax_platform.contracts.models import BatchJobStatus
+from sax_platform.ocr import BatchPollStatus, ExtractedImage
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from ocr.models import (
     ChunkRef,
     FileContentRef,
     OcrBatchRequestRef,
+    OcrBatchStatusInput,
+    OcrBuildRequestInput,
     OcrDuplicateCheckResult,
+    OcrExportInput,
     OcrExportResult,
+    OcrFetchStoreInput,
     OcrJobDerivedStatus,
     OcrJobEntry,
+    OcrListJobsInput,
     OcrListJobsResult,
     OcrMarkResult,
     OcrParseResult,
+    OcrProcessingStatus,
+    OcrReassembleInput,
+    OcrSplitInput,
+    OcrStatusUpsertInput,
     OcrStoreResult,
+    OcrSubmitBatchInput,
     SplitResult,
 )
 
 if TYPE_CHECKING:
     from sax_platform.contracts.s3_blobs import S3Blobs
+    from sax_platform.ocr import MistralOcr
     from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
+
+# Mistral's normalized poll statuses mapped onto the ``wait_batch_ended`` state
+# vocabulary. PENDING and IN_PROGRESS both mean "keep waiting" ("in_progress");
+# ENDED signals the fetch; the three provider-terminal states pass through. An
+# unrecognized status falls back to "in_progress" (the safe non-terminal default).
+_POLL_STATUS_TO_STATE: dict[BatchPollStatus, str] = {
+    BatchPollStatus.PENDING: "in_progress",
+    BatchPollStatus.IN_PROGRESS: "in_progress",
+    BatchPollStatus.ENDED: "ended",
+    BatchPollStatus.FAILED: "failed",
+    BatchPollStatus.EXPIRED: "expired",
+    BatchPollStatus.CANCELED: "canceled",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -337,40 +365,27 @@ def execute_store_ocr_result(
     file_path: str,
     batch_id: str,
     workflow_id: str,
-    raw_response_json: str | None,
-    s3_key: str | None,
+    raw_response_json: str,
+    extracted_images: list[ExtractedImage],
     engine: Engine,
     blobs: S3Blobs,
 ) -> OcrStoreResult:
-    """Resolve the delivered result, store images, save text + status (idempotent)."""
-    from sax_platform.contracts.models import BatchResult
+    """Store the fetched batch entry's images + text + status (idempotent).
 
+    Takes the entry's raw OCR body and its already-extracted images directly (the
+    fetch happens in ``fetch_and_store_ocr_result``); the retired result-envelope
+    resolve indirection is gone.
+    """
     from ocr.store import ocr_image_id, save_ocr_image, save_ocr_result, upsert_ocr_job_status
-
-    body, images = resolve_batch_result(
-        BatchResult(
-            request_id=request_id,
-            batch_id=batch_id,
-            raw_response_json=raw_response_json,
-            s3_key=s3_key,
-            result_type="succeeded",
-        ),
-        blobs,
-    )
-    if body is None:
-        msg = "OCR result has neither inline body nor s3 envelope"
-        raise RuntimeError(msg)
 
     # Store images first (deterministic ids → idempotent on retry), building the
     # original-id -> stored-uuid mapping the markdown rewrite needs.
     image_mapping: dict[str, str] = {}
-    for img in images:
-        original_image_id = img["original_image_id"]
-        page_index = img["page_index"]
-        image_id = ocr_image_id(request_id, original_image_id, page_index)
-        raw_b64 = img["image_base64"]
-        mime_type = img.get("mime_type", "image/jpeg")
-        if isinstance(raw_b64, str) and raw_b64.startswith("data:"):
+    for img in extracted_images:
+        image_id = ocr_image_id(request_id, img.original_image_id, img.page_index)
+        raw_b64 = img.image_base64
+        mime_type = img.mime_type
+        if raw_b64.startswith("data:"):
             header, raw_b64 = raw_b64.split(",", 1)
             mime_type = header.split(":")[1].split(";")[0]
         data = base64.b64decode(raw_b64)
@@ -378,20 +393,20 @@ def execute_store_ocr_result(
             engine,
             image_id=image_id,
             document_id=document_id,
-            page_index=page_index,
-            original_image_id=original_image_id,
+            page_index=img.page_index,
+            original_image_id=img.original_image_id,
             data=data,
             mime_type=mime_type,
             file_size_bytes=len(data),
-            top_left_x=img.get("top_left_x"),
-            top_left_y=img.get("top_left_y"),
-            bottom_right_x=img.get("bottom_right_x"),
-            bottom_right_y=img.get("bottom_right_y"),
+            top_left_x=img.top_left_x,
+            top_left_y=img.top_left_y,
+            bottom_right_x=img.bottom_right_x,
+            bottom_right_y=img.bottom_right_y,
             blobs=blobs,
         )
-        image_mapping[original_image_id] = image_id
+        image_mapping[img.original_image_id] = image_id
 
-    parse_result = parse_ocr_pages(body, image_mapping)
+    parse_result = parse_ocr_pages(raw_response_json, image_mapping)
 
     file_hash = None
     if file_path and Path(file_path).is_file():
@@ -415,7 +430,7 @@ def execute_store_ocr_result(
         request_id=request_id,
         document_id=document_id,
         file_path=file_path,
-        status="stored",
+        status=OcrProcessingStatus.STORED,
     )
     return OcrStoreResult(
         document_id=document_id,
@@ -556,11 +571,26 @@ def execute_list_ocr_jobs(
     ``ocr_job_status`` (OCR single-writer) is the source of truth for the user-facing
     status; the platform ``batch_jobs`` read model is LEFT-joined on ``request_id``
     for the provider-batch detail. No ``forge`` import — only the contracts read model.
+
+    ``status_filter``, when non-empty, is validated against ``OcrJobDerivedStatus``
+    (:func:`_validate_status_filter`; raises ``ValueError`` naming the legal values
+    on an unknown filter) and applied to each row's *derived* display status — the
+    same value ``ocr list`` prints and the same path ``_derive_display_status`` uses
+    for the unfiltered listing — never as a SQL predicate on the raw
+    ``ocr_job_status.status`` column: that column speaks ``OcrProcessingStatus``
+    (submitted/processing/stored/failed), a different vocabulary, so a raw-column
+    predicate for "succeeded"/"errored"/"unknown" would silently match zero rows.
+    Filtering therefore happens in Python, after every row's status has been
+    derived; ``limit`` is applied last, to the *filtered* results, so
+    ``--limit 10 --status errored`` returns up to 10 errored rows rather than
+    filtering an arbitrary 10 unfiltered ones.
     """
     import sqlalchemy as sa
     from sax_platform.contracts.batch_jobs import batch_jobs as bj
 
     from ocr.store import OcrJobStatus
+
+    derived_filter = _validate_status_filter(status_filter)
 
     js = OcrJobStatus.__table__
     stmt = (
@@ -575,9 +605,6 @@ def execute_list_ocr_jobs(
         .select_from(js.outerjoin(bj, bj.c.id == js.c.request_id))
         .order_by(js.c.created_at.desc())
     )
-    if status_filter:
-        stmt = stmt.where(js.c.status == status_filter)
-    stmt = stmt.limit(limit)
 
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
@@ -586,23 +613,114 @@ def execute_list_ocr_jobs(
         OcrJobEntry(
             file_path=row["file_path"],
             document_id=row["document_id"],
-            status=_derive_status(row["ocr_status"], row["provider_status"]),
+            status=_derive_display_status(row["ocr_status"], row["provider_status"]),
             created_at=row["created_at"].isoformat() if row["created_at"] else "",
         )
         for row in rows
     ]
+    if derived_filter is not None:
+        jobs = [job for job in jobs if job.status == derived_filter]
+    jobs = jobs[:limit]
     return OcrListJobsResult(jobs=jobs, total=len(jobs))
 
 
-def _derive_status(ocr_status: str, provider_status: str | None) -> str:
-    """Map the (ocr, provider) status pair to a coarse display status."""
-    if ocr_status == "stored":
-        return OcrJobDerivedStatus.SUCCEEDED.value
-    if ocr_status == "failed" or provider_status in {"failed", "expired", "missing"}:
-        return OcrJobDerivedStatus.ERRORED.value
-    if ocr_status in {"submitted", "processing"}:
-        return OcrJobDerivedStatus.PROCESSING.value
-    return OcrJobDerivedStatus.UNKNOWN.value
+def _coerce_ocr_status(raw: str) -> OcrProcessingStatus | None:
+    """Parse a stored OCR status string, tolerating unknown legacy values (``None``)."""
+    try:
+        return OcrProcessingStatus(raw)
+    except ValueError:
+        return None
+
+
+def _coerce_provider_status(raw: str | None) -> BatchJobStatus | None:
+    """Parse a joined provider status, tolerating absent/unknown values (``None``)."""
+    if raw is None:
+        return None
+    try:
+        return BatchJobStatus(raw)
+    except ValueError:
+        return None
+
+
+_LEGAL_STATUS_FILTERS = frozenset(status.value for status in OcrJobDerivedStatus)
+
+
+def _validate_status_filter(status_filter: str) -> OcrJobDerivedStatus | None:
+    """Validate a raw ``--status`` filter against the derived-status vocabulary (pure).
+
+    Empty string means "no filter" (``None``). Any non-empty value must name one
+    of ``OcrJobDerivedStatus``'s members — ``processing``, ``succeeded``,
+    ``errored``, or ``unknown`` (the derived enum's own catch-all state is a legal
+    filter target: rows the read side couldn't classify are still listable). An
+    unrecognized value raises ``ValueError`` naming the legal set, at the
+    CLI/activity boundary this function is called from — never silently matching
+    zero rows the way filtering the raw ``OcrProcessingStatus`` column did.
+    """
+    if not status_filter:
+        return None
+    try:
+        return OcrJobDerivedStatus(status_filter)
+    except ValueError as exc:
+        legal = ", ".join(sorted(_LEGAL_STATUS_FILTERS))
+        msg = f"Unknown --status filter {status_filter!r}; must be one of: {legal}"
+        raise ValueError(msg) from exc
+
+
+def _derive_display_status(ocr_status: str, provider_status: str | None) -> OcrJobDerivedStatus:
+    """Coerce the raw joined status strings, then derive the display status (pure).
+
+    The read side is tolerant by design: an unrecognized stored OCR status
+    (a legacy row) maps straight to ``UNKNOWN`` without entering ``_derive_status``,
+    and an unknown provider string is treated as "no provider info" (``None``).
+    """
+    ocr = _coerce_ocr_status(ocr_status)
+    if ocr is None:
+        return OcrJobDerivedStatus.UNKNOWN
+    return _derive_status(ocr, _coerce_provider_status(provider_status))
+
+
+def _derive_status(
+    ocr_status: OcrProcessingStatus, provider_status: BatchJobStatus | None
+) -> OcrJobDerivedStatus:
+    """Map the (OCR processing, provider batch) status pair to a display status (pure).
+
+    ``ocr_job_status`` (OCR single-writer) is authoritative for terminal OCR
+    outcomes; the platform ``batch_jobs`` provider status only refines the still
+    in-flight case. Derivation table (``None`` provider = no ledger row /
+    pre-submit failure)::
+
+        OCR \\ provider   None  submitted  processing  ended  failed  expired  missing
+        stored            succ  succ       succ        succ   succ    succ     succ
+        failed            err   err        err         err    err     err      err
+        submitted         proc  proc       proc        proc   err     err      err
+        processing        proc  proc       proc        proc   err     err      err
+
+    ``stored``/``failed`` are OCR-terminal and ignore the provider column. While
+    OCR is still ``submitted``/``processing`` a provider-terminal failure
+    (``failed``/``expired``/``missing``) surfaces as ``errored`` before the OCR
+    writer catches up; every other provider state — including ``ended`` (fetch +
+    store imminent) and ``None`` — reads as ``processing``.
+    """
+    match ocr_status:
+        case OcrProcessingStatus.STORED:
+            return OcrJobDerivedStatus.SUCCEEDED
+        case OcrProcessingStatus.FAILED:
+            return OcrJobDerivedStatus.ERRORED
+        case OcrProcessingStatus.SUBMITTED | OcrProcessingStatus.PROCESSING:
+            match provider_status:
+                case BatchJobStatus.FAILED | BatchJobStatus.EXPIRED | BatchJobStatus.MISSING:
+                    return OcrJobDerivedStatus.ERRORED
+                case (
+                    BatchJobStatus.SUBMITTED
+                    | BatchJobStatus.PROCESSING
+                    | BatchJobStatus.ENDED
+                    | None
+                ):
+                    return OcrJobDerivedStatus.PROCESSING
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 # ---------------------------------------------------------------------------
@@ -611,14 +729,14 @@ def _derive_status(ocr_status: str, provider_status: str | None) -> str:
 
 
 class OcrStoreActivities:
-    """Dependency-carrying OCR activities: one store engine + one blob client.
+    """Dependency-carrying OCR activities: store engine + blob client + Mistral OCR.
 
     Temporal's sanctioned dependency injection (T3.6): the process-wide store
-    engine and :class:`S3Blobs` are built once at worker startup and injected
-    here, replacing the per-call ``get_store_engine()`` each shell used to build
-    (a fresh pooled Postgres engine per activity invocation). OCR requires S3, so
-    ``blobs`` is required — the worker fails fast at startup on an unset bucket
-    rather than deferring the error to the first blob-touching activity.
+    engine, :class:`S3Blobs`, and :class:`~sax_platform.ocr.MistralOcr` capability
+    are built once at worker startup and injected here. OCR requires all three —
+    the worker fails fast at startup on an unset S3 bucket or a missing
+    ``MISTRAL_API_KEY`` (T4.2 makes OCR poll its own Mistral batches) rather than
+    deferring the error to the first activity that needs them.
 
     Each method is a bare ``@activity.defn`` so its *registered* name equals the
     method ``__name__`` — the exact names the OCR workflows invoke by string.
@@ -627,9 +745,10 @@ class OcrStoreActivities:
     by-name activity mocks in the workflow tests.
     """
 
-    def __init__(self, engine: Engine, blobs: S3Blobs) -> None:
+    def __init__(self, engine: Engine, blobs: S3Blobs, mistral: MistralOcr) -> None:
         self._engine = engine
         self._blobs = blobs
+        self._mistral = mistral
 
     @activity.defn
     async def read_and_store_file_content(self, file_path: str) -> FileContentRef:
@@ -638,25 +757,23 @@ class OcrStoreActivities:
         return execute_read_and_store_file(file_path, self._engine, self._blobs)
 
     @activity.defn
-    async def split_file_into_chunks(self, input_json: str) -> SplitResult:
+    async def split_file_into_chunks(self, input: OcrSplitInput) -> SplitResult:
         """Activity: split a stored file into OCR chunks."""
-        data = json.loads(input_json)
         return execute_split_file_into_chunks(
-            content_id=data["content_id"],
-            mime_type=data["mime_type"],
-            file_size_bytes=data["file_size_bytes"],
+            content_id=input.content_id,
+            mime_type=input.mime_type,
+            file_size_bytes=input.file_size_bytes,
             engine=self._engine,
             blobs=self._blobs,
         )
 
     @activity.defn
-    async def build_ocr_request_blob(self, input_json: str) -> OcrBatchRequestRef:
+    async def build_ocr_request_blob(self, input: OcrBuildRequestInput) -> OcrBatchRequestRef:
         """Activity: build the /v1/ocr request and stash it to S3; mint request_id."""
-        data = json.loads(input_json)
         return execute_build_request_blob(
-            content_id=data["content_id"],
-            mime_type=data["mime_type"],
-            model_name=data["model_name"],
+            content_id=input.content_id,
+            mime_type=input.mime_type,
+            model_name=input.model_name,
             engine=self._engine,
             blobs=self._blobs,
         )
@@ -669,56 +786,91 @@ class OcrStoreActivities:
         delete_file_content(self._engine, content_id, self._blobs)
 
     @activity.defn
-    async def store_ocr_result(self, input_json: str) -> OcrStoreResult:
-        """Activity: resolve the delivered result and store text + images + status."""
-        data = json.loads(input_json)
-        logger.info("Storing OCR result: document_id=%s", data.get("document_id", ""))
+    async def submit_ocr_batch(self, input: OcrSubmitBatchInput) -> str:
+        """Activity: fetch the request blob and submit the Mistral /v1/ocr batch.
+
+        Reads the pre-built request list from ocr's own S3 by ``s3_key`` and calls
+        ``MistralOcr.submit_batch`` → the provider batch id. Writes nothing (the
+        workflow records the batch_jobs ledger row separately — the
+        double-submit-safety invariant: a provider submit and a DB write never
+        share one re-runnable activity).
+        """
+        raw = self._blobs.get(input.s3_key)
+        requests = json.loads(raw.decode("utf-8"))
+        return await self._mistral.submit_batch(requests, input.model, endpoint="/v1/ocr")
+
+    @activity.defn
+    async def ocr_batch_status(self, input: OcrBatchStatusInput) -> str:
+        """Activity: poll one Mistral batch's status (no download).
+
+        Maps ``MistralOcr.get_batch_status`` onto the ``wait_batch_ended`` state
+        vocabulary ("in_progress"/"ended"/"failed"/"expired"/"canceled").
+        """
+        status = await self._mistral.get_batch_status(input.batch_id)
+        return _POLL_STATUS_TO_STATE.get(status, "in_progress")
+
+    @activity.defn
+    async def fetch_and_store_ocr_result(self, input: OcrFetchStoreInput) -> OcrStoreResult:
+        """Activity: download the finished batch, select this request, store it.
+
+        Fetches all result entries, selects the one whose ``custom_id`` matches
+        ``request_id`` (absent or failed → a non-retryable ``ApplicationError``),
+        then stores text + images + status. Result bytes never return to the
+        workflow — only the small :class:`OcrStoreResult` summary does.
+        """
+        entries = await self._mistral.fetch_batch_results(input.batch_id)
+        entry = next((e for e in entries if e.custom_id == input.request_id), None)
+        if entry is None:
+            msg = f"No OCR result entry for request {input.request_id} in batch {input.batch_id}"
+            raise ApplicationError(msg, non_retryable=True)
+        if not entry.succeeded or entry.raw_response_json is None:
+            detail = entry.error or "no response body"
+            msg = f"OCR batch entry failed for request {input.request_id}: {detail}"
+            raise ApplicationError(msg, non_retryable=True)
+        logger.info("Storing OCR result: document_id=%s", input.document_id)
         return execute_store_ocr_result(
-            request_id=data["request_id"],
-            document_id=data["document_id"],
-            file_path=data["file_path"],
-            batch_id=data["batch_id"],
-            workflow_id=data["workflow_id"],
-            raw_response_json=data.get("raw_response_json"),
-            s3_key=data.get("s3_key"),
+            request_id=input.request_id,
+            document_id=input.document_id,
+            file_path=input.file_path,
+            batch_id=input.batch_id,
+            workflow_id=input.workflow_id,
+            raw_response_json=entry.raw_response_json,
+            extracted_images=entry.extracted_images,
             engine=self._engine,
             blobs=self._blobs,
         )
 
     @activity.defn
-    async def upsert_ocr_status(self, input_json: str) -> None:
+    async def upsert_ocr_status(self, input: OcrStatusUpsertInput) -> None:
         """Activity: upsert the OCR processing-status row (single-writer)."""
         from ocr.store import upsert_ocr_job_status
 
-        data = json.loads(input_json)
         upsert_ocr_job_status(
             self._engine,
-            request_id=data["request_id"],
-            document_id=data["document_id"],
-            file_path=data.get("file_path", ""),
-            status=data["status"],
-            error_message=data.get("error_message"),
+            request_id=input.request_id,
+            document_id=input.document_id,
+            file_path=input.file_path,
+            status=input.status,
+            error_message=input.error_message,
         )
 
     @activity.defn
-    async def reassemble_ocr_chunks(self, input_json: str) -> OcrStoreResult:
+    async def reassemble_ocr_chunks(self, input: OcrReassembleInput) -> OcrStoreResult:
         """Activity: combine OCR results from multiple chunks into one."""
-        data = json.loads(input_json)
         return execute_reassemble_ocr_chunks(
-            document_id=data["document_id"],
-            chunk_document_ids=data["chunk_document_ids"],
-            file_path=data["file_path"],
-            total_pages=data["total_pages"],
+            document_id=input.document_id,
+            chunk_document_ids=input.chunk_document_ids,
+            file_path=input.file_path,
+            total_pages=input.total_pages,
             engine=self._engine,
         )
 
     @activity.defn
-    async def export_ocr_document(self, input_json: str) -> OcrExportResult:
+    async def export_ocr_document(self, input: OcrExportInput) -> OcrExportResult:
         """Activity: export OCR text and images to the filesystem."""
-        data = json.loads(input_json)
         return execute_export_ocr_document(
-            document_id=data["document_id"],
-            output_dir=data.get("output_dir", ""),
+            document_id=input.document_id,
+            output_dir=input.output_dir,
             engine=self._engine,
             blobs=self._blobs,
         )
@@ -745,11 +897,10 @@ class OcrStoreActivities:
         return OcrMarkResult(document_id=document_id, found=found)
 
     @activity.defn
-    async def list_ocr_jobs(self, input_json: str) -> OcrListJobsResult:
+    async def list_ocr_jobs(self, input: OcrListJobsInput) -> OcrListJobsResult:
         """Activity: list OCR submissions (status join)."""
-        data = json.loads(input_json)
         return execute_list_ocr_jobs(
             self._engine,
-            limit=data.get("limit", 50),
-            status_filter=data.get("status_filter", ""),
+            limit=input.limit,
+            status_filter=input.status_filter,
         )

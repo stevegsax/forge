@@ -1,11 +1,11 @@
 """Temporal worker entry point for the OCR app — the composition root (T3.6).
 
 Runs on ``ocr-task-queue`` (same namespace + database as the platform). Builds
-the per-process settings, store engine, blob client, and (optionally) the
-Mistral OCR capability ONCE at startup, injects the engine + blobs into
-``OcrStoreActivities``, and registers its bound methods. The platform's batch
-poller (a separate worker on ``forge-task-queue``) signals OcrStoreWorkflow when
-a batch completes.
+the per-process settings, store engine, blob client, and Mistral OCR capability
+ONCE at startup, injects all three into ``OcrStoreActivities``, and registers its
+bound methods. Each OcrStoreWorkflow polls its own Mistral batch on a timer
+(T4.2) and records the terminal outcome on the platform ``batch_jobs`` ledger
+cross-queue — no signals.
 
 This module is where OCR first gained logging: nothing configured a handler
 before T3.6, so worker output went nowhere. ``setup_logging("ocr", console=True)``
@@ -29,7 +29,6 @@ from sax_platform.temporal.worker import run_worker as _run_worker
 from ocr.activities import OcrStoreActivities
 from ocr.settings import OcrSettings
 from ocr.workflow_export import OcrExportWorkflow
-from ocr.workflow_gather import OcrGatherWorkflow
 from ocr.workflow_list_jobs import OcrListJobsWorkflow
 from ocr.workflow_mark_removal import (
     OcrClearRemovalMarkWorkflow,
@@ -63,15 +62,15 @@ def _init_store(url: str) -> None:
 def _build_mistral_ocr(api_key: str | None) -> MistralOcr | None:
     """Construct the Mistral OCR capability, or ``None`` when no key is set.
 
-    The OCR worker does not need Mistral today — the platform makes the provider
-    submit; OCR only builds the request blob and stores results. Phase 4's
-    self-polling activities (OCR polling its own Mistral batches, D88) are the
-    first consumer, and will thread this into their own composition. It is built
-    here so a *set-but-broken* key fails fast at startup rather than hours later.
+    OCR now polls its own Mistral batches (T4.2, D88): ``OcrStoreActivities``
+    submits, polls status, and fetches results through this capability, so the
+    worker requires it and injects it (``run_worker`` fails fast on a missing
+    key). This builder stays total — it returns ``None`` for an empty key and the
+    composition root turns that into the startup error.
 
-    Local import: ``sax_platform.ocr`` pulls in ``mistralai`` eagerly at module
-    level, so it is kept out of worker.py's top-level import graph (mirroring
-    ``_init_store``'s local import of ``ocr.store``/``sqlalchemy``).
+    Local import: ``sax_platform.ocr``'s runtime touch points pull in ``mistralai``
+    lazily, but the client construction here does, so it is kept out of worker.py's
+    top-level import graph (mirroring ``_init_store``'s local import).
     """
     if not api_key:
         return None
@@ -85,7 +84,6 @@ def workflows() -> list[type]:
     return [
         OcrSubmitWorkflow,
         OcrStoreWorkflow,
-        OcrGatherWorkflow,
         OcrExportWorkflow,
         OcrListJobsWorkflow,
         OcrMarkForRemovalWorkflow,
@@ -103,8 +101,10 @@ def activity_methods(store: OcrStoreActivities) -> list[Callable[..., Any]]:
         store.read_and_store_file_content,
         store.split_file_into_chunks,
         store.build_ocr_request_blob,
+        store.submit_ocr_batch,
+        store.ocr_batch_status,
+        store.fetch_and_store_ocr_result,
         store.delete_file_content_blob,
-        store.store_ocr_result,
         store.upsert_ocr_status,
         store.reassemble_ocr_chunks,
         store.export_ocr_document,
@@ -119,11 +119,11 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     """Connect to Temporal and run the OCR worker until interrupted.
 
     The composition root: reads settings once (fail-fast on a missing
-    ``FORGE_DB_URL``), runs migrations, configures logging, builds the store
-    engine + blob client + Mistral capability ONCE, injects the engine + blobs
-    into ``OcrStoreActivities``, then hands the bound methods and workflows to
-    the shared ``sax_platform.temporal.worker.run_worker`` (Worker construction +
-    graceful SIGINT/SIGTERM drain). ``address`` overrides the settings-resolved
+    ``FORGE_DB_URL`` or ``MISTRAL_API_KEY``), runs migrations, configures logging,
+    builds the store engine + blob client + Mistral capability ONCE, injects all
+    three into ``OcrStoreActivities``, then hands the bound methods and workflows
+    to the shared ``sax_platform.temporal.worker.run_worker`` (Worker construction
+    + graceful SIGINT/SIGTERM drain). ``address`` overrides the settings-resolved
     Temporal address (used by the CLI's ``--temporal-address`` option);
     ``graceful_shutdown_timeout`` is 5 minutes to match the shared default.
     """
@@ -140,13 +140,15 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     # OCR requires S3: build the client unconditionally so an unset bucket fails
     # fast here (S3Blobs raises on an empty bucket) rather than at first use.
     blobs = S3Blobs(settings.blob.bucket or "", settings.blob.prefix)
+    # OCR now polls its own Mistral batches (T4.2): the capability is required.
+    # Fail fast at startup on a missing key rather than at the first submit/poll.
     mistral = _build_mistral_ocr(settings.llm.mistral_api_key)
-    logger.info(
-        "OCR worker: store engine + blobs ready; Mistral OCR %s (Phase 4 wires polling)",
-        "configured" if mistral is not None else "not configured (MISTRAL_API_KEY unset)",
-    )
+    if mistral is None:
+        msg = "OCR worker requires MISTRAL_API_KEY (it submits and polls its own Mistral batches)."
+        raise ValueError(msg)
+    logger.info("OCR worker: store engine + blobs + Mistral OCR ready")
 
-    store = OcrStoreActivities(engine, blobs)
+    store = OcrStoreActivities(engine, blobs, mistral)
 
     client = await connect_temporal(
         address or settings.temporal.address,

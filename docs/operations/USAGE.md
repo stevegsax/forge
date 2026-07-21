@@ -302,10 +302,12 @@ forge start ExportPlaybookWorkflow --input-file input.json --id my-export
 OCR is a separate workspace app with its own worker on `ocr-task-queue` and its own CLI — use that rather than `forge start`:
 
 ```bash
-uv run --package ocr ocr submit /data/doc.pdf   # batch OCR via the Mistral Batch API
+uv run --package ocr ocr submit /data/doc.pdf   # start-only; echoes the workflow id
 uv run --package ocr ocr list                   # submissions with status
 uv run --package ocr ocr export <document_id>   # write text + images to disk
 ```
+
+`ocr submit` returns immediately with the workflow id; the workflow submits and polls its own Mistral batch to completion on its own (up to a ~26h execution ceiling).
 
 To hand-drive an OCR workflow through `forge start` anyway, add `--task-queue ocr-task-queue`.
 

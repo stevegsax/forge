@@ -1,8 +1,9 @@
 """OcrListJobsWorkflow — list OCR job submissions.
 
-Returns one entry per user submission (grouped by file_path), with
-aggregate status derived from the underlying batch_jobs rows and
-document_id from ocr_results when available.
+Returns one entry per ``ocr_job_status`` row (OCR's single-writer status
+projection), left-joined to the platform ``batch_jobs`` ledger on
+``request_id``. The displayed status is derived from the pair (OCR processing
+status by provider batch status) by ``_derive_status``.
 
 Composable as a child workflow for other workflows that need to
 inspect OCR job state.
@@ -36,7 +37,7 @@ class OcrListJobsWorkflow:
 
         result: OcrListJobsResult = await workflow.execute_activity(
             "list_ocr_jobs",
-            input.model_dump_json(),
+            input,
             start_to_close_timeout=_QUERY_TIMEOUT,
             retry_policy=_QUERY_RETRY,
             result_type=OcrListJobsResult,

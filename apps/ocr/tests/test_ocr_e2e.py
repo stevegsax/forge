@@ -1,22 +1,22 @@
 """End-to-end OCR test against the real platform + Mistral batch API.
 
-This is a CONSUMER-SIDE e2e: OCR consumes the platform, so the platform must be
-running. It runs the OCR worker in-process and submits a real document; the running
-forge platform worker services the opaque-blob submit SPI, the batch poller, and the
-batch_jobs record. The full path exercised is:
+This is a CONSUMER-SIDE e2e: OCR consumes the platform for the cross-queue
+``batch_jobs`` ledger, so the platform worker must be running. It runs the OCR
+worker in-process and submits a real document; OCR now owns the Mistral submit and
+self-polls the batch. The full path exercised is:
 
-    OcrSubmitWorkflow (build request -> S3, submit SPI cross-queue, record batch_jobs)
-      -> Mistral batch API -> platform poller -> batch_result_received signal
-      -> OcrStoreWorkflow (store images + text, write ocr_job_status='stored')
+    OcrSubmitWorkflow (build request -> S3, submit_ocr_batch to Mistral,
+      record batch_jobs cross-queue, start store child)
+      -> OcrStoreWorkflow (poll Mistral status on a timer, fetch + store images +
+         text, write ocr_job_status='stored', record batch_outcome cross-queue)
 
 Prerequisites (the test SKIPs unless all are present):
-  - MISTRAL_API_KEY            real Mistral key (provider submit happens platform-side)
+  - MISTRAL_API_KEY            real Mistral key (OCR submits + polls directly)
   - FORGE_OCR_S3_BUCKET        real S3 bucket both workers can read/write
   - FORGE_DB_URL               the shared DB both workers use
   - OCR_E2E_PLATFORM=1         operator confirms a forge platform worker is running on
                                forge-task-queue against the SAME Temporal / DB / S3
-                               (start it with e.g. `forge worker --batch-poll-interval 30`
-                               so the poll cycle is fast enough for the test)
+                               (it services only the cross-queue persist_to_store)
 
 Optional:
   - FORGE_TEMPORAL_ADDRESS     default localhost:7233
@@ -39,6 +39,7 @@ import pytest
 from sax_platform.contracts.constants import OCR_TASK_QUEUE
 from sax_platform.contracts.s3_blobs import S3Blobs
 from sax_platform.db import get_store_engine
+from sax_platform.ocr import MistralOcr, make_mistral_client
 from sax_platform.temporal.client import connect_temporal
 from temporalio.worker import Worker
 
@@ -100,7 +101,8 @@ async def _submit_and_await_stored(file_path: str, expected_words: list[str]) ->
 
     engine = get_store_engine(os.environ["FORGE_DB_URL"])
     blobs = S3Blobs(os.environ["FORGE_OCR_S3_BUCKET"], os.environ.get("FORGE_OCR_S3_PREFIX", ""))
-    store = OcrStoreActivities(engine, blobs)
+    mistral = MistralOcr(make_mistral_client(os.environ["MISTRAL_API_KEY"]))
+    store = OcrStoreActivities(engine, blobs, mistral)
 
     async with Worker(
         client,
@@ -119,8 +121,8 @@ async def _submit_and_await_stored(file_path: str, expected_words: list[str]) ->
         request_id = result.batch_refs[0].request_id
         document_id = result.document_id
 
-        # The store child waits for the platform poller's signal; poll the OCR-owned
-        # status projection until it reaches a terminal state (or we time out).
+        # The store child polls its own Mistral batch; poll the OCR-owned status
+        # projection until it reaches a terminal state (or we time out).
         deadline = time.monotonic() + timeout
         row = None
         while time.monotonic() < deadline:

@@ -18,6 +18,7 @@ import pytest
 from sax_platform.contracts import persist as persist_module
 from sax_platform.contracts.persist import (
     PersistBatchFailure,
+    PersistBatchOutcome,
     PersistBatchSubmission,
     PersistResult,
     persist_block,
@@ -43,6 +44,16 @@ class TestPersistRequestModels:
         req = PersistBatchFailure(request_id="r1", workflow_id="wf1", error_message="boom")
         assert req.kind == "batch_failure"
         assert req.provider == "anthropic"
+
+    def test_batch_outcome_defaults(self) -> None:
+        req = PersistBatchOutcome(request_id="r1", status="ended")
+        assert req.kind == "batch_outcome"
+        assert req.error_message is None
+
+    def test_batch_outcome_carries_error_message(self) -> None:
+        req = PersistBatchOutcome(request_id="r1", status="failed", error_message="provider failed")
+        assert req.status == "failed"
+        assert req.error_message == "provider failed"
 
     def test_persist_result_round_trips(self) -> None:
         result = PersistResult(kind="batch_submission", applied=True)

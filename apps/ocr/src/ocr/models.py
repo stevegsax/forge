@@ -7,27 +7,50 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, field_validator
 
 
+class OcrProcessingStatus(StrEnum):
+    """Coarse processing lifecycle owned by OCR (single-writer: the OCR workflow).
+
+    Written to the ``ocr_job_status`` projection and validated at the store
+    boundary (``upsert_ocr_job_status``), exactly as ``BatchJobStatus`` is in the
+    platform contracts. Distinct from the platform's provider-batch
+    ``BatchJobStatus`` — the two are joined on ``request_id`` for the user-facing
+    status view (see ``_derive_status``).
+    """
+
+    SUBMITTED = "submitted"
+    """The batch has been submitted to the provider; the store child is polling."""
+
+    PROCESSING = "processing"
+    """Reserved in-flight state (no writer today; kept so the derivation table and
+    any future intermediate writer stay covered)."""
+
+    STORED = "stored"
+    """Terminal success: the fetched result's text + images have been stored."""
+
+    FAILED = "failed"
+    """Terminal failure: submit error, a provider-terminal batch, a give-up at the
+    ceiling, or a fetch/store error."""
+
+
 class OcrJobDerivedStatus(StrEnum):
     """Aggregated OCR job status as shown by ``ocr list``.
 
-    Derived from the underlying ``BatchJobStatus`` values of a submission's
-    chunks. See ``execute_list_ocr_jobs`` for the derivation rules. This is
-    a display-level label, distinct from ``BatchJobStatus`` which is the
-    DB-level per-chunk state.
+    A display-level label derived from a submission's ``OcrProcessingStatus``
+    (authoritative) and the joined provider ``BatchJobStatus``. See
+    ``_derive_status`` for the full derivation table.
     """
 
     PROCESSING = "processing"
-    """At least one chunk is still SUBMITTED or STORING — not done yet."""
+    """OCR is still submitted/processing and the provider batch has not failed."""
 
     SUCCEEDED = "succeeded"
-    """Every chunk reached BatchJobStatus.SUCCEEDED."""
+    """OCR reached the terminal STORED state."""
 
     ERRORED = "errored"
-    """At least one chunk is in ERRORED / FAILED / EXPIRED / CANCELED /
-    MISSING."""
+    """OCR reached FAILED, or the provider batch is FAILED / EXPIRED / MISSING."""
 
     UNKNOWN = "unknown"
-    """Chunks are in a combination that doesn't match any rule above."""
+    """The stored OCR status is an unrecognized (legacy) value."""
 
 
 class OcrSubmitInput(BaseModel):
@@ -65,7 +88,8 @@ class OcrBatchRequestRef(BaseModel):
 
     ``request_id`` is the single correlation id (== provider custom_id ==
     platform ``batch_jobs`` PK), minted once when the blob is built. The submit
-    workflow hands ``s3_key`` + ``model`` to the platform's opaque-blob submit SPI.
+    workflow hands ``s3_key`` + ``model`` to ocr's own ``submit_ocr_batch``
+    activity (via ``OcrSubmitBatchInput``).
     """
 
     request_id: str
@@ -74,11 +98,12 @@ class OcrBatchRequestRef(BaseModel):
 
 
 class OcrSubmitResult(BaseModel):
-    """Result from OcrSubmitWorkflow — returned immediately after batch submission.
+    """Result from OcrSubmitWorkflow — returned once every chunk has stored.
 
-    The workflow does not wait for OCR to complete. Child workflows
-    (OcrStoreWorkflow / OcrGatherWorkflow) continue running independently
-    and will store the results when the batch finishes.
+    The workflow submits each chunk's batch, then awaits its parent-awaited
+    OcrStoreWorkflow children (each polls its own Mistral batch and stores the
+    result). It returns after all children complete (and, for a split document,
+    after inline reassembly). ``batch_refs`` records the submitted batches.
     """
 
     document_id: str
@@ -89,13 +114,82 @@ class OcrSubmitResult(BaseModel):
 
 
 class OcrStoreInput(BaseModel):
-    """Input to the OcrStoreWorkflow."""
+    """Input to the OcrStoreWorkflow.
+
+    Carries the real provider ``batch_id`` (the child polls it directly); the
+    signal-era ``gather_workflow_id``/empty-``batch_id`` fields are gone.
+    """
 
     batch_id: str
     request_id: str
     document_id: str
     file_path: str  # original source file (metadata)
-    gather_workflow_id: str = ""  # if set, signal this workflow on completion
+
+
+class OcrSubmitBatchInput(BaseModel):
+    """Input to the ``submit_ocr_batch`` activity.
+
+    ``s3_key`` locates the pre-built /v1/ocr request blob in ocr's own S3;
+    ``model`` is the provider model id (no provider prefix).
+    """
+
+    s3_key: str
+    model: str
+
+
+class OcrBatchStatusInput(BaseModel):
+    """Input to the ``ocr_batch_status`` activity (a status-only poll)."""
+
+    batch_id: str
+
+
+class OcrFetchStoreInput(BaseModel):
+    """Input to the ``fetch_and_store_ocr_result`` activity.
+
+    The activity downloads the finished batch, selects this request's entry by
+    ``request_id``, and stores text + images under ``document_id``. Result bytes
+    never transit workflow history — only the small summary returns.
+    """
+
+    batch_id: str
+    request_id: str
+    document_id: str
+    file_path: str
+    workflow_id: str
+
+
+class OcrSplitInput(BaseModel):
+    """Input to the ``split_file_into_chunks`` activity."""
+
+    content_id: str
+    mime_type: str
+    file_size_bytes: int
+
+
+class OcrBuildRequestInput(BaseModel):
+    """Input to the ``build_ocr_request_blob`` activity.
+
+    ``model_name`` is the full ``provider:model`` id; the activity strips the
+    prefix when recording the request blob's provider model.
+    """
+
+    content_id: str
+    mime_type: str
+    model_name: str
+
+
+class OcrStatusUpsertInput(BaseModel):
+    """Input to the ``upsert_ocr_status`` activity (single-writer status projection).
+
+    ``status`` is a validated ``OcrProcessingStatus`` — every write site passes an
+    enum member, so an out-of-vocabulary status can never reach the activity.
+    """
+
+    request_id: str
+    document_id: str
+    file_path: str = ""
+    status: OcrProcessingStatus
+    error_message: str | None = None
 
 
 class OcrStoreResult(BaseModel):
@@ -165,16 +259,6 @@ class OcrReassembleInput(BaseModel):
     total_pages: int
 
 
-class OcrGatherInput(BaseModel):
-    """Input to the OcrGatherWorkflow."""
-
-    document_id: str
-    chunk_document_ids: list[str]  # ordered
-    store_workflow_ids: list[str]  # OcrStoreWorkflow IDs to await
-    file_path: str
-    total_pages: int
-
-
 class OcrExportInput(BaseModel):
     """Input to the OcrExportWorkflow."""
 
@@ -182,7 +266,7 @@ class OcrExportInput(BaseModel):
     output_dir: str = Field(
         default="",
         description=(
-            "Override export directory. Defaults to $XDG_DATA_HOME/forge/ocr-export/<document_id>."
+            "Override export directory. Defaults to $XDG_DATA_HOME/ocr/export/<document_id>."
         ),
     )
 
@@ -220,13 +304,13 @@ class OcrMarkResult(BaseModel):
 class OcrJobEntry(BaseModel):
     """A single OCR job submission as seen by the user.
 
-    ``status`` values are ``OcrJobDerivedStatus`` members, serialized as
-    their string value for JSON compatibility.
+    ``status`` is the derived display label (``OcrJobDerivedStatus``), serialized
+    as its string value for JSON compatibility.
     """
 
     file_path: str
     document_id: str = ""
-    status: str = ""
+    status: OcrJobDerivedStatus = OcrJobDerivedStatus.UNKNOWN
     chunk_count: int = 1
     created_at: str = ""
 
@@ -237,7 +321,9 @@ class OcrListJobsInput(BaseModel):
     limit: int = Field(default=50, description="Maximum number of jobs to return.")
     status_filter: str = Field(
         default="",
-        description="Filter by aggregate status (processing, succeeded, errored).",
+        description=(
+            "Filter by derived aggregate status (processing, succeeded, errored, unknown)."
+        ),
     )
 
 

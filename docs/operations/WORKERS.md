@@ -15,11 +15,11 @@ The worker polls the `forge-task-queue` task queue. All Forge workflows and acti
 
 ## Startup and Configuration
 
-Each worker main is a composition root (T3.6): it reads a frozen settings object **once** at startup, then builds one database engine, one Anthropic SDK client, one S3 blob client, and (when `MISTRAL_API_KEY` is set) one Mistral OCR client for the whole process, injecting them into the class-based activities. Environment variables are read only through those settings, so a misconfiguration is a **startup failure, not a mid-workflow surprise**:
+Each worker main is a composition root (T3.6): it reads a frozen settings object **once** at startup, then builds one database engine, one Anthropic SDK client, and one S3 blob client for the whole process, injecting them into the class-based activities. The **ocr worker** additionally builds one required Mistral OCR client; the forge worker builds no Mistral client — its batch transport is anthropic-only (T4.2). Environment variables are read only through those settings, so a misconfiguration is a **startup failure, not a mid-workflow surprise**:
 
 - The **forge worker** fails fast if `FORGE_DB_URL` is unset.
 - The **ocr worker** fails fast if `FORGE_DB_URL` or `FORGE_OCR_S3_BUCKET` is unset (the bucket check moved to startup in T3.6; it used to surface at first OCR use).
-- `MISTRAL_API_KEY` is **not** a fail-fast for either worker: unset simply means the Mistral OCR client is not built (forge makes the OCR submit today; the ocr worker builds its client ahead of Phase 4's self-polling).
+- `MISTRAL_API_KEY` is a **fail-fast for the ocr worker** — it submits and polls its own Mistral batches, so an unset key aborts startup (T4.2). The forge worker never reads it (anthropic-only transport).
 
 The full environment-variable reference is in [DEPLOYMENT.md](DEPLOYMENT.md#configuration).
 

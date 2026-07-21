@@ -18,12 +18,11 @@ import pytest
 from click.testing import CliRunner
 from sax_platform.contracts.constants import OCR_TASK_QUEUE
 
-from ocr.cli import EXIT_INFRASTRUCTURE_ERROR, _auto_id, _echo, _start_and_wait, main
+from ocr.cli import EXIT_INFRASTRUCTURE_ERROR, _auto_id, _echo, _start_and_wait, _start_submit, main
 from ocr.models import (
     OcrExportResult,
     OcrListJobsResult,
     OcrMarkResult,
-    OcrSubmitResult,
 )
 
 # ---------------------------------------------------------------------------
@@ -132,6 +131,38 @@ class TestStartAndWait:
         mock_handle.result.assert_awaited_once_with(rpc_timeout=timedelta(hours=2.0))
 
 
+class TestStartSubmit:
+    @pytest.mark.asyncio
+    async def test_starts_without_waiting_with_derived_timeout(self) -> None:
+        """Submit starts the workflow (with a ~26h execution timeout) and returns
+        its id — it never awaits ``handle.result``."""
+        from sax_platform.temporal.polling import BATCH_WAIT_CEILING
+
+        mock_handle = AsyncMock()
+        mock_handle.id = "ocr-submit-abc"
+        mock_client = AsyncMock()
+        mock_client.start_workflow.return_value = mock_handle
+
+        with patch(
+            "ocr.cli.connect_temporal", new=AsyncMock(return_value=mock_client)
+        ) as mock_connect:
+            started_id = await _start_submit(
+                {"file_path": "/tmp/x.pdf"}, workflow_id="ocr-submit-abc", address="localhost:7233"
+            )
+
+        assert started_id == "ocr-submit-abc"
+        mock_connect.assert_awaited_once_with("localhost:7233")
+        mock_client.start_workflow.assert_awaited_once_with(
+            "OcrSubmitWorkflow",
+            {"file_path": "/tmp/x.pdf"},
+            id="ocr-submit-abc",
+            task_queue=OCR_TASK_QUEUE,
+            execution_timeout=BATCH_WAIT_CEILING + timedelta(hours=1),
+        )
+        # It must NOT block on the workflow result (the run can take up to 25h).
+        mock_handle.result.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # worker
 # ---------------------------------------------------------------------------
@@ -162,29 +193,25 @@ class TestWorkerCommand:
 
 class TestSubmitCommand:
     def test_success_uses_defaults(self, cli_runner: CliRunner) -> None:
-        submit_result = OcrSubmitResult(document_id="doc-1", chunk_count=1)
-        with patch("ocr.cli._start_and_wait") as mock_start:
-            mock_start.side_effect = _async_result(submit_result)
+        with patch("ocr.cli._start_submit") as mock_start:
+            mock_start.side_effect = _async_result("ocr-submit-xyz")
             result = cli_runner.invoke(main, ["submit", "/tmp/doc.pdf"])
 
         assert result.exit_code == 0
         parsed = json.loads(result.output)
-        assert parsed["document_id"] == "doc-1"
+        assert parsed == {"workflow_id": "ocr-submit-xyz", "status": "started"}
 
         call_args, call_kwargs = mock_start.call_args
-        assert call_args[0] == "OcrSubmitWorkflow"
-        wf_input = call_args[1]
+        wf_input = call_args[0]
         assert wf_input.file_path == "/tmp/doc.pdf"
         assert wf_input.model_name == "mistral:mistral-ocr-latest"
         assert wf_input.skip_duplicate_detection is False
         assert call_kwargs["workflow_id"].startswith("ocr-submit-")
         assert call_kwargs["address"] == "localhost:7233"
-        assert call_kwargs["timeout_hours"] == 1.0
 
     def test_custom_model_and_skip_duplicate_flag(self, cli_runner: CliRunner) -> None:
-        submit_result = OcrSubmitResult(document_id="doc-2", chunk_count=2)
-        with patch("ocr.cli._start_and_wait") as mock_start:
-            mock_start.side_effect = _async_result(submit_result)
+        with patch("ocr.cli._start_submit") as mock_start:
+            mock_start.side_effect = _async_result("ocr-submit-2")
             result = cli_runner.invoke(
                 main,
                 [
@@ -197,12 +224,12 @@ class TestSubmitCommand:
             )
 
         assert result.exit_code == 0
-        wf_input = mock_start.call_args[0][1]
+        wf_input = mock_start.call_args[0][0]
         assert wf_input.model_name == "mistral:custom"
         assert wf_input.skip_duplicate_detection is True
 
     def test_error_exits_with_infrastructure_code(self, cli_runner: CliRunner) -> None:
-        with patch("ocr.cli._start_and_wait") as mock_start:
+        with patch("ocr.cli._start_submit") as mock_start:
             mock_start.side_effect = RuntimeError("Connection refused")
             result = cli_runner.invoke(main, ["submit", "/tmp/doc.pdf"])
 

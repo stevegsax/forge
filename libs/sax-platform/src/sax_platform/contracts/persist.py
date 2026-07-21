@@ -72,6 +72,29 @@ class PersistBatchFailure(BaseModel):
     provider: str = "anthropic"
 
 
+class PersistBatchOutcome(BaseModel):
+    """Terminal provider-lifecycle outcome of a batch job (UPDATE on batch_jobs.id).
+
+    Written by the waiting workflow at final fetch (``ENDED``) or on a
+    failed/abandoned wait (``FAILED``/``EXPIRED``/``MISSING``). ``status`` carries a
+    ``BatchJobStatus`` value, validated at the store boundary. The write is
+    idempotent and monotonic: ``update_batch_status``'s ``WHERE status =
+    'submitted'`` guard makes a duplicate or stale re-apply a no-op that can never
+    regress an already-terminal row.
+
+    Lives here beside ``PersistBatchSubmission``/``PersistBatchFailure`` (not in a
+    consumer app) because a consumer records the terminal outcome of its own batch
+    on the platform ``batch_jobs`` ledger cross-queue (T4.2 ST1 — ocr needs it in
+    ST2), so both apps must import the request shape. Generic — carries no domain
+    fields.
+    """
+
+    kind: Literal["batch_outcome"] = "batch_outcome"
+    request_id: str
+    status: str
+    error_message: str | None = None
+
+
 async def persist_block(req: BaseModel, *, task_queue: str | None = None) -> PersistResult:
     """Survivable store write: invoke ``persist_to_store`` with the persist retry.
 

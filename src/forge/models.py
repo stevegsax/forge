@@ -10,15 +10,11 @@ from pydantic import BaseModel, Field
 
 # BatchJobStatus is the cross-queue wire contract; it now lives in sax-platform
 # (T3.4, ST7) and is re-exported here so existing `from forge.models import ...`
-# call sites keep working.
+# call sites keep working. BatchSubmitResult used to live there too, but as of
+# T4.2 ST3 it no longer crosses a queue (ocr owns its own submit and typed
+# output) — it is defined locally below with the rest of the batch models.
 from sax_platform.contracts.models import (
     BatchJobStatus as BatchJobStatus,
-)
-from sax_platform.contracts.models import (
-    BatchSubmitResult as BatchSubmitResult,
-)
-from sax_platform.contracts.models import (
-    BatchSubmitSpiInput as BatchSubmitSpiInput,
 )
 
 # The model-tier registry and thinking policy are single-sourced on the platform
@@ -42,16 +38,18 @@ from sax_platform.llm.tiers import (
     resolve_model as resolve_model,
 )
 
+# The per-wait batch ceiling now lives in ``sax_platform.temporal.polling`` (T4.2
+# ST1), the module that owns the shared batch poll loop. It is re-exported here so
+# forge's execution-timeout math (``_batch_execution_timeout`` /
+# ``derive_execution_timeout``) and ``forge.workflows._child_timeout`` keep
+# importing the 25h ceiling from ``forge.models`` unchanged.
+from sax_platform.temporal.polling import (
+    BATCH_WAIT_CEILING as BATCH_WAIT_CEILING,
+)
+
 # ---------------------------------------------------------------------------
 # Execution-timeout derivation constants (T4.1 ST3c)
 # ---------------------------------------------------------------------------
-
-# The per-wait batch ceiling: a single batch wait may legally block a workflow up
-# to this long before the timer loop gives up. This is the one source of truth for
-# the 25h number — ``workflow_blocks._BATCH_WAIT_TIMEOUT`` references it rather than
-# duplicating the literal, and both ``_child_timeout`` and ``derive_execution_timeout``
-# derive their budgets from it.
-BATCH_WAIT_CEILING: timedelta = timedelta(hours=25)
 
 # Hard cap on planner-produced plan length. An oversized plan becomes a validation
 # failure at the parse seam (retryable there) instead of an unbounded execution
@@ -1150,6 +1148,23 @@ class BatchSubmitInput(BaseModel):
             "window). A retried submit reuses the same custom_id, so the provider "
             "dedupes to one paid batch."
         ),
+    )
+
+
+class BatchSubmitResult(BaseModel):
+    """Outcome of a forge batch submission (the ``submit_batch_request`` activity).
+
+    Forge-internal since T4.2 ST3: it no longer crosses a task queue (ocr owns
+    its own submit with its own typed output). Forge submits anthropic only, so
+    ``provider`` is threaded back — always ``"anthropic"`` here — and the
+    workflow persists the submission survivably with it (honest transport).
+    """
+
+    request_id: str = Field(description="Provider custom_id == batch_jobs PK, minted once.")
+    batch_id: str = Field(description="Provider batch ID.")
+    provider: str = Field(
+        default="anthropic",
+        description="Provider name, threaded back so the workflow can record the submission.",
     )
 
 

@@ -1,10 +1,10 @@
 """Temporal plumbing shared by the platform and its consumer apps (T3.4, ST2).
 
-``retries`` and ``heartbeat`` import only ``temporalio.common`` /
-``temporalio.activity`` plus pydantic — cheap and workflow/activity-sandbox
-safe — so they may be imported eagerly. ``client`` and ``worker`` import
-``temporalio.client`` / ``temporalio.worker`` (real connection and worker
-machinery), so — mirroring ``sax_platform.llm`` and
+``retries``, ``heartbeat``, and ``polling`` import only ``temporalio.common`` /
+``temporalio.activity`` / ``temporalio.workflow`` plus stdlib — cheap and
+workflow/activity-sandbox safe — so they may be imported eagerly. ``client`` and
+``worker`` import ``temporalio.client`` / ``temporalio.worker`` (real connection
+and worker machinery), so — mirroring ``sax_platform.llm`` and
 ``sax_platform.contracts`` — they are exported lazily via PEP 562:
 `import sax_platform.temporal` or `from sax_platform.temporal import retries`
 inside a Temporal workflow sandbox must never drag in the worker stack.
@@ -13,6 +13,13 @@ inside a Temporal workflow sandbox must never drag in the worker stack.
 from typing import TYPE_CHECKING, Any
 
 from sax_platform.temporal.heartbeat import heartbeat_during
+from sax_platform.temporal.polling import (
+    BATCH_WAIT_CEILING,
+    BackoffSchedule,
+    FixedInterval,
+    PollSchedule,
+    wait_batch_ended,
+)
 from sax_platform.temporal.retries import (
     DB_RETRY,
     IO_RETRY,
@@ -62,12 +69,16 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "BATCH_WAIT_CEILING",
     "DB_RETRY",
     "DEFAULT_GRACEFUL_SHUTDOWN",
     "DEFAULT_MAX_CONCURRENT_ACTIVITIES",
     "IO_RETRY",
     "LLM_RETRY",
     "PERSIST_RETRY",
+    "BackoffSchedule",
+    "FixedInterval",
+    "PollSchedule",
     "TemporalTLSConfigError",
     "build_sandbox_runner",
     "build_tls_config",
@@ -75,5 +86,6 @@ __all__ = [
     "connect_temporal",
     "heartbeat_during",
     "run_worker",
+    "wait_batch_ended",
     "worker_kwargs",
 ]

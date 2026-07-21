@@ -53,7 +53,7 @@ own migrations at startup.
 `make workers-restart` sends `SIGTERM` to every running forge/ocr/pbook
 worker process. Each worker now handles `SIGTERM` (and `SIGINT`, for
 foreground runs) by draining gracefully — it stops polling for new
-work, waits up to `graceful_shutdown_timeout` (30s) for in-flight
+work, waits up to `graceful_shutdown_timeout` (5 minutes) for in-flight
 activities to finish, then exits 0. launchd's `KeepAlive` is
 unconditional, so a clean exit relaunches the agent immediately from
 whatever code is on disk in the repo checkout (`ThrottleInterval` is

@@ -203,6 +203,27 @@ class TestParseFailureOutcomes:
 # ---------------------------------------------------------------------------
 
 
+class _StubBlobs:
+    """Minimal S3Blobs stand-in: returns a canned envelope for any key."""
+
+    def __init__(self, envelope: bytes) -> None:
+        self._envelope = envelope
+        self.requested: list[str] = []
+
+    def get(self, key: str) -> bytes:
+        self.requested.append(key)
+        return self._envelope
+
+
+def _silent_tracer() -> MagicMock:
+    span = MagicMock()
+    span.__enter__ = MagicMock(return_value=span)
+    span.__exit__ = MagicMock(return_value=False)
+    tracer = MagicMock()
+    tracer.start_as_current_span.return_value = span
+    return tracer
+
+
 class TestParseLlmResponseActivity:
     @pytest.mark.asyncio
     async def test_activity_delegates_and_records_model(self) -> None:
@@ -212,20 +233,13 @@ class TestParseLlmResponseActivity:
 
         raw = _typed_message({"files": [], "edits": [], "explanation": "done"})
 
-        mock_span = MagicMock()
-        mock_span.__enter__ = MagicMock(return_value=mock_span)
-        mock_span.__exit__ = MagicMock(return_value=False)
-        mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value = mock_span
-
         batch = BatchActivities(
             client=MagicMock(),
             output_types=OUTPUT_TYPES,
             engine=MagicMock(),
             blob_store=None,
-            mistral_ocr=None,
         )
-        with patch("forge.activities.roots.get_tracer", return_value=mock_tracer):
+        with patch("forge.activities.roots.get_tracer", return_value=_silent_tracer()):
             result = await batch.parse_llm_response(
                 ParseResponseInput(
                     raw_response_json=raw,
@@ -236,3 +250,69 @@ class TestParseLlmResponseActivity:
 
         assert result.model_name == "claude-sonnet-5"
         assert result.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_activity_resolves_s3_pointer_via_blob_store(self) -> None:
+        """A pointer-delivered result is fetched from blobs and unwrapped directly.
+
+        The parse activity reads the envelope via ``S3Blobs.get`` +
+        ``parse_batch_result_payload`` (T4.2 ST1); the old signal-era envelope
+        model and its resolver were deleted in ST3.
+        """
+        from sax_platform.contracts.models import dump_batch_result_payload
+
+        from forge.activities.roots import BatchActivities
+        from forge.models import ParseResponseInput
+        from forge.output_types import OUTPUT_TYPES
+
+        raw = _typed_message({"files": [], "edits": [], "explanation": "from s3"})
+        envelope = dump_batch_result_payload(raw, []).encode("utf-8")
+        blobs = _StubBlobs(envelope)
+
+        batch = BatchActivities(
+            client=MagicMock(),
+            output_types=OUTPUT_TYPES,
+            engine=MagicMock(),
+            blob_store=blobs,  # type: ignore[arg-type]
+        )
+        with patch("forge.activities.roots.get_tracer", return_value=_silent_tracer()):
+            result = await batch.parse_llm_response(
+                ParseResponseInput(
+                    raw_response_json=None,
+                    s3_key="result-blob-key",
+                    output_type_name="LLMResponse",
+                    task_id="t-s3",
+                )
+            )
+
+        assert blobs.requested == ["result-blob-key"]
+
+        from forge.models import LLMResponse
+
+        parsed = LLMResponse.model_validate_json(result.parsed_json)
+        assert parsed.explanation == "from s3"
+
+    @pytest.mark.asyncio
+    async def test_activity_raises_when_s3_pointer_but_no_blob_store(self) -> None:
+        from forge.activities.roots import BatchActivities
+        from forge.models import ParseResponseInput
+        from forge.output_types import OUTPUT_TYPES
+
+        batch = BatchActivities(
+            client=MagicMock(),
+            output_types=OUTPUT_TYPES,
+            engine=MagicMock(),
+            blob_store=None,
+        )
+        with (
+            patch("forge.activities.roots.get_tracer", return_value=_silent_tracer()),
+            pytest.raises(RuntimeError, match="S3 blob store not configured"),
+        ):
+            await batch.parse_llm_response(
+                ParseResponseInput(
+                    raw_response_json=None,
+                    s3_key="result-blob-key",
+                    output_type_name="LLMResponse",
+                    task_id="t-missing-blobs",
+                )
+            )

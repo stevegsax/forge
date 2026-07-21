@@ -8,12 +8,16 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from sax_platform.contracts.models import dump_batch_result_payload
+from sax_platform.contracts.models import BatchJobStatus
+from sax_platform.ocr import BatchPollStatus, BatchResultEntry, ExtractedImage
+from sax_platform.testing import FakeMistralOcr
 
 from ocr.activities import (
     CHUNK_SIZE_PAGES,
     MAX_FILE_SIZE_BYTES,
     MAX_PAGES,
+    OcrStoreActivities,
+    _derive_display_status,
     _derive_status,
     _get_export_dir,
     _mime_to_extension,
@@ -34,7 +38,19 @@ from ocr.activities import (
     rewrite_ocr_uris_to_local,
     validate_file_size,
 )
-from ocr.models import OcrJobDerivedStatus
+from ocr.models import (
+    OcrBatchStatusInput,
+    OcrBuildRequestInput,
+    OcrExportInput,
+    OcrFetchStoreInput,
+    OcrJobDerivedStatus,
+    OcrListJobsInput,
+    OcrProcessingStatus,
+    OcrReassembleInput,
+    OcrSplitInput,
+    OcrStatusUpsertInput,
+    OcrSubmitBatchInput,
+)
 from ocr.store import (
     get_file_content,
     get_ocr_images,
@@ -97,15 +113,56 @@ class TestPure:
         data = b"not an image at all"
         assert _strip_image_prefix(data) == data
 
-    def test_derive_status(self) -> None:
-        assert _derive_status("stored", "processing") == OcrJobDerivedStatus.SUCCEEDED.value
-        assert _derive_status("failed", None) == OcrJobDerivedStatus.ERRORED.value
-        assert _derive_status("submitted", "failed") == OcrJobDerivedStatus.ERRORED.value
-        assert _derive_status("submitted", "submitted") == OcrJobDerivedStatus.PROCESSING.value
+    @pytest.mark.parametrize(
+        ("ocr_status", "provider_status", "expected"),
+        [
+            # OCR-terminal states ignore the provider column.
+            (OcrProcessingStatus.STORED, None, OcrJobDerivedStatus.SUCCEEDED),
+            (OcrProcessingStatus.STORED, BatchJobStatus.FAILED, OcrJobDerivedStatus.SUCCEEDED),
+            (OcrProcessingStatus.FAILED, None, OcrJobDerivedStatus.ERRORED),
+            (OcrProcessingStatus.FAILED, BatchJobStatus.ENDED, OcrJobDerivedStatus.ERRORED),
+            # In-flight: a provider-terminal failure surfaces as errored early.
+            (OcrProcessingStatus.SUBMITTED, BatchJobStatus.FAILED, OcrJobDerivedStatus.ERRORED),
+            (OcrProcessingStatus.SUBMITTED, BatchJobStatus.EXPIRED, OcrJobDerivedStatus.ERRORED),
+            (OcrProcessingStatus.SUBMITTED, BatchJobStatus.MISSING, OcrJobDerivedStatus.ERRORED),
+            (OcrProcessingStatus.PROCESSING, BatchJobStatus.MISSING, OcrJobDerivedStatus.ERRORED),
+            # In-flight: every non-failure provider state (incl. ended, None) reads processing.
+            (OcrProcessingStatus.SUBMITTED, None, OcrJobDerivedStatus.PROCESSING),
+            (
+                OcrProcessingStatus.SUBMITTED,
+                BatchJobStatus.SUBMITTED,
+                OcrJobDerivedStatus.PROCESSING,
+            ),
+            (
+                OcrProcessingStatus.SUBMITTED,
+                BatchJobStatus.PROCESSING,
+                OcrJobDerivedStatus.PROCESSING,
+            ),
+            (OcrProcessingStatus.SUBMITTED, BatchJobStatus.ENDED, OcrJobDerivedStatus.PROCESSING),
+            (OcrProcessingStatus.PROCESSING, None, OcrJobDerivedStatus.PROCESSING),
+        ],
+    )
+    def test_derive_status(
+        self,
+        ocr_status: OcrProcessingStatus,
+        provider_status: BatchJobStatus | None,
+        expected: OcrJobDerivedStatus,
+    ) -> None:
+        assert _derive_status(ocr_status, provider_status) == expected
 
-    def test_derive_status_unknown_combination_falls_through(self) -> None:
-        """A status pair matching none of the known rules maps to UNKNOWN."""
-        assert _derive_status("queued", "running") == OcrJobDerivedStatus.UNKNOWN.value
+    def test_derive_display_status_coerces_valid_strings(self) -> None:
+        """The raw-string boundary parses valid values, then derives normally."""
+        assert _derive_display_status("stored", "ended") == OcrJobDerivedStatus.SUCCEEDED
+        assert _derive_display_status("submitted", None) == OcrJobDerivedStatus.PROCESSING
+        assert _derive_display_status("submitted", "missing") == OcrJobDerivedStatus.ERRORED
+
+    def test_derive_display_status_unknown_ocr_string_is_unknown(self) -> None:
+        """A legacy/unknown stored OCR status reads as UNKNOWN, never crashes."""
+        assert _derive_display_status("queued", "running") == OcrJobDerivedStatus.UNKNOWN
+
+    def test_derive_display_status_unknown_provider_string_tolerated(self) -> None:
+        """An unrecognized provider string is treated as 'no provider info' (processing)."""
+        assert _derive_display_status("submitted", "weird-legacy") == OcrJobDerivedStatus.PROCESSING
 
     def test_compute_file_hash_matches_sha256(self, tmp_path) -> None:
         path = tmp_path / "content.bin"
@@ -433,7 +490,7 @@ class TestExecuteSplitFileIntoChunks:
 
 
 class TestStoreOcrResult:
-    def test_inline_body_no_images(self, store_engine, blobs) -> None:
+    def test_body_no_images(self, store_engine, blobs) -> None:
         engine = store_engine
         body = json.dumps(
             {"model": "m", "pages": [{"markdown": "hello"}], "usage_info": {"pages_processed": 1}}
@@ -445,7 +502,7 @@ class TestStoreOcrResult:
             batch_id="b1",
             workflow_id="wf",
             raw_response_json=body,
-            s3_key=None,
+            extracted_images=[],
             engine=engine,
             blobs=blobs,
         )
@@ -453,31 +510,27 @@ class TestStoreOcrResult:
         assert get_ocr_result(engine, "doc-1")["text"] == "hello"
         assert get_ocr_job_status(engine, "r1")["status"] == "stored"
 
-    def test_s3_envelope_with_images(self, store_engine, blobs) -> None:
+    def test_with_extracted_images(self, store_engine, blobs) -> None:
+        engine = store_engine
         body = json.dumps(
             {"model": "m", "pages": [{"markdown": "![x](img-0.jpeg)"}], "usage_info": {}}
         )
         images = [
-            {
-                "original_image_id": "img-0.jpeg",
-                "page_index": 0,
-                "image_base64": "ZmFrZQ==",
-                "mime_type": "image/jpeg",
-            }
+            ExtractedImage(
+                original_image_id="img-0.jpeg",
+                page_index=0,
+                image_base64="ZmFrZQ==",
+                mime_type="image/jpeg",
+            )
         ]
-        key = blobs.build_key("batch-result-r2")
-        envelope = dump_batch_result_payload(body, images).encode("utf-8")
-        blobs.put(key, envelope, "application/json")
-
-        engine = store_engine
         result = execute_store_ocr_result(
             request_id="r2",
             document_id="doc-2",
             file_path="",
             batch_id="b2",
             workflow_id="wf",
-            raw_response_json=None,
-            s3_key=key,
+            raw_response_json=body,
+            extracted_images=images,
             engine=engine,
             blobs=blobs,
         )
@@ -498,29 +551,13 @@ class TestStoreOcrResult:
             batch_id="b3",
             workflow_id="wf",
             raw_response_json=body,
-            s3_key=None,
+            extracted_images=[],
             engine=engine,
             blobs=blobs,
         )
         execute_store_ocr_result(**kw)
         execute_store_ocr_result(**kw)  # retry — must not raise or duplicate
         assert get_ocr_result(engine, "doc-3") is not None
-
-    def test_no_body_raises(self, store_engine, blobs) -> None:
-        """Neither an inline body nor an s3 envelope is a hard failure."""
-        engine = store_engine
-        with pytest.raises(RuntimeError, match="neither inline body nor"):
-            execute_store_ocr_result(
-                request_id="r4",
-                document_id="doc-4",
-                file_path="",
-                batch_id="b4",
-                workflow_id="wf",
-                raw_response_json=None,
-                s3_key=None,
-                engine=engine,
-                blobs=blobs,
-            )
 
     def test_image_with_data_uri_prefix_is_decoded(self, store_engine, blobs) -> None:
         """image_base64 delivered as a data: URI has its header stripped before decode."""
@@ -529,24 +566,21 @@ class TestStoreOcrResult:
             {"model": "m", "pages": [{"markdown": "![x](img-0.jpeg)"}], "usage_info": {}}
         )
         images = [
-            {
-                "original_image_id": "img-0.jpeg",
-                "page_index": 0,
-                "image_base64": "data:image/png;base64,ZmFrZQ==",
-            }
+            ExtractedImage(
+                original_image_id="img-0.jpeg",
+                page_index=0,
+                image_base64="data:image/png;base64,ZmFrZQ==",
+                mime_type="image/png",
+            )
         ]
-        key = blobs.build_key("batch-result-r5")
-        envelope = dump_batch_result_payload(body, images).encode("utf-8")
-        blobs.put(key, envelope, "application/json")
-
         execute_store_ocr_result(
             request_id="r5",
             document_id="doc-5",
             file_path="",
             batch_id="b5",
             workflow_id="wf",
-            raw_response_json=None,
-            s3_key=key,
+            raw_response_json=body,
+            extracted_images=images,
             engine=engine,
             blobs=blobs,
         )
@@ -568,12 +602,118 @@ class TestStoreOcrResult:
             batch_id="b6",
             workflow_id="wf",
             raw_response_json=body,
-            s3_key=None,
+            extracted_images=[],
             engine=engine,
             blobs=blobs,
         )
         stored = get_ocr_result(engine, "doc-6")
         assert stored["file_hash"] == hashlib.sha256(data).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# submit_ocr_batch / ocr_batch_status / fetch_and_store_ocr_result activities
+# ---------------------------------------------------------------------------
+
+
+class TestOcrBatchActivities:
+    """The new Mistral-facing activities, built with an injected FakeMistralOcr."""
+
+    async def test_submit_ocr_batch_reads_blob_and_submits(self, store_engine, blobs) -> None:
+        requests = [{"custom_id": "rid-1", "body": {"document": {}}}]
+        s3_key = blobs.build_key("ocr-request-rid-1")
+        blobs.put(s3_key, json.dumps(requests).encode("utf-8"), "application/json")
+        fake = FakeMistralOcr(submit_batch_id="batch-xyz")
+        activities = OcrStoreActivities(store_engine, blobs, fake)
+
+        batch_id = await activities.submit_ocr_batch(
+            OcrSubmitBatchInput(s3_key=s3_key, model="mistral-ocr-latest")
+        )
+
+        assert batch_id == "batch-xyz"
+        # The activity forwarded the parsed request list + endpoint to Mistral.
+        call = next(c for c in fake.calls if c.method == "submit_batch")
+        assert call.args[0] == requests
+        assert call.args[1] == "mistral-ocr-latest"
+        assert call.kwargs["endpoint"] == "/v1/ocr"
+
+    @pytest.mark.parametrize(
+        ("poll_status", "expected_state"),
+        [
+            (BatchPollStatus.PENDING, "in_progress"),
+            (BatchPollStatus.IN_PROGRESS, "in_progress"),
+            (BatchPollStatus.ENDED, "ended"),
+            (BatchPollStatus.FAILED, "failed"),
+            (BatchPollStatus.EXPIRED, "expired"),
+            (BatchPollStatus.CANCELED, "canceled"),
+        ],
+    )
+    async def test_ocr_batch_status_maps_vocabulary(
+        self, store_engine, blobs, poll_status, expected_state
+    ) -> None:
+        fake = FakeMistralOcr(status=poll_status)
+        activities = OcrStoreActivities(store_engine, blobs, fake)
+        state = await activities.ocr_batch_status(OcrBatchStatusInput(batch_id="b1"))
+        assert state == expected_state
+        # A status poll never downloads results.
+        assert not any(c.method == "fetch_batch_results" for c in fake.calls)
+
+    async def test_fetch_and_store_selects_by_request_id_and_stores(
+        self, store_engine, blobs
+    ) -> None:
+        body = json.dumps({"model": "m", "pages": [{"markdown": "hi"}], "usage_info": {}})
+        entries = [
+            BatchResultEntry(custom_id="other", succeeded=True, raw_response_json="{}"),
+            BatchResultEntry(custom_id="rid-1", succeeded=True, raw_response_json=body),
+        ]
+        fake = FakeMistralOcr(entries=entries)
+        activities = OcrStoreActivities(store_engine, blobs, fake)
+
+        result = await activities.fetch_and_store_ocr_result(
+            OcrFetchStoreInput(
+                batch_id="b1",
+                request_id="rid-1",
+                document_id="doc-fetch",
+                file_path="",
+                workflow_id="wf",
+            )
+        )
+
+        assert result.document_id == "doc-fetch"
+        assert get_ocr_result(store_engine, "doc-fetch")["text"] == "hi"
+        assert get_ocr_job_status(store_engine, "rid-1")["status"] == "stored"
+
+    async def test_fetch_and_store_absent_entry_raises(self, store_engine, blobs) -> None:
+        from temporalio.exceptions import ApplicationError
+
+        fake = FakeMistralOcr(entries=[])
+        activities = OcrStoreActivities(store_engine, blobs, fake)
+        with pytest.raises(ApplicationError, match="No OCR result entry"):
+            await activities.fetch_and_store_ocr_result(
+                OcrFetchStoreInput(
+                    batch_id="b1",
+                    request_id="missing",
+                    document_id="doc-x",
+                    file_path="",
+                    workflow_id="wf",
+                )
+            )
+
+    async def test_fetch_and_store_failed_entry_raises(self, store_engine, blobs) -> None:
+        from temporalio.exceptions import ApplicationError
+
+        entries = [BatchResultEntry(custom_id="rid-1", succeeded=False, error="provider boom")]
+        fake = FakeMistralOcr(entries=entries)
+        activities = OcrStoreActivities(store_engine, blobs, fake)
+        with pytest.raises(ApplicationError, match="provider boom"):
+            await activities.fetch_and_store_ocr_result(
+                OcrFetchStoreInput(
+                    batch_id="b1",
+                    request_id="rid-1",
+                    document_id="doc-x",
+                    file_path="",
+                    workflow_id="wf",
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +968,13 @@ class TestListOcrJobs:
         assert by_doc["d-go"] == OcrJobDerivedStatus.PROCESSING.value
         assert by_doc["d-bad"] == OcrJobDerivedStatus.ERRORED.value
 
-    def test_status_filter_narrows_results(self, store_engine) -> None:
+    def test_succeeded_filter_matches_stored_row(self, store_engine) -> None:
+        """The filter is the DERIVED vocabulary (``succeeded``), not the raw column.
+
+        A raw ``status="stored"`` row derives to ``succeeded``; filtering by the
+        raw value "stored" would (pre-fix) match zero rows since ``_derive_status``
+        never runs against the SQL predicate.
+        """
         from sax_platform.contracts.batch_jobs import metadata as bj_metadata
 
         engine = store_engine
@@ -840,10 +986,117 @@ class TestListOcrJobs:
             engine, request_id="r-b", document_id="d-b", file_path="/b.pdf", status="submitted"
         )
 
-        result = execute_list_ocr_jobs(engine, status_filter="stored")
+        result = execute_list_ocr_jobs(engine, status_filter="succeeded")
 
         assert result.total == 1
         assert result.jobs[0].document_id == "d-a"
+        assert result.jobs[0].status == OcrJobDerivedStatus.SUCCEEDED
+
+    def test_errored_filter_matches_failed_row(self, store_engine) -> None:
+        """An ``errored`` filter matches an OCR-terminal ``failed`` row.
+
+        ``failed`` is OCR-terminal and derives straight to ``errored`` regardless
+        of the (absent) provider ledger row — see ``_derive_status``.
+        """
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+        engine = store_engine
+        bj_metadata.create_all(engine)
+        upsert_ocr_job_status(
+            engine, request_id="r-ok", document_id="d-ok", file_path="/ok.pdf", status="stored"
+        )
+        upsert_ocr_job_status(
+            engine, request_id="r-bad", document_id="d-bad", file_path="/bad.pdf", status="failed"
+        )
+
+        result = execute_list_ocr_jobs(engine, status_filter="errored")
+
+        assert result.total == 1
+        assert result.jobs[0].document_id == "d-bad"
+        assert result.jobs[0].status == OcrJobDerivedStatus.ERRORED
+
+    def test_unknown_status_filter_is_rejected(self, store_engine) -> None:
+        """An out-of-vocabulary filter is rejected with a clear message, not silently 0 rows."""
+        with pytest.raises(ValueError, match="Unknown --status filter 'bogus'"):
+            execute_list_ocr_jobs(store_engine, status_filter="bogus")
+
+    def test_limit_applied_after_filter(self, store_engine) -> None:
+        """``limit`` bounds the FILTERED result set, not the pre-filter row scan.
+
+        Seeds rows so the two most-recent (by ``created_at``, the listing's sort
+        key) are ``succeeded`` and the three oldest are ``errored``. A SQL-side
+        ``LIMIT`` applied before filtering would take the two most-recent rows
+        (both ``succeeded``) and filter ``errored`` down to zero. Filtering first
+        and limiting the filtered set returns the requested count of actual
+        ``errored`` rows instead.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+        from ocr.store import OcrJobStatus
+
+        engine = store_engine
+        bj_metadata.create_all(engine)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        # Oldest -> newest: three errored, then two succeeded (most recent).
+        rows = [
+            ("d-err-1", "failed", base),
+            ("d-err-2", "failed", base + timedelta(minutes=1)),
+            ("d-err-3", "failed", base + timedelta(minutes=2)),
+            ("d-ok-1", "stored", base + timedelta(minutes=3)),
+            ("d-ok-2", "stored", base + timedelta(minutes=4)),
+        ]
+        with engine.begin() as conn:
+            for i, (doc_id, status, created_at) in enumerate(rows):
+                conn.execute(
+                    sa.insert(OcrJobStatus.__table__).values(
+                        request_id=f"r-{i}",
+                        document_id=doc_id,
+                        file_path=f"/{doc_id}.pdf",
+                        status=status,
+                        created_at=created_at,
+                        updated_at=created_at,
+                    )
+                )
+
+        result = execute_list_ocr_jobs(engine, limit=2, status_filter="errored")
+
+        assert result.total == 2
+        assert {job.document_id for job in result.jobs} == {"d-err-2", "d-err-3"}
+        assert all(job.status == OcrJobDerivedStatus.ERRORED for job in result.jobs)
+
+    def test_legacy_unknown_status_reads_as_unknown(self, store_engine) -> None:
+        """A row with an out-of-vocabulary status (legacy) reads as UNKNOWN, never crashes.
+
+        The status must be inserted directly — ``upsert_ocr_job_status`` rejects
+        unknown strings — to prove the read side stays tolerant of old rows.
+        """
+        from datetime import UTC, datetime
+
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+        from ocr.store import OcrJobStatus
+
+        engine = store_engine
+        bj_metadata.create_all(engine)
+        now = datetime.now(UTC)
+        with engine.begin() as conn:
+            conn.execute(
+                sa.insert(OcrJobStatus.__table__).values(
+                    request_id="r-legacy",
+                    document_id="d-legacy",
+                    file_path="/legacy.pdf",
+                    status="ancient-status",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        result = execute_list_ocr_jobs(engine)
+
+        by_doc = {j.document_id: j.status for j in result.jobs}
+        assert by_doc["d-legacy"] == OcrJobDerivedStatus.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
@@ -878,10 +1131,9 @@ class TestActivityWrappers:
             file_size_bytes=3,
             blobs=blobs,
         )
-        input_json = json.dumps(
-            {"content_id": "split-me", "mime_type": "image/png", "file_size_bytes": 3}
+        result = await store_activities.split_file_into_chunks(
+            OcrSplitInput(content_id="split-me", mime_type="image/png", file_size_bytes=3)
         )
-        result = await store_activities.split_file_into_chunks(input_json)
         assert len(result.chunks) == 1
         assert result.chunks[0].content_id == "split-me"
 
@@ -894,14 +1146,13 @@ class TestActivityWrappers:
             file_size_bytes=8,
             blobs=blobs,
         )
-        input_json = json.dumps(
-            {
-                "content_id": "blob-me",
-                "mime_type": "application/pdf",
-                "model_name": "mistral:mistral-ocr-latest",
-            }
+        ref = await store_activities.build_ocr_request_blob(
+            OcrBuildRequestInput(
+                content_id="blob-me",
+                mime_type="application/pdf",
+                model_name="mistral:mistral-ocr-latest",
+            )
         )
-        ref = await store_activities.build_ocr_request_blob(input_json)
         assert ref.model == "mistral-ocr-latest"
 
     async def test_delete_file_content_blob(self, store_activities, store_engine, blobs) -> None:
@@ -916,32 +1167,31 @@ class TestActivityWrappers:
         await store_activities.delete_file_content_blob("del-me")
         assert get_file_content(store_engine, "del-me", blobs) is None
 
-    async def test_store_ocr_result(self, store_activities, store_engine) -> None:
+    async def test_fetch_and_store_ocr_result(self, store_engine, blobs) -> None:
         body = json.dumps({"model": "m", "pages": [{"markdown": "hi"}], "usage_info": {}})
-        input_json = json.dumps(
-            {
-                "request_id": "wr-1",
-                "document_id": "wdoc-1",
-                "file_path": "",
-                "batch_id": "wb-1",
-                "workflow_id": "wf",
-                "raw_response_json": body,
-            }
+        entries = [BatchResultEntry(custom_id="wr-1", succeeded=True, raw_response_json=body)]
+        activities = OcrStoreActivities(store_engine, blobs, FakeMistralOcr(entries=entries))
+        result = await activities.fetch_and_store_ocr_result(
+            OcrFetchStoreInput(
+                batch_id="wb-1",
+                request_id="wr-1",
+                document_id="wdoc-1",
+                file_path="",
+                workflow_id="wf",
+            )
         )
-        result = await store_activities.store_ocr_result(input_json)
         assert result.document_id == "wdoc-1"
         assert get_ocr_result(store_engine, "wdoc-1") is not None
 
     async def test_upsert_ocr_status(self, store_activities, store_engine) -> None:
-        input_json = json.dumps(
-            {
-                "request_id": "wr-2",
-                "document_id": "wdoc-2",
-                "file_path": "/a.pdf",
-                "status": "submitted",
-            }
+        await store_activities.upsert_ocr_status(
+            OcrStatusUpsertInput(
+                request_id="wr-2",
+                document_id="wdoc-2",
+                file_path="/a.pdf",
+                status=OcrProcessingStatus.SUBMITTED,
+            )
         )
-        await store_activities.upsert_ocr_status(input_json)
         assert get_ocr_job_status(store_engine, "wr-2")["status"] == "submitted"
 
     async def test_reassemble_ocr_chunks(self, store_activities, store_engine) -> None:
@@ -957,15 +1207,14 @@ class TestActivityWrappers:
                 batch_id="b",
                 workflow_id="wf",
             )
-        input_json = json.dumps(
-            {
-                "document_id": "wcombined",
-                "chunk_document_ids": ["wchunk-1", "wchunk-2"],
-                "file_path": "",
-                "total_pages": 2,
-            }
+        result = await store_activities.reassemble_ocr_chunks(
+            OcrReassembleInput(
+                document_id="wcombined",
+                chunk_document_ids=["wchunk-1", "wchunk-2"],
+                file_path="",
+                total_pages=2,
+            )
         )
-        result = await store_activities.reassemble_ocr_chunks(input_json)
         assert result.document_id == "wcombined"
 
     async def test_export_ocr_document(self, store_activities, store_engine, tmp_path) -> None:
@@ -980,8 +1229,9 @@ class TestActivityWrappers:
             batch_id="b",
             workflow_id="wf",
         )
-        input_json = json.dumps({"document_id": "wexport", "output_dir": str(tmp_path)})
-        result = await store_activities.export_ocr_document(input_json)
+        result = await store_activities.export_ocr_document(
+            OcrExportInput(document_id="wexport", output_dir=str(tmp_path))
+        )
         assert result.status == "exported"
 
     async def test_check_ocr_duplicate(self, store_activities, tmp_path) -> None:
@@ -1021,6 +1271,5 @@ class TestActivityWrappers:
             file_path="/x.pdf",
             status="stored",
         )
-        input_json = json.dumps({"limit": 10, "status_filter": ""})
-        result = await store_activities.list_ocr_jobs(input_json)
+        result = await store_activities.list_ocr_jobs(OcrListJobsInput(limit=10, status_filter=""))
         assert result.total == 1

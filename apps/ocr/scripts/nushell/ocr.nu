@@ -9,7 +9,8 @@
 # `ocr <subcommand> --help` to see them.
 #
 # Workflows are started on the OCR worker's queue (ocr-task-queue); the
-# platform worker on forge-task-queue services the batch submit SPI and poller.
+# platform worker on forge-task-queue services cross-queue `persist_block`
+# ledger writes.
 
 const TASK_QUEUE = "ocr-task-queue"
 

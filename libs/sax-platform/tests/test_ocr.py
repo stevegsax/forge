@@ -470,11 +470,10 @@ class TestSubmitBatch:
         assert str(client.batch.jobs.create_async.call_args.kwargs["endpoint"]) == "/v1/ocr"
 
     async def test_empty_string_endpoint_normalizes_to_default(self) -> None:
-        """Regression test: forge's SPI shell always forwards an `endpoint`
-        argument, and `BatchSubmitSpiInput.endpoint` itself defaults to ""
-        rather than being absent — so a caller commonly passes
-        endpoint="" rather than omitting it, which the keyword default
-        alone can't catch."""
+        """Regression test: a caller that forwards `endpoint=""` (rather than
+        omitting it) still gets the default `/v1/ocr` — the keyword default
+        alone can't catch an explicit empty string, so `endpoint or
+        _OCR_ENDPOINT` normalizes it."""
         client = MagicMock()
         client.files.upload_async = AsyncMock(return_value=MagicMock(id="file-upload-5"))
         client.batch.jobs.create_async = AsyncMock(return_value=MagicMock(id="batch-5"))

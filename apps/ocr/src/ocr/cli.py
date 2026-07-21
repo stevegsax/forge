@@ -2,8 +2,9 @@
 ``ocr mark``, ``ocr unmark``.
 
 Workflows are started on ``ocr-task-queue`` (the OCR worker's queue) so they hit the
-OCR-side activities; the platform worker on ``forge-task-queue`` services the batch
-submit SPI and the poller.
+OCR-side activities, which now own the Mistral submit + self-polling; the platform
+worker on ``forge-task-queue`` only services the cross-queue ``batch_jobs`` ledger
+writes.
 """
 
 from __future__ import annotations
@@ -34,6 +35,29 @@ async def _start_and_wait(
         task_queue=OCR_TASK_QUEUE,
     )
     return await handle.result(rpc_timeout=timedelta(hours=timeout_hours))
+
+
+async def _start_submit(arg: object, *, workflow_id: str, address: str) -> str:
+    """Start OcrSubmitWorkflow and return its id WITHOUT awaiting its full run.
+
+    The submit workflow now awaits its self-polling store children (up to the 25h
+    batch ceiling), so the CLI cannot block on the result. It starts the workflow
+    with a derived ~26h execution timeout (the ceiling plus reassembly/store
+    margins) and returns immediately; progress is tracked via ``ocr list``.
+    """
+    from datetime import timedelta
+
+    from sax_platform.temporal.polling import BATCH_WAIT_CEILING
+
+    client = await connect_temporal(address)
+    handle = await client.start_workflow(
+        "OcrSubmitWorkflow",
+        arg,
+        id=workflow_id,
+        task_queue=OCR_TASK_QUEUE,
+        execution_timeout=BATCH_WAIT_CEILING + timedelta(hours=1),
+    )
+    return handle.id
 
 
 def _auto_id(prefix: str) -> str:
@@ -75,7 +99,7 @@ def worker_cmd(temporal_address: str) -> None:
 def submit_cmd(
     file_path: str, model: str, skip_duplicate_detection: bool, temporal_address: str
 ) -> None:
-    """Submit a document for OCR via the platform batch service."""
+    """Submit a document for OCR (starts the workflow; does not wait for it)."""
     from ocr.models import OcrSubmitInput
 
     wf_input = OcrSubmitInput(
@@ -83,17 +107,12 @@ def submit_cmd(
         model_name=model,
         skip_duplicate_detection=skip_duplicate_detection,
     )
+    workflow_id = _auto_id("ocr-submit")
     try:
-        result = asyncio.run(
-            _start_and_wait(
-                "OcrSubmitWorkflow",
-                wf_input,
-                workflow_id=_auto_id("ocr-submit"),
-                address=temporal_address,
-                timeout_hours=1.0,
-            )
+        started_id = asyncio.run(
+            _start_submit(wf_input, workflow_id=workflow_id, address=temporal_address)
         )
-        _echo(result)
+        _echo({"workflow_id": started_id, "status": "started"})
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(EXIT_INFRASTRUCTURE_ERROR)
@@ -101,7 +120,12 @@ def submit_cmd(
 
 @main.command("list")
 @click.option("--limit", default=50, show_default=True, type=int)
-@click.option("--status", "status_filter", default="", help="processing|succeeded|errored")
+@click.option(
+    "--status",
+    "status_filter",
+    default="",
+    help="Filter by derived status: processing|succeeded|errored|unknown",
+)
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",

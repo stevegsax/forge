@@ -2,26 +2,26 @@
 
 The requester polls and fetches its own batch: a ``batch_status`` status poll
 loop replaces the shared poller's signal delivery, and ``fetch_batch_result``
-downloads this waiter's own result line once the batch has ended. Both are
-provider-agnostic at the seam — anthropic and mistral answers are normalized to
-the same value types (``BatchStatusResult`` / ``BatchFetchResult``).
+downloads this waiter's own result line once the batch has ended. Forge submits
+anthropic only (T4.2 ST3) — a non-anthropic ``provider`` raises, since such a
+batch is its owning app's concern — but the explicit provider threading stays
+(honest transport).
 
 Design follows Function Core / Imperative Shell:
 - Testable functions: ``execute_batch_status`` / ``execute_fetch_batch_result``
-  (take the AsyncAnthropic client / MistralOcr and the blob-put callable as
-  arguments, so tests inject fakes).
+  (take the AsyncAnthropic client and the blob-put callable as arguments, so
+  tests inject fakes).
 - Imperative shell: the ``batch_status`` / ``fetch_batch_result`` bound methods
   on ``BatchActivities`` (forge.activities.roots), which pass the
-  composition-root client, mistral client, and blob store.
+  composition-root client and blob store.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from sax_platform.contracts.models import dump_batch_result_payload
-from sax_platform.ocr import BatchPollStatus
 
 from forge.models import BatchFetchResult, BatchStatusResult
 
@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 
     from anthropic import AsyncAnthropic
     from sax_platform.llm.batch import BatchRequestFailed
-    from sax_platform.ocr import MistralOcr
 
     from forge.models import BatchStatusInput, FetchBatchResultInput
 
@@ -42,19 +41,18 @@ _INLINE_THRESHOLD_BYTES = 256 * 1024
 
 type _BatchState = Literal["in_progress", "ended", "failed", "expired", "canceled"]
 
-# Mistral has a native status-only call (`MistralOcr.get_batch_status`, one
-# `jobs.get` with no download), so batch_status maps its normalized
-# BatchPollStatus onto the provider-agnostic state directly. PENDING collapses to
-# in_progress: the timer loop only distinguishes "keep waiting" from the terminal
-# states. The result download happens later, once, in fetch_batch_result.
-_MISTRAL_STATUS_TO_STATE: dict[BatchPollStatus, _BatchState] = {
-    BatchPollStatus.PENDING: "in_progress",
-    BatchPollStatus.IN_PROGRESS: "in_progress",
-    BatchPollStatus.ENDED: "ended",
-    BatchPollStatus.FAILED: "failed",
-    BatchPollStatus.CANCELED: "canceled",
-    BatchPollStatus.EXPIRED: "expired",
-}
+
+def _reject_non_anthropic(provider: str) -> NoReturn:
+    """Raise for any non-anthropic provider: forge's transport is anthropic-only.
+
+    Forge submits anthropic only (T4.2 ST3); a non-anthropic batch is polled and
+    fetched by its owning app, never through forge's transport.
+    """
+    msg = (
+        f"forge batch transport received provider {provider!r}: non-anthropic "
+        "batches are their owning app's concern; forge submits anthropic only."
+    )
+    raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -65,32 +63,16 @@ _MISTRAL_STATUS_TO_STATE: dict[BatchPollStatus, _BatchState] = {
 async def execute_batch_status(
     input: BatchStatusInput,
     *,
-    client: AsyncAnthropic | None,
-    mistral_ocr: MistralOcr | None,
+    client: AsyncAnthropic,
 ) -> BatchStatusResult:
-    """Poll one batch's normalized lifecycle state through its provider.
+    """Poll one anthropic batch's normalized lifecycle state.
 
-    Provider dispatch: ``"mistral"`` routes through the injected ``MistralOcr``;
-    every other provider is Anthropic's Message Batches API. The injected
-    *client* / *mistral_ocr* come from the ``BatchActivities`` composition root;
-    a missing one is a configuration error raised at point of use.
+    Forge submits anthropic only (T4.2 ST3): a non-anthropic ``input.provider``
+    raises before the client is touched. The injected *client* comes from the
+    ``BatchActivities`` composition root.
     """
-    if input.provider == "mistral":
-        if mistral_ocr is None:
-            msg = (
-                "mistral batch status requires MISTRAL_API_KEY to be set at worker "
-                "startup (no MistralOcr was constructed)."
-            )
-            raise RuntimeError(msg)
-        status = await mistral_ocr.get_batch_status(input.batch_id)
-        return BatchStatusResult(
-            batch_id=input.batch_id,
-            state=_MISTRAL_STATUS_TO_STATE[status],
-        )
-
-    if client is None:
-        msg = "anthropic batch status requires an AsyncAnthropic client (none was injected)."
-        raise RuntimeError(msg)
+    if input.provider != "anthropic":
+        _reject_non_anthropic(input.provider)
     return await _anthropic_status(client, input.batch_id)
 
 
@@ -121,31 +103,21 @@ async def _anthropic_status(client: AsyncAnthropic, batch_id: str) -> BatchStatu
 async def execute_fetch_batch_result(
     input: FetchBatchResultInput,
     *,
-    client: AsyncAnthropic | None,
-    mistral_ocr: MistralOcr | None,
+    client: AsyncAnthropic,
     put_result_blob: Callable[[str, bytes], str],
     inline_threshold: int = _INLINE_THRESHOLD_BYTES,
 ) -> BatchFetchResult:
-    """Fetch this waiter's result line and claim-check it into a BatchFetchResult.
+    """Fetch this waiter's anthropic result line and claim-check it.
 
     Selects the line whose ``custom_id`` equals ``input.request_id`` from the
     finished batch. A failed line becomes ``error``; a missing custom_id becomes
-    ``error``. A succeeded line is delivered inline when its body is small and
-    image-free, else stashed to a blob (via *put_result_blob*) and returned as an
-    ``s3_key`` pointer. Provider dispatch mirrors ``execute_batch_status``.
+    ``error``. A succeeded line is delivered inline when its body is small, else
+    stashed to a blob (via *put_result_blob*) and returned as an ``s3_key``
+    pointer. Forge submits anthropic only (T4.2 ST3): a non-anthropic
+    ``input.provider`` raises.
     """
-    if input.provider == "mistral":
-        if mistral_ocr is None:
-            msg = (
-                "mistral batch fetch requires MISTRAL_API_KEY to be set at worker "
-                "startup (no MistralOcr was constructed)."
-            )
-            raise RuntimeError(msg)
-        return await _fetch_mistral(input, mistral_ocr, put_result_blob, inline_threshold)
-
-    if client is None:
-        msg = "anthropic batch fetch requires an AsyncAnthropic client (none was injected)."
-        raise RuntimeError(msg)
+    if input.provider != "anthropic":
+        _reject_non_anthropic(input.provider)
     return await _fetch_anthropic(input, client, put_result_blob, inline_threshold)
 
 
@@ -166,26 +138,6 @@ async def _fetch_anthropic(
             return BatchFetchResult(error=_format_request_failure(line))
         # A succeeded anthropic line is the verbatim serialized Message; no images.
         return _claim_check(input.request_id, line, [], put_result_blob, inline_threshold)
-    return BatchFetchResult(error=_missing_custom_id(input))
-
-
-async def _fetch_mistral(
-    input: FetchBatchResultInput,
-    mistral_ocr: MistralOcr,
-    put_result_blob: Callable[[str, bytes], str],
-    inline_threshold: int,
-) -> BatchFetchResult:
-    """Fetch the mistral batch results, find this waiter's entry, and claim-check it."""
-    entries = await mistral_ocr.fetch_batch_results(input.batch_id)
-    for entry in entries:
-        if entry.custom_id != input.request_id:
-            continue
-        if not entry.succeeded:
-            return BatchFetchResult(error=entry.error or "Unknown error")
-        images = [img.model_dump(mode="json") for img in entry.extracted_images]
-        return _claim_check(
-            input.request_id, entry.raw_response_json, images, put_result_blob, inline_threshold
-        )
     return BatchFetchResult(error=_missing_custom_id(input))
 
 

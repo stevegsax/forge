@@ -1,14 +1,16 @@
 """Batch submit activity for Forge.
 
 Submits an assembled context to the Anthropic Message Batches API via the
-platform batch lane (`sax_platform.llm.batch`).
+platform batch lane (`sax_platform.llm.batch`). Forge submits anthropic only
+(T4.2 ST3): the cross-queue opaque-blob submit SPI is gone — a non-anthropic
+batch is its owning app's concern.
 
 Design follows Function Core / Imperative Shell:
-- Testable functions: execute_batch_submit / execute_submit_batch_blob (take the
-  AsyncAnthropic client / provider as arguments)
-- Imperative shell: the ``submit_batch_request`` / ``submit_batch_blob`` bound
-  methods on ``BatchActivities`` (forge.activities.roots), which pass the
-  composition-root client, output-type registry, blob store, and mistral client.
+- Testable function: execute_batch_submit (takes the AsyncAnthropic client as an
+  argument)
+- Imperative shell: the ``submit_batch_request`` bound method on
+  ``BatchActivities`` (forge.activities.roots), which passes the composition-root
+  client and output-type registry.
 """
 
 from __future__ import annotations
@@ -22,8 +24,8 @@ from sax_platform.llm.tiers import split_provider
 from forge.message_log import write_message_log
 
 # BatchSubmitResult is instantiated below (runtime); CapabilityTier/ModelConfig/
-# resolve_model compute DEFAULT_MODEL at import — all runtime. The input types are
-# annotation-only here (the activity params live on the BatchActivities methods).
+# resolve_model compute DEFAULT_MODEL at import — all runtime. The input type is
+# annotation-only here (the activity param lives on the BatchActivities method).
 from forge.models import (
     BatchSubmitResult,
     CapabilityTier,
@@ -33,26 +35,12 @@ from forge.models import (
 from forge.output_types import OUTPUT_TYPES, resolve_output_type
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-    from typing import Any, Protocol
+    from collections.abc import Mapping
 
     from anthropic import AsyncAnthropic
     from pydantic import BaseModel
-    from sax_platform.ocr import MistralOcr
 
-    from forge.models import BatchSubmitInput, BatchSubmitSpiInput
-
-    class _BlobSubmitProvider(Protocol):
-        """Structural contract for the opaque-blob submit SPI.
-
-        Both the platform's anthropic batch submit (adapted by
-        ``_AnthropicBlobSubmit``) and ``sax_platform.ocr.MistralOcr`` — which
-        implements OCR-only methods — satisfy this narrow shape.
-        """
-
-        async def submit_batch(
-            self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
-        ) -> str: ...
+    from forge.models import BatchSubmitInput
 
 
 # Shadow fallback for a missing context.model_name (see forge.activities.llm).
@@ -121,82 +109,3 @@ async def execute_batch_submit(
     handle = await submit_batch(client, [request])
 
     return BatchSubmitResult(request_id=request_id, batch_id=handle.batch_id)
-
-
-# ---------------------------------------------------------------------------
-# Opaque-blob submit SPI (Option 1) — the cross-queue batch service
-# ---------------------------------------------------------------------------
-
-
-async def execute_submit_batch_blob(
-    input: BatchSubmitSpiInput,
-    provider: _BlobSubmitProvider,
-    fetch_blob: Callable[[str], bytes],
-) -> BatchSubmitResult:
-    """Fetch the pre-built request blob and submit it verbatim.
-
-    The platform never parses the body — it treats the blob as opaque, so the
-    submit path is domain-agnostic. Writes nothing: the caller records the
-    submission separately, so a provider submit and a ``batch_jobs`` write never
-    share a re-runnable activity (double-submit safety). Separated from the shell
-    so tests can inject a mock provider and a fake blob fetcher.
-    """
-    raw = fetch_blob(input.s3_key)
-    requests = json.loads(raw.decode("utf-8"))
-    batch_id = await provider.submit_batch(requests, input.model, endpoint=input.endpoint)
-    return BatchSubmitResult(
-        request_id=input.custom_id,
-        batch_id=batch_id,
-        provider=input.provider,
-    )
-
-
-class _AnthropicBlobSubmit:
-    """Adapts the platform's anthropic batch submit onto the opaque-blob SPI shape.
-
-    The SPI's provider contract is ``submit_batch(requests, model, *, endpoint="")
-    -> str`` (shared with ``MistralOcr``). The platform's anthropic submit takes
-    only ``(client, requests)`` — the model rides inside each request's ``params``
-    and there is no per-submit endpoint — so ``model``/``endpoint`` are accepted
-    and ignored here to satisfy that shared shape, returning the new batch id.
-    """
-
-    def __init__(self, client: AsyncAnthropic) -> None:
-        self._client = client
-
-    async def submit_batch(
-        self, requests: list[dict[str, Any]], model: str, *, endpoint: str = ""
-    ) -> str:
-        # Local import for sandbox safety (see execute_batch_submit); also
-        # shadows this method's own name with the platform function.
-        from sax_platform.llm.batch import submit_batch
-
-        handle = await submit_batch(self._client, requests)
-        return handle.batch_id
-
-
-def _resolve_blob_submit_provider(
-    provider_name: str,
-    *,
-    client: AsyncAnthropic,
-    mistral_ocr: MistralOcr | None,
-) -> _BlobSubmitProvider:
-    """Resolve the batch-submit provider for the opaque-blob SPI.
-
-    The composition root supplies both the AsyncAnthropic *client* and the
-    optional *mistral_ocr* (``BatchActivities`` state). Mistral routes through
-    the injected ``MistralOcr`` — a ``None`` here means ``MISTRAL_API_KEY`` was
-    unset at worker startup, so it raises a clear error. Every other provider
-    name is Anthropic's Message Batches API, submitted through the platform batch
-    lane via a thin ``_AnthropicBlobSubmit`` adapter over the shared client.
-    """
-    if provider_name == "mistral":
-        if mistral_ocr is None:
-            msg = (
-                "mistral batch submit requires MISTRAL_API_KEY to be set at worker "
-                "startup (no MistralOcr was constructed)."
-            )
-            raise RuntimeError(msg)
-        return mistral_ocr
-
-    return _AnthropicBlobSubmit(client)

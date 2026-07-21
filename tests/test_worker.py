@@ -154,7 +154,6 @@ class TestRunWorkerComposition:
         assert batch._client is comp.sdk_client
         assert batch._engine is comp.engine
         assert batch._blob_store is comp.blobs
-        assert batch._mistral_ocr is comp.mistral
 
     @pytest.mark.asyncio
     async def test_registers_all_activity_names_unchanged(self) -> None:
@@ -196,7 +195,6 @@ class TestRunWorkerComposition:
             "call_extraction_llm",
             "review_manual_playbook",
             "submit_batch_request",
-            "submit_batch_blob",
             "parse_llm_response",
             "batch_status",
             "fetch_batch_result",
@@ -214,13 +212,16 @@ class TestRunWorkerComposition:
         )
 
     @pytest.mark.asyncio
-    async def test_no_mistral_key_leaves_ocr_none(self) -> None:
-        comp = _Composition(mistral_key=None)
+    async def test_forge_never_builds_mistral_ocr(self) -> None:
+        """Forge submits anthropic only (T4.2 ST3): the worker never constructs a
+        MistralOcr client even when MISTRAL_API_KEY is set, and BatchActivities
+        carries no ocr attribute."""
+        comp = _Composition(mistral_key="mk")
         with comp.apply():
             await worker_mod.run_worker()
 
         comp.mistral_cls.assert_not_called()
-        assert comp.bound("submit_batch_request").__self__._mistral_ocr is None
+        assert not hasattr(comp.bound("submit_batch_request").__self__, "_mistral_ocr")
 
     @pytest.mark.asyncio
     async def test_no_bucket_leaves_blob_store_none(self) -> None:

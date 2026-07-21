@@ -11,7 +11,6 @@ type from ``sax_platform.contracts.types``. This module imports only
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
@@ -26,6 +25,11 @@ from sax_platform.db import (
     insert_or_ignore,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# ``OcrProcessingStatus`` lives in the pure model module (imports flow inward);
+# store.py re-exposes it via this import so ``from ocr.store import
+# OcrProcessingStatus`` keeps working.
+from ocr.models import OcrProcessingStatus as OcrProcessingStatus
 
 if TYPE_CHECKING:
     from sax_platform.contracts.s3_blobs import S3Blobs
@@ -105,19 +109,6 @@ class OcrImage(Base):
         default=lambda: datetime.now(UTC),
         server_default=sa.func.now(),
     )
-
-
-class OcrProcessingStatus(StrEnum):
-    """Coarse processing lifecycle owned by OCR (single-writer: the OCR workflow).
-
-    Distinct from the platform's provider-batch ``BatchJobStatus`` — joined to it
-    on ``request_id`` for the user-facing status view.
-    """
-
-    SUBMITTED = "submitted"
-    PROCESSING = "processing"
-    STORED = "stored"
-    FAILED = "failed"
 
 
 class OcrJobStatus(Base):
@@ -509,8 +500,15 @@ def upsert_ocr_job_status(
     status: OcrProcessingStatus | str,
     error_message: str | None = None,
 ) -> None:
-    """Insert or update the coarse processing status for a request."""
-    status_value = status.value if isinstance(status, OcrProcessingStatus) else status
+    """Insert or update the coarse processing status for a request.
+
+    Accepts either an ``OcrProcessingStatus`` member or its string value. Unknown
+    strings raise ``ValueError`` here — this is the single write-side validation
+    point (mirroring the platform's ``update_batch_status``) that keeps garbage
+    statuses out of the DB. Reads deliberately stay tolerant: ``_derive_status``
+    coerces any legacy/unknown stored value to ``UNKNOWN`` rather than crashing.
+    """
+    validated = OcrProcessingStatus(status)
     t = _OCR_JOB_STATUS_TABLE
     now = datetime.now(UTC)
     with engine.begin() as conn:
@@ -523,7 +521,7 @@ def upsert_ocr_job_status(
                     request_id=request_id,
                     document_id=document_id,
                     file_path=file_path,
-                    status=status_value,
+                    status=validated,
                     error_message=error_message,
                     created_at=now,
                     updated_at=now,
@@ -533,7 +531,7 @@ def upsert_ocr_job_status(
             conn.execute(
                 sa.update(t)
                 .where(t.c.request_id == request_id)
-                .values(status=status_value, error_message=error_message, updated_at=now)
+                .values(status=validated, error_message=error_message, updated_at=now)
             )
 
 

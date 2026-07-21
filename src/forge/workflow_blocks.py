@@ -21,10 +21,14 @@ with workflow.unsafe.imports_passed_through():
         PersistBatchSubmission,
         persist_block,
     )
+    from sax_platform.temporal.polling import (
+        BATCH_WAIT_CEILING,
+        FixedInterval,
+        wait_batch_ended,
+    )
     from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
     from forge.models import (
-        BATCH_WAIT_CEILING,
         AssembledContext,
         BatchFetchResult,
         BatchStatusInput,
@@ -91,8 +95,8 @@ _GIT_TIMEOUT = timedelta(seconds=30)
 _LLM_TIMEOUT = timedelta(minutes=5)
 _SUBMIT_TIMEOUT = timedelta(seconds=60)
 _PARSE_TIMEOUT = timedelta(seconds=30)
-# One source of truth for the 25h ceiling: shared with _child_timeout /
-# derive_execution_timeout via forge.models.BATCH_WAIT_CEILING (T4.1 ST3c).
+# One source of truth for the 25h ceiling: sax_platform.temporal.polling owns it
+# (T4.2 ST1); forge.models re-exports it for _child_timeout / derive_execution_timeout.
 _BATCH_WAIT_TIMEOUT = BATCH_WAIT_CEILING
 _BATCH_STATUS_TIMEOUT = timedelta(seconds=60)
 _BATCH_FETCH_TIMEOUT = timedelta(minutes=5)
@@ -170,26 +174,14 @@ async def batch_submit_and_wait(
             provider=submit_result.provider,
         )
     )
-    # Timer loop: sleep, then poll the provider's normalized status. Sleep first
-    # (a batch is never done instantly). Break on ``ended``; a provider-terminal
-    # status or the 25h ceiling records a terminal ledger outcome and raises a
-    # non-retryable ApplicationError, preserving the T1.6b failure symmetry.
-    deadline = workflow.now() + wait_timeout
-    while True:
-        remaining = deadline - workflow.now()
-        if remaining <= timedelta(0):
-            await persist_block(
-                PersistBatchOutcome(
-                    request_id=request_id,
-                    status=BatchJobStatus.MISSING.value,
-                    error_message=f"batch wait exceeded {wait_timeout} ceiling",
-                )
-            )
-            raise ApplicationError(
-                f"Batch wait exceeded {wait_timeout} ceiling for request {request_id}",
-                non_retryable=True,
-            )
-        await workflow.sleep(min(poll_interval, remaining))
+
+    # Timer loop (shared skeleton in sax_platform.temporal.polling): sleep, then
+    # poll the provider's normalized status. FixedInterval reproduces forge's exact
+    # pre-extraction sleep sequence (min(poll_interval, remaining) each iteration),
+    # so the committed replay histories still replay unregenerated. The loop returns
+    # a plain outcome string; the persists + non-retryable ApplicationErrors that
+    # keep the T1.6b failure symmetry stay here, where the outcomes now surface.
+    async def _poll_status() -> str:
         status: BatchStatusResult = await workflow.execute_activity(
             "batch_status",
             BatchStatusInput(batch_id=submit_result.batch_id, provider=submit_result.provider),
@@ -197,23 +189,38 @@ async def batch_submit_and_wait(
             retry_policy=IO_RETRY,
             result_type=BatchStatusResult,
         )
-        if status.state == "ended":
-            break
-        if status.state in ("failed", "expired", "canceled"):
-            terminal = (
-                BatchJobStatus.EXPIRED if status.state == "expired" else BatchJobStatus.FAILED
+        return status.state
+
+    outcome = await wait_batch_ended(
+        _poll_status,
+        schedule=FixedInterval(poll_interval),
+        ceiling=wait_timeout,
+    )
+    if outcome == "gave_up":
+        await persist_block(
+            PersistBatchOutcome(
+                request_id=request_id,
+                status=BatchJobStatus.MISSING.value,
+                error_message=f"batch wait exceeded {wait_timeout} ceiling",
             )
-            await persist_block(
-                PersistBatchOutcome(
-                    request_id=request_id,
-                    status=terminal.value,
-                    error_message=f"provider batch {status.state}",
-                )
+        )
+        raise ApplicationError(
+            f"Batch wait exceeded {wait_timeout} ceiling for request {request_id}",
+            non_retryable=True,
+        )
+    if outcome in ("failed", "expired", "canceled"):
+        terminal = BatchJobStatus.EXPIRED if outcome == "expired" else BatchJobStatus.FAILED
+        await persist_block(
+            PersistBatchOutcome(
+                request_id=request_id,
+                status=terminal.value,
+                error_message=f"provider batch {outcome}",
             )
-            raise ApplicationError(
-                f"Batch {submit_result.batch_id} {status.state} for request {request_id}",
-                non_retryable=True,
-            )
+        )
+        raise ApplicationError(
+            f"Batch {submit_result.batch_id} {outcome} for request {request_id}",
+            non_retryable=True,
+        )
     fetch: BatchFetchResult = await workflow.execute_activity(
         "fetch_batch_result",
         FetchBatchResultInput(

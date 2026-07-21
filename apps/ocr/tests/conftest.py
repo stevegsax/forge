@@ -131,10 +131,14 @@ def store_activities(store_engine: Engine, ocr_s3: str) -> OcrStoreActivities:
     """An ``OcrStoreActivities`` bound to the test engine + a moto-backed ``S3Blobs``.
 
     Used by the activity-wrapper tests, which exercise the bound ``@activity.defn``
-    methods (formerly module-level functions) with real dependencies injected.
+    methods (formerly module-level functions) with real dependencies injected. The
+    Mistral capability is a default ``FakeMistralOcr``; tests that exercise the
+    submit/poll/fetch activities construct ``OcrStoreActivities`` directly with a
+    configured fake.
     """
     from sax_platform.contracts.s3_blobs import S3Blobs
+    from sax_platform.testing import FakeMistralOcr
 
     from ocr.activities import OcrStoreActivities
 
-    return OcrStoreActivities(store_engine, S3Blobs(ocr_s3))
+    return OcrStoreActivities(store_engine, S3Blobs(ocr_s3), FakeMistralOcr())

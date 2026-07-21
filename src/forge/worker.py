@@ -83,9 +83,10 @@ async def run_worker(
 
     The single composition root: ``ForgeSettings()`` reads the environment once
     (fail-fast on an unset ``FORGE_DB_URL``); the store engine, the shared
-    AnthropicLLM/AsyncAnthropic client, the optional S3 blob store, and the
-    optional MistralOcr client are each built exactly once and injected into the
-    four activity classes. No activity reads config or builds a client itself.
+    AnthropicLLM/AsyncAnthropic client, and the optional S3 blob store are each
+    built exactly once and injected into the four activity classes. Forge submits
+    anthropic only (T4.2 ST3) — no MistralOcr client. No activity reads config or
+    builds a client itself.
     """
     from sax_platform.contracts.s3_blobs import S3Blobs
     from sax_platform.db import get_store_engine
@@ -108,16 +109,12 @@ async def run_worker(
     # Build the process-wide dependencies ONCE. One AsyncAnthropic SDK client is
     # shared by the sync lane (AnthropicLLM) and the batch lane (BatchActivities);
     # one store engine (bounded Postgres pool) serves every store activity. The
-    # blob store and MistralOcr client are built only when configured.
+    # blob store is built only when configured. Forge submits anthropic only
+    # (T4.2 ST3) — no MistralOcr client here.
     sdk_client = make_client()
     llm = AnthropicLLM(sdk_client)
     engine = get_store_engine(settings.db.url)
     blobs = S3Blobs(settings.blob.bucket, settings.blob.prefix) if settings.blob.bucket else None
-    mistral = None
-    if settings.llm.mistral_api_key:
-        from sax_platform.ocr import MistralOcr, make_mistral_client
-
-        mistral = MistralOcr(make_mistral_client(settings.llm.mistral_api_key))
 
     store_activities = StoreActivities(engine)
     context_activities = ContextActivities(engine)
@@ -127,7 +124,6 @@ async def run_worker(
         output_types=OUTPUT_TYPES,
         engine=engine,
         blob_store=blobs,
-        mistral_ocr=mistral,
     )
 
     workflows: list[type] = [
@@ -178,7 +174,6 @@ async def run_worker(
         llm_activities.call_extraction_llm,
         llm_activities.review_manual_playbook,
         batch_activities.submit_batch_request,
-        batch_activities.submit_batch_blob,
         batch_activities.parse_llm_response,
         batch_activities.batch_status,
         batch_activities.fetch_batch_result,

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 import sqlalchemy as sa
 
+from ocr.models import OcrProcessingStatus
 from ocr.store import (
     clear_ocr_removal_mark,
     delete_ocr_images_by_document,
@@ -295,3 +297,18 @@ class TestOcrJobStatus:
                 sa.select(sa.func.count()).select_from(OcrJobStatus.__table__)
             ).scalar()
         assert count == 1
+
+    def test_upsert_accepts_enum_member(self, store_engine) -> None:
+        engine = store_engine
+        upsert_ocr_job_status(
+            engine, request_id="r-enum", document_id="d-enum", status=OcrProcessingStatus.STORED
+        )
+        assert get_ocr_job_status(engine, "r-enum")["status"] == "stored"
+
+    def test_upsert_rejects_unknown_status(self, store_engine) -> None:
+        """Unknown status strings are rejected at the store boundary (like update_batch_status)."""
+        engine = store_engine
+        with pytest.raises(ValueError, match="ancient-status"):
+            upsert_ocr_job_status(
+                engine, request_id="r-bad", document_id="d-bad", status="ancient-status"
+            )

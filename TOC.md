@@ -35,6 +35,10 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 - [operations/USAGE.md](docs/operations/USAGE.md) — submitting code and research tasks to Forge.
 - [operations/WORKERS.md](docs/operations/WORKERS.md) — worker overview, identity, and scaling.
 - [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — local-first deployment: podman stack (Temporal + Postgres + MinIO), launchd workers, Supabase + S3 stores (D99).
+- [deploy/README.md](deploy/README.md) — deployment quick start and directory map; points into the guides below (D99).
+- [deploy/local-stack/README.md](deploy/local-stack/README.md) — the podman stack: Temporal (production) plus dev-only Postgres/MinIO counterparts.
+- [deploy/launchd/README.md](deploy/launchd/README.md) — launchd agents: install, operate, restart, logs.
+- [deploy/s3/README.md](deploy/s3/README.md) — S3 bucket lifecycle policy: what it does and deliberately does not expire.
 - [operations/DEBUGGING.md](docs/operations/DEBUGGING.md) — logging, observability store, API message logs, OTel tracing, env vars.
 - [operations/ADDING_A_DOMAIN.md](docs/operations/ADDING_A_DOMAIN.md) — parameterizing LLM behavior through task domains.
 - [operations/test-strategy.md](docs/operations/test-strategy.md) — testing pyramid and signal quality.

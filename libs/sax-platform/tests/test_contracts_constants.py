@@ -2,13 +2,12 @@
 
 These are part of the wire contract between the platform and its consumer
 apps, so the values themselves (not just their existence) are pinned here —
-an accidental rename would silently break cross-queue signaling.
+an accidental rename would silently misroute cross-queue activities.
 """
 
 from __future__ import annotations
 
 from sax_platform.contracts.constants import (
-    BATCH_RESULT_SIGNAL,
     FORGE_TASK_QUEUE,
     OCR_TASK_QUEUE,
     TEMPORAL_NAMESPACE,
@@ -27,8 +26,3 @@ def test_task_queue_names() -> None:
 def test_task_queues_are_distinct() -> None:
     """Each worker owns one queue; a collision would misroute activities."""
     assert FORGE_TASK_QUEUE != OCR_TASK_QUEUE
-
-
-def test_batch_result_signal_name() -> None:
-    """Temporal binds signals by name — this string is the wire contract."""
-    assert BATCH_RESULT_SIGNAL == "batch_result_received"

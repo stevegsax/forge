@@ -325,16 +325,11 @@ class MistralOcr:
         original dispatch between inline-JSON submission (default chat
         endpoint) and file-based upload (`/v1/ocr` only) is gone along with
         chat support: this OCR-only class always uploads a JSONL file.
-        `endpoint` stays a keyword parameter — defaulted to `/v1/ocr` — so
-        the call shape matches what forge's opaque-blob SPI already calls:
-        `provider.submit_batch(requests, model, endpoint=input.endpoint)`.
-
-        Forge's SPI shell always forwards an `endpoint` argument, and
-        `BatchSubmitSpiInput.endpoint` itself defaults to `""` rather than
-        being absent — so the keyword default above is dead on that call
-        path. `endpoint = endpoint or _OCR_ENDPOINT` restores the old
-        provider's normalization: an empty string is treated the same as
-        "not supplied."
+        `endpoint` stays a keyword parameter — defaulted to `/v1/ocr`. ocr's
+        own submit activity (T4.2 ST2) is the caller and passes it
+        explicitly. `endpoint = endpoint or _OCR_ENDPOINT` normalizes an
+        empty string the same as "not supplied," so a caller that forwards
+        `endpoint=""` still gets the OCR endpoint.
         """
         from mistralai.types.basemodel import UnrecognizedStr
 

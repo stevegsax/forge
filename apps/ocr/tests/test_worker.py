@@ -55,6 +55,7 @@ class TestRunWorker:
         settings = _fake_settings()
         engine_sentinel = object()
         blobs_sentinel = object()
+        mistral_sentinel = object()
         store_sentinel = MagicMock(name="store-activities")
         activities_sentinel = [MagicMock(name="bound-method")]
         client_sentinel = MagicMock(name="client")
@@ -68,7 +69,7 @@ class TestRunWorker:
                 worker_mod, "get_store_engine", return_value=engine_sentinel
             ) as mock_get_engine,
             patch.object(worker_mod, "S3Blobs", return_value=blobs_sentinel) as mock_s3blobs,
-            patch.object(worker_mod, "_build_mistral_ocr", return_value=None),
+            patch.object(worker_mod, "_build_mistral_ocr", return_value=mistral_sentinel),
             patch.object(worker_mod, "OcrStoreActivities", return_value=store_sentinel) as mock_cls,
             patch.object(
                 worker_mod, "activity_methods", return_value=activities_sentinel
@@ -89,8 +90,8 @@ class TestRunWorker:
         mock_get_engine.assert_called_once_with("sqlite:///x.db")
         # Blob client bound to settings.blob bucket + prefix.
         mock_s3blobs.assert_called_once_with("bkt", "pre/")
-        # Activities constructed with the injected engine + blobs.
-        mock_cls.assert_called_once_with(engine_sentinel, blobs_sentinel)
+        # Activities constructed with the injected engine + blobs + Mistral capability.
+        mock_cls.assert_called_once_with(engine_sentinel, blobs_sentinel, mistral_sentinel)
         mock_activity_methods.assert_called_once_with(store_sentinel)
 
         # Connect via settings (address falls back to settings.temporal.address).
@@ -118,7 +119,7 @@ class TestRunWorker:
             patch.object(worker_mod, "silence_noisy_loggers"),
             patch.object(worker_mod, "get_store_engine", return_value=object()),
             patch.object(worker_mod, "S3Blobs", return_value=object()),
-            patch.object(worker_mod, "_build_mistral_ocr", return_value=None),
+            patch.object(worker_mod, "_build_mistral_ocr", return_value=object()),
             patch.object(worker_mod, "OcrStoreActivities", return_value=MagicMock()),
             patch.object(worker_mod, "activity_methods", return_value=[]),
             patch.object(
@@ -131,6 +132,26 @@ class TestRunWorker:
         mock_connect.assert_awaited_once_with(
             "override:7233", identity=None, settings=settings.temporal
         )
+
+    @pytest.mark.asyncio
+    async def test_unset_mistral_key_fails_fast(self) -> None:
+        """OCR now polls its own Mistral batches: a missing key fails at startup."""
+        settings = _fake_settings(mistral_key=None)
+
+        with (  # noqa: SIM117
+            patch.object(worker_mod, "OcrSettings", return_value=settings),
+            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "setup_logging"),
+            patch.object(worker_mod, "silence_noisy_loggers"),
+            patch.object(worker_mod, "get_store_engine", return_value="eng"),
+            patch.object(worker_mod, "S3Blobs", return_value=object()),
+            patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())),
+            patch.object(worker_mod, "_run_worker", AsyncMock()),
+        ):
+            # _build_mistral_ocr is NOT patched: the real builder returns None for
+            # an empty key, and the composition root turns that into the error.
+            with pytest.raises(ValueError, match="MISTRAL_API_KEY"):
+                await worker_mod.run_worker()
 
     @pytest.mark.asyncio
     async def test_unset_bucket_fails_fast(self) -> None:

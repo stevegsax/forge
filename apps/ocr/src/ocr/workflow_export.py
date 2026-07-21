@@ -35,7 +35,7 @@ class OcrExportWorkflow:
 
         result: OcrExportResult = await workflow.execute_activity(
             "export_ocr_document",
-            input.model_dump_json(),
+            input,
             start_to_close_timeout=_EXPORT_TIMEOUT,
             retry_policy=_EXPORT_RETRY,
             result_type=OcrExportResult,

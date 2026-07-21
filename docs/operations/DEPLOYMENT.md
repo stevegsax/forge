@@ -27,11 +27,11 @@ application state of record stays managed and offsite.
 │  │   persistence ─┐         │   │   FORGE_TEMPORAL_ADDRESS=          │ │
 │  │ temporal-ui :8233        │   │     127.0.0.1:7233                 │ │
 │  │ postgres :5433 ◄┘        │   │ pbook-worker → pbook worker (opt)  │ │
-│  │   forge_dev + temporal + │   │   env: ~/.config/forge/forge.env   │ │
-│  │   temporal_visibility    │   └───────────────┬───────────────────┘ │
-│  │ minio :9002/:9003 (dev)  │                   │                     │
-│  └──────────────────────────┘                   │ outbound HTTPS      │
-│  worktrees, cloned repos, logs (disposable)     │                     │
+│  │   forge_dev + temporal + │   │ ocr-worker → ocr worker (opt)      │ │
+│  │   temporal_visibility    │   │   env: ~/.config/forge/forge.env   │ │
+│  │ minio :9002/:9003 (dev)  │   └───────────────┬───────────────────┘ │
+│  └──────────────────────────┘                   │                     │
+│  worktrees, cloned repos, logs (disposable)     │ outbound HTTPS      │
 └─────────────────────────────────────────────────┼─────────────────────┘
                                                   ▼
                               Supabase Postgres (forge + pbook state)
@@ -74,7 +74,7 @@ increment 2, but the build-agent rationale keeps them on the host.)
 | Supabase Postgres | Forge store (and pbook store if used) | `FORGE_DB_URL`; direct (non-transaction-pooled) connection |
 | S3 bucket | OCR/batch blobs | Creds via `~/.aws` or the env file; lifecycle policy: [deploy/s3/](../../deploy/s3/) |
 | Anthropic API | All Forge LLM calls; pbook extraction/review | `ANTHROPIC_API_KEY` |
-| Mistral API | OCR submits | `MISTRAL_API_KEY` — built into a client at startup when set; unset → Mistral OCR disabled (not a fail-fast) |
+| Mistral API | OCR (ocr app only) | `MISTRAL_API_KEY` — **required by the ocr worker** (fail-fast at startup, T4.2); the forge worker never reads it |
 | OpenAI API | pbook embeddings | `OPENAI_API_KEY` (only if pbook used) |
 | GitHub | Clone/push the repos Forge operates on | The operator's normal git credentials |
 
@@ -193,7 +193,7 @@ Worker/CLI environment (the launchd agents read these from
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for the `otlp_*` exporters — the standard OpenTelemetry SDK var (forge's own `FORGE_OTEL_ENDPOINT` was deleted at T3.6) | unset (exporter is `none`) |
 | `FORGE_WORKER_IDENTITY` | Worker identity in Temporal | set by the launchd agents (`desktop-forge-worker-1/2`) |
 | `ANTHROPIC_API_KEY` | Anthropic SDK auth | key |
-| `MISTRAL_API_KEY` | OCR submits. The forge and ocr workers each build a Mistral client at startup **only when it is set**; unset → Mistral OCR is disabled (no fail-fast). Forge makes the OCR submit today; the ocr worker's client is built ahead of Phase 4's self-polling | key |
+| `MISTRAL_API_KEY` | OCR (ocr app). **Required by the ocr worker** — it submits and polls its own Mistral batches and fails fast at startup without it (T4.2). The forge worker never reads it (anthropic-only transport) | key |
 | `OPENAI_API_KEY` | pbook embeddings | key (if pbook used) |
 | `PBOOK_DATABASE_URL` | pbook Postgres store | Supabase URL (if pbook used) |
 | `AWS_*` | S3 auth if not using `~/.aws` | keys/region |

@@ -20,6 +20,9 @@ from sax_platform.contracts.persist import (
     PersistBatchFailure as PersistBatchFailure,
 )
 from sax_platform.contracts.persist import (
+    PersistBatchOutcome as PersistBatchOutcome,
+)
+from sax_platform.contracts.persist import (
     PersistBatchSubmission as PersistBatchSubmission,
 )
 from sax_platform.contracts.persist import (
@@ -91,27 +94,6 @@ class PersistBatchStatus(BaseModel):
     """A batch job status transition (plain UPDATE on batch_jobs.id)."""
 
     kind: Literal["batch_status"] = "batch_status"
-    request_id: str
-    status: str
-    error_message: str | None = None
-
-
-class PersistBatchOutcome(BaseModel):
-    """Terminal provider-lifecycle outcome of a batch job (UPDATE on batch_jobs.id).
-
-    Written by the waiting workflow at final fetch (``ENDED``) or on a
-    failed/abandoned wait (``FAILED``/``EXPIRED``/``MISSING``). ``status`` carries a
-    ``BatchJobStatus`` value, validated at the store boundary. The write is
-    idempotent and monotonic: ``update_batch_status``'s ``WHERE status =
-    'submitted'`` guard makes a duplicate or stale re-apply a no-op that can never
-    regress an already-terminal row.
-
-    Forge-internal (the timer-loop transport is the only writer); it stays in
-    ``forge.persist_models`` rather than the shared ``sax_platform.contracts``
-    surface, unlike ``PersistBatchSubmission``/``PersistBatchFailure``.
-    """
-
-    kind: Literal["batch_outcome"] = "batch_outcome"
     request_id: str
     status: str
     error_message: str | None = None

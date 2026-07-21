@@ -338,7 +338,7 @@ The plan can override the tier for individual steps via `capability_tier`, so a 
 
 Every LLM call in Forge can run in two modes:
 
-- **Batch mode** (default) — The activity submits the request to the Anthropic Batch API; the workflow then polls `batch_status` on a `workflow.sleep` loop until the batch ends and fetches its own result line via `fetch_batch_result` (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal). (Mistral batch is reached only through the opaque-blob OCR SPI — `sax_platform.ocr.MistralOcr` — not forge's own LLM calls.)
+- **Batch mode** (default) — The activity submits the request to the Anthropic Batch API; the workflow then polls `batch_status` on a `workflow.sleep` loop until the batch ends and fetches its own result line via `fetch_batch_result` (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal). (Forge's batch transport is anthropic-only, T4.2; Mistral batch lives entirely in the `apps/ocr` app.)
 - **Sync mode** (opt-in via `--sync`) — The activity calls the provider's messages API directly and waits for the response.
 
 `ForgeTaskInput.sync_mode` defaults to `False`, so batch is the default path. The prompt construction is identical in both modes. The workflow dispatch methods (`_call_generation`, `_call_planner_llm`, `_call_exploration`, `_call_sanity_check_llm`, `_call_conflict_resolution`) check `self._sync_mode` and route accordingly. This is why every LLM call must be a self-contained document completion—batch APIs don't support multi-turn conversations.
@@ -407,7 +407,6 @@ src/forge/
 │
 ├── activities/
 │   ├── _heartbeat.py          # Heartbeat management for long-running activities
-│   ├── _mistral.py            # Cached MistralOcr resolver (routes the OCR blob SPI)
 │   ├── context.py             # Prompt assembly (system + user prompts)
 │   ├── llm.py                 # LLM call execution (structured outputs via sax_platform.llm)
 │   ├── output.py              # File writing + edit application
@@ -423,9 +422,9 @@ src/forge/
 │   ├── persist.py             # Survivable idempotent store writes
 │   ├── playbook_export.py     # Playbook export activity
 │   ├── playbook_review.py     # Manual-playbook LLM review activity
-│   ├── batch_submit.py        # Batch API submission (LLM lane + opaque-blob SPI)
+│   ├── batch_submit.py        # Anthropic Batch API submission (anthropic-only, T4.2)
 │   ├── batch_parse.py         # Batch response parsing
-│   └── batch_poll.py          # Batch status polling + signal delivery
+│   └── batch_fetch.py         # Batch status polling + result fetch (timer loop; no signal)
 │
 ├── code_intel/
 │   ├── graph.py               # Import graph analysis (grimp + networkx)
@@ -443,9 +442,9 @@ src/forge/
 └── alembic/                   # Store migrations (env.py + versions/001–003)
 ```
 
-The LLM client — `AnthropicLLM` (structured outputs, both lanes), the tier registry, `ThinkingPolicy`, and the Mistral OCR capability — lives in the `sax-platform` workspace member (`libs/sax-platform`), not under `src/forge/` (the former `sax-llm` provider layer was deleted at T3.5). The OCR pipeline is no longer in this tree either: it is the separate `apps/ocr` consumer app, which reaches the platform through forge's batch SPI.
+The LLM client — `AnthropicLLM` (structured outputs, both lanes), the tier registry, `ThinkingPolicy`, and the Mistral OCR capability — lives in the `sax-platform` workspace member (`libs/sax-platform`), not under `src/forge/` (the former `sax-llm` provider layer was deleted at T3.5). The OCR pipeline is no longer in this tree either: it is the separate `apps/ocr` consumer app, which owns its full Mistral batch lifecycle via `sax_platform.ocr.MistralOcr` and shares only the cross-queue batch ledger with forge (T4.2 deleted the batch SPI).
 
-> The map above covers the core loop. Major shipped subsystems — batch execution (the default), transcript ingestion, the knowledge/playbook lifecycle, planner evaluation, store externalization (Postgres + S3 with survivable writes), the batch SPI (consumed by `apps/ocr`), and mTLS remote access (infrastructure since removed, D99) — are summarized in [Subsystems Beyond the Core Loop](#subsystems-beyond-the-core-loop).
+> The map above covers the core loop. Major shipped subsystems — batch execution (the default), transcript ingestion, the knowledge/playbook lifecycle, planner evaluation, store externalization (Postgres + S3 with survivable writes), the OCR consumer app (`apps/ocr`, its own Mistral batch lifecycle), and mTLS remote access (infrastructure since removed, D99) — are summarized in [Subsystems Beyond the Core Loop](#subsystems-beyond-the-core-loop).
 
 ---
 
@@ -509,9 +508,9 @@ The universal workflow step is the spine, but several shipped subsystems run alo
 
 All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to the Anthropic Batch API by default (`sync_mode=False`). Each workflow then runs its own timer loop: it records the submission in `batch_jobs`, polls `batch_status` on a `workflow.sleep` interval (min 300s, D88) until the batch ends or the 25h ceiling passes, fetches its own result line via `fetch_batch_result`, and records the final outcome. Submit/status/fetch/parse: `activities/batch_submit.py`, `activities/batch_fetch.py`, `activities/batch_parse.py`; the wait loop lives in `workflow_blocks.py`; lifecycle states: `models.py::BatchJobStatus`. Durable `workflow.sleep` timers keep all workflow state alive across the wait rather than terminate-and-restart (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal).
 
-### Batch SPI (OCR-agnostic) and the OCR consumer
+### The OCR consumer app
 
-Forge exposes a domain-agnostic batch SPI: `submit_batch_blob` forwards an opaque provider payload to a Batch API, and the consumer workflow polls `batch_status` and fetches its own verbatim provider result cross-queue via `fetch_batch_result` (`activities/batch_submit.py`, `activities/batch_fetch.py`). The `"mistral"` provider routes to `sax_platform.ocr.MistralOcr` rather than the retired sax-llm registry (rerouted at T3.3; sax-llm deleted at T3.5). The OCR pipeline itself — sync/batch Mistral OCR, image extraction, `ocr-image://` URI rewriting, PDF chunking, S3 blob storage — is no longer in this repo's `src/forge/`; it is the separate `apps/ocr` consumer app, which imports `sax_platform` only (never `forge`; the former `forge_contracts` package it used to import was absorbed into `sax_platform.contracts` at T3.4).
+Forge's batch transport is anthropic-only (T4.2): every forge batch is an Anthropic batch, and `batch_fetch` rejects any non-anthropic provider. OCR lives entirely in the separate `apps/ocr` consumer app — it submits and polls its own Mistral batches through `sax_platform.ocr.MistralOcr` (`submit_ocr_batch`, an `ocr_batch_status` timer loop with backoff+jitter via `sax_platform.temporal.polling.wait_batch_ended`, a single `fetch_and_store_ocr_result`), extracts images, rewrites `ocr-image://` URIs, chunks PDFs, and stores blobs in S3. `OcrSubmitWorkflow` awaits its store children inline (no ABANDON) and reassembles the document; if any chunk fails, the document fails once all chunks have settled — a failed chunk no longer strands the document for the old 26h gather timeout. The app imports `sax_platform` only (never `forge`); the sole cross-queue link is the shared batch ledger — ocr writes `batch_jobs` rows via `persist_block` activity calls on `forge-task-queue` (not signals — zero `@workflow.signal` platform-wide) and reads that ledger read-only, both from `sax_platform.contracts` (the former `forge_contracts` package, absorbed at T3.4).
 
 ### Transcript ingestion
 

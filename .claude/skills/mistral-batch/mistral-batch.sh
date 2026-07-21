@@ -60,7 +60,7 @@ case "$cmd" in
                 echo "$line" | jq -c '{
                     custom_id,
                     status: .response.status_code,
-                    has_choices: ((.response.body.choices // []) | length > 0)
+                    has_pages: ((.response.body.pages // []) | length > 0)
                 }' 2>/dev/null || echo "$line"
             done
         ;;

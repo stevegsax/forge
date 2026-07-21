@@ -22,22 +22,18 @@ re-export.
 from typing import TYPE_CHECKING, Any
 
 from sax_platform.contracts.constants import (
-    BATCH_RESULT_SIGNAL,
     FORGE_TASK_QUEUE,
     OCR_TASK_QUEUE,
     TEMPORAL_NAMESPACE,
 )
 from sax_platform.contracts.models import (
     BatchJobStatus,
-    BatchResult,
-    BatchSubmitResult,
-    BatchSubmitSpiInput,
     dump_batch_result_payload,
     parse_batch_result_payload,
-    resolve_batch_result,
 )
 from sax_platform.contracts.persist import (
     PersistBatchFailure,
+    PersistBatchOutcome,
     PersistBatchSubmission,
     PersistResult,
     persist_block,
@@ -65,15 +61,12 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "BATCH_RESULT_SIGNAL",
     "FORGE_TASK_QUEUE",
     "OCR_TASK_QUEUE",
     "TEMPORAL_NAMESPACE",
     "BatchJobStatus",
-    "BatchResult",
-    "BatchSubmitResult",
-    "BatchSubmitSpiInput",
     "PersistBatchFailure",
+    "PersistBatchOutcome",
     "PersistBatchSubmission",
     "PersistResult",
     "S3ConfigError",
@@ -81,5 +74,4 @@ __all__ = [
     "dump_batch_result_payload",
     "parse_batch_result_payload",
     "persist_block",
-    "resolve_batch_result",
 ]
