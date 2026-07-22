@@ -50,11 +50,16 @@ class TestForgeSettingsFailFast:
 # ---------------------------------------------------------------------------
 
 
-def _fake_settings(*, bucket: str | None = "b", mistral_key: str | None = "mk") -> SimpleNamespace:
+def _fake_settings(
+    *,
+    bucket: str | None = "b",
+    mistral_key: str | None = "mk",
+    namespace: str = "forge-test",
+) -> SimpleNamespace:
     return SimpleNamespace(
         db=SimpleNamespace(url="sqlite:///settings.db"),
         tracing=SimpleNamespace(exporter="console"),
-        temporal=SimpleNamespace(address="settings-host:7233"),
+        temporal=SimpleNamespace(address="settings-host:7233", namespace=namespace),
         blob=SimpleNamespace(bucket=bucket, prefix="pre/"),
         llm=SimpleNamespace(mistral_api_key=mistral_key),
         log=SimpleNamespace(),
@@ -65,8 +70,14 @@ class _Composition:
     """Sentinels for every dependency the composition root builds, plus the
     patch set that injects them, so tests can assert the exact wiring."""
 
-    def __init__(self, *, bucket: str | None = "b", mistral_key: str | None = "mk") -> None:
-        self.settings = _fake_settings(bucket=bucket, mistral_key=mistral_key)
+    def __init__(
+        self,
+        *,
+        bucket: str | None = "b",
+        mistral_key: str | None = "mk",
+        namespace: str = "forge-test",
+    ) -> None:
+        self.settings = _fake_settings(bucket=bucket, mistral_key=mistral_key, namespace=namespace)
         self.client = MagicMock(name="temporal_client")
         self.sdk_client = MagicMock(name="sdk_client")
         self.llm = MagicMock(name="anthropic_llm")
@@ -127,7 +138,10 @@ class TestRunWorkerComposition:
         comp.init_store.assert_called_once_with(comp.settings.db.url)
         comp.init_tracing.assert_called_once_with(comp.settings.tracing.exporter)
         comp.connect.assert_awaited_once_with(
-            "settings-host:7233", identity="worker-1", settings=comp.settings.temporal
+            "settings-host:7233",
+            identity="worker-1",
+            namespace="forge-test",
+            settings=comp.settings.temporal,
         )
 
         # Exactly one SDK client and one store engine built.
@@ -208,7 +222,10 @@ class TestRunWorkerComposition:
             await worker_mod.run_worker(address="override:7233")
 
         comp.connect.assert_awaited_once_with(
-            "override:7233", identity=None, settings=comp.settings.temporal
+            "override:7233",
+            identity=None,
+            namespace="forge-test",
+            settings=comp.settings.temporal,
         )
 
     @pytest.mark.asyncio
@@ -267,3 +284,26 @@ class TestEnvGuard:
             await worker_mod.run_worker()
 
         assert "forge worker starting: env=test" in caplog.text
+
+
+class TestNamespaceCoherence:
+    """The worker refuses an env/namespace pairing that crosses the prod/staging line."""
+
+    @pytest.mark.asyncio
+    async def test_incoherent_namespace_fails_before_store_setup(self) -> None:
+        """FORGE_ENV=test + the ``default`` namespace fails fast, before migrations.
+
+        The coherence check runs after settings are built but before ``_init_store``
+        or the client is constructed, so a mis-namespaced worker never touches a
+        database or the Temporal frontend.
+        """
+        from sax_platform.config import ForgeEnvError
+
+        # env=test comes from the autouse forge_env fixture; the default namespace
+        # is incoherent with it.
+        comp = _Composition(namespace="default")
+        with comp.apply(), pytest.raises(ForgeEnvError, match="must not use the 'default'"):
+            await worker_mod.run_worker()
+
+        comp.init_store.assert_not_called()
+        comp.connect.assert_not_awaited()

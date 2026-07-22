@@ -43,11 +43,15 @@ shell hands it ``os.environ``).
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final
+from pathlib import Path
+from typing import TYPE_CHECKING, Final, assert_never
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -60,6 +64,9 @@ __all__ = [
     "LlmSettings",
     "LogSettings",
     "TemporalSettings",
+    "parse_env_profile",
+    "require_namespace_coherence",
+    "resolve_env_profile_path",
     "resolve_forge_env",
 ]
 
@@ -74,6 +81,13 @@ class TemporalSettings(BaseSettings):
     model_config = SettingsConfigDict(frozen=True, extra="ignore", populate_by_name=True)
 
     address: str = Field(default="localhost:7233", validation_alias="FORGE_TEMPORAL_ADDRESS")
+    # The Temporal namespace this process connects to. Defaults to the shared
+    # ``TEMPORAL_NAMESPACE`` ("default") so production — which sets nothing here —
+    # keeps its historical behavior with zero config. A dev/test process declares
+    # its own (e.g. ``forge-dev``) to isolate its queues/schedules/workflow ids
+    # inside the shared local Temporal server; ``require_namespace_coherence``
+    # enforces the pairing against ``FORGE_ENV``.
+    namespace: str = Field(default=TEMPORAL_NAMESPACE, validation_alias="FORGE_TEMPORAL_NAMESPACE")
     tls: bool = Field(default=False, validation_alias="FORGE_TEMPORAL_TLS")
     tls_server_ca: str | None = Field(default=None, validation_alias="FORGE_TEMPORAL_TLS_SERVER_CA")
     tls_client_cert: str | None = Field(
@@ -205,3 +219,141 @@ def resolve_forge_env(environ: Mapping[str, str]) -> ForgeEnv:
             )
 
     return env
+
+
+def require_namespace_coherence(env: ForgeEnv, namespace: str) -> None:
+    """Refuse an env/namespace pairing that crosses the prod/staging line.
+
+    A single Temporal server is shared across environments; a namespace isolates
+    everything queue-scoped inside it — task queues, schedules, and workflow ids.
+    A process's namespace must therefore match its declared environment, or it
+    would poll the wrong environment's work. Pure over its two inputs: the shell
+    resolves the env (:func:`resolve_forge_env`) and reads the namespace from
+    :class:`TemporalSettings` before calling this, immediately before connecting.
+
+    Rules:
+
+    - :attr:`ForgeEnv.PROD` MUST use the shared ``"default"`` namespace
+      (:data:`TEMPORAL_NAMESPACE`) — production *is* the default namespace, so
+      any other value means a mis-assembled prod environment.
+    - :attr:`ForgeEnv.DEV` / :attr:`ForgeEnv.TEST` MUST NOT use ``"default"``
+      (that is production's namespace); a staging process must declare its own.
+
+    Raises:
+        ForgeEnvError: when the pairing is incoherent. The message names the fix
+            because it surfaces verbatim to an operator at process start.
+    """
+    match env:
+        case ForgeEnv.PROD:
+            if namespace != TEMPORAL_NAMESPACE:
+                raise ForgeEnvError(
+                    f"FORGE_ENV=prod requires the {TEMPORAL_NAMESPACE!r} Temporal "
+                    f"namespace, but FORGE_TEMPORAL_NAMESPACE={namespace!r}. Production "
+                    "runs in the default namespace — unset FORGE_TEMPORAL_NAMESPACE "
+                    "(or set it to 'default') in the prod profile."
+                )
+        case ForgeEnv.DEV | ForgeEnv.TEST:
+            if namespace == TEMPORAL_NAMESPACE:
+                raise ForgeEnvError(
+                    f"FORGE_ENV={env.value} must not use the {TEMPORAL_NAMESPACE!r} "
+                    "Temporal namespace — that is production's, and a dev/test process "
+                    "there would poll production's queues and schedules. Set "
+                    "FORGE_TEMPORAL_NAMESPACE=forge-dev in the dev profile (create the "
+                    "namespace once with "
+                    "`temporal operator namespace create --retention 72h -n forge-dev`)."
+                )
+        case _ as unreachable:  # pragma: no cover - exhaustiveness guard
+            assert_never(unreachable)
+
+
+# ---------------------------------------------------------------------------
+# Env-profile parsing (pure) — the CLI ``--env`` flag's functional core
+# ---------------------------------------------------------------------------
+
+# Matches ``${NAME}`` (braced form only). A bare ``$`` or ``$NAME`` is left
+# untouched so a secret value containing ``$`` is never corrupted; only the
+# braced, name-shaped reference is a candidate for expansion. The name pattern
+# is the POSIX env-var shape, so ``${1BAD}`` or ``${}`` never matches and is
+# left literal wholesale.
+_ENV_REF: Final = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_refs(value: str, expand_from: Mapping[str, str]) -> str:
+    """Expand ``${NAME}`` references against *expand_from* (pure, braced-only).
+
+    An unknown ``${NAME}`` (name absent from *expand_from*) is left literal, as
+    is any unbraced ``$`` or ``$NAME``. No shell evaluation ever occurs.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in expand_from:
+            return expand_from[name]
+        return match.group(0)  # unknown ${NAME}: leave the reference literal
+
+    return _ENV_REF.sub(_replace, value)
+
+
+def parse_env_profile(text: str, *, expand_from: Mapping[str, str]) -> dict[str, str]:
+    """Parse an env-profile file's *text* into a ``KEY -> VALUE`` mapping (pure).
+
+    Tolerates the two authoring styles in use: strict ``KEY=VALUE`` lines and
+    shell-style ``export KEY="value"`` lines. It performs no shell evaluation
+    and never executes anything — only these mechanical steps, per line:
+
+    1. Blank lines and ``#`` comment lines are skipped.
+    2. One optional leading ``export `` is stripped.
+    3. The line is split on its first ``=`` (values may contain ``=``).
+    4. One matching pair of surrounding single or double quotes is stripped
+       from the value.
+    5. ``${NAME}`` references are expanded against *expand_from* (braced form
+       only; unknown or unbraced references are left literal — see
+       :func:`_expand_refs`).
+
+    A non-comment line with no ``=`` (or an empty key) is malformed and raises
+    :class:`ForgeEnvError` naming the 1-based line number — the shell surfaces
+    that message and exits. Expansion is against an explicit mapping (the shell
+    passes ``os.environ``) so the function stays pure and testable.
+    """
+    result: dict[str, str] = {}
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export ") or line.startswith("export\t"):
+            line = line[len("export") :].lstrip()
+
+        key, sep, value = line.partition("=")
+        if not sep:
+            raise ForgeEnvError(
+                f"Malformed env-profile line {lineno}: {raw_line!r} has no '='. "
+                "Each non-comment line must be KEY=VALUE (an optional leading "
+                "'export ' is allowed)."
+            )
+        key = key.strip()
+        if not key:
+            raise ForgeEnvError(
+                f"Malformed env-profile line {lineno}: {raw_line!r} has an empty key."
+            )
+
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        result[key] = _expand_refs(value, expand_from)
+    return result
+
+
+def resolve_env_profile_path(value: str, *, xdg_config_home: str | None) -> Path:
+    """Resolve a ``--env`` value to a profile file path (pure).
+
+    A *value* containing a path separator (``/``) or ending in ``.env`` is taken
+    verbatim as a filesystem path. Otherwise it is a profile *name* resolved to
+    ``<xdg_config_home or ~/.config>/forge/envs/<value>.env`` — the XDG
+    convention the deploy tree and workers use. ``xdg_config_home`` is passed in
+    explicitly (the shell reads ``XDG_CONFIG_HOME``); the ``~/.config`` fallback
+    is used only when it is ``None``.
+    """
+    if "/" in value or value.endswith(".env"):
+        return Path(value)
+    base = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
+    return base / "forge" / "envs" / f"{value}.env"

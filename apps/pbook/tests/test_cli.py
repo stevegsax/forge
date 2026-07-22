@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -959,6 +960,175 @@ class TestEnvGuard:
         assert result.exit_code == 0
         schema = json.loads(result.output)
         assert "properties" in schema
+
+
+# ---------------------------------------------------------------------------
+# --env profile flag (T0.9 follow-up)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def restore_environ():
+    """Snapshot ``os.environ`` and restore it on teardown.
+
+    ``--env`` mutates the real process environment (that is the whole feature),
+    and those writes are not tracked by ``monkeypatch``, so they would leak
+    between tests. This fixture restores a full snapshot afterward.
+    """
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(snapshot)
+
+
+class TestEnvProfileFlag:
+    """``pbook --env NAME|PATH`` loads a profile before the guard runs.
+
+    It applies the parsed KEY=VALUE pairs to the process environment (overwriting
+    ambient values), declares FORGE_ENV, then the guard runs unchanged. It never
+    sets FORGE_PROD_ACK — ``--env prod`` still fails without a separately-exported
+    ack. ``add --schema`` is the cheap observable command (no DB). All cases use
+    ``restore_environ`` so the direct ``os.environ`` writes don't leak.
+    """
+
+    def test_path_profile_applies_vars_and_proceeds(self, tmp_path, restore_environ):
+        profile = tmp_path / "dev.env"
+        profile.write_text('export FORGE_ENV_TAG="dev"\nFORGE_DB_URL=sqlite:///from-profile.db\n')
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--env", str(profile), "add", "--schema"])
+
+        assert result.exit_code == 0
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///from-profile.db"
+        assert os.environ["FORGE_ENV"] == "dev"
+
+    def test_name_resolves_under_xdg_config_home(self, tmp_path, monkeypatch, restore_environ):
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "dev.env").write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///named.db\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--env", "dev", "add", "--schema"])
+
+        assert result.exit_code == 0
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///named.db"
+        assert os.environ["FORGE_ENV"] == "dev"
+
+    def test_profile_overrides_ambient_var(self, tmp_path, restore_environ):
+        os.environ["FORGE_DB_URL"] = "sqlite:///ambient.db"
+        profile = tmp_path / "dev.env"
+        profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///override.db\n")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--env", str(profile), "add", "--schema"])
+
+        assert result.exit_code == 0
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///override.db"
+
+    def test_tag_mismatch_exits_78(self, tmp_path, monkeypatch, restore_environ):
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "dev.env").write_text("FORGE_ENV_TAG=prod\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--env", "dev", "add", "--schema"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "does not match" in result.stderr
+
+    def test_env_prod_still_requires_ack(self, tmp_path, monkeypatch, restore_environ):
+        # The non-bypass proof: --env prod loads a prod-tagged profile but never
+        # supplies FORGE_PROD_ACK, so the guard still refuses.
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "prod.env").write_text("FORGE_ENV_TAG=prod\nFORGE_DB_URL=sqlite:///prod.db\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--env", "prod", "add", "--schema"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "explicit act" in result.stderr
+
+    def test_missing_file_exits_78(self, tmp_path, restore_environ):
+        missing = tmp_path / "nope.env"
+        runner = CliRunner()
+        result = runner.invoke(main, ["--env", str(missing), "add", "--schema"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert str(missing) in result.stderr
+
+    def test_path_profile_without_tag_exits_78(self, tmp_path, restore_environ):
+        profile = tmp_path / "notag.env"
+        profile.write_text("FORGE_DB_URL=sqlite:///x.db\n")
+        runner = CliRunner()
+        result = runner.invoke(main, ["--env", str(profile), "add", "--schema"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "FORGE_ENV_TAG" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Staging-lane isolation: --env dev threads its namespace into the connect,
+# and a dev env without a declared namespace is refused before connecting.
+# ---------------------------------------------------------------------------
+
+
+class TestNamespaceCoherence:
+    """A ``--env dev`` profile carries its Temporal namespace into every connect."""
+
+    def test_dev_profile_namespace_reaches_connect(self, tmp_path, restore_environ):
+        from unittest.mock import AsyncMock, patch
+
+        from pbook.models import RetrievalResult
+
+        profile = tmp_path / "dev.env"
+        profile.write_text("FORGE_ENV_TAG=dev\nFORGE_TEMPORAL_NAMESPACE=forge-dev\n")
+
+        mock_client = AsyncMock()
+        mock_client.execute_workflow.return_value = RetrievalResult()
+
+        runner = CliRunner()
+        with patch(
+            "pbook.cli.connect_temporal", new=AsyncMock(return_value=mock_client)
+        ) as mock_connect:
+            result = runner.invoke(main, ["--env", str(profile), "search", "foo", "--json"])
+
+        assert result.exit_code == 0, result.output
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.kwargs["namespace"] == "forge-dev"
+
+    def test_dev_env_without_namespace_refuses_to_connect(self, monkeypatch, restore_environ):
+        from unittest.mock import AsyncMock, patch
+
+        # Dev without a declared namespace defaults to "default" — production's —
+        # so a Temporal-touching command exits 78 with the coherence message and
+        # never opens a connection.
+        monkeypatch.setenv("FORGE_ENV", "dev")
+        monkeypatch.delenv("FORGE_TEMPORAL_NAMESPACE", raising=False)
+
+        runner = CliRunner()
+        with patch("pbook.cli.connect_temporal", new=AsyncMock()) as mock_connect:
+            result = runner.invoke(main, ["search", "foo"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "must not use the 'default'" in result.stderr
+        mock_connect.assert_not_awaited()
+
+    def test_pure_command_unaffected_by_namespace(self, monkeypatch, restore_environ):
+        # ``add --schema`` never connects to Temporal, so a dev env with no
+        # namespace (which would fail a Temporal command) leaves it alone.
+        monkeypatch.setenv("FORGE_ENV", "dev")
+        monkeypatch.delenv("FORGE_TEMPORAL_NAMESPACE", raising=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--schema"])
+
+        assert result.exit_code == 0
+        assert "properties" in json.loads(result.output)
 
 
 # ---------------------------------------------------------------------------

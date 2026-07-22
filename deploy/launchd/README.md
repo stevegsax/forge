@@ -48,6 +48,11 @@ targets — there is no default, and production is an explicit act:
   never set by the profile or the scripts — only by the plist (or an
   interactive shell), so sourcing a profile can never by itself grant
   production access.
+- Each profile also declares `FORGE_TEMPORAL_NAMESPACE` (prod `default`,
+  dev `forge-dev`) — the [staging-lane isolation](../../docs/operations/WORKERS.md#staging-lane-dev-namespace).
+  A coherence check refuses to connect unless it matches `FORGE_ENV`
+  (`prod`→`default`; `dev`/`test`→anything but `default`), so a dev
+  worker can never poll production's queues in the shared Temporal server.
 
 To run a worker or `make backup-app-dbs` **interactively**, declare the
 environment yourself, and use `set -a` so the profile's values (including

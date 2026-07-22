@@ -17,13 +17,20 @@ import pytest
 import ocr.worker as worker_mod
 
 
-def _fake_settings(*, bucket: str = "bkt", prefix: str = "pre/", mistral_key: str | None = "k"):
+def _fake_settings(
+    *,
+    bucket: str = "bkt",
+    prefix: str = "pre/",
+    mistral_key: str | None = "k",
+    namespace: str = "forge-test",
+):
     settings = MagicMock(name="OcrSettings")
     settings.db.url = "sqlite:///x.db"
     settings.blob.bucket = bucket
     settings.blob.prefix = prefix
     settings.llm.mistral_api_key = mistral_key
     settings.temporal.address = "settings-temporal:7233"
+    settings.temporal.namespace = namespace
     return settings
 
 
@@ -95,9 +102,13 @@ class TestRunWorker:
         mock_cls.assert_called_once_with(engine_sentinel, blobs_sentinel, mistral_sentinel)
         mock_activity_methods.assert_called_once_with(store_sentinel)
 
-        # Connect via settings (address falls back to settings.temporal.address).
+        # Connect via settings (address falls back to settings.temporal.address);
+        # the resolved namespace is threaded so the worker joins the right lane.
         mock_connect.assert_awaited_once_with(
-            "settings-temporal:7233", identity="worker-123", settings=settings.temporal
+            "settings-temporal:7233",
+            identity="worker-123",
+            namespace="forge-test",
+            settings=settings.temporal,
         )
 
         # The tracker Schedule is installed on the connected client before serving
@@ -141,7 +152,10 @@ class TestRunWorker:
             await worker_mod.run_worker("override:7233")
 
         mock_connect.assert_awaited_once_with(
-            "override:7233", identity=None, settings=settings.temporal
+            "override:7233",
+            identity=None,
+            namespace="forge-test",
+            settings=settings.temporal,
         )
 
     @pytest.mark.asyncio
@@ -228,3 +242,34 @@ class TestEnvGuard:
             await worker_mod.run_worker()
 
         assert "ocr worker starting: env=test" in caplog.text
+
+
+class TestNamespaceCoherence:
+    """The worker refuses an env/namespace pairing that crosses the prod/staging line."""
+
+    @pytest.mark.asyncio
+    async def test_incoherent_namespace_fails_before_store_setup(self) -> None:
+        """FORGE_ENV=test + the ``default`` namespace fails fast, before migrations.
+
+        The coherence check runs after settings are built but before ``_init_store``,
+        the Mistral capability, or the client, so a mis-namespaced worker never
+        touches a database or the Temporal frontend.
+        """
+        from sax_platform.config import ForgeEnvError
+
+        settings = _fake_settings(namespace="default")
+        mock_init_store = MagicMock()
+        mock_connect = AsyncMock()
+        with (  # noqa: SIM117
+            patch.object(worker_mod, "OcrSettings", return_value=settings),
+            patch.object(worker_mod, "_init_store", mock_init_store),
+            patch.object(worker_mod, "setup_logging"),
+            patch.object(worker_mod, "silence_noisy_loggers"),
+            patch.object(worker_mod, "connect_temporal", mock_connect),
+            patch.object(worker_mod, "_run_worker", AsyncMock()),
+        ):
+            with pytest.raises(ForgeEnvError, match="must not use the 'default'"):
+                await worker_mod.run_worker()
+
+        mock_init_store.assert_not_called()
+        mock_connect.assert_not_awaited()

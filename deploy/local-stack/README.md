@@ -133,6 +133,21 @@ uv run pbook migrate
 pbook does not auto-migrate — run `uv run pbook migrate` once against the
 target database before first use.
 
+The ocr chain (`alembic_version_ocr`) is applied automatically by the ocr
+worker at startup, but `ocr migrate` runs it standalone — parity with
+`pbook migrate` — for a schema bootstrap ahead of the worker or a dev
+setup. It reads `FORGE_DB_URL` and prints a credential-free
+`chain -> host/database` line:
+
+```bash
+uv run --package ocr ocr --env dev migrate
+```
+
+Either export `FORGE_ENV=dev` and `FORGE_DB_URL` first, or pass
+`--env dev` to load the dev profile inline (both CLIs take `--env` on the
+top-level group — before the subcommand: `pbook --env dev migrate`,
+`ocr --env dev migrate`).
+
 ## Object storage (MinIO)
 
 Forge's blob path (`forge_contracts.s3_blobs`, keyed under

@@ -13,7 +13,11 @@ import os
 from datetime import timedelta
 
 from openai import AsyncOpenAI
-from sax_platform.config import TemporalSettings, resolve_forge_env
+from sax_platform.config import (
+    TemporalSettings,
+    require_namespace_coherence,
+    resolve_forge_env,
+)
 from sax_platform.embeddings import OpenAIEmbeddings
 from sax_platform.llm import AnthropicLLM, make_client
 from sax_platform.logging import setup_logging
@@ -106,6 +110,13 @@ async def run_worker(address: str = "localhost:7233") -> None:
     """
     env = resolve_forge_env(os.environ)
     settings = PbookSettings()
+    temporal_settings = TemporalSettings()
+
+    # Enforce env/namespace coherence BEFORE store setup: a dev/test worker must
+    # never poll production's namespace (or vice versa). An incoherent pairing
+    # raises ForgeEnvError here so the worker fails fast, before it touches a DB.
+    require_namespace_coherence(env, temporal_settings.namespace)
+
     setup_logging("pbook", log_path=settings.log_path, console=True)
     logger.info("pbook worker starting: env=%s", env)
 
@@ -138,7 +149,9 @@ async def run_worker(address: str = "localhost:7233") -> None:
     ]
 
     logger.info("Connecting to Temporal at %s", address)
-    client = await connect_temporal(address, settings=TemporalSettings())
+    client = await connect_temporal(
+        address, namespace=temporal_settings.namespace, settings=temporal_settings
+    )
 
     logger.info("pbook worker starting on queue %s", PBOOK_TASK_QUEUE)
     await run_platform_worker(

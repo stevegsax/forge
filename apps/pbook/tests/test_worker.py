@@ -120,9 +120,11 @@ class TestRunWorkerComposition:
         with p_log, p_mig, p_eng, p_conn as conn, p_run:
             await worker_mod.run_worker(address="host:1234")
         conn.assert_awaited_once()
-        # address is passed positionally; TLS settings threaded via keyword.
+        # address is passed positionally; TLS settings + the resolved namespace
+        # threaded via keyword (forge-test in the suite, from the autouse fixture).
         assert conn.call_args.args[0] == "host:1234"
         assert "settings" in conn.call_args.kwargs
+        assert conn.call_args.kwargs["namespace"] == "forge-test"
 
 
 class TestEnvGuard:
@@ -160,3 +162,36 @@ class TestEnvGuard:
             await worker_mod.run_worker()
 
         assert "pbook worker starting: env=test" in caplog.text
+
+
+class TestNamespaceCoherence:
+    """The worker refuses an env/namespace pairing that crosses the prod/staging line."""
+
+    @pytest.mark.asyncio
+    async def test_incoherent_namespace_fails_before_store_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FORGE_ENV=test + the ``default`` namespace fails fast, before migrations.
+
+        The coherence check runs after settings are built but before ``build_engine``,
+        migrations, or the client, so a mis-namespaced worker never touches a DB or
+        the Temporal frontend.
+        """
+        from sax_platform.config import ForgeEnvError
+
+        # env=test comes from the autouse _forge_env fixture; the default namespace
+        # is incoherent with it.
+        monkeypatch.setenv("FORGE_TEMPORAL_NAMESPACE", "default")
+        p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
+        with (
+            p_log,
+            p_mig as mig,
+            p_eng,
+            p_conn as conn,
+            p_run,
+            pytest.raises(ForgeEnvError, match="must not use the 'default'"),
+        ):
+            await worker_mod.run_worker()
+
+        mig.assert_not_called()
+        conn.assert_not_awaited()

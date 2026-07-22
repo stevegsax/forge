@@ -24,9 +24,16 @@ from typing import TYPE_CHECKING
 
 import click
 
+# Module-level so the connect chokepoint is patchable in tests (as in the forge
+# and ocr CLIs). Importing this module does NOT pull in temporalio — the SDK
+# imports inside ``connect_temporal`` stay lazy — so the pure commands (migrate,
+# skill-prompt) pay nothing for it.
+from sax_platform.temporal.client import connect_temporal
+
 if TYPE_CHECKING:
     from typing import Any, NoReturn
 
+    from temporalio.client import Client
     from temporalio.types import MethodAsyncSingleParam
 
     from pbook.models import RetrievalResult
@@ -69,6 +76,88 @@ def _require_forge_env() -> None:
         sys.exit(EXIT_CONFIG_ERROR)
 
 
+def _apply_env_profile(env_value: str) -> None:
+    """Load a ``--env`` profile into the process environment before the guard.
+
+    The pure parsing (``parse_env_profile``/``resolve_env_profile_path``) lives
+    in ``sax_platform.config``; this shell reads the resolved file, applies the
+    parsed ``KEY=VALUE`` pairs over ``os.environ`` (an explicit flag overrides
+    ambient values; keys the file omits are left untouched), and declares
+    ``FORGE_ENV`` — the profile *name* for a name value, or the file's
+    ``FORGE_ENV_TAG`` for a path value. It never sets ``FORGE_PROD_ACK``, so
+    ``--env prod`` still fails unless the ack is exported separately. A missing
+    file, a malformed profile line, or a path-form profile with no
+    ``FORGE_ENV_TAG`` exits ``EXIT_CONFIG_ERROR``.
+    """
+    import os
+
+    from sax_platform.config import (
+        ForgeEnvError,
+        parse_env_profile,
+        resolve_env_profile_path,
+    )
+
+    is_path = "/" in env_value or env_value.endswith(".env")
+    path = resolve_env_profile_path(env_value, xdg_config_home=os.environ.get("XDG_CONFIG_HOME"))
+    try:
+        text = path.read_text()
+    except OSError:
+        click.echo(f"--env profile not found: {path}", err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+    try:
+        values = parse_env_profile(text, expand_from=os.environ)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+
+    for key, value in values.items():
+        os.environ[key] = value
+
+    if is_path:
+        tag = values.get("FORGE_ENV_TAG", "")
+        if not tag:
+            click.echo(
+                f"--env profile {path} declares no FORGE_ENV_TAG; a path-form "
+                "profile must name its environment (add FORGE_ENV_TAG=<prod|dev|test>).",
+                err=True,
+            )
+            sys.exit(EXIT_CONFIG_ERROR)
+        os.environ["FORGE_ENV"] = tag
+    else:
+        os.environ["FORGE_ENV"] = env_value
+
+
+async def _connect_checked(temporal_address: str) -> Client:
+    """Connect to Temporal after enforcing env/namespace coherence.
+
+    The single connect chokepoint for the pbook CLI. It routes through the shared
+    ``sax_platform`` ``connect_temporal`` (data converter, TLS) and, first,
+    re-resolves the already-guarded FORGE_ENV — purely, from ``os.environ`` — to
+    pair it with the namespace from :class:`TemporalSettings` (the sole
+    FORGE_TEMPORAL_* reader), refusing to connect a dev/test process to
+    production's namespace, or a prod process to any other, before the connection
+    opens. An incoherent pairing prints the fix and exits ``EXIT_CONFIG_ERROR``.
+    ``migrate`` and ``skill-prompt`` never reach a connect, so the namespace never
+    affects them.
+    """
+    import os
+
+    from sax_platform.config import (
+        ForgeEnvError,
+        TemporalSettings,
+        require_namespace_coherence,
+        resolve_forge_env,
+    )
+
+    settings = TemporalSettings()
+    try:
+        require_namespace_coherence(resolve_forge_env(os.environ), settings.namespace)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+    return await connect_temporal(temporal_address, namespace=settings.namespace, settings=settings)
+
+
 def _execute_workflow[ParamType, ReturnType](
     workflow_fn: MethodAsyncSingleParam[Any, ParamType, ReturnType],
     arg: ParamType,
@@ -83,14 +172,9 @@ def _execute_workflow[ParamType, ReturnType](
     the worker isn't running, the connect/submit will fail and the
     caller surfaces the error.
     """
-    from temporalio.client import Client
-    from temporalio.contrib.pydantic import pydantic_data_converter
 
     async def _submit() -> ReturnType:
-        client = await Client.connect(
-            temporal_address,
-            data_converter=pydantic_data_converter,
-        )
+        client = await _connect_checked(temporal_address)
         result: ReturnType = await client.execute_workflow(
             workflow_fn,
             arg,
@@ -197,9 +281,23 @@ def _format_entry(entry: dict[str, Any]) -> str:
 
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
+@click.option(
+    "--env",
+    "env_profile",
+    default=None,
+    metavar="NAME|PATH",
+    help=(
+        "Load an env profile before the environment guard runs. A bare NAME "
+        "resolves to $XDG_CONFIG_HOME/forge/envs/<NAME>.env and sets FORGE_ENV; "
+        "a path (or a value ending in .env) is read verbatim and takes FORGE_ENV "
+        "from its FORGE_ENV_TAG. Never supplies FORGE_PROD_ACK."
+    ),
+)
 @click.pass_context
-def main(ctx: click.Context, verbose: bool) -> None:
+def main(ctx: click.Context, verbose: bool, env_profile: str | None) -> None:
     """pbook — Knowledge playbook service."""
+    if env_profile is not None:
+        _apply_env_profile(env_profile)
     _require_forge_env()
 
     from sax_platform.logging import setup_logging
@@ -557,16 +655,10 @@ def push(file_path: Path, temporal_address: str) -> None:
         sys.exit(1)
 
     async def _submit() -> dict[str, Any]:
-        from temporalio.client import Client
-        from temporalio.contrib.pydantic import pydantic_data_converter
-
         from pbook.worker import PBOOK_TASK_QUEUE
         from pbook.workflows.extraction import ExtractionWorkflow
 
-        client = await Client.connect(
-            temporal_address,
-            data_converter=pydantic_data_converter,
-        )
+        client = await _connect_checked(temporal_address)
         result: dict[str, Any] = await client.execute_workflow(
             ExtractionWorkflow.run,
             json.dumps({"experiences": experiences, "project": project}),
@@ -651,17 +743,11 @@ def search(
         )
 
     async def _submit() -> RetrievalResult:
-        from temporalio.client import Client
-        from temporalio.contrib.pydantic import pydantic_data_converter
-
         from pbook.models import RetrievalInput, RetrievalMode
         from pbook.worker import PBOOK_TASK_QUEUE
         from pbook.workflows.retrieval import RetrievalWorkflow
 
-        client = await Client.connect(
-            temporal_address,
-            data_converter=pydantic_data_converter,
-        )
+        client = await _connect_checked(temporal_address)
         retrieval_mode = RetrievalMode(mode)
         result: RetrievalResult = await client.execute_workflow(
             RetrievalWorkflow.run,
@@ -1223,13 +1309,7 @@ def ingest(
     workflow_id = f"pbook-batch-ingest-{int(time.time())}"
 
     async def _submit() -> str:
-        from temporalio.client import Client
-        from temporalio.contrib.pydantic import pydantic_data_converter
-
-        client = await Client.connect(
-            temporal_address,
-            data_converter=pydantic_data_converter,
-        )
+        client = await _connect_checked(temporal_address)
         handle = await client.start_workflow(
             "BatchIngestionWorkflow",
             json.dumps({"sessions": session_dicts}),

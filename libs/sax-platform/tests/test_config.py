@@ -5,6 +5,8 @@ the mechanism: env values land in the right fields, defaults apply when a var
 is unset, instances are frozen, and ``DbSettings`` requires ``FORGE_DB_URL``.
 """
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -16,11 +18,16 @@ from sax_platform.config import (
     LlmSettings,
     LogSettings,
     TemporalSettings,
+    parse_env_profile,
+    require_namespace_coherence,
+    resolve_env_profile_path,
     resolve_forge_env,
 )
+from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
 
 _ALL_ENV_VARS = (
     "FORGE_TEMPORAL_ADDRESS",
+    "FORGE_TEMPORAL_NAMESPACE",
     "FORGE_TEMPORAL_TLS",
     "FORGE_TEMPORAL_TLS_SERVER_CA",
     "FORGE_TEMPORAL_TLS_CLIENT_CERT",
@@ -91,11 +98,63 @@ class TestTemporalSettings:
         assert settings.tls_client_key is None
         assert settings.tls_server_name is None
 
+    def test_namespace_defaults_to_shared_namespace_when_unset(self) -> None:
+        # Prod sets nothing here, so the default must equal the shared namespace —
+        # production's behavior stays identical with zero config.
+        assert TemporalSettings().namespace == TEMPORAL_NAMESPACE == "default"
+
+    def test_namespace_read_from_env_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_TEMPORAL_NAMESPACE", "forge-dev")
+        assert TemporalSettings().namespace == "forge-dev"
+
     def test_frozen_instance_rejects_mutation(self) -> None:
         settings = TemporalSettings()
 
         with pytest.raises(ValidationError, match="frozen"):
             settings.address = "mutated:7233"  # type: ignore[misc]
+
+
+class TestRequireNamespaceCoherence:
+    """The env/namespace coherence check is pure over its two inputs.
+
+    Prod must run in the shared ``default`` namespace; dev/test must run in any
+    other. This keeps a dev/test process off production's queues and schedules in
+    the shared Temporal server (and vice versa) — enforced at every connect.
+    """
+
+    @pytest.mark.parametrize(
+        ("env", "namespace"),
+        [
+            # Prod IS the default namespace.
+            (ForgeEnv.PROD, "default"),
+            (ForgeEnv.PROD, TEMPORAL_NAMESPACE),
+            # Dev/test in any non-default namespace are coherent.
+            (ForgeEnv.DEV, "forge-dev"),
+            (ForgeEnv.TEST, "forge-test"),
+            (ForgeEnv.TEST, "anything-but-default"),
+        ],
+    )
+    def test_coherent_pairings_pass(self, env: ForgeEnv, namespace: str) -> None:
+        # A coherent pairing returns None and raises nothing.
+        assert require_namespace_coherence(env, namespace) is None
+
+    @pytest.mark.parametrize(
+        ("env", "namespace", "match"),
+        [
+            # Prod in any non-default namespace is a mis-assembled prod env.
+            (ForgeEnv.PROD, "forge-dev", "requires the 'default'"),
+            (ForgeEnv.PROD, "forge-prod", "requires the 'default'"),
+            # Dev/test in the default namespace would poll production's work.
+            (ForgeEnv.DEV, "default", "must not use the 'default'"),
+            (ForgeEnv.TEST, "default", "must not use the 'default'"),
+            (ForgeEnv.DEV, TEMPORAL_NAMESPACE, "forge-dev"),
+        ],
+    )
+    def test_incoherent_pairings_raise_with_actionable_message(
+        self, env: ForgeEnv, namespace: str, match: str
+    ) -> None:
+        with pytest.raises(ForgeEnvError, match=match):
+            require_namespace_coherence(env, namespace)
 
 
 class TestDbSettings:
@@ -276,3 +335,106 @@ class TestResolveForgeEnv:
         """
         with pytest.raises(ForgeEnvError, match="not a valid environment"):
             resolve_forge_env({"FORGE_ENV": value})
+
+
+class TestParseEnvProfile:
+    """``parse_env_profile`` is pure: text + explicit expansion mapping -> dict.
+
+    No case reads ``os.environ`` — every ``${VAR}`` is expanded against a
+    hand-built ``expand_from`` mapping, so the parser stays deterministic and
+    never touches the ambient shell env.
+    """
+
+    def test_plain_key_value(self) -> None:
+        assert parse_env_profile("FORGE_DB_URL=sqlite:///x.db", expand_from={}) == {
+            "FORGE_DB_URL": "sqlite:///x.db"
+        }
+
+    def test_export_prefix_stripped(self) -> None:
+        assert parse_env_profile("export FORGE_ENV_TAG=dev", expand_from={}) == {
+            "FORGE_ENV_TAG": "dev"
+        }
+
+    def test_double_quotes_stripped(self) -> None:
+        assert parse_env_profile('FORGE_DB_URL="sqlite:///x.db"', expand_from={}) == {
+            "FORGE_DB_URL": "sqlite:///x.db"
+        }
+
+    def test_single_quotes_stripped(self) -> None:
+        assert parse_env_profile("GREETING='hello world'", expand_from={}) == {
+            "GREETING": "hello world"
+        }
+
+    def test_only_one_quote_pair_stripped(self) -> None:
+        assert parse_env_profile("""A="'quoted'\"""", expand_from={}) == {"A": "'quoted'"}
+
+    def test_braced_var_expanded(self) -> None:
+        out = parse_env_profile(
+            "FORGE_LOG_DIR=${XDG_STATE_HOME}/forge",
+            expand_from={"XDG_STATE_HOME": "/home/u/.local/state"},
+        )
+        assert out == {"FORGE_LOG_DIR": "/home/u/.local/state/forge"}
+
+    def test_expansion_runs_after_quote_strip(self) -> None:
+        out = parse_env_profile('D="${H}/log"', expand_from={"H": "/state"})
+        assert out == {"D": "/state/log"}
+
+    def test_unknown_braced_var_left_literal(self) -> None:
+        out = parse_env_profile("A=${NOPE}/x", expand_from={})
+        assert out == {"A": "${NOPE}/x"}
+
+    def test_bare_dollar_and_unbraced_name_left_literal(self) -> None:
+        # A ``$`` or ``$NAME`` (unbraced) is never expanded — a secret value
+        # containing ``$`` survives verbatim even when the name is in the map.
+        out = parse_env_profile("PW=p$ss$WORD", expand_from={"WORD": "zzz", "ss": "!"})
+        assert out == {"PW": "p$ss$WORD"}
+
+    def test_comments_and_blank_lines_skipped(self) -> None:
+        text = "# a comment\n\n   \nA=1\n#another\nB=2\n"
+        assert parse_env_profile(text, expand_from={}) == {"A": "1", "B": "2"}
+
+    def test_value_containing_equals_splits_on_first(self) -> None:
+        out = parse_env_profile("URL=postgresql://u@h/db?a=b&c=d", expand_from={})
+        assert out == {"URL": "postgresql://u@h/db?a=b&c=d"}
+
+    def test_export_quotes_and_expansion_combined(self) -> None:
+        out = parse_env_profile(
+            'export FORGE_LOG_DIR="${H}/forge/log"', expand_from={"H": "/state"}
+        )
+        assert out == {"FORGE_LOG_DIR": "/state/forge/log"}
+
+    def test_malformed_line_without_equals_raises_naming_lineno(self) -> None:
+        text = "A=1\nGARBAGE_NO_EQUALS\nB=2\n"
+        with pytest.raises(ForgeEnvError, match="line 2"):
+            parse_env_profile(text, expand_from={})
+
+    def test_empty_key_is_malformed(self) -> None:
+        with pytest.raises(ForgeEnvError, match="line 1"):
+            parse_env_profile("=orphan", expand_from={})
+
+
+class TestResolveEnvProfilePath:
+    """``resolve_env_profile_path`` classifies a name-vs-path value (pure)."""
+
+    def test_bare_name_resolves_under_explicit_xdg(self) -> None:
+        assert resolve_env_profile_path("dev", xdg_config_home="/cfg") == Path(
+            "/cfg/forge/envs/dev.env"
+        )
+
+    def test_absolute_path_used_verbatim(self) -> None:
+        assert resolve_env_profile_path("/abs/prod.env", xdg_config_home="/cfg") == Path(
+            "/abs/prod.env"
+        )
+
+    def test_relative_path_with_separator_used_verbatim(self) -> None:
+        assert resolve_env_profile_path("sub/dev.env", xdg_config_home="/cfg") == Path(
+            "sub/dev.env"
+        )
+
+    def test_dotenv_suffix_without_separator_is_a_path(self) -> None:
+        assert resolve_env_profile_path("local.env", xdg_config_home="/cfg") == Path("local.env")
+
+    def test_name_falls_back_to_home_config_when_xdg_none(self) -> None:
+        assert resolve_env_profile_path("dev", xdg_config_home=None) == (
+            Path.home() / ".config" / "forge" / "envs" / "dev.env"
+        )

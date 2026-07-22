@@ -11,7 +11,7 @@ import os
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from sax_platform.config import resolve_forge_env
+from sax_platform.config import require_namespace_coherence, resolve_forge_env
 from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from sax_platform.temporal.worker import run_worker as _run_platform_worker
 
@@ -109,12 +109,23 @@ async def run_worker(
 
     settings = ForgeSettings()
 
+    # Enforce env/namespace coherence BEFORE any store or client setup: a dev/test
+    # worker must never poll production's namespace (or vice versa). An incoherent
+    # pairing raises ForgeEnvError here (message names the fix) so the worker fails
+    # fast, before it touches a database.
+    require_namespace_coherence(env, settings.temporal.namespace)
+
     _init_store(settings.db.url)
     init_tracing(settings.tracing.exporter)
     silence_noisy_loggers()
 
     resolved_address = settings.temporal.address if address is None else address
-    client = await connect_temporal(resolved_address, identity=identity, settings=settings.temporal)
+    client = await connect_temporal(
+        resolved_address,
+        identity=identity,
+        namespace=settings.temporal.namespace,
+        settings=settings.temporal,
+    )
 
     # Build the process-wide dependencies ONCE. One AsyncAnthropic SDK client is
     # shared by the sync lane (AnthropicLLM) and the batch lane (BatchActivities);

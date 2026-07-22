@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from pbook.transcript import SessionInfo
     from sax_platform.llm import AnthropicLLM
     from sqlalchemy import Engine
+    from temporalio.client import Client
 
     from forge.eval.models import DeterministicResult, EvalCase, PlanEvalResult
     from forge.models import (
@@ -93,6 +94,57 @@ def _require_forge_env() -> None:
         sys.exit(EXIT_CONFIG_ERROR)
 
 
+def _apply_env_profile(env_value: str) -> None:
+    """Load a ``--env`` profile into the process environment before the guard.
+
+    The pure parsing (``parse_env_profile``/``resolve_env_profile_path``) lives
+    in ``sax_platform.config``; this shell reads the resolved file, applies the
+    parsed ``KEY=VALUE`` pairs over ``os.environ`` (an explicit flag overrides
+    ambient values; keys the file omits are left untouched), and declares
+    ``FORGE_ENV`` — the profile *name* for a name value, or the file's
+    ``FORGE_ENV_TAG`` for a path value. It never sets ``FORGE_PROD_ACK``, so
+    ``--env prod`` still fails unless the ack is exported separately. A missing
+    file, a malformed profile line, or a path-form profile with no
+    ``FORGE_ENV_TAG`` exits ``EXIT_CONFIG_ERROR``.
+    """
+    import os
+
+    from sax_platform.config import (
+        ForgeEnvError,
+        parse_env_profile,
+        resolve_env_profile_path,
+    )
+
+    is_path = "/" in env_value or env_value.endswith(".env")
+    path = resolve_env_profile_path(env_value, xdg_config_home=os.environ.get("XDG_CONFIG_HOME"))
+    try:
+        text = path.read_text()
+    except OSError:
+        click.echo(f"--env profile not found: {path}", err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+    try:
+        values = parse_env_profile(text, expand_from=os.environ)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+
+    for key, value in values.items():
+        os.environ[key] = value
+
+    if is_path:
+        tag = values.get("FORGE_ENV_TAG", "")
+        if not tag:
+            click.echo(
+                f"--env profile {path} declares no FORGE_ENV_TAG; a path-form "
+                "profile must name its environment (add FORGE_ENV_TAG=<prod|dev|test>).",
+                err=True,
+            )
+            sys.exit(EXIT_CONFIG_ERROR)
+        os.environ["FORGE_ENV"] = tag
+    else:
+        os.environ["FORGE_ENV"] = env_value
+
+
 def _require_store_engine() -> Engine:
     """Resolve the store engine for a CLI command, exiting if it is unconfigured.
 
@@ -118,6 +170,36 @@ def _require_store_engine() -> Engine:
         )
         sys.exit(EXIT_FAILURE)
     return get_store_engine(settings.url)
+
+
+async def _connect_temporal_checked(temporal_address: str) -> Client:
+    """Connect to Temporal after enforcing env/namespace coherence.
+
+    The group callback already ran ``_require_forge_env`` (so FORGE_ENV is
+    valid); re-resolving it here — purely, from ``os.environ`` — pairs it with
+    the namespace from :class:`TemporalSettings` (the sole FORGE_TEMPORAL_*
+    reader) and refuses to connect a dev/test process to production's namespace,
+    or a prod process to any other, before the connection opens. An incoherent
+    pairing prints the fix and exits ``EXIT_CONFIG_ERROR``. Commands that never
+    reach a connect (e.g. ``status``, which reads the store directly) are
+    unaffected by the namespace entirely — this only runs on the connect path.
+    """
+    import os
+
+    from sax_platform.config import (
+        ForgeEnvError,
+        TemporalSettings,
+        require_namespace_coherence,
+        resolve_forge_env,
+    )
+
+    settings = TemporalSettings()
+    try:
+        require_namespace_coherence(resolve_forge_env(os.environ), settings.namespace)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+    return await connect_temporal(temporal_address, namespace=settings.namespace, settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +500,7 @@ async def _submit(
 
     from forge.workflows import ForgeTaskWorkflow
 
-    client = await connect_temporal(temporal_address)
+    client = await _connect_temporal_checked(temporal_address)
     workflow_id = f"forge-task-{task_input.task.task_id}"
 
     # Derive the execution timeout from the permitted batch-wait budget so a
@@ -519,8 +601,22 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
 @click.option(
     "-v", "log_verbosity", count=True, help="Increase log verbosity (-v INFO, -vv DEBUG)."
 )
-def main(log_verbosity: int) -> None:
+@click.option(
+    "--env",
+    "env_profile",
+    default=None,
+    metavar="NAME|PATH",
+    help=(
+        "Load an env profile before the environment guard runs. A bare NAME "
+        "resolves to $XDG_CONFIG_HOME/forge/envs/<NAME>.env and sets FORGE_ENV; "
+        "a path (or a value ending in .env) is read verbatim and takes FORGE_ENV "
+        "from its FORGE_ENV_TAG. Never supplies FORGE_PROD_ACK."
+    ),
+)
+def main(log_verbosity: int, env_profile: str | None) -> None:
     """Forge — LLM task orchestrator."""
+    if env_profile is not None:
+        _apply_env_profile(env_profile)
     _require_forge_env()
     configure_logging(log_verbosity)
 
@@ -1048,7 +1144,7 @@ async def _submit_ingestion(
 
     from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 
-    client = await connect_temporal(temporal_address)
+    client = await _connect_temporal_checked(temporal_address)
 
     import json as json_mod
 
@@ -1310,7 +1406,7 @@ async def _submit_manual_playbook(
     from forge.manual_playbook_workflow import ManualPlaybookWorkflow
     from forge.models import ManualPlaybookInput
 
-    client = await connect_temporal(temporal_address)
+    client = await _connect_temporal_checked(temporal_address)
 
     result: ManualPlaybookResult = await client.execute_workflow(
         ManualPlaybookWorkflow.run,
@@ -1396,7 +1492,7 @@ async def _submit_export_playbooks(
     from forge.export_playbook_workflow import ExportPlaybookWorkflow
     from forge.models import ExportPlaybookInput
 
-    client = await connect_temporal(temporal_address)
+    client = await _connect_temporal_checked(temporal_address)
 
     result: ExportPlaybookResult = await client.execute_workflow(
         ExportPlaybookWorkflow.run,
@@ -1688,7 +1784,7 @@ async def _start_workflow(
 ) -> str:
     """Start a Temporal workflow by string name and return its ID."""
 
-    client = await connect_temporal(temporal_address)
+    client = await _connect_temporal_checked(temporal_address)
     handle = await client.start_workflow(
         workflow_name,
         workflow_input,
@@ -1711,7 +1807,7 @@ async def _start_workflow_and_wait(
 ) -> object:
     """Start a Temporal workflow by string name and wait for its result."""
 
-    client = await connect_temporal(temporal_address)
+    client = await _connect_temporal_checked(temporal_address)
     result = await client.execute_workflow(
         workflow_name,
         workflow_input,

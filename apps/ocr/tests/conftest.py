@@ -35,17 +35,20 @@ _REAL_SERVICES = bool(os.environ.get("OCR_E2E_PLATFORM"))
 
 @pytest.fixture(autouse=True)
 def forge_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Declare ``FORGE_ENV=test`` so the ST-G2 environment guard passes.
+    """Declare ``FORGE_ENV=test`` (and a coherent Temporal namespace) for the guard.
 
     Every ocr CLI command and worker startup now resolves ``FORGE_ENV`` and
-    refuses to run without it. This one central fixture satisfies the guard for
-    the whole suite; the guard's own tests override it with ``monkeypatch.delenv``
-    or a different value. In real-services mode the operator's declared
-    ``FORGE_ENV`` is left untouched.
+    refuses to run without it, and every connect additionally enforces
+    env/namespace coherence: a ``test`` env must not use the ``default`` Temporal
+    namespace. This one central fixture satisfies both — ``FORGE_ENV=test`` plus a
+    non-default ``FORGE_TEMPORAL_NAMESPACE`` — for the whole suite; the guard's and
+    coherence's own tests override them. In real-services mode the operator's
+    declared env is left untouched.
     """
     if _REAL_SERVICES:
         return
     monkeypatch.setenv("FORGE_ENV", "test")
+    monkeypatch.setenv("FORGE_TEMPORAL_NAMESPACE", "forge-test")
 
 
 @pytest.fixture(autouse=True)

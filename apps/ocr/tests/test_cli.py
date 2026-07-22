@@ -11,7 +11,9 @@ body is covered too, not just the pass-through from each command.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -29,6 +31,7 @@ from ocr.cli import (
     _start_and_wait,
     _start_submit,
     derive_tracker_status,
+    format_migration_target,
     main,
     tracker_status_lines,
 )
@@ -37,6 +40,10 @@ from ocr.models import (
     OcrListJobsResult,
     OcrMarkResult,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -134,7 +141,11 @@ class TestStartAndWait:
             )
 
         assert result == {"ok": True}
-        mock_connect.assert_awaited_once_with("localhost:7233")
+        # _connect_checked threads the resolved namespace (forge-test in the suite,
+        # from the autouse forge_env fixture) into the shared connect chokepoint.
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.args == ("localhost:7233",)
+        assert mock_connect.await_args.kwargs["namespace"] == "forge-test"
         mock_client.start_workflow.assert_awaited_once_with(
             "OcrSubmitWorkflow",
             {"file_path": "/tmp/x.pdf"},
@@ -164,7 +175,9 @@ class TestStartSubmit:
             )
 
         assert started_id == "ocr-submit-abc"
-        mock_connect.assert_awaited_once_with("localhost:7233")
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.args == ("localhost:7233",)
+        assert mock_connect.await_args.kwargs["namespace"] == "forge-test"
         mock_client.start_workflow.assert_awaited_once_with(
             "OcrSubmitWorkflow",
             {"file_path": "/tmp/x.pdf"},
@@ -751,3 +764,255 @@ class TestEnvGuard:
         result = cli_runner.invoke(main, ["tracker-status"])
         assert result.exit_code != EXIT_CONFIG_ERROR
         assert result.output.splitlines()[0].startswith("checked_at_gmt: ")
+
+
+# ---------------------------------------------------------------------------
+# --env profile flag (T0.9 follow-up)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def restore_environ() -> Iterator[None]:
+    """Snapshot ``os.environ`` and restore it on teardown.
+
+    ``--env`` mutates the real process environment (that is the whole feature),
+    and those writes are not tracked by ``monkeypatch``, so they would leak
+    between tests. This fixture restores a full snapshot afterward.
+    """
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(snapshot)
+
+
+class TestEnvProfileFlag:
+    """``ocr --env NAME|PATH`` loads a profile before the guard runs.
+
+    It applies the parsed KEY=VALUE pairs to the process environment (overwriting
+    ambient values), declares FORGE_ENV, then the guard runs unchanged. It never
+    sets FORGE_PROD_ACK — ``--env prod`` still fails without a separately-exported
+    ack. All cases use ``restore_environ`` so the direct ``os.environ`` writes
+    don't leak.
+    """
+
+    def test_path_profile_applies_vars_and_proceeds(
+        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    ) -> None:
+        profile = tmp_path / "dev.env"
+        profile.write_text('export FORGE_ENV_TAG="dev"\nFORGE_DB_URL=sqlite:///from-profile.db\n')
+
+        result = cli_runner.invoke(main, ["--env", str(profile), "list", "--help"])
+
+        assert result.exit_code == 0
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///from-profile.db"
+        assert os.environ["FORGE_ENV"] == "dev"
+
+    def test_name_resolves_under_xdg_config_home(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_environ: None,
+    ) -> None:
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "dev.env").write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///named.db\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+        result = cli_runner.invoke(main, ["--env", "dev", "list", "--help"])
+
+        assert result.exit_code == 0
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///named.db"
+        assert os.environ["FORGE_ENV"] == "dev"
+
+    def test_profile_overrides_ambient_var(
+        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    ) -> None:
+        os.environ["FORGE_DB_URL"] = "sqlite:///ambient.db"
+        profile = tmp_path / "dev.env"
+        profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///override.db\n")
+
+        result = cli_runner.invoke(main, ["--env", str(profile), "list", "--help"])
+
+        assert result.exit_code == 0
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///override.db"
+
+    def test_tag_mismatch_exits_78(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_environ: None,
+    ) -> None:
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "dev.env").write_text("FORGE_ENV_TAG=prod\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+        result = cli_runner.invoke(main, ["--env", "dev", "list", "--help"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "does not match" in result.stderr
+
+    def test_env_prod_still_requires_ack(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_environ: None,
+    ) -> None:
+        # The non-bypass proof: --env prod loads a prod-tagged profile but never
+        # supplies FORGE_PROD_ACK, so the guard still refuses.
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "prod.env").write_text("FORGE_ENV_TAG=prod\nFORGE_DB_URL=sqlite:///prod.db\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
+
+        result = cli_runner.invoke(main, ["--env", "prod", "list", "--help"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "explicit act" in result.stderr
+
+    def test_missing_file_exits_78(
+        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    ) -> None:
+        missing = tmp_path / "nope.env"
+        result = cli_runner.invoke(main, ["--env", str(missing), "list", "--help"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert str(missing) in result.stderr
+
+    def test_path_profile_without_tag_exits_78(
+        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    ) -> None:
+        profile = tmp_path / "notag.env"
+        profile.write_text("FORGE_DB_URL=sqlite:///x.db\n")
+        result = cli_runner.invoke(main, ["--env", str(profile), "list", "--help"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "FORGE_ENV_TAG" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Staging-lane isolation: --env dev threads its namespace into the connect,
+# and a dev env without a declared namespace is refused before connecting.
+# ---------------------------------------------------------------------------
+
+
+class TestNamespaceCoherence:
+    """A ``--env dev`` profile carries its Temporal namespace into every connect."""
+
+    def test_dev_profile_namespace_reaches_connect(
+        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    ) -> None:
+        # A dev profile that declares forge-dev: a connecting command (list) must
+        # hand that namespace to the shared connect chokepoint.
+        profile = tmp_path / "dev.env"
+        profile.write_text(
+            "FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///x.db\nFORGE_TEMPORAL_NAMESPACE=forge-dev\n"
+        )
+
+        mock_handle = AsyncMock()
+        mock_handle.result.return_value = {"jobs": []}
+        mock_client = AsyncMock()
+        mock_client.start_workflow.return_value = mock_handle
+
+        with patch(
+            "ocr.cli.connect_temporal", new=AsyncMock(return_value=mock_client)
+        ) as mock_connect:
+            result = cli_runner.invoke(main, ["--env", str(profile), "list"])
+
+        assert result.exit_code == 0
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.kwargs["namespace"] == "forge-dev"
+
+    def test_dev_env_without_namespace_refuses_to_connect(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, restore_environ: None
+    ) -> None:
+        # Dev without a declared namespace defaults to "default" — production's —
+        # so a Temporal-touching command exits 78 with the coherence message and
+        # never opens a connection.
+        monkeypatch.setenv("FORGE_ENV", "dev")
+        monkeypatch.delenv("FORGE_TEMPORAL_NAMESPACE", raising=False)
+
+        with patch("ocr.cli.connect_temporal", new=AsyncMock()) as mock_connect:
+            result = cli_runner.invoke(main, ["list"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "must not use the 'default'" in result.stderr
+        mock_connect.assert_not_awaited()
+
+    def test_direct_db_commands_unaffected_by_namespace(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, restore_environ: None
+    ) -> None:
+        # tracker-status and migrate never connect to Temporal, so a dev env with
+        # no namespace (which would fail a Temporal command) leaves them alone.
+        monkeypatch.setenv("FORGE_ENV", "dev")
+        monkeypatch.delenv("FORGE_TEMPORAL_NAMESPACE", raising=False)
+
+        status_result = cli_runner.invoke(main, ["tracker-status"])
+        migrate_result = cli_runner.invoke(main, ["migrate"])
+
+        assert status_result.exit_code != EXIT_CONFIG_ERROR
+        assert migrate_result.exit_code != EXIT_CONFIG_ERROR
+
+
+# ---------------------------------------------------------------------------
+# migrate — pure target-line formatter (functional core)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatMigrationTarget:
+    def test_postgres_url_hides_credentials(self) -> None:
+        line = format_migration_target("postgresql+psycopg2://u:secretpw@db.host:5432/forge")
+        assert "secretpw" not in line
+        assert "u:" not in line
+        assert "db.host:5432/forge" in line
+        assert line.startswith("alembic_version_ocr -> ")
+
+    def test_sqlite_url_shows_file_path(self) -> None:
+        line = format_migration_target("sqlite:////var/data/ocr.db")
+        assert line == "alembic_version_ocr -> /var/data/ocr.db"
+
+    def test_postgres_without_port(self) -> None:
+        line = format_migration_target("postgresql://u:p@host/forge")
+        assert line == "alembic_version_ocr -> host/forge"
+
+
+# ---------------------------------------------------------------------------
+# migrate — CLI shell
+# ---------------------------------------------------------------------------
+
+
+class TestMigrateCommand:
+    def test_creates_tables_on_sqlite(self, cli_runner: CliRunner, forge_db_url: str) -> None:
+        result = cli_runner.invoke(main, ["migrate"])
+
+        assert result.exit_code == 0
+        engine = sa.create_engine(forge_db_url)
+        try:
+            table_names = sa.inspect(engine).get_table_names()
+        finally:
+            engine.dispose()
+        assert "ocr_tracker_heartbeat" in table_names
+
+    def test_prints_credential_free_target_line(
+        self, cli_runner: CliRunner, forge_db_url: str
+    ) -> None:
+        result = cli_runner.invoke(main, ["migrate"])
+
+        assert result.exit_code == 0
+        last_line = result.output.strip().splitlines()[-1]
+        assert last_line.startswith("alembic_version_ocr -> ")
+        # The autouse forge_db_url is a sqlite file URL — no credentials to leak,
+        # but assert the chain name and that no user:pass fragment appears.
+        assert "://" not in last_line
+
+    def test_missing_forge_db_url_exits_78(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
+        result = cli_runner.invoke(main, ["migrate"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "FORGE_DB_URL is not set" in result.stderr

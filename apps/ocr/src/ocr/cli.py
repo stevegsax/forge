@@ -25,6 +25,8 @@ from sax_platform.temporal.client import connect_temporal
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from temporalio.client import Client
+
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 EXIT_INFRASTRUCTURE_ERROR = 2
 #: ``tracker-status`` exit code reserved for "the probe could not answer" (config
@@ -60,12 +62,92 @@ def _require_forge_env() -> None:
         sys.exit(EXIT_CONFIG_ERROR)
 
 
+def _apply_env_profile(env_value: str) -> None:
+    """Load a ``--env`` profile into the process environment before the guard.
+
+    The pure parsing (``parse_env_profile``/``resolve_env_profile_path``) lives
+    in ``sax_platform.config``; this shell reads the resolved file, applies the
+    parsed ``KEY=VALUE`` pairs over ``os.environ`` (an explicit flag overrides
+    ambient values; keys the file omits are left untouched), and declares
+    ``FORGE_ENV`` — the profile *name* for a name value, or the file's
+    ``FORGE_ENV_TAG`` for a path value. It never sets ``FORGE_PROD_ACK``, so
+    ``--env prod`` still fails unless the ack is exported separately. A missing
+    file, a malformed profile line, or a path-form profile with no
+    ``FORGE_ENV_TAG`` exits ``EXIT_CONFIG_ERROR``.
+    """
+    import os
+
+    from sax_platform.config import (
+        ForgeEnvError,
+        parse_env_profile,
+        resolve_env_profile_path,
+    )
+
+    is_path = "/" in env_value or env_value.endswith(".env")
+    path = resolve_env_profile_path(env_value, xdg_config_home=os.environ.get("XDG_CONFIG_HOME"))
+    try:
+        text = path.read_text()
+    except OSError:
+        click.echo(f"--env profile not found: {path}", err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+    try:
+        values = parse_env_profile(text, expand_from=os.environ)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+
+    for key, value in values.items():
+        os.environ[key] = value
+
+    if is_path:
+        tag = values.get("FORGE_ENV_TAG", "")
+        if not tag:
+            click.echo(
+                f"--env profile {path} declares no FORGE_ENV_TAG; a path-form "
+                "profile must name its environment (add FORGE_ENV_TAG=<prod|dev|test>).",
+                err=True,
+            )
+            sys.exit(EXIT_CONFIG_ERROR)
+        os.environ["FORGE_ENV"] = tag
+    else:
+        os.environ["FORGE_ENV"] = env_value
+
+
+async def _connect_checked(address: str) -> Client:
+    """Connect to Temporal after enforcing env/namespace coherence.
+
+    The group callback already ran ``_require_forge_env`` (so FORGE_ENV is valid);
+    re-resolving it here — purely, from ``os.environ`` — pairs it with the
+    namespace from :class:`TemporalSettings` (the sole FORGE_TEMPORAL_* reader) and
+    refuses to connect a dev/test process to production's namespace, or a prod
+    process to any other, before the connection opens. An incoherent pairing prints
+    the fix and exits ``EXIT_CONFIG_ERROR``. The direct-DB commands (``migrate``,
+    ``tracker-status``) never reach a connect, so the namespace never affects them.
+    """
+    import os
+
+    from sax_platform.config import (
+        ForgeEnvError,
+        TemporalSettings,
+        require_namespace_coherence,
+        resolve_forge_env,
+    )
+
+    settings = TemporalSettings()
+    try:
+        require_namespace_coherence(resolve_forge_env(os.environ), settings.namespace)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+    return await connect_temporal(address, namespace=settings.namespace, settings=settings)
+
+
 async def _start_and_wait(
     workflow_name: str, arg: object, *, workflow_id: str, address: str, timeout_hours: float
 ) -> object:
     from datetime import timedelta
 
-    client = await connect_temporal(address)
+    client = await _connect_checked(address)
     handle = await client.start_workflow(
         workflow_name,
         arg,
@@ -87,7 +169,7 @@ async def _start_submit(arg: object, *, workflow_id: str, address: str) -> str:
 
     from sax_platform.temporal.polling import BATCH_WAIT_CEILING
 
-    client = await connect_temporal(address)
+    client = await _connect_checked(address)
     handle = await client.start_workflow(
         "OcrSubmitWorkflow",
         arg,
@@ -220,9 +302,41 @@ def tracker_status_lines(report: TrackerStatusReport) -> tuple[str, ...]:
     )
 
 
+def format_migration_target(url: str) -> str:
+    """Render a credential-free ``chain -> host/database`` summary line (pure).
+
+    Parses *url* with SQLAlchemy and reconstructs only the host/port/database (or,
+    for SQLite, the file path), deliberately dropping the username and password so
+    a connection string with embedded credentials is never echoed to the terminal.
+    """
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    if parsed.host:
+        host = parsed.host if parsed.port is None else f"{parsed.host}:{parsed.port}"
+        target = f"{host}/{parsed.database or ''}"
+    else:  # SQLite and other host-less URLs: the database is the file path.
+        target = parsed.database or "(in-memory)"
+    return f"alembic_version_ocr -> {target}"
+
+
 @click.group()
-def main() -> None:
+@click.option(
+    "--env",
+    "env_profile",
+    default=None,
+    metavar="NAME|PATH",
+    help=(
+        "Load an env profile before the environment guard runs. A bare NAME "
+        "resolves to $XDG_CONFIG_HOME/forge/envs/<NAME>.env and sets FORGE_ENV; "
+        "a path (or a value ending in .env) is read verbatim and takes FORGE_ENV "
+        "from its FORGE_ENV_TAG. Never supplies FORGE_PROD_ACK."
+    ),
+)
+def main(env_profile: str | None) -> None:
     """OCR app commands."""
+    if env_profile is not None:
+        _apply_env_profile(env_profile)
     _require_forge_env()
 
     from sax_platform.logging import setup_logging
@@ -242,6 +356,42 @@ def worker_cmd(temporal_address: str) -> None:
     from ocr.worker import run_worker
 
     asyncio.run(run_worker(temporal_address))
+
+
+#: Config fail-fast message for ``ocr migrate`` when ``FORGE_DB_URL`` is unset.
+#: Guard-style (stderr + exit 78): there is no 0/1/2/3 verdict contract here.
+_FORGE_DB_URL_MIGRATE_UNSET_MESSAGE = (
+    "FORGE_DB_URL is not set — ocr migrate applies the ocr Alembic chain "
+    "(alembic_version_ocr) to the shared forge database; source an env profile "
+    "(e.g. `ocr migrate --env dev`) or export FORGE_DB_URL; for the local stack "
+    "use the port-5434 override."
+)
+
+
+@main.command("migrate")
+def migrate_cmd() -> None:
+    """Run the OCR Alembic chain (``alembic_version_ocr``) against ``FORGE_DB_URL``.
+
+    Standalone parity with ``pbook migrate``: the OCR worker also runs this chain
+    at startup, but ``ocr migrate`` applies it ahead of time (schema bootstrap,
+    dev setup). Prints a single credential-free ``chain -> host/database`` line
+    on success. An unset ``FORGE_DB_URL`` is a config error — stderr + exit 78.
+    """
+    from pydantic import ValidationError
+    from sax_platform.config import DbSettings
+
+    from ocr.store import run_migrations
+
+    try:
+        # DbSettings reads FORGE_DB_URL from the env (its ``url`` field's alias);
+        # the pydantic mypy plugin can't see that, so it flags the required arg.
+        db_url = DbSettings().url  # type: ignore[call-arg]
+    except ValidationError:
+        click.echo(_FORGE_DB_URL_MIGRATE_UNSET_MESSAGE, err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+
+    run_migrations(db_url)
+    click.echo(format_migration_target(db_url))
 
 
 @main.command("submit")

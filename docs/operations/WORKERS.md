@@ -41,6 +41,28 @@ Every worker and CLI is fronted by an explicit-environment guard (D102): it read
   ```
 
 - **Non-prod work** uses the `dev` profile (`~/.config/forge/envs/dev.env`, `FORGE_ENV_TAG=dev`, no ack): `set -a; source …/envs/dev.env; set +a; export FORGE_ENV=dev`. It points at the local `forge_dev` database and MinIO, so no interactive command reaches production without `FORGE_ENV=prod` and the ack.
+- **The `--env` flag** loads a profile without a manual `set -a; source`: every CLI accepts `--env <name-or-path>` on its top-level group — the flag goes **before** the subcommand (`uv run --package ocr ocr --env dev tracker-status`; placed after the subcommand it is never parsed, and a bare shell fails the guard first). A bare name resolves to `$XDG_CONFIG_HOME/forge/envs/<name>.env` (and sets `FORGE_ENV` to that name); a path — or any value ending `.env` — is read verbatim and takes `FORGE_ENV` from the file's `FORGE_ENV_TAG`. The profile parser tolerates a leading `export`, strips one surrounding quote pair, and expands `${VAR}` references (braced form only, against the current environment) — never any command execution. It never supplies `FORGE_PROD_ACK`, so `--env prod` still fails unless the ack is exported separately; a missing file, malformed line, or path-form profile without a `FORGE_ENV_TAG` exits 78.
+
+### Staging lane (dev namespace)
+
+Production and dev share one local Temporal server, so isolation between them is by **namespace**: a Temporal namespace scopes task queues, schedules, and workflow ids, so a worker or CLI that connects to a different namespace cannot see — or poll — another namespace's work. Production runs in the `default` namespace (unchanged); dev runs in `forge-dev`.
+
+The pairing is enforced, not just conventional. `FORGE_TEMPORAL_NAMESPACE` (read by `TemporalSettings`, defaulting to `default`) is checked against `FORGE_ENV` by `require_namespace_coherence` immediately before every connect: `FORGE_ENV=prod` **must** use `default`, and `FORGE_ENV=dev`/`test` **must not** — an incoherent pairing fails fast with an actionable message (workers crash at startup before touching a database; CLIs exit 78). So a dev process can never silently poll production's queues, and prod stays zero-config (it sets nothing and gets `default`). Commands that never connect to Temporal (`tracker-status`, `ocr migrate`, pbook's direct-DB commands) are unaffected by the namespace entirely.
+
+The `forge-dev` namespace is created once per server, out of band (already done on this machine, with 72h retention):
+
+```bash
+temporal operator namespace create --retention 72h -n forge-dev
+```
+
+The dev profile (`~/.config/forge/envs/dev.env`, from `deploy/launchd/envs/dev.env.example`) sets `FORGE_TEMPORAL_NAMESPACE=forge-dev` alongside `FORGE_ENV_TAG=dev`. Start a dev worker the same way as any other — `--env dev` or a sourced profile — and it connects into `forge-dev`:
+
+```bash
+uv run forge worker --env dev            # forge worker in forge-dev
+uv run --package ocr ocr worker --env dev  # ocr worker in forge-dev
+```
+
+The dev ocr worker installs its own `ocr-batch-tracker` Schedule inside `forge-dev`, separate from production's in `default`. A dev CLI submits into `forge-dev` too, so it only ever reaches the dev workers.
 
 ## Checking Whether Workers Are Running
 
