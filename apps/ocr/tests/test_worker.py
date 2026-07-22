@@ -77,6 +77,7 @@ class TestRunWorker:
             patch.object(
                 worker_mod, "connect_temporal", AsyncMock(return_value=client_sentinel)
             ) as mock_connect,
+            patch.object(worker_mod, "_ensure_schedule", AsyncMock()) as mock_ensure_schedule,
             patch.object(worker_mod, "_run_worker", AsyncMock()) as mock_run_worker,
         ):
             await worker_mod.run_worker(identity="worker-123")
@@ -97,6 +98,15 @@ class TestRunWorker:
         # Connect via settings (address falls back to settings.temporal.address).
         mock_connect.assert_awaited_once_with(
             "settings-temporal:7233", identity="worker-123", settings=settings.temporal
+        )
+
+        # The tracker Schedule is installed on the connected client before serving
+        # work — the store children depend on its status hints.
+        mock_ensure_schedule.assert_awaited_once_with(
+            client_sentinel,
+            worker_mod._TRACKER_SCHEDULE_ID,
+            "OcrBatchTrackerWorkflow",
+            worker_mod._TRACKER_INTERVAL,
         )
 
         # The shared runner received the right task queue / workflows / activities.
@@ -125,6 +135,7 @@ class TestRunWorker:
             patch.object(
                 worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())
             ) as mock_connect,
+            patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
             patch.object(worker_mod, "_run_worker", AsyncMock()),
         ):
             await worker_mod.run_worker("override:7233")
@@ -176,3 +187,44 @@ class TestRunWorker:
             # S3Blobs is NOT patched here: the real construction guard fires.
             with pytest.raises(S3ConfigError, match="bucket"):
                 await worker_mod.run_worker()
+
+
+class TestEnvGuard:
+    """The worker resolves FORGE_ENV FIRST and fails fast without it (T0.9 ST-G2)."""
+
+    @pytest.mark.asyncio
+    async def test_requires_forge_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unset FORGE_ENV raises before settings/store/logging setup.
+
+        No patches are applied: resolution is the worker's first act, so it raises
+        without ever building settings or touching a database.
+        """
+        from sax_platform.config import ForgeEnvError
+
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        with pytest.raises(ForgeEnvError, match="no default environment"):
+            await worker_mod.run_worker()
+
+    @pytest.mark.asyncio
+    async def test_logs_resolved_env(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        settings = _fake_settings()
+        with (
+            patch.object(worker_mod, "OcrSettings", return_value=settings),
+            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "setup_logging"),
+            patch.object(worker_mod, "silence_noisy_loggers"),
+            patch.object(worker_mod, "get_store_engine", return_value=object()),
+            patch.object(worker_mod, "S3Blobs", return_value=object()),
+            patch.object(worker_mod, "_build_mistral_ocr", return_value=object()),
+            patch.object(worker_mod, "OcrStoreActivities", return_value=MagicMock()),
+            patch.object(worker_mod, "activity_methods", return_value=[]),
+            patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())),
+            patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
+            patch.object(worker_mod, "_run_worker", AsyncMock()),
+            caplog.at_level(logging.INFO, logger="ocr.worker"),
+        ):
+            await worker_mod.run_worker()
+
+        assert "ocr worker starting: env=test" in caplog.text

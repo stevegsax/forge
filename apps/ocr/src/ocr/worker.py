@@ -17,14 +17,29 @@ quiets the Mistral SDK's OTel JSON-parse warnings.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import os
+from datetime import timedelta
+from typing import TYPE_CHECKING, Final
 
+from sax_platform.config import resolve_forge_env
 from sax_platform.contracts.constants import OCR_TASK_QUEUE
 from sax_platform.contracts.s3_blobs import S3Blobs
 from sax_platform.db import get_store_engine
 from sax_platform.logging import setup_logging, silence_noisy_loggers
 from sax_platform.temporal.client import connect_temporal
 from sax_platform.temporal.worker import run_worker as _run_worker
+from temporalio.client import (
+    Schedule,
+    ScheduleActionStartWorkflow,
+    ScheduleAlreadyRunningError,
+    ScheduleIntervalSpec,
+    ScheduleOverlapPolicy,
+    SchedulePolicy,
+    ScheduleSpec,
+    ScheduleState,
+    ScheduleUpdate,
+    ScheduleUpdateInput,
+)
 
 from ocr.activities import OcrStoreActivities
 from ocr.settings import OcrSettings
@@ -36,14 +51,25 @@ from ocr.workflow_mark_removal import (
 )
 from ocr.workflow_store import OcrStoreWorkflow
 from ocr.workflow_submit import OcrSubmitWorkflow
+from ocr.workflow_tracker import OcrBatchTrackerWorkflow
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
     from sax_platform.ocr import MistralOcr
+    from temporalio.client import Client
 
 logger = logging.getLogger(__name__)
+
+# The stateless status tracker (T4.4) is driven by a Temporal Schedule, not an
+# in-workflow timer: one short ``OcrBatchTrackerWorkflow`` run every two minutes.
+# overlap=SKIP plus the execution-timeout backstop guard against a wedged run
+# starving later cycles — a run that hangs skips at most two cycles before its
+# 5-minute timeout frees the slot for the next fire.
+_TRACKER_SCHEDULE_ID: Final = "ocr-batch-tracker"
+_TRACKER_INTERVAL: Final = timedelta(seconds=120)
+_TRACKER_EXECUTION_TIMEOUT: Final = timedelta(minutes=5)
 
 
 def _init_store(url: str) -> None:
@@ -79,11 +105,55 @@ def _build_mistral_ocr(api_key: str | None) -> MistralOcr | None:
     return MistralOcr(make_mistral_client(api_key))
 
 
+async def _ensure_schedule(
+    client: Client,
+    schedule_id: str,
+    workflow_name: str,
+    interval: timedelta,
+    execution_timeout: timedelta = _TRACKER_EXECUTION_TIMEOUT,
+) -> None:
+    """Create the tracker Schedule, or reconcile an existing one to match (idempotent).
+
+    Ported from the T1.3 forge signal-poller wiring (deleted in T4.1) and adapted:
+    the tracker workflow takes NO argument, runs on ``ocr-task-queue``, fires every
+    ``interval`` with overlap=SKIP, and is bounded by ``execution_timeout``. On a
+    fresh worker the Schedule is created; on restart ``create_schedule`` raises
+    ``ScheduleAlreadyRunningError`` and we update the live Schedule's spec/action/
+    policy in place so config drift can never accumulate.
+    """
+    schedule = Schedule(
+        action=ScheduleActionStartWorkflow(
+            workflow_name,
+            id=f"{schedule_id}-run",
+            task_queue=OCR_TASK_QUEUE,
+            execution_timeout=execution_timeout,
+        ),
+        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=interval)]),
+        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
+        state=ScheduleState(note=f"OCR schedule: {schedule_id}"),
+    )
+    try:
+        await client.create_schedule(schedule_id, schedule)
+        logger.info("Created schedule %s (every %s)", schedule_id, interval)
+    except ScheduleAlreadyRunningError:
+        handle = client.get_schedule_handle(schedule_id)
+
+        async def _updater(input: ScheduleUpdateInput) -> ScheduleUpdate:
+            input.description.schedule.spec = schedule.spec
+            input.description.schedule.action = schedule.action
+            input.description.schedule.policy = schedule.policy
+            return ScheduleUpdate(schedule=input.description.schedule)
+
+        await handle.update(_updater)
+        logger.info("Reconciled existing schedule %s", schedule_id)
+
+
 def workflows() -> list[type]:
     """The OCR workflow classes registered on the worker."""
     return [
         OcrSubmitWorkflow,
         OcrStoreWorkflow,
+        OcrBatchTrackerWorkflow,
         OcrExportWorkflow,
         OcrListJobsWorkflow,
         OcrMarkForRemovalWorkflow,
@@ -102,7 +172,6 @@ def activity_methods(store: OcrStoreActivities) -> list[Callable[..., Any]]:
         store.split_file_into_chunks,
         store.build_ocr_request_blob,
         store.submit_ocr_batch,
-        store.ocr_batch_status,
         store.fetch_and_store_ocr_result,
         store.delete_file_content_blob,
         store.upsert_ocr_status,
@@ -112,6 +181,9 @@ def activity_methods(store: OcrStoreActivities) -> list[Callable[..., Any]]:
         store.mark_ocr_for_removal,
         store.clear_ocr_removal_mark,
         store.list_ocr_jobs,
+        store.list_live_ocr_jobs,
+        store.sweep_mistral_batches,
+        store.record_tracker_heartbeat,
     ]
 
 
@@ -121,12 +193,20 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     The composition root: reads settings once (fail-fast on a missing
     ``FORGE_DB_URL`` or ``MISTRAL_API_KEY``), runs migrations, configures logging,
     builds the store engine + blob client + Mistral capability ONCE, injects all
-    three into ``OcrStoreActivities``, then hands the bound methods and workflows
-    to the shared ``sax_platform.temporal.worker.run_worker`` (Worker construction
-    + graceful SIGINT/SIGTERM drain). ``address`` overrides the settings-resolved
-    Temporal address (used by the CLI's ``--temporal-address`` option);
-    ``graceful_shutdown_timeout`` is 5 minutes to match the shared default.
+    three into ``OcrStoreActivities``, installs the status-tracker Schedule
+    (``_ensure_schedule``, before serving work), then hands the bound methods and
+    workflows to the shared ``sax_platform.temporal.worker.run_worker`` (Worker
+    construction + graceful SIGINT/SIGTERM drain). ``address`` overrides the
+    settings-resolved Temporal address (used by the CLI's ``--temporal-address``
+    option); ``graceful_shutdown_timeout`` is 5 minutes to match the shared default.
+
+    The environment guard runs FIRST, before settings/store/logging: an unset or
+    invalid ``FORGE_ENV`` raises :class:`ForgeEnvError` (its message is complete
+    and actionable) so the worker can never reach a database without an
+    explicitly declared environment.
     """
+    env = resolve_forge_env(os.environ)
+
     from datetime import timedelta
 
     settings = OcrSettings()
@@ -135,6 +215,7 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
 
     setup_logging("ocr", console=True)
     silence_noisy_loggers()
+    logger.info("ocr worker starting: env=%s", env)
 
     engine = get_store_engine(settings.db.url)
     # OCR requires S3: build the client unconditionally so an unset bucket fails
@@ -155,6 +236,18 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
         identity=identity,
         settings=settings.temporal,
     )
+
+    # Install the status-tracker Schedule before serving work: without it the store
+    # children never receive their status hints, so the worker would be useless.
+    # A failure here should abort startup rather than run a worker that can't finish
+    # a batch.
+    await _ensure_schedule(
+        client,
+        _TRACKER_SCHEDULE_ID,
+        "OcrBatchTrackerWorkflow",
+        _TRACKER_INTERVAL,
+    )
+
     await _run_worker(
         client,
         task_queue=OCR_TASK_QUEUE,

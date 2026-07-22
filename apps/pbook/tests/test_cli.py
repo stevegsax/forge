@@ -11,7 +11,7 @@ from click.testing import CliRunner
 if TYPE_CHECKING:
     from pathlib import Path
 
-from pbook.cli import main
+from pbook.cli import EXIT_CONFIG_ERROR, main
 from pbook.models import PlaybookEntry
 from pbook.store import (
     build_entry_dict,
@@ -910,6 +910,55 @@ class TestMigrate:
         result = runner.invoke(main, ["migrate"])
         assert result.exit_code == 0
         assert "Migrations complete" in result.output
+
+
+# ---------------------------------------------------------------------------
+# ST-G2 environment guard (T0.9)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvGuard:
+    """The root CLI group refuses to run without an explicitly declared FORGE_ENV.
+
+    The guard runs in the group callback, ahead of every command body (including
+    ``PbookSettings()``). A missing or invalid environment exits
+    ``EXIT_CONFIG_ERROR`` (78) with the guard's actionable message on stderr; a
+    declared environment lets the command proceed. ``add --schema`` is a cheap
+    command whose body needs no database. ``FORGE_ENV=test`` comes from the
+    autouse ``_forge_env`` fixture; the failure cases override it.
+    """
+
+    def test_missing_forge_env_exits_78(self, monkeypatch):
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--schema"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "no default environment" in result.stderr
+
+    def test_invalid_forge_env_exits_78(self, monkeypatch):
+        monkeypatch.setenv("FORGE_ENV", "staging")
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--schema"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "not a valid environment" in result.stderr
+
+    def test_prod_without_ack_refused(self, monkeypatch):
+        monkeypatch.setenv("FORGE_ENV", "prod")
+        monkeypatch.delenv("FORGE_ENV_TAG", raising=False)
+        monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--schema"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "explicit act" in result.stderr
+
+    def test_test_env_proceeds(self):
+        # FORGE_ENV=test is set by the autouse _forge_env fixture, so the guard
+        # passes and the command runs to completion.
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--schema"])
+        assert result.exit_code == 0
+        schema = json.loads(result.output)
+        assert "properties" in schema
 
 
 # ---------------------------------------------------------------------------

@@ -123,3 +123,40 @@ class TestRunWorkerComposition:
         # address is passed positionally; TLS settings threaded via keyword.
         assert conn.call_args.args[0] == "host:1234"
         assert "settings" in conn.call_args.kwargs
+
+
+class TestEnvGuard:
+    """The worker resolves FORGE_ENV FIRST and fails fast without it (T0.9 ST-G2)."""
+
+    @pytest.mark.asyncio
+    async def test_requires_forge_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unset FORGE_ENV raises before any settings/store setup.
+
+        No I/O patches are applied: resolution is the worker's first act, so it
+        raises without ever building settings or touching a database.
+        """
+        from sax_platform.config import ForgeEnvError
+
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        with pytest.raises(ForgeEnvError, match="no default environment"):
+            await worker_mod.run_worker()
+
+    @pytest.mark.asyncio
+    async def test_logs_resolved_env(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
+        with (
+            p_log,
+            p_mig,
+            p_eng,
+            p_conn,
+            p_run,
+            caplog.at_level(logging.INFO, logger="pbook.worker"),
+        ):
+            await worker_mod.run_worker()
+
+        assert "pbook worker starting: env=test" in caplog.text

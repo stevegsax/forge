@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 from sax_platform.temporal.heartbeat import heartbeat_during
 from sax_platform.temporal.polling import (
     BATCH_WAIT_CEILING,
-    BackoffSchedule,
     FixedInterval,
     PollSchedule,
     wait_batch_ended,
@@ -76,7 +75,6 @@ __all__ = [
     "IO_RETRY",
     "LLM_RETRY",
     "PERSIST_RETRY",
-    "BackoffSchedule",
     "FixedInterval",
     "PollSchedule",
     "TemporalTLSConfigError",

@@ -11,9 +11,12 @@ from pydantic import ValidationError
 from sax_platform.config import (
     BlobSettings,
     DbSettings,
+    ForgeEnv,
+    ForgeEnvError,
     LlmSettings,
     LogSettings,
     TemporalSettings,
+    resolve_forge_env,
 )
 
 _ALL_ENV_VARS = (
@@ -183,3 +186,93 @@ class TestLogSettings:
 
         with pytest.raises(ValidationError, match="frozen"):
             settings.log_dir = "/mutated"  # type: ignore[misc]
+
+
+class TestResolveForgeEnv:
+    """The environment guard is pure over an explicit mapping.
+
+    Every case passes a hand-built ``dict`` — no monkeypatching — so the tests
+    exercise the resolution rules directly and never touch the ambient shell
+    env (which points at production on this machine).
+    """
+
+    @pytest.mark.parametrize(
+        ("environ", "expected"),
+        [
+            # dev/test resolve with a matching tag...
+            ({"FORGE_ENV": "dev", "FORGE_ENV_TAG": "dev"}, ForgeEnv.DEV),
+            ({"FORGE_ENV": "test", "FORGE_ENV_TAG": "test"}, ForgeEnv.TEST),
+            # ...and with the tag absent (hand-exported vars are fine off prod)...
+            ({"FORGE_ENV": "dev"}, ForgeEnv.DEV),
+            ({"FORGE_ENV": "test"}, ForgeEnv.TEST),
+            # ...and an empty tag counts as absent, not as a mismatch.
+            ({"FORGE_ENV": "dev", "FORGE_ENV_TAG": ""}, ForgeEnv.DEV),
+            # prod resolves only with BOTH the tagged profile and the ack.
+            (
+                {
+                    "FORGE_ENV": "prod",
+                    "FORGE_ENV_TAG": "prod",
+                    "FORGE_PROD_ACK": "yes",
+                },
+                ForgeEnv.PROD,
+            ),
+        ],
+    )
+    def test_resolves(self, environ: dict[str, str], expected: ForgeEnv) -> None:
+        assert resolve_forge_env(environ) == expected
+
+    @pytest.mark.parametrize(
+        ("environ", "match"),
+        [
+            # Rule 1: missing or empty FORGE_ENV — no default is invented.
+            ({}, "no default environment"),
+            ({"FORGE_ENV": ""}, "no default environment"),
+            # Rule 2: unknown value names the valid set.
+            ({"FORGE_ENV": "staging"}, "not a valid environment"),
+            # Rule 3: tag/env disagreement, in both directions.
+            (
+                {"FORGE_ENV": "dev", "FORGE_ENV_TAG": "prod"},
+                "does not match",
+            ),
+            (
+                {"FORGE_ENV": "test", "FORGE_ENV_TAG": "dev"},
+                "does not match",
+            ),
+            # A prod tag under a dev claim is caught by the mismatch rule
+            # before the prod-ack rule (rule 3 precedes rule 4).
+            (
+                {"FORGE_ENV": "prod", "FORGE_ENV_TAG": "dev", "FORGE_PROD_ACK": "yes"},
+                "does not match",
+            ),
+            # Rule 4: prod without the tagged profile.
+            ({"FORGE_ENV": "prod", "FORGE_PROD_ACK": "yes"}, "explicit act"),
+            ({"FORGE_ENV": "prod", "FORGE_ENV_TAG": ""}, "explicit act"),
+            # Rule 4: prod with the tag but no acknowledgement.
+            ({"FORGE_ENV": "prod", "FORGE_ENV_TAG": "prod"}, "explicit act"),
+            # Rule 4: the ack must be exactly "yes".
+            (
+                {
+                    "FORGE_ENV": "prod",
+                    "FORGE_ENV_TAG": "prod",
+                    "FORGE_PROD_ACK": "true",
+                },
+                "explicit act",
+            ),
+        ],
+    )
+    def test_raises(self, environ: dict[str, str], match: str) -> None:
+        with pytest.raises(ForgeEnvError, match=match):
+            resolve_forge_env(environ)
+
+    @pytest.mark.parametrize("value", ["PROD", "Prod", "DEV", "Test"])
+    def test_case_sensitive_rejects_uppercase(self, value: str) -> None:
+        """Matching is exact-lowercase only.
+
+        ``FORGE_ENV`` values travel through env files and CLI flags; accepting
+        case variants would let a shouted or title-cased typo silently route a
+        process to a real environment (worst case, ``"PROD"`` -> production).
+        Rejecting anything but the exact ``StrEnum`` value keeps that from ever
+        happening — the token must match byte-for-byte.
+        """
+        with pytest.raises(ForgeEnvError, match="not a valid environment"):
+            resolve_forge_env({"FORGE_ENV": value})

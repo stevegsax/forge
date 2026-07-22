@@ -19,11 +19,12 @@ import logging
 import mimetypes
 import re
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, assert_never
 
 from sax_platform.contracts.models import BatchJobStatus
-from sax_platform.ocr import BatchPollStatus, ExtractedImage
+from sax_platform.temporal.polling import BATCH_WAIT_CEILING
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -31,7 +32,6 @@ from ocr.models import (
     ChunkRef,
     FileContentRef,
     OcrBatchRequestRef,
-    OcrBatchStatusInput,
     OcrBuildRequestInput,
     OcrDuplicateCheckResult,
     OcrExportInput,
@@ -50,27 +50,29 @@ from ocr.models import (
     OcrStoreResult,
     OcrSubmitBatchInput,
     SplitResult,
+    TrackerHeartbeatInput,
+    TrackerLiveJob,
 )
 
 if TYPE_CHECKING:
     from sax_platform.contracts.s3_blobs import S3Blobs
-    from sax_platform.ocr import MistralOcr
+    from sax_platform.ocr import ExtractedImage, MistralOcr
     from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
-# Mistral's normalized poll statuses mapped onto the ``wait_batch_ended`` state
-# vocabulary. PENDING and IN_PROGRESS both mean "keep waiting" ("in_progress");
-# ENDED signals the fetch; the three provider-terminal states pass through. An
-# unrecognized status falls back to "in_progress" (the safe non-terminal default).
-_POLL_STATUS_TO_STATE: dict[BatchPollStatus, str] = {
-    BatchPollStatus.PENDING: "in_progress",
-    BatchPollStatus.IN_PROGRESS: "in_progress",
-    BatchPollStatus.ENDED: "ended",
-    BatchPollStatus.FAILED: "failed",
-    BatchPollStatus.EXPIRED: "expired",
-    BatchPollStatus.CANCELED: "canceled",
-}
+# The stateless status tracker (T4.4) only cares about jobs that are still within
+# their permitted wait window: a job older than the batch-wait ceiling (plus one
+# hour of grace) is failing at its own ceiling, so the tracker neither lists it as
+# live nor asks Mistral about it. Both the DB row filter and the Mistral
+# ``created_after`` sweep bound derive from this single margin.
+_TRACKER_MAX_AGE: timedelta = BATCH_WAIT_CEILING + timedelta(hours=1)
+
+# OCR-processing statuses that mean a submission is still in flight (a live job).
+_TRACKER_LIVE_STATUSES: tuple[OcrProcessingStatus, ...] = (
+    OcrProcessingStatus.SUBMITTED,
+    OcrProcessingStatus.PROCESSING,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +210,33 @@ def compute_file_hash(file_path: str) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             sha256.update(chunk)
     return sha256.hexdigest()
+
+
+def tracker_created_after(now: datetime) -> datetime:
+    """The tracker's age cutoff: the oldest job creation time still worth sweeping.
+
+    A job created before this instant is past its permitted wait window (the
+    batch-wait ceiling plus an hour of grace) and is failing at its own ceiling,
+    so it is neither listed as live nor asked about on Mistral. ``now`` is injected
+    so this stays pure and deterministic.
+    """
+    return now - _TRACKER_MAX_AGE
+
+
+def _row_to_live_job(
+    request_id: str, batch_id: str | None, workflow_id: str | None
+) -> TrackerLiveJob | None:
+    """Build a ``TrackerLiveJob`` from a joined row, or ``None`` if the ledger is missing.
+
+    A live ``ocr_job_status`` row LEFT-joined to ``batch_jobs`` yields NULL
+    ``batch_id``/``workflow_id`` when there is no ledger row (or the ledger has not
+    recorded the provider batch id yet). Without both the tracker can neither ask
+    Mistral about the batch nor address the waiting store child, so such a row is
+    unroutable and the caller drops it. Pure: the caller does the logging.
+    """
+    if not batch_id or not workflow_id:
+        return None
+    return TrackerLiveJob(request_id=request_id, batch_id=batch_id, workflow_id=workflow_id)
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +653,54 @@ def execute_list_ocr_jobs(
     return OcrListJobsResult(jobs=jobs, total=len(jobs))
 
 
+def execute_list_live_ocr_jobs(engine: Engine, *, min_created_at: datetime) -> list[TrackerLiveJob]:
+    """Return the in-flight OCR submissions the tracker should sweep (T4.4).
+
+    Selects ``ocr_job_status`` rows whose status is still live
+    (submitted/processing) and whose ``created_at`` is at or after
+    *min_created_at* (rows older than the wait ceiling are excluded — they fail at
+    their own ceiling), LEFT-joined to the read-only platform ``batch_jobs`` mirror
+    on ``batch_jobs.id == request_id`` for the provider ``batch_id`` and
+    ``workflow_id``. A live row with no ledger row (or a NULL ``batch_id``/
+    ``workflow_id``) is unroutable — logged as a warning and skipped — so every
+    returned job carries a non-empty batch id and workflow id.
+    """
+    import sqlalchemy as sa
+    from sax_platform.contracts.batch_jobs import batch_jobs as bj
+
+    from ocr.store import OcrJobStatus
+
+    js = OcrJobStatus.__table__
+    live_values = [status.value for status in _TRACKER_LIVE_STATUSES]
+    stmt = (
+        sa.select(
+            js.c.request_id,
+            bj.c.batch_id,
+            bj.c.workflow_id,
+        )
+        .select_from(js.outerjoin(bj, bj.c.id == js.c.request_id))
+        .where(js.c.status.in_(live_values))
+        .where(js.c.created_at >= min_created_at)
+        .order_by(js.c.created_at)
+    )
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+
+    jobs: list[TrackerLiveJob] = []
+    for row in rows:
+        job = _row_to_live_job(row["request_id"], row["batch_id"], row["workflow_id"])
+        if job is None:
+            logger.warning(
+                "Live OCR job %s has no routable batch_jobs ledger row "
+                "(missing batch_id/workflow_id); skipping tracker sweep",
+                row["request_id"],
+            )
+            continue
+        jobs.append(job)
+    return jobs
+
+
 def _coerce_ocr_status(raw: str) -> OcrProcessingStatus | None:
     """Parse a stored OCR status string, tolerating unknown legacy values (``None``)."""
     try:
@@ -800,16 +877,6 @@ class OcrStoreActivities:
         return await self._mistral.submit_batch(requests, input.model, endpoint="/v1/ocr")
 
     @activity.defn
-    async def ocr_batch_status(self, input: OcrBatchStatusInput) -> str:
-        """Activity: poll one Mistral batch's status (no download).
-
-        Maps ``MistralOcr.get_batch_status`` onto the ``wait_batch_ended`` state
-        vocabulary ("in_progress"/"ended"/"failed"/"expired"/"canceled").
-        """
-        status = await self._mistral.get_batch_status(input.batch_id)
-        return _POLL_STATUS_TO_STATE.get(status, "in_progress")
-
-    @activity.defn
     async def fetch_and_store_ocr_result(self, input: OcrFetchStoreInput) -> OcrStoreResult:
         """Activity: download the finished batch, select this request, store it.
 
@@ -903,4 +970,41 @@ class OcrStoreActivities:
             self._engine,
             limit=input.limit,
             status_filter=input.status_filter,
+        )
+
+    @activity.defn
+    async def list_live_ocr_jobs(self) -> list[TrackerLiveJob]:
+        """Activity: list the in-flight OCR submissions the tracker should sweep.
+
+        Computes the age cutoff from the current time (the batch-wait ceiling plus
+        an hour of grace) and returns the routable live jobs — those with a
+        provider ``batch_id`` and a ``workflow_id`` recorded in the ``batch_jobs``
+        ledger.
+        """
+        min_created_at = tracker_created_after(datetime.now(UTC))
+        return execute_list_live_ocr_jobs(self._engine, min_created_at=min_created_at)
+
+    @activity.defn
+    async def sweep_mistral_batches(self) -> dict[str, str]:
+        """Activity: one stateless sweep of Mistral's batch-list endpoint (no download).
+
+        Asks Mistral for the normalized status of every batch created after the
+        tracker's age cutoff and returns a ``{batch_id: status_value}`` map. The
+        platform method already filters by ``created_after`` and downloads no
+        result content, so this activity neither filters nor fetches.
+        """
+        created_after = tracker_created_after(datetime.now(UTC))
+        statuses = await self._mistral.list_batch_statuses(created_after=created_after)
+        return {batch_id: status.value for batch_id, status in statuses.items()}
+
+    @activity.defn
+    async def record_tracker_heartbeat(self, input: TrackerHeartbeatInput) -> None:
+        """Activity: upsert the singleton tracker-heartbeat row (increments cycles_total)."""
+        from ocr.store import record_tracker_heartbeat as _record
+
+        _record(
+            self._engine,
+            now=datetime.now(UTC),
+            live_jobs=input.live_jobs,
+            hints_sent=input.hints_sent,
         )

@@ -9,10 +9,11 @@ composition root (T3.6): it constructs frozen settings once, builds the engine
 from __future__ import annotations
 
 import logging
+import os
 from datetime import timedelta
 
 from openai import AsyncOpenAI
-from sax_platform.config import TemporalSettings
+from sax_platform.config import TemporalSettings, resolve_forge_env
 from sax_platform.embeddings import OpenAIEmbeddings
 from sax_platform.llm import AnthropicLLM, make_client
 from sax_platform.logging import setup_logging
@@ -96,9 +97,17 @@ def _migrate_if_configured(db: PbookDbSettings) -> None:
 
 
 async def run_worker(address: str = "localhost:7233") -> None:
-    """Connect to Temporal and run the pbook worker (composition root)."""
+    """Connect to Temporal and run the pbook worker (composition root).
+
+    The environment guard runs FIRST, before settings/store setup: an unset or
+    invalid ``FORGE_ENV`` raises :class:`ForgeEnvError` (its message is complete
+    and actionable) so the worker can never reach a database without an
+    explicitly declared environment.
+    """
+    env = resolve_forge_env(os.environ)
     settings = PbookSettings()
     setup_logging("pbook", log_path=settings.log_path, console=True)
+    logger.info("pbook worker starting: env=%s", env)
 
     engine = build_engine(settings.db)
     _migrate_if_configured(settings.db)

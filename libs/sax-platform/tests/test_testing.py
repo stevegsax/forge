@@ -8,6 +8,7 @@ Covers the two recording fakes (``FakeLLM``, ``FakeMistralOcr``), the
 from __future__ import annotations
 
 import inspect
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel
@@ -264,6 +265,27 @@ class TestFakeMistralOcr:
         await ocr.get_batch_status("b")
         assert [c.method for c in ocr.calls] == ["get_batch_status"]
 
+    async def test_list_batch_statuses_returns_canned_map_and_records_cutoff(self) -> None:
+        cutoff = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
+        canned = {"job-1": BatchPollStatus.ENDED, "job-2": BatchPollStatus.IN_PROGRESS}
+        ocr = FakeMistralOcr(list_statuses=canned)
+
+        result = await ocr.list_batch_statuses(created_after=cutoff)
+
+        assert result == canned
+        assert ocr.calls[-1] == RecordedCall("list_batch_statuses", (), {"created_after": cutoff})
+
+    async def test_list_batch_statuses_defaults_to_empty_map(self) -> None:
+        ocr = FakeMistralOcr()
+        assert await ocr.list_batch_statuses(created_after=datetime(2026, 1, 1, tzinfo=UTC)) == {}
+
+    async def test_list_endpoint_uninvoked_is_provable_from_calls(self) -> None:
+        """A caller can prove the list endpoint was never hit by inspecting
+        ``calls`` — the sanctioned way to assert a poll path took no sweep."""
+        ocr = FakeMistralOcr()
+        await ocr.get_batch_status("b")
+        assert "list_batch_statuses" not in [c.method for c in ocr.calls]
+
     def test_parse_batch_result_falls_back_to_process_result(self) -> None:
         body = {"pages": []}
         images: list[ExtractedImage] = []
@@ -284,14 +306,21 @@ class TestFakeMistralOcr:
         ocr = FakeMistralOcr()
         assert await ocr.get_batch_status("b") is BatchPollStatus.ENDED
         assert await ocr.fetch_batch_results("b") == []
+        assert await ocr.list_batch_statuses(created_after=datetime(2026, 1, 1, tzinfo=UTC)) == {}
         assert await ocr.submit_batch([], "m") == "batch-fake"
         assert await ocr.process(document={}, model="m") == ({}, [])
         assert ocr.parse_batch_result("{}") == ({}, [])
 
     def test_exposes_the_mistral_ocr_method_surface(self) -> None:
-        """FakeMistralOcr is a duck-typed drop-in for MistralOcr: four async
+        """FakeMistralOcr is a duck-typed drop-in for MistralOcr: five async
         methods plus the sync ``parse_batch_result``."""
         ocr = FakeMistralOcr()
-        for name in ("process", "submit_batch", "get_batch_status", "fetch_batch_results"):
+        for name in (
+            "process",
+            "submit_batch",
+            "get_batch_status",
+            "list_batch_statuses",
+            "fetch_batch_results",
+        ):
             assert inspect.iscoroutinefunction(getattr(ocr, name))
         assert not inspect.iscoroutinefunction(ocr.parse_batch_result)

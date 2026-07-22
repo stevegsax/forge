@@ -6,14 +6,16 @@ starts a parent-awaited OcrStoreWorkflow child with the REAL batch_id (no
 ABANDON). Two workers run: the OCR worker (``ocr-task-queue``) and a stand-in
 platform worker (``forge-task-queue``) for the cross-queue ``persist_to_store``.
 
-The headline test is the failed-chunk AC: with the real self-polling
-OcrStoreWorkflow as the child, a chunk whose provider status is terminal fails
-PROMPTLY (recording ``batch_outcome`` FAILED, never MISSING — the 25h-ceiling
-outcome), its sibling still completes, and the document fails.
+The headline test is the failed-chunk AC: with the real signal-wait
+OcrStoreWorkflow as the child, driven by ``ocr_status_hint`` hints delivered to
+each child by id, a chunk hinted to a terminal ``failed`` state fails PROMPTLY
+(recording ``batch_outcome`` FAILED, never MISSING — the 25h-ceiling outcome),
+its sibling still completes, and the document fails.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -26,19 +28,20 @@ from sax_platform.contracts.persist import (
 )
 from temporalio import activity, workflow
 from temporalio.client import WorkflowFailureError
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.worker import Worker
 
 from ocr.models import (
     ChunkRef,
     FileContentRef,
     OcrBatchRequestRef,
-    OcrBatchStatusInput,
     OcrBuildRequestInput,
     OcrDuplicateCheckResult,
     OcrFetchStoreInput,
     OcrProcessingStatus,
     OcrReassembleInput,
     OcrSplitInput,
+    OcrStatusHint,
     OcrStatusUpsertInput,
     OcrStoreInput,
     OcrStoreResult,
@@ -189,8 +192,12 @@ class TestOcrSubmitOrdering:
 # ---------------------------------------------------------------------------
 
 
-def _ocr_activities_multi(calls: dict[str, list], *, fail_c0: bool = True) -> list:
-    """Chunk-aware mocks: with ``fail_c0`` set, batch-c0 fails; else both end."""
+def _ocr_activities_multi(calls: dict[str, list]) -> list:
+    """Chunk-aware mocks. Which chunk fails vs. ends is driven by the terminal
+    ``ocr_status_hint`` each store child receives from the test, not by these
+    activities: ``submit_ocr_batch`` maps ``key-c{i}`` to a stable ``batch-c{i}``
+    id, and ``fetch_and_store_ocr_result`` runs only for a chunk hinted ``ended``.
+    """
 
     @activity.defn(name="check_ocr_duplicate")
     async def check_ocr_duplicate(file_path: str) -> OcrDuplicateCheckResult:
@@ -228,12 +235,6 @@ def _ocr_activities_multi(calls: dict[str, list], *, fail_c0: bool = True) -> li
         # key-c0 -> batch-c0, key-c1 -> batch-c1
         return input.s3_key.replace("key-", "batch-")
 
-    @activity.defn(name="ocr_batch_status")
-    async def ocr_batch_status(input: OcrBatchStatusInput) -> str:
-        if fail_c0 and input.batch_id == "batch-c0":
-            return "failed"
-        return "ended"
-
     @activity.defn(name="fetch_and_store_ocr_result")
     async def fetch_and_store_ocr_result(input: OcrFetchStoreInput) -> OcrStoreResult:
         calls["fetch"].append(input.request_id)
@@ -258,7 +259,6 @@ def _ocr_activities_multi(calls: dict[str, list], *, fail_c0: bool = True) -> li
         split_file_into_chunks,
         build_ocr_request_blob,
         submit_ocr_batch,
-        ocr_batch_status,
         fetch_and_store_ocr_result,
         upsert_ocr_status,
         delete_file_content_blob,
@@ -266,19 +266,43 @@ def _ocr_activities_multi(calls: dict[str, list], *, fail_c0: bool = True) -> li
     ]
 
 
+async def _signal_child_when_ready(
+    env: WorkflowEnvironment, child_id: str, hint: OcrStatusHint
+) -> None:
+    """Deliver an ``ocr_status_hint`` to a store child, retrying until it exists.
+
+    The parent starts each store child asynchronously, so a child may not yet be
+    registered the instant the test goes to signal it. Time-skipping is off while
+    no workflow result is awaited, so this retries in real time on NOT_FOUND until
+    the signal lands (bounded, ~2s).
+    """
+    for _ in range(40):
+        try:
+            handle = env.client.get_workflow_handle(child_id)
+            await handle.signal("ocr_status_hint", hint)
+            return
+        except RPCError as exc:
+            if exc.status != RPCStatusCode.NOT_FOUND:
+                raise
+            await asyncio.sleep(0.05)
+    raise AssertionError(f"store child {child_id!r} never started to receive its hint")
+
+
 class TestFailedChunkPropagatesPromptly:
     @pytest.mark.asyncio
     async def test_failed_chunk_fails_document_without_hanging(
         self, env: WorkflowEnvironment
     ) -> None:
-        """AC1: a store child that fails surfaces promptly; its sibling completes.
+        """AC1: a store child hinted to a terminal state surfaces promptly; its
+        sibling completes.
 
-        chunk 0's provider status is terminal (``failed``), so the real
-        OcrStoreWorkflow child records a ``batch_outcome`` FAILED and raises after
-        one poll — NOT the 25h-ceiling MISSING outcome. chunk 1 ends normally and
-        stores. The parent gathers both (``return_exceptions=True``) and fails the
-        document. If a failed chunk hung, the time-skipping env would show a
-        ceiling MISSING instead of a fast FAILED.
+        chunk 0 is hinted ``failed`` (a provider-terminal state), so the real
+        signal-wait OcrStoreWorkflow child records a ``batch_outcome`` FAILED and
+        raises at once — NOT the 25h-ceiling MISSING outcome. chunk 1 is hinted
+        ``ended`` and stores normally. The parent gathers both
+        (``return_exceptions=True``) and fails the document. If a chunk hung
+        waiting for a hint, the time-skipping env would show a ceiling MISSING
+        instead of a fast FAILED.
         """
         calls: dict[str, list] = {
             "fetch": [],
@@ -290,7 +314,7 @@ class TestFailedChunkPropagatesPromptly:
         ocr_worker = Worker(
             env.client,
             task_queue=OCR_TASK_QUEUE,
-            # Real self-polling store child — this is what the AC exercises.
+            # Real signal-wait store child — this is what the AC exercises.
             workflows=[OcrSubmitWorkflow, OcrStoreWorkflow],
             activities=_ocr_activities_multi(calls),
         )
@@ -299,13 +323,22 @@ class TestFailedChunkPropagatesPromptly:
         )
 
         async with ocr_worker, platform_worker:
+            handle = await env.client.start_workflow(
+                OcrSubmitWorkflow.run,
+                OcrSubmitInput(file_path="/tmp/x.pdf", document_id="doc-x"),
+                id="test-submit-failed-chunk",
+                task_queue=OCR_TASK_QUEUE,
+            )
+            # chunk 0 -> batch-c0 (failed), chunk 1 -> batch-c1 (ended). Both hints
+            # land before any result is awaited, so no child hits the 25h ceiling.
+            await _signal_child_when_ready(
+                env, "ocr-store-doc-x__chunk_0", OcrStatusHint(batch_id="batch-c0", state="failed")
+            )
+            await _signal_child_when_ready(
+                env, "ocr-store-doc-x__chunk_1", OcrStatusHint(batch_id="batch-c1", state="ended")
+            )
             with pytest.raises(WorkflowFailureError):
-                await env.client.execute_workflow(
-                    OcrSubmitWorkflow.run,
-                    OcrSubmitInput(file_path="/tmp/x.pdf", document_id="doc-x"),
-                    id="test-submit-failed-chunk",
-                    task_queue=OCR_TASK_QUEUE,
-                )
+                await handle.result()
 
         outcomes = [p for p in calls["persist"] if isinstance(p, PersistBatchOutcome)]
         by_req = {p.request_id: p.status for p in outcomes}
@@ -321,7 +354,7 @@ class TestFailedChunkPropagatesPromptly:
 
     @pytest.mark.asyncio
     async def test_multichunk_success_reassembles_inline(self, env: WorkflowEnvironment) -> None:
-        """Both chunks store, then the parent reassembles inline and returns."""
+        """Both chunks are hinted ``ended``; the parent reassembles inline and returns."""
         calls: dict[str, list] = {
             "fetch": [],
             "status": [],
@@ -333,19 +366,27 @@ class TestFailedChunkPropagatesPromptly:
             env.client,
             task_queue=OCR_TASK_QUEUE,
             workflows=[OcrSubmitWorkflow, OcrStoreWorkflow],
-            activities=_ocr_activities_multi(calls, fail_c0=False),
+            activities=_ocr_activities_multi(calls),
         )
         platform_worker = Worker(
             env.client, task_queue=FORGE_TASK_QUEUE, activities=_persist_activity(calls)
         )
 
         async with ocr_worker, platform_worker:
-            result = await env.client.execute_workflow(
+            handle = await env.client.start_workflow(
                 OcrSubmitWorkflow.run,
                 OcrSubmitInput(file_path="/tmp/x.pdf", document_id="doc-y"),
                 id="test-submit-multichunk-ok",
                 task_queue=OCR_TASK_QUEUE,
             )
+            # Both chunks end: chunk 0 -> batch-c0, chunk 1 -> batch-c1.
+            await _signal_child_when_ready(
+                env, "ocr-store-doc-y__chunk_0", OcrStatusHint(batch_id="batch-c0", state="ended")
+            )
+            await _signal_child_when_ready(
+                env, "ocr-store-doc-y__chunk_1", OcrStatusHint(batch_id="batch-c1", state="ended")
+            )
+            result = await handle.result()
 
         assert result.chunk_count == 2
         # Both chunks fetched + stored, then reassembled once, inline in the parent.

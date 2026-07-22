@@ -8,27 +8,62 @@ up at login.
 | --- | --- |
 | `com.saxcapital.forge-stack` | RunAtLoad one-shot: `podman machine start` if needed, then `make stack-up` |
 | `com.saxcapital.forge-worker-1` / `-2` | KeepAlive: `uv run forge worker` (identities `desktop-forge-worker-1/2`) |
-| `com.saxcapital.pbook-worker` | KeepAlive: `uv run pbook worker` (opt-in) |
-| `com.saxcapital.ocr-worker` | KeepAlive: `uv run --package ocr ocr worker` (opt-in) |
+| `com.saxcapital.pbook-worker` | KeepAlive: `uv run pbook worker` (opt-in, `--with-pbook`) |
+| `com.saxcapital.ocr-worker` | KeepAlive: `uv run --package ocr ocr worker` (opt-in, `--with-ocr`) |
+| `com.saxcapital.db-backup` | Daily 03:30: `pg_dump` forge + pbook → S3 (opt-in, `--with-backup`) |
 
 ## Install
 
 ```bash
-cp deploy/launchd/forge.env.example ~/.config/forge/forge.env
-chmod 600 ~/.config/forge/forge.env   # then fill in the CHANGEMEs
-deploy/launchd/install.sh             # --with-pbook for ingestion, --with-ocr for OCR
+cp deploy/launchd/envs/prod.env.example ~/.config/forge/envs/prod.env
+chmod 600 ~/.config/forge/envs/prod.env   # then fill in the CHANGEMEs
+deploy/launchd/install.sh --with-backup   # + --with-pbook / --with-ocr as needed
 ```
 
-`install.sh` renders `com.saxcapital.forge.plist.in` per agent into
+`install.sh` renders `com.saxcapital.forge.plist.in` (workers) and
+`com.saxcapital.db-backup.plist.in` (backup) per agent into
 `~/Library/LaunchAgents/` and `launchctl bootstrap`s them; re-running is
-idempotent, `--uninstall` removes everything. Logs land under
-`$XDG_STATE_HOME/forge/logs/` (one file per agent).
+idempotent, `--uninstall` removes everything (all agents, whether or not
+they were installed). Logs land under `$XDG_STATE_HOME/forge/logs/` (one
+file per agent). The opt-in flags are `--with-pbook`, `--with-ocr`, and
+`--with-backup` (all default off — enable `--with-backup` on the
+production host so the databases have offsite durability).
 
-Workers read the env file through `run-worker.sh`, which parses
-`KEY=VALUE` lines without shell-evaluating them (the T0.7/G35 fix — a
-`&` in a DB URL is inert) and refuses to start unless the file is
-chmod 600. After a fresh boot the workers crash-loop politely
-(ThrottleInterval 10s) until the stack agent has Temporal listening.
+## Environment guard (T0.9)
+
+Every worker (and the backup job) must declare which environment it
+targets — there is no default, and production is an explicit act:
+
+- The **launchd plist** sets `FORGE_ENV=prod` in `EnvironmentVariables`,
+  and for the workers/backup also `FORGE_PROD_ACK=yes` (the production
+  acknowledgement — deliberately never in a profile file).
+- `run-worker.sh` (and `backup-app-dbs.sh`) source the shared
+  `load-env.sh`, which loads the matching profile
+  `~/.config/forge/envs/$FORGE_ENV.env`, parsing `KEY=VALUE` lines
+  **without shell-evaluating them** (the T0.7/G35 property — a `&` in a
+  DB URL is inert) and refusing to start unless the file is chmod 600.
+- Each profile declares `FORGE_ENV_TAG` (`prod` / `dev`); `load-env.sh`
+  aborts if the tag disagrees with `FORGE_ENV`, so you cannot source a
+  dev profile into a prod agent (or vice-versa). `FORGE_PROD_ACK` is
+  never set by the profile or the scripts — only by the plist (or an
+  interactive shell), so sourcing a profile can never by itself grant
+  production access.
+
+To run a worker or `make backup-app-dbs` **interactively**, declare the
+environment yourself, and use `set -a` so the profile's values (including
+`FORGE_ENV_TAG`) export — a plain `source` does not export, and the guard
+rejects an unexported tag by design:
+
+```bash
+set -a; source ~/.config/forge/envs/prod.env; set +a
+export FORGE_ENV=prod FORGE_PROD_ACK=yes
+```
+
+Example profiles: `deploy/launchd/envs/prod.env.example` (local
+`forge` + `pbook` databases, real S3, `FORGE_BACKUP_S3_BUCKET`) and
+`envs/dev.env.example` (`forge_dev`, local MinIO, no prod ack). After a
+fresh boot the workers crash-loop politely (ThrottleInterval 10s) until
+the stack agent has Temporal listening.
 
 ## Operate
 
@@ -67,6 +102,19 @@ agent is not installed (both are opt-in) — it is not an error.
 
 `make workers-status` lists the currently running worker processes
 (read-only, safe to run anytime).
+
+## Nightly backups (`--with-backup`)
+
+The `com.saxcapital.db-backup` agent runs
+`deploy/local-stack/backup-app-dbs.sh` daily at 03:30: `pg_dump -Fc` of
+the `forge` and `pbook` databases out of the `forge-postgres` container,
+uploaded to `s3://$FORGE_BACKUP_S3_BUCKET/db-backups/` with a UTC
+timestamp (offsite durability now that the app store is local — T0.9).
+It loads the prod profile the same way the workers do (its plist sets
+`FORGE_ENV=prod` + `FORGE_PROD_ACK=yes`; `FORGE_BACKUP_S3_BUCKET` and the
+AWS creds come from the profile). Run it by hand with `make
+backup-app-dbs` (needs `FORGE_ENV` set in the shell). Logs:
+`~/.local/state/forge/logs/db-backup.log`.
 
 ## Always-on
 

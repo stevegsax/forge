@@ -175,6 +175,18 @@ def _store_engine(_pg_url: str) -> Iterator[Engine]:
 
 
 @pytest.fixture(autouse=True)
+def _forge_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declare ``FORGE_ENV=test`` so the ST-G2 environment guard passes.
+
+    Every pbook CLI command and worker startup now resolves ``FORGE_ENV`` and
+    refuses to run without it. This one central fixture satisfies the guard for
+    the whole suite; the guard's own tests override it with ``monkeypatch.delenv``
+    or a different value.
+    """
+    monkeypatch.setenv("FORGE_ENV", "test")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_db(_pg_url: str, _store_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the store env at the test DB and truncate tables before each test."""
     monkeypatch.setenv("PBOOK_DATABASE_URL", _pg_url)

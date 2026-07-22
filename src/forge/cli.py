@@ -65,6 +65,32 @@ if TYPE_CHECKING:
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_INFRASTRUCTURE_ERROR = 3
+# EX_CONFIG (sysexits.h, 78): the environment guard refused to run because
+# FORGE_ENV was unset or invalid. Deliberately outside every other command exit
+# code so an operator or monitoring harness never confuses "environment not
+# declared" with a real command outcome.
+EXIT_CONFIG_ERROR = 78
+
+
+def _require_forge_env() -> None:
+    """Refuse to run any command without an explicitly declared environment.
+
+    The composition-root guard for the CLI shell: it reads the process
+    environment through the pure ``resolve_forge_env`` (sax_platform.config),
+    which refuses to invent a default so reaching the production store is always
+    an explicit act. On failure it prints the guard's complete, actionable
+    message to stderr and exits ``EXIT_CONFIG_ERROR``; on success it returns
+    silently and the command proceeds.
+    """
+    import os
+
+    from sax_platform.config import ForgeEnvError, resolve_forge_env
+
+    try:
+        resolve_forge_env(os.environ)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
 
 
 def _require_store_engine() -> Engine:
@@ -495,6 +521,7 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
 )
 def main(log_verbosity: int) -> None:
     """Forge — LLM task orchestrator."""
+    _require_forge_env()
     configure_logging(log_verbosity)
 
 

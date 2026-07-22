@@ -42,6 +42,32 @@ logger = logging.getLogger(__name__)
 _TEMPORAL_ADDRESS = "localhost:7233"
 _PBOOK_TASK_QUEUE = "pbook-task-queue"
 
+# EX_CONFIG (sysexits.h, 78): the environment guard refused to run because
+# FORGE_ENV was unset or invalid. Deliberately outside every other command exit
+# code so an operator or monitoring harness never confuses "environment not
+# declared" with a real command outcome.
+EXIT_CONFIG_ERROR = 78
+
+
+def _require_forge_env() -> None:
+    """Refuse to run any command without an explicitly declared environment.
+
+    Reads the process environment through the pure ``resolve_forge_env``
+    (sax_platform.config), which invents no default so reaching the production
+    store is always an explicit act. On failure it prints the guard's complete,
+    actionable message to stderr and exits ``EXIT_CONFIG_ERROR``; on success it
+    returns silently and the command proceeds.
+    """
+    import os
+
+    from sax_platform.config import ForgeEnvError, resolve_forge_env
+
+    try:
+        resolve_forge_env(os.environ)
+    except ForgeEnvError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+
 
 def _execute_workflow[ParamType, ReturnType](
     workflow_fn: MethodAsyncSingleParam[Any, ParamType, ReturnType],
@@ -174,6 +200,8 @@ def _format_entry(entry: dict[str, Any]) -> str:
 @click.pass_context
 def main(ctx: click.Context, verbose: bool) -> None:
     """pbook — Knowledge playbook service."""
+    _require_forge_env()
+
     from sax_platform.logging import setup_logging
 
     from pbook.settings import PbookSettings

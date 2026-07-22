@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,6 @@ from ocr.activities import (
     validate_file_size,
 )
 from ocr.models import (
-    OcrBatchStatusInput,
     OcrBuildRequestInput,
     OcrExportInput,
     OcrFetchStoreInput,
@@ -50,6 +50,8 @@ from ocr.models import (
     OcrSplitInput,
     OcrStatusUpsertInput,
     OcrSubmitBatchInput,
+    TrackerHeartbeatInput,
+    TrackerLiveJob,
 )
 from ocr.store import (
     get_file_content,
@@ -611,7 +613,7 @@ class TestStoreOcrResult:
 
 
 # ---------------------------------------------------------------------------
-# submit_ocr_batch / ocr_batch_status / fetch_and_store_ocr_result activities
+# submit_ocr_batch / fetch_and_store_ocr_result activities
 # ---------------------------------------------------------------------------
 
 
@@ -635,27 +637,6 @@ class TestOcrBatchActivities:
         assert call.args[0] == requests
         assert call.args[1] == "mistral-ocr-latest"
         assert call.kwargs["endpoint"] == "/v1/ocr"
-
-    @pytest.mark.parametrize(
-        ("poll_status", "expected_state"),
-        [
-            (BatchPollStatus.PENDING, "in_progress"),
-            (BatchPollStatus.IN_PROGRESS, "in_progress"),
-            (BatchPollStatus.ENDED, "ended"),
-            (BatchPollStatus.FAILED, "failed"),
-            (BatchPollStatus.EXPIRED, "expired"),
-            (BatchPollStatus.CANCELED, "canceled"),
-        ],
-    )
-    async def test_ocr_batch_status_maps_vocabulary(
-        self, store_engine, blobs, poll_status, expected_state
-    ) -> None:
-        fake = FakeMistralOcr(status=poll_status)
-        activities = OcrStoreActivities(store_engine, blobs, fake)
-        state = await activities.ocr_batch_status(OcrBatchStatusInput(batch_id="b1"))
-        assert state == expected_state
-        # A status poll never downloads results.
-        assert not any(c.method == "fetch_batch_results" for c in fake.calls)
 
     async def test_fetch_and_store_selects_by_request_id_and_stores(
         self, store_engine, blobs
@@ -1097,6 +1078,181 @@ class TestListOcrJobs:
 
         by_doc = {j.document_id: j.status for j in result.jobs}
         assert by_doc["d-legacy"] == OcrJobDerivedStatus.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Tracker activities (T4.4 stateless status tracker)
+# ---------------------------------------------------------------------------
+
+
+def _seed_batch_job(
+    engine,
+    *,
+    request_id: str,
+    batch_id: str,
+    workflow_id: str,
+    status: str = "submitted",
+) -> None:
+    """Insert a platform ``batch_jobs`` ledger row (the tracker LEFT-joins to it)."""
+    from sax_platform.contracts.batch_jobs import batch_jobs
+
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(batch_jobs).values(
+                id=request_id,
+                batch_id=batch_id,
+                workflow_id=workflow_id,
+                status=status,
+                provider="mistral",
+            )
+        )
+
+
+class TestListLiveOcrJobs:
+    async def test_live_row_with_ledger_returned(self, store_activities, store_engine) -> None:
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+        bj_metadata.create_all(store_engine)
+        upsert_ocr_job_status(
+            store_engine, request_id="r1", document_id="d1", file_path="/a.pdf", status="submitted"
+        )
+        _seed_batch_job(store_engine, request_id="r1", batch_id="batch-1", workflow_id="wf-1")
+
+        jobs = await store_activities.list_live_ocr_jobs()
+
+        assert jobs == [TrackerLiveJob(request_id="r1", batch_id="batch-1", workflow_id="wf-1")]
+
+    async def test_missing_ledger_skipped_and_warned(
+        self, store_activities, store_engine, caplog
+    ) -> None:
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+        bj_metadata.create_all(store_engine)
+        upsert_ocr_job_status(
+            store_engine,
+            request_id="r-ok",
+            document_id="d-ok",
+            file_path="/ok.pdf",
+            status="submitted",
+        )
+        _seed_batch_job(store_engine, request_id="r-ok", batch_id="batch-ok", workflow_id="wf-ok")
+        # A live row with NO ledger row: unroutable, dropped with a warning.
+        upsert_ocr_job_status(
+            store_engine,
+            request_id="r-orphan",
+            document_id="d-orphan",
+            file_path="/orphan.pdf",
+            status="submitted",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="ocr.activities"):
+            jobs = await store_activities.list_live_ocr_jobs()
+
+        assert [j.request_id for j in jobs] == ["r-ok"]
+        assert "r-orphan" in caplog.text
+
+    async def test_terminal_rows_excluded(self, store_activities, store_engine) -> None:
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+        bj_metadata.create_all(store_engine)
+        seeds = (("r-stored", "stored"), ("r-failed", "failed"), ("r-live", "submitted"))
+        for rid, status in seeds:
+            upsert_ocr_job_status(
+                store_engine,
+                request_id=rid,
+                document_id=f"d-{rid}",
+                file_path=f"/{rid}.pdf",
+                status=status,
+            )
+            _seed_batch_job(
+                store_engine, request_id=rid, batch_id=f"b-{rid}", workflow_id=f"wf-{rid}"
+            )
+
+        jobs = await store_activities.list_live_ocr_jobs()
+
+        assert [j.request_id for j in jobs] == ["r-live"]
+
+    async def test_over_age_row_excluded(self, store_activities, store_engine) -> None:
+        """A live, fully-routable row created past the wait ceiling is excluded by age."""
+        from datetime import UTC, datetime, timedelta
+
+        from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+        from ocr.store import OcrJobStatus
+
+        bj_metadata.create_all(store_engine)
+        now = datetime.now(UTC)
+        old = now - timedelta(hours=200)  # well past the 25h ceiling + 1h grace
+        with store_engine.begin() as conn:
+            for rid, created in (("r-fresh", now), ("r-old", old)):
+                conn.execute(
+                    sa.insert(OcrJobStatus.__table__).values(
+                        request_id=rid,
+                        document_id=f"d-{rid}",
+                        file_path=f"/{rid}.pdf",
+                        status="submitted",
+                        created_at=created,
+                        updated_at=created,
+                    )
+                )
+        _seed_batch_job(store_engine, request_id="r-fresh", batch_id="b-fresh", workflow_id="wf-f")
+        _seed_batch_job(store_engine, request_id="r-old", batch_id="b-old", workflow_id="wf-o")
+
+        jobs = await store_activities.list_live_ocr_jobs()
+
+        assert [j.request_id for j in jobs] == ["r-fresh"]
+
+
+class TestSweepMistralBatches:
+    async def test_maps_statuses_and_passes_cutoff(self, store_engine, blobs) -> None:
+        from datetime import UTC, datetime
+
+        fake = FakeMistralOcr(
+            list_statuses={
+                "batch-a": BatchPollStatus.ENDED,
+                "batch-b": BatchPollStatus.IN_PROGRESS,
+                "batch-c": BatchPollStatus.PENDING,
+            }
+        )
+        activities = OcrStoreActivities(store_engine, blobs, fake)
+
+        result = await activities.sweep_mistral_batches()
+
+        # Mapped to the raw enum values (PENDING stays "pending" — not the poll-state map).
+        assert result == {"batch-a": "ended", "batch-b": "in_progress", "batch-c": "pending"}
+        call = next(c for c in fake.calls if c.method == "list_batch_statuses")
+        created_after = call.kwargs["created_after"]
+        assert isinstance(created_after, datetime)
+        assert created_after < datetime.now(UTC)
+        # A sweep is status-only: it never downloads results.
+        assert not any(c.method == "fetch_batch_results" for c in fake.calls)
+
+
+class TestRecordTrackerHeartbeat:
+    async def test_upsert_single_row_increments_cycles(
+        self, store_activities, store_engine
+    ) -> None:
+        from ocr.store import OcrTrackerHeartbeat, get_tracker_heartbeat
+
+        await store_activities.record_tracker_heartbeat(
+            TrackerHeartbeatInput(live_jobs=3, hints_sent=2)
+        )
+        await store_activities.record_tracker_heartbeat(
+            TrackerHeartbeatInput(live_jobs=5, hints_sent=4)
+        )
+
+        row = get_tracker_heartbeat(store_engine)
+        assert row is not None
+        assert row["cycles_total"] == 2
+        assert row["live_jobs"] == 5  # overwritten with the latest cycle
+        assert row["hints_sent"] == 4
+        assert row["last_run_at"] is not None
+        # Still exactly one row (singleton on id=1).
+        with store_engine.connect() as conn:
+            count = conn.execute(
+                sa.select(sa.func.count()).select_from(OcrTrackerHeartbeat.__table__)
+            ).scalar()
+        assert count == 1
 
 
 # ---------------------------------------------------------------------------

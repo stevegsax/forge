@@ -2,42 +2,30 @@
 #
 # run-worker.sh <forge|pbook|ocr> [worker-identity]
 #
-# launchd entry point for a Forge or pbook worker. Loads secrets/config from
-# $XDG_CONFIG_HOME/forge/forge.env (chmod 600), then execs the worker from the
-# repo root so uv resolves the workspace venv.
+# launchd entry point for a Forge, pbook, or ocr worker. FORGE_ENV comes from
+# the agent's launchd plist (EnvironmentVariables: FORGE_ENV=prod, and for the
+# workers FORGE_PROD_ACK=yes). load-env.sh then selects and loads the matching
+# per-env profile $XDG_CONFIG_HOME/forge/envs/$FORGE_ENV.env (chmod 600), and
+# this script execs the worker from the repo root so uv resolves the workspace
+# venv.
 #
-# The env file is parsed line-by-line and NEVER shell-evaluated (G35, T0.7):
-# values containing `&`, `;`, `$(...)` etc. are inert. Lines are KEY=VALUE;
-# blank lines and #-comments are skipped; anything else aborts loudly.
+# The profile is parsed line-by-line and NEVER shell-evaluated (G35, T0.7):
+# values containing `&`, `;`, `$(...)` etc. are inert. This file stays bash
+# (matching install.sh / start-stack.sh) to minimize churn; the shared
+# load-env.sh is written to be sourced by both bash and zsh (the backup job).
 set -euo pipefail
 
 # launchd starts agents with a minimal PATH; uv and podman live in the usual
 # user-install locations.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/forge/forge.env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "run-worker.sh: $ENV_FILE not found — copy deploy/launchd/forge.env.example there (chmod 600)" >&2
-  exit 78  # EX_CONFIG
-fi
-perms="$(stat -f '%Lp' "$ENV_FILE")"
-if [[ "$perms" != "600" ]]; then
-  echo "run-worker.sh: $ENV_FILE must be chmod 600 (is $perms) — it holds API keys" >&2
-  exit 78
-fi
-
-while IFS= read -r line || [[ -n "$line" ]]; do
-  [[ -z "$line" || "$line" == \#* ]] && continue
-  key="${line%%=*}"
-  value="${line#*=}"
-  if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    echo "run-worker.sh: malformed line in $ENV_FILE (not KEY=VALUE): ${line%%=*}" >&2
-    exit 78
-  fi
-  export "$key=$value"
-done < "$ENV_FILE"
+# Require FORGE_ENV (from the plist), load + validate the per-env profile, and
+# verify FORGE_ENV_TAG matches. Never sets FORGE_PROD_ACK (plist-only).
+# shellcheck source=deploy/launchd/load-env.sh
+. "$SCRIPT_DIR/load-env.sh"
 
 worker="${1:?usage: run-worker.sh <forge|pbook|ocr> [worker-identity]}"
 cd "$REPO_ROOT"

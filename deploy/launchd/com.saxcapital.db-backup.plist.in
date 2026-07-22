@@ -6,15 +6,24 @@
     <string>@LABEL@</string>
     <key>ProgramArguments</key>
     <array>
-@PROGRAM_ARGS@
+        <string>@SCRIPT@</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FORGE_ENV</key>
+        <string>prod</string>
+        <key>FORGE_PROD_ACK</key>
+        <string>yes</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
     <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    @KEEP_ALIVE@
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-@ENV_VARS@
+    <false/>
     <key>WorkingDirectory</key>
     <string>@REPO@</string>
     <key>StandardOutPath</key>

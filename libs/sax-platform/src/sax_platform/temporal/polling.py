@@ -20,12 +20,10 @@ stdlib), so it is safe to import inside the Temporal workflow sandbox via
 ``workflow.unsafe.imports_passed_through()``. Everything it touches inside the
 loop is replay-safe: ``workflow.now`` (deterministic clock), ``workflow.sleep``
 (a timer command), and ``workflow.random`` (deterministic PRNG seeded from
-history — no command emitted). The schedules are pure frozen dataclasses whose
-jitter is drawn from that caller-supplied ``random.Random``; with
-``jitter_fraction == 0`` the sleep sequence is exactly deterministic.
+history — no command emitted). The schedule is a pure frozen dataclass, so the
+sleep sequence is exactly deterministic.
 """
 
-import math
 import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -36,7 +34,6 @@ from temporalio import workflow
 
 __all__ = [
     "BATCH_WAIT_CEILING",
-    "BackoffSchedule",
     "FixedInterval",
     "PollSchedule",
     "wait_batch_ended",
@@ -78,64 +75,6 @@ class FixedInterval:
     def next_sleep(self, *, attempt: int, remaining: timedelta, rng: random.Random) -> timedelta:
         """Return ``min(interval, remaining)`` — ``attempt`` and ``rng`` unused."""
         return min(self.interval, remaining)
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class BackoffSchedule:
-    """Adaptive backoff with per-waiter jitter (ocr's schedule; used from ST2).
-
-    Shaped to the OCR processing-time distribution (mode ≈ 30 min): poll at a
-    steady ``initial`` cadence while a wait is young (its first ``fast_window``
-    worth of polls clears most jobs), then double each subsequent poll up to
-    ``cap`` so a long tail costs few history events. ``jitter_fraction`` spreads a
-    burst of concurrent waiters so they don't hammer the provider status endpoint
-    in lockstep.
-
-    ``fast_window // initial`` fixes how many polls run at the fast cadence (e.g.
-    1h // 300s = 12); poll ``attempt`` at or beyond that index sleeps
-    ``initial * factor ** (index-past-window)``, capped at ``cap``. Jitter is
-    symmetric (``± jitter_fraction`` of the base) and drawn from the injected
-    PRNG; ``jitter_fraction == 0`` leaves the base untouched and never advances
-    the PRNG, so the sequence is exactly deterministic.
-    """
-
-    initial: timedelta = timedelta(seconds=300)
-    fast_window: timedelta = timedelta(hours=1)
-    factor: float = 2.0
-    cap: timedelta = timedelta(seconds=1800)
-    jitter_fraction: float = 0.0
-
-    def next_sleep(self, *, attempt: int, remaining: timedelta, rng: random.Random) -> timedelta:
-        """Return the (jittered, capped) backoff sleep, clamped to ``remaining``."""
-        fast_polls = self.fast_window // self.initial
-        if attempt < fast_polls:
-            base_seconds = self.initial.total_seconds()
-        else:
-            # Clamp the exponent to the doublings needed to reach the cap: once
-            # ``initial * factor ** step >= cap`` the result is pinned at the cap,
-            # so a far-out attempt need not raise ``factor`` to a huge power (which
-            # would ``OverflowError`` on ``float ** int``).
-            step = min(attempt - fast_polls + 1, self._steps_to_cap)
-            base_seconds = min(
-                self.initial.total_seconds() * self.factor**step,
-                self.cap.total_seconds(),
-            )
-        sleep_seconds = self._apply_jitter(base_seconds, rng)
-        return min(timedelta(seconds=sleep_seconds), remaining)
-
-    @property
-    def _steps_to_cap(self) -> int:
-        """Doublings for ``initial`` to reach ``cap`` (0 when it can't grow)."""
-        if self.factor <= 1.0 or self.cap <= self.initial:
-            return 0
-        return math.ceil(math.log(self.cap / self.initial, self.factor))
-
-    def _apply_jitter(self, base_seconds: float, rng: random.Random) -> float:
-        """Symmetric ``± jitter_fraction`` jitter; a no-op (PRNG untouched) at 0."""
-        if self.jitter_fraction <= 0:
-            return base_seconds
-        spread = base_seconds * self.jitter_fraction
-        return base_seconds + rng.uniform(-spread, spread)
 
 
 async def wait_batch_ended(

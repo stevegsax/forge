@@ -240,3 +240,30 @@ class TestRunWorkerComposition:
             await worker_mod.run_worker()
 
         comp.shutdown_tracing.assert_called_once_with()
+
+
+class TestEnvGuard:
+    """The worker resolves FORGE_ENV FIRST and fails fast without it (T0.9 ST-G2)."""
+
+    @pytest.mark.asyncio
+    async def test_requires_forge_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unset FORGE_ENV raises before any settings/store/client setup.
+
+        No composition patches are applied: resolution is the worker's first act,
+        so it raises without ever building settings or touching a database.
+        """
+        from sax_platform.config import ForgeEnvError
+
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        with pytest.raises(ForgeEnvError, match="no default environment"):
+            await worker_mod.run_worker()
+
+    @pytest.mark.asyncio
+    async def test_logs_resolved_env(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        comp = _Composition()
+        with comp.apply(), caplog.at_level(logging.INFO, logger="forge.worker"):
+            await worker_mod.run_worker()
+
+        assert "forge worker starting: env=test" in caplog.text

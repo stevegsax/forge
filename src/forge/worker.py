@@ -7,9 +7,11 @@ and runs the worker until interrupted.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from sax_platform.config import resolve_forge_env
 from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from sax_platform.temporal.worker import run_worker as _run_platform_worker
 
@@ -87,7 +89,15 @@ async def run_worker(
     built exactly once and injected into the four activity classes. Forge submits
     anthropic only (T4.2 ST3) — no MistralOcr client. No activity reads config or
     builds a client itself.
+
+    The environment guard runs FIRST, before any settings, store, or client
+    setup: an unset or invalid ``FORGE_ENV`` raises :class:`ForgeEnvError` (its
+    message is complete and actionable) so a worker can never reach a database
+    without an explicitly declared environment.
     """
+    env = resolve_forge_env(os.environ)
+    logger.info("forge worker starting: env=%s", env)
+
     from sax_platform.contracts.s3_blobs import S3Blobs
     from sax_platform.db import get_store_engine
     from sax_platform.llm import AnthropicLLM, make_client

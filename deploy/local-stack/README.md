@@ -1,16 +1,19 @@
 # Local stack (Postgres + MinIO + Temporal)
 
-The podman-managed stack this deployment runs on (D99). It has two roles:
+The podman-managed stack this deployment runs on (D99, amended by T0.9 —
+Supabase retired). This Postgres holds everything:
 
 - **Temporal is production.** The workflow engine self-hosts here on the
-  always-on desktop, persisting to this stack's Postgres (databases
-  `temporal` + `temporal_visibility` beside `forge_dev`). The forge and
-  pbook workers run on the host and connect to `127.0.0.1:7233`; the web
-  UI is at `http://localhost:8233`.
-- **Postgres (`forge_dev`) + MinIO are dev counterparts** of the managed
-  app stores (production forge/pbook state is Supabase Postgres; blobs
-  are AWS S3 — see
-  [../../docs/operations/DEPLOYMENT.md](../../docs/operations/DEPLOYMENT.md)).
+  always-on desktop, persisting to databases `temporal` +
+  `temporal_visibility`. The forge and pbook workers run on the host and
+  connect to `127.0.0.1:7233`; the web UI is at `http://localhost:8233`.
+- **The production application store is now local too (T0.9).** The
+  `forge` (forge/ocr) and `pbook` databases live here, provisioned by
+  `docker/initdb/02-app-databases.sql`, beside the disposable dev
+  database `forge_dev`. Nightly `pg_dump` → S3 gives offsite durability
+  (`backup-app-dbs.sh`; see below). Blobs stay on AWS S3 (dev uses the
+  local MinIO) — see
+  [../../docs/operations/DEPLOYMENT.md](../../docs/operations/DEPLOYMENT.md).
 
 It is **not** required by the test suite: the default `uv run pytest` run
 uses temp-file SQLite and mocks S3 in-process with moto, and the opt-in
@@ -20,12 +23,14 @@ uses temp-file SQLite and mocks S3 in-process with moto, and the opt-in
 
 ```text
 deploy/local-stack/
-├── compose.yaml            postgres (pgvector:pg16) + temporal + temporal-ui
-│                           + minio + minio-init — all loopback-only
+├── compose.yaml              postgres (pgvector:pg16) + temporal + temporal-ui
+│                             + minio + minio-init — all loopback-only
 ├── docker/initdb/
-│   └── 01-extensions.sql   enables the `vector` extension on first init
-├── .env.example            FORGE_DB_URL, Temporal addresses, AWS_*/MinIO,
-│                           and *_PORT / *_DATA overrides
+│   ├── 01-extensions.sql     enables `vector` in forge_dev on first init
+│   └── 02-app-databases.sql  provisions the prod-parity forge + pbook databases
+├── backup-app-dbs.sh         nightly pg_dump of forge + pbook → S3 (zsh)
+├── .env.example              FORGE_DB_URL, Temporal addresses, AWS_*/MinIO,
+│                             and *_PORT / *_DATA overrides
 └── README.md
 ```
 
@@ -44,15 +49,18 @@ bucket creation).
 
 ```bash
 make stack-up     # start everything (needs a running podman machine)
-make db-migrate   # create Forge's tables in forge_dev (needs FORGE_DB_URL set)
+make db-migrate   # create Forge's tables in forge_dev (needs FORGE_ENV=dev + FORGE_DB_URL set)
 make stack-psql   # psql shell;  \dx shows the vector extension;  \l lists
-                  # forge_dev + temporal + temporal_visibility
+                  # forge + pbook + forge_dev + temporal + temporal_visibility
 make stack-logs   # tail all containers' logs
 make stack-down   # stop and remove the containers (data survives — see below)
 ```
 
 Forge reads `FORGE_DB_URL` from the environment (there is no default and no
-`.env` auto-load); set it via direnv/keychain or a manual `export`. The
+`.env` auto-load); set it via direnv/keychain or a manual `export`. Since
+T0.9, every CLI also requires `FORGE_ENV` (use `FORGE_ENV=dev` for stack
+work — the guard exits 78 without it; see
+[../launchd/README.md](../launchd/README.md)). The
 username/password/database literals are the throwaway values in
 `compose.yaml`.
 
@@ -67,7 +75,7 @@ stacks (override via the `FORGE_*_PORT` variables in `.env.example`):
 
 | Service | Host port | Purpose |
 | --- | --- | --- |
-| postgres | 5433 | `forge_dev` + Temporal persistence |
+| postgres | 5433 | `forge` + `pbook` + `forge_dev` + Temporal persistence |
 | temporal | 7233 | Temporal frontend (workers, CLIs) |
 | temporal-ui | 8233 | Temporal web UI |
 | minio | 9002 / 9003 | S3 API / web console |
@@ -86,15 +94,44 @@ in `compose.yaml` to skip it. Temporal's state lives inside Postgres, so
 backup discipline for the Postgres data directory covers workflow
 histories too.
 
-## pbook against this stack
+## Offsite backups (app databases)
 
-pbook's tables live in their own `pbook` schema with their own Alembic
-version table, so it shares `forge_dev` cleanly:
+Now that the production application store is local (T0.9), offsite
+durability comes from `backup-app-dbs.sh`: `pg_dump -Fc` of the `forge`
+and `pbook` databases out of the `forge-postgres` container, uploaded to
+`s3://$FORGE_BACKUP_S3_BUCKET/db-backups/` with a UTC timestamp, staged in
+a temp dir that is pruned on exit. Any failed step aborts the run
+non-zero.
 
 ```bash
+FORGE_ENV=prod make backup-app-dbs   # or: FORGE_ENV=dev …
+```
+
+It resolves its environment through the same `load-env.sh` the workers
+use (see [../launchd/README.md](../launchd/README.md)): `FORGE_ENV`
+selects the profile that supplies `FORGE_BACKUP_S3_BUCKET` and the AWS
+creds. The launchd `com.saxcapital.db-backup` agent runs it daily at
+03:30 (`install.sh --with-backup`). The `db-backups/` key prefix is
+distinct from the flat blob keyspace, so an S3 lifecycle rule can target
+the dumps without touching OCR blobs (see
+[../s3/README.md](../s3/README.md)).
+
+## pbook against this stack
+
+In **production** pbook has its own `pbook` database (provisioned by
+`docker/initdb/02-app-databases.sql`); the prod profile points
+`PBOOK_DATABASE_URL` at it. In **dev**, pbook's tables live in their own
+`pbk_`-prefixed schema with their own Alembic version table, so it shares
+`forge_dev` cleanly:
+
+```bash
+export FORGE_ENV=dev
 export PBOOK_DATABASE_URL=postgresql+psycopg://forge:forge@localhost:5433/forge_dev
 uv run pbook migrate
 ```
+
+pbook does not auto-migrate — run `uv run pbook migrate` once against the
+target database before first use.
 
 ## Object storage (MinIO)
 

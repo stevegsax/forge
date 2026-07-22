@@ -82,6 +82,19 @@ parent-awaited children. The scaling envelope above is unchanged: the ≥300s fl
 ~11-events-per-poll history budget still bound a single wait, and continue-as-new stays the
 escape hatch if concurrent wait counts ever outgrow the 51.2k-event cap.
 
+**Amended 2026-07-22 (T4.4) — ocr's shared status tracker.** ocr's per-waiter timer loop is
+replaced by a stateless broadcast tracker (D101): a Schedule fires `OcrBatchTrackerWorkflow`
+every 120s, each run sweeps Mistral's batch **list** endpoint once (one request covers every
+in-flight batch — the amortization forge's per-batch Anthropic polling never gets) and
+broadcasts `ocr_status_hint` signals to the waiting store children, whose `wait_condition`
+state machines absorb duplicates. This is the sanctioned hint shape: a hint advances a
+receiver's state but is never authoritative and never a payload — each child still fetches its
+own result keyed by its own `batch_id`/`request_id`. `BackoffSchedule` is retired; forge's
+`FixedInterval` timer loop is unchanged. This supersedes the 2026-07-20 amendment's "no shared
+poller remains anywhere" for ocr — the tracker is a shared status *tracker* whose signals carry
+hints, never payloads; the correlation-dependent, payload-bearing result-signal subsystem
+retired at T4.1/T4.2 stays deleted.
+
 ## 9. Cross-service boundaries
 
 Services do not call each other's activities or child workflows cross-queue, and do not import

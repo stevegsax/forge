@@ -11,14 +11,27 @@ body is covered too, not just the pass-through from each command.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import sqlalchemy as sa
 from click.testing import CliRunner
 from sax_platform.contracts.constants import OCR_TASK_QUEUE
 
-from ocr.cli import EXIT_INFRASTRUCTURE_ERROR, _auto_id, _echo, _start_and_wait, _start_submit, main
+from ocr.cli import (
+    EXIT_CONFIG_ERROR,
+    EXIT_INFRASTRUCTURE_ERROR,
+    EXIT_PROBE_ERROR,
+    TrackerStatusReport,
+    _auto_id,
+    _echo,
+    _start_and_wait,
+    _start_submit,
+    derive_tracker_status,
+    main,
+    tracker_status_lines,
+)
 from ocr.models import (
     OcrExportResult,
     OcrListJobsResult,
@@ -386,3 +399,355 @@ class TestUnmarkCommand:
 
         assert result.exit_code == EXIT_INFRASTRUCTURE_ERROR
         assert "Error: unavailable" in result.output
+
+
+# ---------------------------------------------------------------------------
+# tracker-status: pure verdict derivation (functional core)
+# ---------------------------------------------------------------------------
+
+_NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def _heartbeat(
+    last_run_at: datetime,
+    *,
+    live_jobs: int = 2,
+    hints_sent: int = 1,
+    cycles_total: int = 5,
+) -> dict[str, object]:
+    """A raw ``get_tracker_heartbeat`` row shaped like the store returns it."""
+    return {
+        "id": 1,
+        "last_run_at": last_run_at,
+        "live_jobs": live_jobs,
+        "hints_sent": hints_sent,
+        "cycles_total": cycles_total,
+    }
+
+
+class TestDeriveTrackerStatus:
+    @pytest.mark.parametrize(
+        ("heartbeat", "live_jobs_now", "expected_status", "expected_exit", "expected_age"),
+        [
+            # No heartbeat row: never-ran. Exit 2 only when work is waiting.
+            (None, 0, "never-ran", 1, None),
+            (None, 3, "never-ran", 2, None),
+            # Fresh (age <= threshold): healthy regardless of live-job count.
+            (_heartbeat(_NOW - timedelta(seconds=10)), 0, "fresh", 0, 10),
+            (_heartbeat(_NOW - timedelta(seconds=10)), 5, "fresh", 0, 10),
+            (_heartbeat(_NOW), 9, "fresh", 0, 0),
+            # Exactly at the threshold is still fresh (<=).
+            (_heartbeat(_NOW - timedelta(seconds=300)), 0, "fresh", 0, 300),
+            # Stale (age > threshold): exit 1 with no live jobs, exit 2 with live jobs.
+            (_heartbeat(_NOW - timedelta(seconds=400)), 0, "stale", 1, 400),
+            (_heartbeat(_NOW - timedelta(seconds=400)), 2, "stale", 2, 400),
+        ],
+    )
+    def test_verdict_table(
+        self,
+        heartbeat: dict[str, object] | None,
+        live_jobs_now: int,
+        expected_status: str,
+        expected_exit: int,
+        expected_age: int | None,
+    ) -> None:
+        report = derive_tracker_status(
+            heartbeat, now=_NOW, stale_after_seconds=300, live_jobs_now=live_jobs_now
+        )
+        assert report.status == expected_status
+        assert report.exit_code == expected_exit
+        assert report.heartbeat_age_seconds == expected_age
+        assert report.live_jobs_now == live_jobs_now
+
+    def test_never_ran_nulls_all_heartbeat_fields(self) -> None:
+        report = derive_tracker_status(None, now=_NOW, stale_after_seconds=300, live_jobs_now=0)
+        assert report.last_run_at is None
+        assert report.cycles_total is None
+        assert report.live_jobs_last_cycle is None
+        assert report.hints_sent_last_cycle is None
+
+    def test_heartbeat_fields_pass_through(self) -> None:
+        row = _heartbeat(_NOW - timedelta(seconds=30), live_jobs=7, hints_sent=4, cycles_total=99)
+        report = derive_tracker_status(row, now=_NOW, stale_after_seconds=300, live_jobs_now=1)
+        assert report.cycles_total == 99
+        assert report.live_jobs_last_cycle == 7
+        assert report.hints_sent_last_cycle == 4
+
+    def test_naive_last_run_at_is_treated_as_utc(self) -> None:
+        """A naive ``last_run_at`` (as SQLite reads it) is normalized to UTC, not crashed."""
+        naive = datetime(2026, 1, 1, 11, 50, 0)  # deliberately naive (sqlite readback)
+        report = derive_tracker_status(
+            _heartbeat(naive), now=_NOW, stale_after_seconds=300, live_jobs_now=0
+        )
+        assert report.heartbeat_age_seconds == 600
+        assert report.status == "stale"
+        assert report.last_run_at == datetime(2026, 1, 1, 11, 50, 0, tzinfo=UTC)
+
+    def test_aware_non_utc_last_run_at_is_normalized(self) -> None:
+        """An aware, non-UTC ``last_run_at`` (Postgres-style) is converted to UTC."""
+        aware = datetime(2026, 1, 1, 13, 55, 0, tzinfo=timezone(timedelta(hours=2)))  # 11:55 UTC
+        report = derive_tracker_status(
+            _heartbeat(aware), now=_NOW, stale_after_seconds=300, live_jobs_now=0
+        )
+        assert report.last_run_at == datetime(2026, 1, 1, 11, 55, 0, tzinfo=UTC)
+        assert report.heartbeat_age_seconds == 300
+        assert report.status == "fresh"
+
+
+class TestTrackerStatusLines:
+    def test_never_ran_renders_none_placeholders(self) -> None:
+        report = TrackerStatusReport(
+            last_run_at=None,
+            heartbeat_age_seconds=None,
+            cycles_total=None,
+            live_jobs_last_cycle=None,
+            hints_sent_last_cycle=None,
+            live_jobs_now=0,
+            status="never-ran",
+            exit_code=1,
+        )
+        lines = tracker_status_lines(report)
+        assert lines[0] == "last_run_at: none"
+        assert "heartbeat_age_seconds: none" in lines
+        assert "cycles_total: none" in lines
+        assert "status: never-ran" in lines
+
+
+# ---------------------------------------------------------------------------
+# tracker-status: CLI shell (direct DB read; no Temporal)
+# ---------------------------------------------------------------------------
+
+
+def _create_batch_jobs(engine: sa.Engine) -> None:
+    """Create the platform-owned ``batch_jobs`` table the live-job query LEFT-joins."""
+    from sax_platform.contracts.batch_jobs import metadata as bj_metadata
+
+    bj_metadata.create_all(engine)
+
+
+def _seed_heartbeat(
+    engine: sa.Engine,
+    *,
+    last_run_at: datetime,
+    live_jobs: int = 0,
+    hints_sent: int = 0,
+) -> None:
+    from ocr.store import record_tracker_heartbeat
+
+    record_tracker_heartbeat(engine, now=last_run_at, live_jobs=live_jobs, hints_sent=hints_sent)
+
+
+def _seed_live_job(engine: sa.Engine, *, request_id: str, batch_id: str, workflow_id: str) -> None:
+    """A live ``ocr_job_status`` row plus its routable ``batch_jobs`` ledger row."""
+    from sax_platform.contracts.batch_jobs import batch_jobs
+
+    from ocr.store import upsert_ocr_job_status
+
+    upsert_ocr_job_status(
+        engine,
+        request_id=request_id,
+        document_id=f"d-{request_id}",
+        file_path=f"/{request_id}.pdf",
+        status="submitted",
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(batch_jobs).values(
+                id=request_id,
+                batch_id=batch_id,
+                workflow_id=workflow_id,
+                status="submitted",
+                provider="mistral",
+            )
+        )
+
+
+def _parse_report(output: str) -> dict[str, str]:
+    """Parse ``key: value`` report lines into a dict."""
+    report: dict[str, str] = {}
+    for line in output.splitlines():
+        if ": " in line:
+            key, _, value = line.partition(": ")
+            report[key] = value
+    return report
+
+
+class TestTrackerStatusCommand:
+    def test_fresh_heartbeat_exit_zero_all_fields(
+        self, cli_runner: CliRunner, store_engine: sa.Engine
+    ) -> None:
+        _create_batch_jobs(store_engine)
+        _seed_heartbeat(store_engine, last_run_at=datetime.now(UTC), live_jobs=2, hints_sent=1)
+
+        result = cli_runner.invoke(main, ["tracker-status"])
+
+        assert result.exit_code == 0
+        report = _parse_report(result.output)
+        assert report["status"] == "fresh"
+        assert report["cycles_total"] == "1"
+        assert report["live_jobs_last_cycle"] == "2"
+        assert report["hints_sent_last_cycle"] == "1"
+        assert report["live_jobs_now"] == "0"
+        for field in (
+            "checked_at_gmt",
+            "last_run_at",
+            "heartbeat_age_seconds",
+            "cycles_total",
+            "live_jobs_last_cycle",
+            "hints_sent_last_cycle",
+            "live_jobs_now",
+            "status",
+        ):
+            assert field in report
+
+    def test_stale_heartbeat_no_live_jobs_exit_one(
+        self, cli_runner: CliRunner, store_engine: sa.Engine
+    ) -> None:
+        _create_batch_jobs(store_engine)
+        _seed_heartbeat(store_engine, last_run_at=datetime.now(UTC) - timedelta(seconds=1000))
+
+        result = cli_runner.invoke(main, ["tracker-status"])
+
+        assert result.exit_code == 1
+        report = _parse_report(result.output)
+        assert report["status"] == "stale"
+        assert report["live_jobs_now"] == "0"
+
+    def test_stale_heartbeat_with_live_job_exit_two(
+        self, cli_runner: CliRunner, store_engine: sa.Engine
+    ) -> None:
+        _create_batch_jobs(store_engine)
+        _seed_heartbeat(store_engine, last_run_at=datetime.now(UTC) - timedelta(seconds=1000))
+        _seed_live_job(store_engine, request_id="r1", batch_id="batch-1", workflow_id="wf-1")
+
+        result = cli_runner.invoke(main, ["tracker-status"])
+
+        assert result.exit_code == 2
+        report = _parse_report(result.output)
+        assert report["status"] == "stale"
+        assert report["live_jobs_now"] == "1"
+
+    def test_no_heartbeat_row_never_ran_exit_one(
+        self, cli_runner: CliRunner, store_engine: sa.Engine
+    ) -> None:
+        _create_batch_jobs(store_engine)  # no heartbeat seeded
+
+        result = cli_runner.invoke(main, ["tracker-status"])
+
+        assert result.exit_code == 1
+        report = _parse_report(result.output)
+        assert report["status"] == "never-ran"
+        assert report["last_run_at"] == "none"
+        assert report["heartbeat_age_seconds"] == "none"
+        assert report["cycles_total"] == "none"
+
+    def test_checked_at_gmt_always_first_and_aware_utc(
+        self, cli_runner: CliRunner, store_engine: sa.Engine
+    ) -> None:
+        _create_batch_jobs(store_engine)
+        _seed_heartbeat(store_engine, last_run_at=datetime.now(UTC))
+
+        result = cli_runner.invoke(main, ["tracker-status"])
+
+        lines = result.output.splitlines()
+        assert lines[0].startswith("checked_at_gmt: ")
+        parsed = datetime.fromisoformat(lines[0].split(": ", 1)[1])
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timedelta(0)
+
+    def test_unreachable_store_fails_probe_exit_three(self, cli_runner: CliRunner) -> None:
+        """An unreachable store fails the probe: exit 3, ``status: error`` on stdout,
+        the exception message on stderr, and ``checked_at_gmt`` still printed first."""
+        with patch("sax_platform.db.get_store_engine", side_effect=RuntimeError("db down")):
+            result = cli_runner.invoke(main, ["tracker-status"])
+
+        assert result.exit_code == EXIT_PROBE_ERROR
+        out_lines = result.stdout.splitlines()
+        assert out_lines[0].startswith("checked_at_gmt: ")
+        assert "status: error" in out_lines
+        # The reason goes to stderr as the bare exception message (no "Error:" prefix).
+        assert "db down" in result.stderr
+        assert "status: error" not in result.stderr
+
+    def test_missing_forge_db_url_fails_fast_exit_three(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No FORGE_DB_URL: config fail-fast — exit 3, ``status: error`` on stdout,
+        an actionable FORGE_DB_URL one-liner on stderr, ``checked_at_gmt`` still first.
+
+        The autouse ``forge_db_url`` fixture exported a tmp sqlite URL; delete it to
+        simulate a shell that was never pointed at the shared forge database.
+        """
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
+
+        result = cli_runner.invoke(main, ["tracker-status"])
+
+        assert result.exit_code == EXIT_PROBE_ERROR
+        out_lines = result.stdout.splitlines()
+        assert out_lines[0].startswith("checked_at_gmt: ")
+        assert "status: error" in out_lines
+        assert "FORGE_DB_URL is not set" in result.stderr
+        assert "forge.env" in result.stderr
+        assert "5434" in result.stderr
+
+    def test_rejects_non_positive_stale_after(
+        self, cli_runner: CliRunner, store_engine: sa.Engine
+    ) -> None:
+        result = cli_runner.invoke(main, ["tracker-status", "--stale-after", "0"])
+        assert result.exit_code != 0
+        assert "stale-after" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# ST-G2 environment guard (T0.9)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvGuard:
+    """The root CLI group refuses to run without an explicitly declared FORGE_ENV.
+
+    The guard runs in the group callback, ahead of every command body. A missing
+    or invalid environment exits ``EXIT_CONFIG_ERROR`` (78) — outside the
+    ``tracker-status`` 0/1/2/3 contract — with the guard's actionable message on
+    stderr. For ``tracker-status`` a guard failure means the probe never ran, so
+    no ``checked_at_gmt`` line is printed. ``FORGE_ENV=test`` comes from the
+    autouse ``forge_env`` fixture; the failure cases override it.
+    """
+
+    def test_missing_forge_env_exits_78_probe_never_runs(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        result = cli_runner.invoke(main, ["tracker-status"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "no default environment" in result.stderr
+        # A guard failure short-circuits before the probe body: no report line.
+        assert "checked_at_gmt" not in result.output
+
+    def test_invalid_forge_env_exits_78(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FORGE_ENV", "staging")
+        result = cli_runner.invoke(main, ["list", "--help"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "not a valid environment" in result.stderr
+
+    def test_prod_without_ack_refused(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FORGE_ENV", "prod")
+        monkeypatch.delenv("FORGE_ENV_TAG", raising=False)
+        monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
+        result = cli_runner.invoke(main, ["list", "--help"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "explicit act" in result.stderr
+
+    def test_test_env_proceeds_probe_runs(
+        self, cli_runner: CliRunner, store_engine: sa.Engine
+    ) -> None:
+        # FORGE_ENV=test (autouse) passes the guard, so tracker-status runs to a
+        # real verdict and prints checked_at_gmt first — never exit 78.
+        _create_batch_jobs(store_engine)
+        result = cli_runner.invoke(main, ["tracker-status"])
+        assert result.exit_code != EXIT_CONFIG_ERROR
+        assert result.output.splitlines()[0].startswith("checked_at_gmt: ")

@@ -34,6 +34,21 @@ _REAL_SERVICES = bool(os.environ.get("OCR_E2E_PLATFORM"))
 
 
 @pytest.fixture(autouse=True)
+def forge_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declare ``FORGE_ENV=test`` so the ST-G2 environment guard passes.
+
+    Every ocr CLI command and worker startup now resolves ``FORGE_ENV`` and
+    refuses to run without it. This one central fixture satisfies the guard for
+    the whole suite; the guard's own tests override it with ``monkeypatch.delenv``
+    or a different value. In real-services mode the operator's declared
+    ``FORGE_ENV`` is left untouched.
+    """
+    if _REAL_SERVICES:
+        return
+    monkeypatch.setenv("FORGE_ENV", "test")
+
+
+@pytest.fixture(autouse=True)
 def forge_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Point every test at an isolated SQLite store via ``FORGE_DB_URL``.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class OcrProcessingStatus(StrEnum):
@@ -126,6 +126,55 @@ class OcrStoreInput(BaseModel):
     file_path: str  # original source file (metadata)
 
 
+class OcrStatusHint(BaseModel):
+    """A status hint broadcast to an ``OcrStoreWorkflow`` via the ``ocr_status_hint``
+    signal (T4.4).
+
+    Carries only a normalized batch state — never a result payload (the sanctioned
+    hint pattern: hints advance the store child's state machine; the child still
+    fetches its own result keyed by ``batch_id``/``request_id``). ``batch_id``
+    addresses the intended recipient; a hint whose ``batch_id`` does not match the
+    child's is ignored. ``state`` is the normalized vocabulary
+    (``pending``/``in_progress``/``ended``/``failed``/``canceled``/``expired``);
+    an out-of-vocabulary value is rejected by the receiver's transition function.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    batch_id: str
+    state: str
+
+
+class TrackerLiveJob(BaseModel):
+    """A live OCR submission the stateless tracker (T4.4) should sweep for.
+
+    A value object joining OCR's own ``ocr_job_status`` (the live row) to the
+    read-only platform ``batch_jobs`` ledger: ``batch_id`` is the provider batch
+    the tracker asks Mistral about; ``workflow_id`` addresses the waiting store
+    child a status hint is broadcast to. Both come from the ledger row — a live
+    OCR row without one is skipped upstream, so this value never carries an empty
+    ``batch_id``/``workflow_id``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    request_id: str
+    batch_id: str
+    workflow_id: str
+
+
+class TrackerHeartbeatInput(BaseModel):
+    """Input to the ``record_tracker_heartbeat`` activity (T4.4).
+
+    Records one tracker cycle's observed counts: ``live_jobs`` seen this sweep and
+    ``hints_sent`` broadcast. The activity stamps ``last_run_at`` and increments a
+    running ``cycles_total`` itself — those are not part of the input.
+    """
+
+    live_jobs: int
+    hints_sent: int
+
+
 class OcrSubmitBatchInput(BaseModel):
     """Input to the ``submit_ocr_batch`` activity.
 
@@ -135,12 +184,6 @@ class OcrSubmitBatchInput(BaseModel):
 
     s3_key: str
     model: str
-
-
-class OcrBatchStatusInput(BaseModel):
-    """Input to the ``ocr_batch_status`` activity (a status-only poll)."""
-
-    batch_id: str
 
 
 class OcrFetchStoreInput(BaseModel):

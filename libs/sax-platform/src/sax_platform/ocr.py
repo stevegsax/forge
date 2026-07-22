@@ -47,6 +47,8 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from mistralai import Mistral
     from mistralai.models import BatchError, DocumentTypedDict, FileTypedDict
 
@@ -62,6 +64,10 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _OCR_ENDPOINT = "/v1/ocr"
+
+# Page size for the batch-jobs list sweep. The Mistral list endpoint caps a
+# page at 100 rows; requesting that maximum minimizes round-trips.
+_LIST_PAGE_SIZE = 100
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +380,45 @@ class MistralOcr:
             logger.warning("Batch %s has %d failed request(s)", batch_id, job.failed_requests)
 
         return _MISTRAL_JOB_STATUS.get(job.status, BatchPollStatus.IN_PROGRESS)
+
+    async def list_batch_statuses(self, *, created_after: datetime) -> dict[str, BatchPollStatus]:
+        """List normalized statuses for every batch job created after a cutoff.
+
+        A stateless broadcast primitive (T4.4): one `batch.jobs.list_async`
+        sweep per page, paged with `page_size=_LIST_PAGE_SIZE` until a short
+        page (fewer rows than the page size, including an empty one) signals the
+        server has no more. `created_after` is a server-side filter, passed
+        straight through — the sweep asks only for jobs newer than the cutoff.
+
+        Like `get_batch_status`, this reads status metadata only and downloads
+        nothing: each job's `output_file` is a file id left untouched, so the
+        sweep never touches file storage. The raw Mistral status maps through
+        `_MISTRAL_JOB_STATUS` (an unrecognized status falls back to
+        `IN_PROGRESS`, i.e. "keep waiting"). No status filtering is applied — a
+        remotely-finished job is reported exactly like a running one, so a
+        broadcast can hint completion to a waiter.
+
+        Returns a `{job_id: BatchPollStatus}` mapping across all pages.
+        """
+        statuses: dict[str, BatchPollStatus] = {}
+        page_index = 0
+        while True:
+            page = await self._client.batch.jobs.list_async(
+                page=page_index,
+                page_size=_LIST_PAGE_SIZE,
+                created_after=created_after,
+            )
+            jobs = page.data or []
+            for job in jobs:
+                statuses[job.id] = _MISTRAL_JOB_STATUS.get(job.status, BatchPollStatus.IN_PROGRESS)
+            if len(jobs) < _LIST_PAGE_SIZE:
+                break
+            page_index += 1
+
+        logger.debug(
+            "Listed %d batch job status(es) created after %s", len(statuses), created_after
+        )
+        return statuses
 
     async def fetch_batch_results(self, batch_id: str) -> list[BatchResultEntry]:
         """Download and parse a finished batch's result files into per-request entries.

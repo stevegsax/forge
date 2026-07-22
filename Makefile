@@ -13,7 +13,7 @@
 # applies (workspace command discipline — see CLAUDE.md).
 
 .PHONY: help lint typecheck lint-imports test gates replay-histories \
-	stack-up stack-down stack-logs stack-psql db-migrate \
+	stack-up stack-down stack-logs stack-psql db-migrate backup-app-dbs \
 	workers-restart workers-status
 
 # Bare `make` prints the target list instead of running the first target.
@@ -78,6 +78,7 @@ help:
 	@echo "  make stack-logs   tail all containers' logs"
 	@echo "  make stack-psql   open a psql shell against the running Postgres"
 	@echo "  make db-migrate   apply Forge's Alembic migrations (needs FORGE_DB_URL)"
+	@echo "  make backup-app-dbs  pg_dump forge+pbook -> S3 (needs FORGE_ENV set)"
 	@echo "  Temporal UI: http://localhost:$${FORGE_TEMPORAL_UI_PORT:-8233}"
 	@echo "  MinIO console: http://localhost:$${FORGE_MINIO_CONSOLE_PORT:-9003} (user/pass: forge / forge-minio-secret)"
 	@echo ""
@@ -105,6 +106,13 @@ stack-psql:
 # entry point the worker uses (forge.store.run_migrations against FORGE_DB_URL).
 db-migrate:
 	uv run python -c "from forge.store import run_migrations, get_store_url; run_migrations(get_store_url())"
+
+# Manual run of the nightly offsite backup (the launchd db-backup agent runs it
+# at 03:30). Dumps the forge + pbook databases from the forge-postgres container
+# to s3://$$FORGE_BACKUP_S3_BUCKET/db-backups/. FORGE_ENV must be set in the
+# shell (the script loads the matching profile for the bucket + AWS creds).
+backup-app-dbs:
+	deploy/local-stack/backup-app-dbs.sh
 
 # Every launchd-supervised worker now drains gracefully on SIGTERM (exit 0)
 # instead of dying on Python's default handler — launchd's unconditional

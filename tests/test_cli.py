@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from forge.cli import (
+    EXIT_CONFIG_ERROR,
     EXIT_FAILURE,
     EXIT_INFRASTRUCTURE_ERROR,
     build_task_definition,
@@ -2615,3 +2616,53 @@ class TestIngestCommand:
 
         assert result.exit_code == EXIT_FAILURE
         assert "pbook is not installed" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# ST-G2 environment guard (T0.9)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvGuard:
+    """The root CLI group refuses to run without an explicitly declared FORGE_ENV.
+
+    The guard runs in the group callback, so ``run --help`` exercises it (Click
+    invokes the group callback before the subcommand's ``--help``). A missing or
+    invalid environment exits ``EXIT_CONFIG_ERROR`` (78) — outside every other
+    forge exit code — with the guard's actionable message on stderr; a declared
+    environment lets the command proceed. ``FORGE_ENV=test`` comes from the
+    autouse ``forge_env`` fixture; the failure cases override it.
+    """
+
+    def test_missing_forge_env_exits_78(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "no default environment" in result.stderr
+
+    def test_invalid_forge_env_exits_78(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FORGE_ENV", "staging")
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "not a valid environment" in result.stderr
+
+    def test_prod_without_ack_refused(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FORGE_ENV", "prod")
+        monkeypatch.delenv("FORGE_ENV_TAG", raising=False)
+        monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "explicit act" in result.stderr
+
+    def test_test_env_proceeds(self, cli_runner: CliRunner) -> None:
+        # FORGE_ENV=test is set by the autouse forge_env fixture, so the guard
+        # passes and the command runs (here: reaches `run --help`).
+        result = cli_runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--task-id" in result.output

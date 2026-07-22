@@ -19,7 +19,13 @@ from ocr.store import Base, run_migrations
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-_OCR_TABLES = {"ocr_results", "ocr_images", "ocr_file_content_blobs", "ocr_job_status"}
+_OCR_TABLES = {
+    "ocr_results",
+    "ocr_images",
+    "ocr_file_content_blobs",
+    "ocr_job_status",
+    "ocr_tracker_heartbeat",
+}
 _FORGE_VERSION_DDL = "CREATE TABLE alembic_version_forge (version_num varchar PRIMARY KEY)"
 
 

@@ -11,7 +11,7 @@ type from ``sax_platform.contracts.types``. This module imports only
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import sqlalchemy as sa
 
@@ -34,6 +34,8 @@ from ocr.models import OcrProcessingStatus as OcrProcessingStatus
 if TYPE_CHECKING:
     from sax_platform.contracts.s3_blobs import S3Blobs
     from sqlalchemy import Engine
+    from sqlalchemy.dialects.postgresql import Insert as PostgresInsert
+    from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert
 
 
 class Base(DeclarativeBase):
@@ -141,6 +143,39 @@ class OcrJobStatus(Base):
     )
 
 
+class OcrTrackerHeartbeat(Base):
+    """Single-row liveness/telemetry marker for the stateless status tracker (T4.4).
+
+    The tracker workflow sweeps once every ~2 minutes; this row records the last
+    sweep so an operator can see the tracker is alive. It is a singleton — always
+    ``id == 1`` — upserted each cycle: ``last_run_at``/``live_jobs``/``hints_sent``
+    are overwritten with the current cycle's values and ``cycles_total`` is
+    incremented, so the running count survives concurrent or duplicated runs.
+    """
+
+    __tablename__ = "ocr_tracker_heartbeat"
+
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=False)
+    last_run_at: Mapped[datetime] = mapped_column(
+        UTCDateTime,
+        default=lambda: datetime.now(UTC),
+        server_default=sa.func.now(),
+    )
+    live_jobs: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default="0"
+    )
+    hints_sent: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default="0"
+    )
+    cycles_total: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=0, server_default="0"
+    )
+
+
+#: The tracker heartbeat is a singleton row keyed on this constant id.
+TRACKER_HEARTBEAT_ID: Final = 1
+
+
 # Typed Table handles. ``Model.__table__`` is typed ``FromClause`` by SQLAlchemy's
 # declarative stubs, but ``metadata.tables`` is typed ``Table`` — which is what the
 # sax_platform DB helpers (e.g. ``insert_or_ignore``) and ``sa.insert``/``update``/
@@ -149,6 +184,7 @@ _OCR_RESULTS_TABLE: sa.Table = Base.metadata.tables[OcrResult.__tablename__]
 _FILE_CONTENT_BLOBS_TABLE: sa.Table = Base.metadata.tables[FileContentBlob.__tablename__]
 _OCR_IMAGES_TABLE: sa.Table = Base.metadata.tables[OcrImage.__tablename__]
 _OCR_JOB_STATUS_TABLE: sa.Table = Base.metadata.tables[OcrJobStatus.__tablename__]
+_OCR_TRACKER_HEARTBEAT_TABLE: sa.Table = Base.metadata.tables[OcrTrackerHeartbeat.__tablename__]
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +576,76 @@ def get_ocr_job_status(engine: Engine, request_id: str) -> dict[str, Any] | None
     t = _OCR_JOB_STATUS_TABLE
     with engine.connect() as conn:
         row = conn.execute(t.select().where(t.c.request_id == request_id)).mappings().first()
+        return dict(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Tracker heartbeat (single-row liveness marker for the T4.4 status tracker)
+# ---------------------------------------------------------------------------
+
+
+def record_tracker_heartbeat(
+    engine: Engine,
+    *,
+    now: datetime,
+    live_jobs: int,
+    hints_sent: int,
+) -> None:
+    """Upsert the singleton tracker-heartbeat row (``id == 1``).
+
+    ``last_run_at``/``live_jobs``/``hints_sent`` are set to this cycle's values;
+    ``cycles_total`` is incremented by 1. The increment is expressed as
+    ``cycles_total + 1`` inside the dialect's ``ON CONFLICT DO UPDATE`` so it is
+    computed atomically against the stored value — a concurrent or duplicated run
+    can never lose a count by read-modify-write. Mirrors the dialect-branch shape
+    of ``sax_platform.db.insert_or_ignore`` so it works on both the SQLite test
+    store and Postgres.
+    """
+    t = _OCR_TRACKER_HEARTBEAT_TABLE
+    values = {
+        "id": TRACKER_HEARTBEAT_ID,
+        "last_run_at": now,
+        "live_jobs": live_jobs,
+        "hints_sent": hints_sent,
+        "cycles_total": 1,
+    }
+    updated = {
+        "last_run_at": now,
+        "live_jobs": live_jobs,
+        "hints_sent": hints_sent,
+        "cycles_total": t.c.cycles_total + 1,
+    }
+    dialect = engine.dialect.name
+    stmt: SQLiteInsert | PostgresInsert
+    if dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        stmt = (
+            sqlite_insert(t)
+            .values(**values)
+            .on_conflict_do_update(index_elements=["id"], set_=updated)
+        )
+    elif dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as postgres_insert
+
+        stmt = (
+            postgres_insert(t)
+            .values(**values)
+            .on_conflict_do_update(index_elements=["id"], set_=updated)
+        )
+    else:  # pragma: no cover - only sqlite/postgres are supported stores
+        msg = f"record_tracker_heartbeat is unsupported on dialect {dialect!r}"
+        raise RuntimeError(msg)
+
+    with engine.begin() as conn:
+        conn.execute(stmt)
+
+
+def get_tracker_heartbeat(engine: Engine) -> dict[str, Any] | None:
+    """Return the singleton tracker-heartbeat row, or None if no sweep has run."""
+    t = _OCR_TRACKER_HEARTBEAT_TABLE
+    with engine.connect() as conn:
+        row = conn.execute(t.select().where(t.c.id == TRACKER_HEARTBEAT_ID)).mappings().first()
         return dict(row) if row is not None else None
 
 

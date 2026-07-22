@@ -18,7 +18,7 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 ## Architecture & Decisions
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — how Forge works: universal workflow step, execution modes, context assembly, batch-vs-sync, key data models, module map, and subsystems beyond the core loop.
-- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D99, with supersession/stale markers.
+- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D102, with supersession/stale markers.
 
 ## Requirements
 
@@ -34,7 +34,7 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 
 - [operations/USAGE.md](docs/operations/USAGE.md) — submitting code and research tasks to Forge.
 - [operations/WORKERS.md](docs/operations/WORKERS.md) — worker overview, identity, and scaling.
-- [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — local-first deployment: podman stack (Temporal + Postgres + MinIO), launchd workers, Supabase + S3 stores (D99).
+- [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — local-first deployment: podman stack (Temporal + local `forge`/`pbook` Postgres + MinIO), launchd workers, the `FORGE_ENV` guard, nightly S3 backups (D99, D102).
 - [deploy/README.md](deploy/README.md) — deployment quick start and directory map; points into the guides below (D99).
 - [deploy/local-stack/README.md](deploy/local-stack/README.md) — the podman stack: Temporal (production) plus dev-only Postgres/MinIO counterparts.
 - [deploy/launchd/README.md](deploy/launchd/README.md) — launchd agents: install, operate, restart, logs.

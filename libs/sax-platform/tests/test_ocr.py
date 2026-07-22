@@ -15,6 +15,7 @@ import json
 import logging
 import subprocess
 import sys
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
@@ -81,6 +82,27 @@ def _ocr_body(
 ) -> dict[str, Any]:
     """A minimal successful OCR response body ('pages', not 'choices')."""
     return {"pages": pages if pages is not None else [{"markdown": "text"}], "model": model}
+
+
+# `list_batch_statuses` pages by page_size 100; a job carries only id + status.
+_LIST_PAGE_SIZE = 100
+_CREATED_AFTER = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
+
+
+def _make_list_job(job_id: str, status: str = "RUNNING") -> MagicMock:
+    """A minimal Mistral BatchJobOut mock for the list endpoint: id + status."""
+    job = MagicMock()
+    job.id = job_id
+    job.status = status
+    return job
+
+
+def _make_list_page(jobs: list[MagicMock]) -> MagicMock:
+    """A Mistral BatchJobsOut mock: `.data` is the page's list of jobs."""
+    page = MagicMock()
+    page.data = jobs
+    page.total = len(jobs)
+    return page
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +561,137 @@ class TestGetBatchStatus:
         assert "context length exceeded (x3)" in caplog.text
         assert "3 failed request" in caplog.text
         client.files.download_async.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# MistralOcr.list_batch_statuses  (stateless broadcast sweep; never downloads)
+# ---------------------------------------------------------------------------
+
+
+class TestListBatchStatuses:
+    async def test_pages_until_short_page_and_returns_all_jobs(self) -> None:
+        # Two full pages (100 each) then an empty page terminates the sweep.
+        page0 = _make_list_page([_make_list_job(f"job-0-{i}") for i in range(_LIST_PAGE_SIZE)])
+        page1 = _make_list_page([_make_list_job(f"job-1-{i}") for i in range(_LIST_PAGE_SIZE)])
+        page2 = _make_list_page([])
+        client = MagicMock()
+        client.batch.jobs.list_async = AsyncMock(side_effect=[page0, page1, page2])
+        ocr = MistralOcr(client)
+
+        statuses = await ocr.list_batch_statuses(created_after=_CREATED_AFTER)
+
+        assert len(statuses) == 2 * _LIST_PAGE_SIZE
+        assert statuses["job-0-0"] == BatchPollStatus.IN_PROGRESS
+        assert statuses["job-1-99"] == BatchPollStatus.IN_PROGRESS
+
+        calls = client.batch.jobs.list_async.call_args_list
+        # page advances 0, 1, 2; page_size and created_after are constant.
+        assert [c.kwargs["page"] for c in calls] == [0, 1, 2]
+        assert [c.kwargs["page_size"] for c in calls] == [_LIST_PAGE_SIZE] * 3
+        assert [c.kwargs["created_after"] for c in calls] == [_CREATED_AFTER] * 3
+
+    async def test_partial_page_terminates_without_further_fetch(self) -> None:
+        # A full page then a partial page (< page_size) ends the sweep — a third
+        # fetch would raise StopIteration off the 2-element side_effect.
+        page0 = _make_list_page([_make_list_job(f"a{i}") for i in range(_LIST_PAGE_SIZE)])
+        page1 = _make_list_page([_make_list_job(f"b{i}") for i in range(30)])
+        client = MagicMock()
+        client.batch.jobs.list_async = AsyncMock(side_effect=[page0, page1])
+        ocr = MistralOcr(client)
+
+        statuses = await ocr.list_batch_statuses(created_after=_CREATED_AFTER)
+
+        assert len(statuses) == _LIST_PAGE_SIZE + 30
+        assert client.batch.jobs.list_async.call_count == 2
+
+    async def test_single_short_page_is_one_fetch(self) -> None:
+        client = MagicMock()
+        client.batch.jobs.list_async = AsyncMock(
+            return_value=_make_list_page([_make_list_job("only-job")])
+        )
+        ocr = MistralOcr(client)
+
+        statuses = await ocr.list_batch_statuses(created_after=_CREATED_AFTER)
+
+        assert statuses == {"only-job": BatchPollStatus.IN_PROGRESS}
+        assert client.batch.jobs.list_async.call_count == 1
+
+    async def test_data_none_is_treated_as_empty(self) -> None:
+        client = MagicMock()
+        empty_page = MagicMock()
+        empty_page.data = None  # the SDK types `data` as list | None
+        client.batch.jobs.list_async = AsyncMock(return_value=empty_page)
+        ocr = MistralOcr(client)
+
+        statuses = await ocr.list_batch_statuses(created_after=_CREATED_AFTER)
+
+        assert statuses == {}
+        assert client.batch.jobs.list_async.call_count == 1
+
+    @pytest.mark.parametrize(
+        ("mistral_status", "expected"),
+        [
+            ("QUEUED", BatchPollStatus.PENDING),
+            ("RUNNING", BatchPollStatus.IN_PROGRESS),
+            ("SUCCESS", BatchPollStatus.ENDED),
+            ("FAILED", BatchPollStatus.FAILED),
+            ("TIMEOUT_EXCEEDED", BatchPollStatus.EXPIRED),
+            ("CANCELLATION_REQUESTED", BatchPollStatus.CANCELED),
+            ("CANCELLED", BatchPollStatus.CANCELED),
+            # An unrecognized status is reported as "keep waiting".
+            ("SOME_FUTURE_STATUS", BatchPollStatus.IN_PROGRESS),
+        ],
+    )
+    async def test_every_provider_status_maps(
+        self, mistral_status: str, expected: BatchPollStatus
+    ) -> None:
+        client = MagicMock()
+        client.batch.jobs.list_async = AsyncMock(
+            return_value=_make_list_page([_make_list_job("job-1", status=mistral_status)])
+        )
+        ocr = MistralOcr(client)
+
+        statuses = await ocr.list_batch_statuses(created_after=_CREATED_AFTER)
+
+        assert statuses == {"job-1": expected}
+
+    async def test_reports_finished_jobs_without_status_filtering(self) -> None:
+        # A terminal job (SUCCESS) is returned like any other — the sweep does
+        # not filter by remote status, so a completion can be broadcast.
+        client = MagicMock()
+        client.batch.jobs.list_async = AsyncMock(
+            return_value=_make_list_page(
+                [
+                    _make_list_job("running", status="RUNNING"),
+                    _make_list_job("done", status="SUCCESS"),
+                ]
+            )
+        )
+        ocr = MistralOcr(client)
+
+        statuses = await ocr.list_batch_statuses(created_after=_CREATED_AFTER)
+
+        assert statuses == {
+            "running": BatchPollStatus.IN_PROGRESS,
+            "done": BatchPollStatus.ENDED,
+        }
+        # `status` is never passed — no server-side status narrowing.
+        assert "status" not in client.batch.jobs.list_async.call_args.kwargs
+
+    async def test_never_downloads(self) -> None:
+        client = MagicMock()
+        client.batch.jobs.list_async = AsyncMock(
+            return_value=_make_list_page(
+                [_make_list_job("job-1", status="SUCCESS")]  # terminal, has an output_file remotely
+            )
+        )
+        ocr = MistralOcr(client)
+
+        await ocr.list_batch_statuses(created_after=_CREATED_AFTER)
+
+        # A status sweep touches no file storage and no single-job get endpoint.
+        client.files.download_async.assert_not_called()
+        client.batch.jobs.get_async.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

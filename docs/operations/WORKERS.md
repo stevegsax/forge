@@ -21,7 +21,26 @@ Each worker main is a composition root (T3.6): it reads a frozen settings object
 - The **ocr worker** fails fast if `FORGE_DB_URL` or `FORGE_OCR_S3_BUCKET` is unset (the bucket check moved to startup in T3.6; it used to surface at first OCR use).
 - `MISTRAL_API_KEY` is a **fail-fast for the ocr worker** — it submits and polls its own Mistral batches, so an unset key aborts startup (T4.2). The forge worker never reads it (anthropic-only transport).
 
+The **ocr worker** additionally installs and reconciles the `ocr-batch-tracker` Temporal Schedule at startup — one `OcrBatchTrackerWorkflow` run every 120s (overlap=SKIP) — before it serves work, and **aborts startup if it cannot** install it. Without the Schedule the store children never receive their status hints, so the worker would be unable to finish a batch (T4.4).
+
+To check tracker health, run `uv run --package ocr ocr tracker-status`: a Temporal-free DB probe that prints the current GMT time, the `ocr_tracker_heartbeat` fields, the current live-job count, and a `fresh`/`stale`/`never-ran` verdict. Exit codes are script-friendly: 0 fresh, 1 stale or never-ran with no live jobs, 2 stale **with** live jobs waiting (work is queued but the tracker is not completing cycles — check the worker and the Mistral API), 3 probe error (missing `FORGE_DB_URL` or unreachable database — the probe could not answer; never collides with the verdict codes). Staleness threshold: `--stale-after` seconds, default 300 (2–3 tracker cycles). It reads whatever `FORGE_DB_URL` points at; a bare interactive shell carries neither that variable nor `FORGE_ENV` — source a profile with the [environment guard](#environment-guard) pattern first, or point `FORGE_ENV=dev` at the local stack's dev database on port 5434.
+
 The full environment-variable reference is in [DEPLOYMENT.md](DEPLOYMENT.md#configuration).
+
+### Environment guard
+
+Every worker and CLI is fronted by an explicit-environment guard (D102): it reads `FORGE_ENV` (`prod` / `dev` / `test`) and **fails if it is unset** — there is no default, and a guard failure exits **78** (`EX_CONFIG`, distinct from every command's own exit codes). This makes "which database am I about to touch" unambiguous, and reaching production a deliberate act rather than the result of an unset variable falling through to a default.
+
+- **Workers** resolve `FORGE_ENV` before any settings or store setup and log the resolved env (`env=prod`) at startup. The launchd plists declare `FORGE_ENV=prod` and `FORGE_PROD_ACK=yes` in `EnvironmentVariables` — the plists are the explicit production act — while `run-worker.sh` loads the matching profile `~/.config/forge/envs/prod.env`, aborting if the profile's `FORGE_ENV_TAG` disagrees or the file is not chmod 600.
+- **Production** additionally requires `FORGE_PROD_ACK=yes`, which the profile files never set — only the plist or an interactive shell — so sourcing a profile can never by itself grant production access.
+- **Interactive** commands must declare their environment. Sourcing a profile needs `set -a` so the values (and the tag) are exported — a plain `source` does not export, and the guard rejects an unexported tag by design:
+
+  ```bash
+  set -a; source ~/.config/forge/envs/prod.env; set +a
+  export FORGE_ENV=prod FORGE_PROD_ACK=yes
+  ```
+
+- **Non-prod work** uses the `dev` profile (`~/.config/forge/envs/dev.env`, `FORGE_ENV_TAG=dev`, no ack): `set -a; source …/envs/dev.env; set +a; export FORGE_ENV=dev`. It points at the local `forge_dev` database and MinIO, so no interactive command reaches production without `FORGE_ENV=prod` and the ack.
 
 ## Checking Whether Workers Are Running
 

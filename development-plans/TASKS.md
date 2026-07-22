@@ -22,6 +22,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T0.6 — Eval judge integrity](tasks/T0.6-eval-judge-integrity.md) *(added 2026-07-08 sweep)*
 - [x] [T0.7 — Local deployment: retire EC2 (D99)](tasks/T0.7-deploy-hardening.md) *(added 2026-07-08 sweep; rewritten 2026-07-16 per D99 — most original findings mooted by EC2 removal)*
 - [x] [T0.8 — Record the pre-migration operating decision](tasks/T0.8-operating-decision.md) *(added 2026-07-08 sweep)*
+- [x] [T0.9 — App store rehomed to local Postgres + explicit-environment guard](tasks/T0.9-local-db-rehoming-env-guard.md) *(added 2026-07-22 by owner decision — one database server, separate app/Temporal databases, Supabase retired; FORGE_ENV guard with no default and explicit prod ack; 58 tasks total; landed 2026-07-22, D102 — cutover owner-executed and verified live)*
 
 ### Phase 1 — Stop the bleeding (current repos)
 
@@ -69,7 +70,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T4.1 — forge: submit → poll-loop → fetch](tasks/T4.1-forge-timer-loop-transport.md)
 - [x] [T4.2 — ocr: own polling + gather restructure](tasks/T4.2-ocr-own-polling-gather-restructure.md)
 - [x] [T4.3 — Transport decisions sweep](tasks/T4.3-transport-decisions-sweep.md)
-- [ ] [T4.4 — ocr: Mistral status tracker](tasks/T4.4-mistral-status-tracker.md) *(added 2026-07-21 — owner adoption of the parked T4.2 batch-tracker proposal in its stateless-broadcast form; ocr-local and disjoint from Phase 5's forge files, so it may run before or parallel to Phase 5; 57 tasks total)*
+- [x] [T4.4 — ocr: Mistral status tracker](tasks/T4.4-mistral-status-tracker.md) *(added 2026-07-21 — owner adoption of the parked T4.2 batch-tracker proposal in its stateless-broadcast form; ocr-local and disjoint from Phase 5's forge files, so it may run before or parallel to Phase 5; 57 tasks total; landed 2026-07-22, D101)*
 
 ### Phase 5 — Workflow consolidation (forge)
 

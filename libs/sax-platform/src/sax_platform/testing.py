@@ -54,6 +54,7 @@ from sax_platform.ocr import BatchPollStatus, BatchResultEntry, ExtractedImage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
+    from datetime import datetime
     from typing import Protocol
 
     from anthropic.types import MessageParam
@@ -294,21 +295,26 @@ class FakeMistralOcr:
     """Recording fake for ``sax_platform.ocr.MistralOcr``.
 
     Mirrors ``MistralOcr``'s public surface exactly — ``process``,
-    ``submit_batch``, ``get_batch_status``, ``fetch_batch_results`` (all async)
-    and ``parse_batch_result`` (sync) — so it drops in anywhere a ``MistralOcr``
-    instance is expected. It holds no SDK client; instead it returns the canned
-    values passed to the constructor and records every call on ``self.calls``.
+    ``submit_batch``, ``get_batch_status``, ``list_batch_statuses``,
+    ``fetch_batch_results`` (all async) and ``parse_batch_result`` (sync) — so it
+    drops in anywhere a ``MistralOcr`` instance is expected. It holds no SDK
+    client; instead it returns the canned values passed to the constructor and
+    records every call on ``self.calls``.
 
     The batch-result surface is split the same way the real class is: ``status``
     is the canned ``BatchPollStatus`` returned by ``get_batch_status`` and
     ``entries`` is the canned ``list[BatchResultEntry]`` returned by
     ``fetch_batch_results``. Because they are separate methods (and separate
     recorded calls), a test can prove the status path performs no download by
-    asserting ``fetch_batch_results`` was never called.
+    asserting ``fetch_batch_results`` was never called. ``list_statuses`` is the
+    canned ``{job_id: BatchPollStatus}`` map returned by ``list_batch_statuses``;
+    because it is its own recorded method, a test can equally prove the list
+    endpoint was never invoked by inspecting ``self.calls``.
 
     Defaults keep it usable with no arguments: ``get_batch_status`` returns
-    ``ENDED``, ``fetch_batch_results`` returns ``[]``, ``submit_batch`` returns
-    ``"batch-fake"``, and ``process``/``parse_batch_result`` return ``({}, [])``.
+    ``ENDED``, ``fetch_batch_results`` returns ``[]``, ``list_batch_statuses``
+    returns ``{}``, ``submit_batch`` returns ``"batch-fake"``, and
+    ``process``/``parse_batch_result`` return ``({}, [])``.
     """
 
     def __init__(
@@ -316,12 +322,16 @@ class FakeMistralOcr:
         *,
         status: BatchPollStatus = BatchPollStatus.ENDED,
         entries: list[BatchResultEntry] | None = None,
+        list_statuses: dict[str, BatchPollStatus] | None = None,
         submit_batch_id: str = "batch-fake",
         process_result: tuple[dict[str, Any], list[ExtractedImage]] | None = None,
         parse_result: tuple[dict[str, Any], list[ExtractedImage]] | None = None,
     ) -> None:
         self._status = status
         self._entries: list[BatchResultEntry] = entries if entries is not None else []
+        self._list_statuses: dict[str, BatchPollStatus] = (
+            list_statuses if list_statuses is not None else {}
+        )
         self._submit_batch_id = submit_batch_id
         self._process_result: tuple[dict[str, Any], list[ExtractedImage]] = (
             process_result if process_result is not None else ({}, [])
@@ -369,6 +379,11 @@ class FakeMistralOcr:
         """Record the call and return the canned status. No download."""
         self.calls.append(RecordedCall("get_batch_status", (batch_id,), {}))
         return self._status
+
+    async def list_batch_statuses(self, *, created_after: datetime) -> dict[str, BatchPollStatus]:
+        """Record the call and return the canned status map. No download."""
+        self.calls.append(RecordedCall("list_batch_statuses", (), {"created_after": created_after}))
+        return self._list_statuses
 
     async def fetch_batch_results(self, batch_id: str) -> list[BatchResultEntry]:
         """Record the call and return the canned result entries."""

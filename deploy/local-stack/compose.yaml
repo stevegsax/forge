@@ -1,22 +1,23 @@
 # The local Forge stack, run under rootless podman: PostgreSQL + MinIO +
 # Temporal + Temporal UI. Everything binds to loopback only.
 #
-# Two roles live here (D99):
+# This Postgres holds everything (D99, amended by T0.9 — Supabase retired):
 #   - Temporal is PRODUCTION: the workflow engine self-hosts on this always-on
-#     desktop, persisting to this stack's Postgres (databases `temporal` +
-#     `temporal_visibility` beside `forge_dev`). Workers on the host connect
-#     to 127.0.0.1:7233.
-#   - Postgres (`forge_dev`) + MinIO remain the DEV counterparts of the
-#     managed app stores (production forge/pbook state is Supabase; blobs are
-#     AWS S3 — see docs/operations/DEPLOYMENT.md). The default test suite
-#     needs none of this: it uses temp-file SQLite and moto, and the opt-in
-#     `-m postgres` suite starts its own throwaway testcontainer.
+#     desktop, persisting to databases `temporal` + `temporal_visibility`.
+#     Workers on the host connect to 127.0.0.1:7233.
+#   - The PRODUCTION application store now lives here too (T0.9): `forge`
+#     (forge/ocr) and `pbook` (pbook), provisioned by docker/initdb/
+#     02-app-databases.sql, beside the disposable dev database `forge_dev`.
+#     Blobs stay on AWS S3 (see docs/operations/DEPLOYMENT.md). The default
+#     test suite needs none of this: it uses temp-file SQLite and moto, and the
+#     opt-in `-m postgres` suite starts its own throwaway testcontainer.
 #
-# The app connects via the single required env var FORGE_DB_URL, e.g.
-#   FORGE_DB_URL=postgresql+psycopg2://forge:forge@localhost:5433/forge_dev
-# (psycopg2 driver — Forge is synchronous; see .env.example). The host port
-# defaults to 5433 (not 5432) so this coexists with another local Postgres —
-# e.g. a sibling project's dev DB already on 5432; override via FORGE_PG_PORT.
+# The app connects via FORGE_DB_URL, e.g. prod
+#   FORGE_DB_URL=postgresql+psycopg2://forge:forge@localhost:5433/forge
+# or dev (forge_dev). psycopg2 driver — Forge is synchronous; see .env.example
+# and deploy/launchd/envs/. The host port defaults to 5433 (not 5432) so this
+# coexists with another local Postgres — e.g. a sibling project's dev DB
+# already on 5432; override via FORGE_PG_PORT.
 #
 # Image: pgvector/pgvector:pg16 — the Postgres 16 engine the migration
 # testcontainer already validates against, plus the pgvector extension so one
