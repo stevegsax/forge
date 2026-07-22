@@ -1,8 +1,9 @@
 # Root targets for Forge: workspace-wide gates (T2.2) and the podman-managed
-# local stack in deploy/local-stack — Postgres + MinIO + Temporal (the
-# production workflow engine per D99; the app stores' production homes stay
-# Supabase/S3). The default test suites run without the stack, except pbook's
-# (its conftest needs a podman machine or PBOOK_TEST_DATABASE_URL).
+# local stack in deploy/local-stack — Postgres + MinIO + Temporal (production
+# per D99; since T0.9/D102 the app stores' production homes are this stack's
+# forge/pbook databases too, with S3 for blobs and nightly dump backups). The
+# default test suites run without the stack, except pbook's (its conftest
+# needs a podman machine or PBOOK_TEST_DATABASE_URL).
 #
 # Typical first run:
 #   make stack-up     # start Postgres + Temporal + UI + MinIO (needs podman machine)
@@ -14,7 +15,7 @@
 
 .PHONY: help lint typecheck lint-imports test gates replay-histories \
 	stack-up stack-down stack-logs stack-psql db-migrate backup-app-dbs \
-	workers-restart workers-status
+	workers-restart workers-status dev-worker
 
 # Bare `make` prints the target list instead of running the first target.
 .DEFAULT_GOAL := help
@@ -85,6 +86,7 @@ help:
 	@echo "Workers (launchd-supervised; SIGTERM drains gracefully, KeepAlive restarts)"
 	@echo "  make workers-restart   signal forge/ocr/pbook workers; launchd relaunches from disk"
 	@echo "  make workers-status    list running worker processes"
+	@echo "  make dev-worker        start a staging-lane worker (forge-dev namespace) in detached tmux [WORKER=ocr|forge|pbook]"
 
 stack-up:
 	@podman machine inspect --format '{{.State}}' 2>/dev/null | grep -q running \
@@ -133,3 +135,30 @@ workers-restart:
 		|| echo "pbook worker: none running — nothing to restart (expected: pbook is opt-in)"
 workers-status:
 	-pgrep -fl "uv run forge worker|uv run --package ocr ocr worker|uv run pbook worker"
+
+# Staging-lane worker (T0.9 dev namespace) in a detached tmux session, so it
+# doesn't hold the terminal. Sources the dev profile with `set -a` (works for
+# both plain and export-prefixed profile styles), declares FORGE_ENV=dev, and
+# runs the chosen worker. The FORGE_ENV guard + namespace coherence check abort
+# a misconfigured profile (exit 78); the recipe detects the died-immediately
+# case and prints the foreground command to reproduce, instead of leaving a
+# silently vanished session. Default worker: ocr (make dev-worker WORKER=forge).
+WORKER ?= ocr
+DEV_PROFILE = $${XDG_CONFIG_HOME:-$$HOME/.config}/forge/envs/dev.env
+DEV_WORKER_CMD = $(if $(filter ocr,$(WORKER)),uv run --package ocr ocr worker,uv run $(WORKER) worker)
+dev-worker:
+	@test -f "$(DEV_PROFILE)" || { echo "no dev profile at $(DEV_PROFILE) — copy deploy/launchd/envs/dev.env.example there"; exit 1; }
+	@if tmux has-session -t dev-$(WORKER)-worker 2>/dev/null; then \
+		echo "dev-$(WORKER)-worker already running — attach: tmux attach -t dev-$(WORKER)-worker"; \
+	else \
+		tmux new-session -d -s dev-$(WORKER)-worker \
+			'set -a; . "$${XDG_CONFIG_HOME:-$$HOME/.config}/forge/envs/dev.env"; set +a; export FORGE_ENV=dev; exec $(DEV_WORKER_CMD)'; \
+		sleep 3; \
+		if tmux has-session -t dev-$(WORKER)-worker 2>/dev/null; then \
+			echo "dev-$(WORKER)-worker started — attach: tmux attach -t dev-$(WORKER)-worker | stop: tmux kill-session -t dev-$(WORKER)-worker"; \
+		else \
+			echo "dev-$(WORKER)-worker exited immediately (guard/coherence failure?) — reproduce in the foreground:"; \
+			echo "  set -a; source $(DEV_PROFILE); set +a; export FORGE_ENV=dev; $(DEV_WORKER_CMD)"; \
+			exit 1; \
+		fi; \
+	fi
