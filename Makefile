@@ -139,26 +139,45 @@ workers-status:
 # Staging-lane worker (T0.9 dev namespace) in a detached tmux session, so it
 # doesn't hold the terminal. Sources the dev profile with `set -a` (works for
 # both plain and export-prefixed profile styles), declares FORGE_ENV=dev, and
-# runs the chosen worker. The FORGE_ENV guard + namespace coherence check abort
-# a misconfigured profile (exit 78); the recipe detects the died-immediately
-# case and prints the foreground command to reproduce, instead of leaving a
-# silently vanished session. Default worker: ocr (make dev-worker WORKER=forge).
+# runs the chosen worker. Crash-safe: the session is created with
+# remain-on-exit on (a crashed worker leaves a dead pane holding the final
+# output instead of vaporizing the session and its scrollback) and the pane
+# output is tee'd to a persistent log, so post-mortems survive both crashes
+# and kill-session. The FORGE_ENV guard + namespace coherence check abort a
+# misconfigured profile (exit 78); the recipe distinguishes running / crashed
+# / died-at-startup instead of leaving a silently vanished session.
+# Default worker: ocr (make dev-worker WORKER=forge).
 WORKER ?= ocr
 DEV_PROFILE = $${XDG_CONFIG_HOME:-$$HOME/.config}/forge/envs/dev.env
+DEV_WORKER_LOG = $${XDG_STATE_HOME:-$$HOME/.local/state}/forge/logs/dev-$(WORKER)-worker.log
 DEV_WORKER_CMD = $(if $(filter ocr,$(WORKER)),uv run --package ocr ocr worker,uv run $(WORKER) worker)
 dev-worker:
 	@test -f "$(DEV_PROFILE)" || { echo "no dev profile at $(DEV_PROFILE) — copy deploy/launchd/envs/dev.env.example there"; exit 1; }
 	@if tmux has-session -t dev-$(WORKER)-worker 2>/dev/null; then \
-		echo "dev-$(WORKER)-worker already running — attach: tmux attach -t dev-$(WORKER)-worker"; \
-	else \
-		tmux new-session -d -s dev-$(WORKER)-worker \
-			'set -a; . "$${XDG_CONFIG_HOME:-$$HOME/.config}/forge/envs/dev.env"; set +a; export FORGE_ENV=dev; exec $(DEV_WORKER_CMD)'; \
-		sleep 3; \
-		if tmux has-session -t dev-$(WORKER)-worker 2>/dev/null; then \
-			echo "dev-$(WORKER)-worker started — attach: tmux attach -t dev-$(WORKER)-worker | stop: tmux kill-session -t dev-$(WORKER)-worker"; \
+		if tmux list-panes -t dev-$(WORKER)-worker -F '#{pane_dead}' | grep -q 1; then \
+			echo "dev-$(WORKER)-worker CRASHED earlier — the dead pane holds the final output:"; \
+			echo "  inspect: tmux attach -t dev-$(WORKER)-worker   (log: $(DEV_WORKER_LOG))"; \
+			echo "  then:    tmux kill-session -t dev-$(WORKER)-worker && make dev-worker WORKER=$(WORKER)"; \
+			exit 1; \
 		else \
-			echo "dev-$(WORKER)-worker exited immediately (guard/coherence failure?) — reproduce in the foreground:"; \
+			echo "dev-$(WORKER)-worker already running — attach: tmux attach -t dev-$(WORKER)-worker"; \
+		fi; \
+	else \
+		mkdir -p "$$(dirname "$(DEV_WORKER_LOG)")"; \
+		tmux new-session -d -s dev-$(WORKER)-worker \
+			'set -a; . "$${XDG_CONFIG_HOME:-$$HOME/.config}/forge/envs/dev.env"; set +a; export FORGE_ENV=dev; $(DEV_WORKER_CMD) 2>&1 | tee -a "$(DEV_WORKER_LOG)"' \; \
+			set-option -t dev-$(WORKER)-worker remain-on-exit on; \
+		sleep 3; \
+		if ! tmux has-session -t dev-$(WORKER)-worker 2>/dev/null; then \
+			echo "dev-$(WORKER)-worker died before crash-capture engaged — reproduce in the foreground:"; \
 			echo "  set -a; source $(DEV_PROFILE); set +a; export FORGE_ENV=dev; $(DEV_WORKER_CMD)"; \
 			exit 1; \
+		elif tmux list-panes -t dev-$(WORKER)-worker -F '#{pane_dead}' | grep -q 1; then \
+			echo "dev-$(WORKER)-worker exited immediately (guard/coherence failure?) — last output:"; \
+			tmux capture-pane -t dev-$(WORKER)-worker -pS - | rg -v '^$$' | tail -5; \
+			echo "  full log: $(DEV_WORKER_LOG) | clear: tmux kill-session -t dev-$(WORKER)-worker"; \
+			exit 1; \
+		else \
+			echo "dev-$(WORKER)-worker started — attach: tmux attach -t dev-$(WORKER)-worker | stop: tmux kill-session -t dev-$(WORKER)-worker | log: $(DEV_WORKER_LOG)"; \
 		fi; \
 	fi
