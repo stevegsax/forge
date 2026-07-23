@@ -156,6 +156,40 @@ Priority order. OPEN tech-debt (no mechanism today) before PARTIAL (hardening) b
 - [ ] LSP-based context generation — [../docs/planning/LSP_INTEGRATION_PLAN.md](../docs/planning/LSP_INTEGRATION_PLAN.md).
 - [ ] Multi-transform DAG planner — [../docs/planning/task-management/DECOMPOSITION.md](../docs/planning/task-management/DECOMPOSITION.md) (draft; would replace `activities/planner.py`).
 
+## Parked follow-ups (2026-07-23, owner-adjudicated)
+
+Raised during the 2026-07-22/23 T4.4 + T0.9 + staging-lane work; recorded
+here so they outlive the session. None are scheduled; pick up at grooming.
+
+- [ ] **Bounded first-step wait on workflow-routed CLI commands** (owner-adopted
+  direction): every CLI command that executes a workflow bounds its wait and
+  fails with a "no worker is polling `<queue>` in `<namespace>`" message
+  instead of hanging (observed: `ocr list` hung 20+ minutes with no dev
+  worker). Applies to all three CLIs — forge, ocr, **and pbook**. Direct-DB
+  bypasses are rejected (Architecture Principle 8).
+- [ ] **Deploy workers from a committed ref** — launchd workers exec `uv run`
+  from the live working tree; mid-build KeepAlive relaunches crash-loop on
+  mixed edits (observed 2026-07-22) and any restart deploys uncommitted
+  code. The staging lane mitigates procedurally; a release-ref deployment
+  removes the hazard.
+- [ ] **Consolidate the triplicated CLI env glue** — `_require_forge_env`,
+  `_apply_env_profile`, `_EnvCommand`/`_EnvGroup` are near-identical across
+  the three CLIs (sax_platform is deliberately click-free; a shared home
+  needs deciding).
+- [ ] **Point real-services e2e at the dev lane** — `OCR_E2E_PLATFORM=1`
+  documents itself as expecting "a running platform worker", which in
+  practice meant production; it should target `forge-dev` workers now that
+  the staging lane exists.
+- [ ] **pbook direct-DB CLI commands review** — pre-existing direct-DB paths
+  in pbook's CLI are in tension with Architecture Principle 8; migrate them
+  behind workflows or bless them as recorded exceptions (owner disposition
+  pending).
+- [ ] **Large-result claim-check for workflow-routed reads** (owner-parked:
+  hold off until necessary): if an operation's result ever approaches
+  Temporal's payload limits, return an S3 link instead — the batch
+  transport's existing inline-≤256KB-else-S3 pattern (T4.1) is the
+  precedent and the machinery (`S3Blobs`, envelope helpers) already exists.
+
 ## Dependencies
 
 - **Structured human-in-the-loop** is a prerequisite for the **multi-transform DAG planner** (its clarification/approval gates depend on it).

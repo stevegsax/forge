@@ -89,6 +89,7 @@ The test suite uses `asyncio_mode = "auto"` and a session-scoped Temporal time-s
 5. **Halt when confused.** When the orchestrator encounters a situation it cannot classify, it stops and escalates to a human.
 6. **The LLM call is the universal primitive.** Every task is an instance of: construct message, send, receive, serialize, transition.
 7. **Follow Temporal best practices.** Before planning changes that touch Temporal workflows, activities, or worker configuration, check [Temporal Best Practices](https://docs.temporal.io/best-practices) and [docs/operations/WORKERS.md](docs/operations/WORKERS.md) to ensure the approach aligns with Temporal's guidance.
+8. **Application access is through Temporal** (owner decision 2026-07-23). CLI and application reads/writes route through workflows/activities — no direct database connections outside the workers, unless strictly necessary. Infrastructure tooling is the sanctioned exception: diagnostics that must work when Temporal itself is down (`ocr tracker-status`), schema migrations (`ocr migrate`, `pbook migrate`), and backup tooling. Corollaries: workflow-routed CLI commands bound their first-step wait and fail with a clear "no worker is polling this queue/namespace" message rather than hanging; if an operation's result ever approaches Temporal's payload limits, the direction is a claim-check — the workflow writes to S3 and returns the link (the batch transport's inline-≤256KB-else-S3 pattern is the precedent) — parked until actually needed.
 
 ## Test Patterns
 
