@@ -140,13 +140,13 @@ setup. It reads `FORGE_DB_URL` and prints a credential-free
 `chain -> host/database` line:
 
 ```bash
-uv run --package ocr ocr --env dev migrate
+uv run --package ocr ocr migrate --env dev
 ```
 
 Either export `FORGE_ENV=dev` and `FORGE_DB_URL` first, or pass
-`--env dev` to load the dev profile inline (both CLIs take `--env` on the
-top-level group — before the subcommand: `pbook --env dev migrate`,
-`ocr --env dev migrate`).
+`--env dev` to load the dev profile inline (both CLIs take `--env` in
+either position — before or after the subcommand: `pbook migrate --env dev`,
+`ocr migrate --env dev`).
 
 ## Object storage (MinIO)
 

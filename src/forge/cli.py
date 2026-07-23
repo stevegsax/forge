@@ -596,28 +596,84 @@ def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
         forge_logger.setLevel(logging.NOTSET)
 
 
-@click.group()
+# ---------------------------------------------------------------------------
+# Position-independent --env plumbing (the environment guard seam)
+# ---------------------------------------------------------------------------
+
+#: Shared help for the ``--env`` option, mounted at both the group level and on
+#: every command (so it reads the same wherever ``--help`` surfaces it).
+_ENV_OPTION_HELP = (
+    "Load an env profile before the environment guard runs. A bare NAME "
+    "resolves to $XDG_CONFIG_HOME/forge/envs/<NAME>.env and sets FORGE_ENV; "
+    "a path (or a value ending in .env) is read verbatim and takes FORGE_ENV "
+    "from its FORGE_ENV_TAG. Never supplies FORGE_PROD_ACK. Valid before or "
+    "after the subcommand; given at both, the subcommand value wins."
+)
+
+
+class _EnvCommand(click.Command):
+    """A ``click.Command`` that accepts ``--env`` in the subcommand position.
+
+    Every command in this CLI is built from this class (via ``_EnvGroup``'s
+    ``command_class``), so ``--env`` parses both before the subcommand
+    (``forge --env dev run …``, consumed by the group) and after it
+    (``forge run --env dev …``, consumed here) with identical semantics.
+
+    ``__init__`` appends the shared ``--env`` option; ``invoke`` applies that
+    profile (when it was given at this level) and then runs the ``FORGE_ENV``
+    guard, immediately before the command body. The captured value is popped
+    out of ``ctx.params`` so the command's own callback signature is untouched.
+    Because the guard lives here — at the command seam, not in the group
+    callback — ``--help`` and other parse-only paths short-circuit ahead of it
+    and need no declared environment. A command-level ``--env`` is applied last,
+    so it wins over a group-level one.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.params.append(
+            click.Option(
+                ["--env", "env_profile"], default=None, metavar="NAME|PATH", help=_ENV_OPTION_HELP
+            )
+        )
+
+    def invoke(self, ctx: click.Context) -> Any:
+        env_profile: str | None = ctx.params.pop("env_profile", None)
+        if env_profile is not None:
+            _apply_env_profile(env_profile)
+        _require_forge_env()
+        return super().invoke(ctx)
+
+
+class _EnvGroup(click.Group):
+    """A ``click.Group`` whose commands (and nested groups) are ``_EnvCommand``s.
+
+    ``command_class`` makes every ``@group.command()`` an ``_EnvCommand`` (the
+    ``--env``-in-either-position behavior and the guard attach automatically,
+    with no per-command decorator), and ``group_class = type`` propagates the
+    same group class to nested groups so their subcommands inherit it too. The
+    group callback applies a group-level ``--env`` eagerly; the guard itself
+    lives on the commands, so a nested group invoked without a subcommand guards
+    in its own body.
+    """
+
+    command_class = _EnvCommand
+    group_class = type
+
+
+@click.group(cls=_EnvGroup)
 @click.version_option(package_name="forge")
 @click.option(
     "-v", "log_verbosity", count=True, help="Increase log verbosity (-v INFO, -vv DEBUG)."
 )
-@click.option(
-    "--env",
-    "env_profile",
-    default=None,
-    metavar="NAME|PATH",
-    help=(
-        "Load an env profile before the environment guard runs. A bare NAME "
-        "resolves to $XDG_CONFIG_HOME/forge/envs/<NAME>.env and sets FORGE_ENV; "
-        "a path (or a value ending in .env) is read verbatim and takes FORGE_ENV "
-        "from its FORGE_ENV_TAG. Never supplies FORGE_PROD_ACK."
-    ),
-)
+@click.option("--env", "env_profile", default=None, metavar="NAME|PATH", help=_ENV_OPTION_HELP)
 def main(log_verbosity: int, env_profile: str | None) -> None:
     """Forge — LLM task orchestrator."""
+    # Apply a group-level --env eagerly so its vars are in place before the
+    # subcommand parses; the FORGE_ENV guard runs per-command (see _EnvCommand),
+    # not here, so --help stays usable without a declared environment.
     if env_profile is not None:
         _apply_env_profile(env_profile)
-    _require_forge_env()
     configure_logging(log_verbosity)
 
 
@@ -1362,6 +1418,11 @@ def playbooks(
     """List and inspect playbook entries."""
     if ctx.invoked_subcommand is not None:
         return
+
+    # Terminal group path (no subcommand): the per-command guard seam does not
+    # cover a group's own body, so run the environment guard here before any
+    # store access — matching what every _EnvCommand does at invoke.
+    _require_forge_env()
 
     import json as json_mod
 

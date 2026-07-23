@@ -919,15 +919,28 @@ class TestMigrate:
 
 
 class TestEnvGuard:
-    """The root CLI group refuses to run without an explicitly declared FORGE_ENV.
+    """Every pbook command refuses to run without an explicitly declared FORGE_ENV.
 
-    The guard runs in the group callback, ahead of every command body (including
-    ``PbookSettings()``). A missing or invalid environment exits
-    ``EXIT_CONFIG_ERROR`` (78) with the guard's actionable message on stderr; a
-    declared environment lets the command proceed. ``add --schema`` is a cheap
-    command whose body needs no database. ``FORGE_ENV=test`` comes from the
-    autouse ``_forge_env`` fixture; the failure cases override it.
+    Since ``--env`` became position-independent the guard runs at the per-command
+    seam (``_EnvCommand.invoke``), immediately before the command body — not in
+    the group callback. So ``--help`` and other parse-only paths work env-less,
+    while any actual command execution without a declared FORGE_ENV exits
+    ``EXIT_CONFIG_ERROR`` (78) with the guard's actionable message on stderr.
+    ``add --schema`` is a cheap command whose body needs no database.
+    ``FORGE_ENV=test`` comes from the autouse ``_forge_env`` fixture; the failure
+    cases override it.
     """
+
+    def test_help_succeeds_without_env(self, monkeypatch):
+        # Re-pinned contract: help is a parse-only path, so it works env-less at
+        # both the group and command levels (the guard no longer fires for it).
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        runner = CliRunner()
+        top = runner.invoke(main, ["--help"])
+        assert top.exit_code == 0
+        sub = runner.invoke(main, ["add", "--help"])
+        assert sub.exit_code == 0
+        assert "--env" in sub.output
 
     def test_missing_forge_env_exits_78(self, monkeypatch):
         monkeypatch.delenv("FORGE_ENV", raising=False)
@@ -1040,9 +1053,12 @@ class TestEnvProfileFlag:
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert "does not match" in result.stderr
 
-    def test_env_prod_still_requires_ack(self, tmp_path, monkeypatch, restore_environ):
-        # The non-bypass proof: --env prod loads a prod-tagged profile but never
-        # supplies FORGE_PROD_ACK, so the guard still refuses.
+    def test_env_prod_still_requires_ack_both_positions(
+        self, tmp_path, monkeypatch, restore_environ
+    ):
+        # The non-bypass proof, in BOTH positions: --env prod loads a prod-tagged
+        # profile but never supplies FORGE_PROD_ACK, so the guard still refuses
+        # whether --env sits before or after the subcommand.
         envs = tmp_path / "config" / "forge" / "envs"
         envs.mkdir(parents=True)
         (envs / "prod.env").write_text("FORGE_ENV_TAG=prod\nFORGE_DB_URL=sqlite:///prod.db\n")
@@ -1050,10 +1066,43 @@ class TestEnvProfileFlag:
         monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
 
         runner = CliRunner()
-        result = runner.invoke(main, ["--env", "prod", "add", "--schema"])
+        for argv in (["--env", "prod", "add", "--schema"], ["add", "--env", "prod", "--schema"]):
+            result = runner.invoke(main, argv)
+            assert result.exit_code == EXIT_CONFIG_ERROR, argv
+            assert "explicit act" in result.stderr, argv
+
+    def test_applies_in_subcommand_position(self, tmp_path, monkeypatch, restore_environ):
+        # --env after the subcommand is parsed by the command (not the group), so
+        # its profile is applied and guarded there. A tag mismatch proves it took
+        # effect: without the subcommand-position apply the autouse FORGE_ENV=test
+        # would pass the guard and print the schema.
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "dev.env").write_text("FORGE_ENV_TAG=prod\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["add", "--env", "dev", "--schema"])
 
         assert result.exit_code == EXIT_CONFIG_ERROR
-        assert "explicit act" in result.stderr
+        assert "does not match" in result.stderr
+
+    def test_subcommand_env_wins_over_group_env(self, tmp_path, restore_environ):
+        # --env at both levels: the command-level profile applies last, so its
+        # value wins. Both are dev-tagged so the guard passes; `add --schema`
+        # completes and the applied FORGE_DB_URL reflects the winner.
+        group_profile = tmp_path / "group.env"
+        group_profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///group.db\n")
+        cmd_profile = tmp_path / "cmd.env"
+        cmd_profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///cmd.db\n")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["--env", str(group_profile), "add", "--env", str(cmd_profile), "--schema"]
+        )
+
+        assert result.exit_code == 0
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///cmd.db"
 
     def test_missing_file_exits_78(self, tmp_path, restore_environ):
         missing = tmp_path / "nope.env"

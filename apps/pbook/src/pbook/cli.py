@@ -279,26 +279,78 @@ def _format_entry(entry: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-@click.group()
-@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
-@click.option(
-    "--env",
-    "env_profile",
-    default=None,
-    metavar="NAME|PATH",
-    help=(
-        "Load an env profile before the environment guard runs. A bare NAME "
-        "resolves to $XDG_CONFIG_HOME/forge/envs/<NAME>.env and sets FORGE_ENV; "
-        "a path (or a value ending in .env) is read verbatim and takes FORGE_ENV "
-        "from its FORGE_ENV_TAG. Never supplies FORGE_PROD_ACK."
-    ),
+# ---------------------------------------------------------------------------
+# Position-independent --env plumbing (the environment guard seam)
+# ---------------------------------------------------------------------------
+
+#: Shared help for the ``--env`` option, mounted at both the group level and on
+#: every command (so it reads the same wherever ``--help`` surfaces it).
+_ENV_OPTION_HELP = (
+    "Load an env profile before the environment guard runs. A bare NAME "
+    "resolves to $XDG_CONFIG_HOME/forge/envs/<NAME>.env and sets FORGE_ENV; "
+    "a path (or a value ending in .env) is read verbatim and takes FORGE_ENV "
+    "from its FORGE_ENV_TAG. Never supplies FORGE_PROD_ACK. Valid before or "
+    "after the subcommand; given at both, the subcommand value wins."
 )
+
+
+class _EnvCommand(click.Command):
+    """A ``click.Command`` that accepts ``--env`` in the subcommand position.
+
+    Every command in this CLI is built from this class (via ``_EnvGroup``'s
+    ``command_class``), so ``--env`` parses both before the subcommand
+    (``pbook --env dev migrate``, consumed by the group) and after it
+    (``pbook migrate --env dev``, consumed here) with identical semantics.
+
+    ``__init__`` appends the shared ``--env`` option; ``invoke`` applies that
+    profile (when it was given at this level) and then runs the ``FORGE_ENV``
+    guard, immediately before the command body. The captured value is popped out
+    of ``ctx.params`` so the command's own callback signature is untouched.
+    Because the guard lives here — at the command seam, not in the group
+    callback — ``--help`` and other parse-only paths short-circuit ahead of it
+    and need no declared environment. A command-level ``--env`` is applied last,
+    so it wins over a group-level one.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.params.append(
+            click.Option(
+                ["--env", "env_profile"], default=None, metavar="NAME|PATH", help=_ENV_OPTION_HELP
+            )
+        )
+
+    def invoke(self, ctx: click.Context) -> Any:
+        env_profile: str | None = ctx.params.pop("env_profile", None)
+        if env_profile is not None:
+            _apply_env_profile(env_profile)
+        _require_forge_env()
+        return super().invoke(ctx)
+
+
+class _EnvGroup(click.Group):
+    """A ``click.Group`` whose commands are ``_EnvCommand``s.
+
+    ``command_class`` makes every ``@group.command()`` an ``_EnvCommand`` (the
+    ``--env``-in-either-position behavior and the guard attach automatically,
+    with no per-command decorator). The group callback applies a group-level
+    ``--env`` eagerly; the guard itself lives on the commands.
+    """
+
+    command_class = _EnvCommand
+
+
+@click.group(cls=_EnvGroup)
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
+@click.option("--env", "env_profile", default=None, metavar="NAME|PATH", help=_ENV_OPTION_HELP)
 @click.pass_context
 def main(ctx: click.Context, verbose: bool, env_profile: str | None) -> None:
     """pbook — Knowledge playbook service."""
+    # Apply a group-level --env eagerly so its vars are in place before the
+    # subcommand parses; the FORGE_ENV guard runs per-command (see _EnvCommand),
+    # not here, so --help stays usable without a declared environment.
     if env_profile is not None:
         _apply_env_profile(env_profile)
-    _require_forge_env()
 
     from sax_platform.logging import setup_logging
 

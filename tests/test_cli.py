@@ -2626,21 +2626,35 @@ class TestIngestCommand:
 
 
 class TestEnvGuard:
-    """The root CLI group refuses to run without an explicitly declared FORGE_ENV.
+    """Every forge command refuses to run without an explicitly declared FORGE_ENV.
 
-    The guard runs in the group callback, so ``run --help`` exercises it (Click
-    invokes the group callback before the subcommand's ``--help``). A missing or
-    invalid environment exits ``EXIT_CONFIG_ERROR`` (78) — outside every other
-    forge exit code — with the guard's actionable message on stderr; a declared
-    environment lets the command proceed. ``FORGE_ENV=test`` comes from the
+    Since ``--env`` became position-independent the guard runs at the per-command
+    seam (``_EnvCommand.invoke``), immediately before the command body — not in
+    the group callback. So ``--help`` and other parse-only paths work env-less,
+    while any actual command execution without a declared FORGE_ENV exits
+    ``EXIT_CONFIG_ERROR`` (78) — outside every other forge exit code — with the
+    guard's actionable message on stderr. ``FORGE_ENV=test`` comes from the
     autouse ``forge_env`` fixture; the failure cases override it.
     """
+
+    def test_help_succeeds_without_env(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Re-pinned contract: help is a parse-only path, so it works env-less at
+        # both the group and command levels (the guard no longer fires for it).
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+        top = cli_runner.invoke(main, ["--help"])
+        assert top.exit_code == 0
+        sub = cli_runner.invoke(main, ["run", "--help"])
+        assert sub.exit_code == 0
+        assert "--task-id" in sub.output
 
     def test_missing_forge_env_exits_78(
         self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Actual execution (not --help): the guard fires before the command body.
         monkeypatch.delenv("FORGE_ENV", raising=False)
-        result = cli_runner.invoke(main, ["run", "--help"])
+        result = cli_runner.invoke(main, ["run"])
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert "no default environment" in result.stderr
 
@@ -2648,7 +2662,7 @@ class TestEnvGuard:
         self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("FORGE_ENV", "staging")
-        result = cli_runner.invoke(main, ["run", "--help"])
+        result = cli_runner.invoke(main, ["run"])
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert "not a valid environment" in result.stderr
 
@@ -2658,16 +2672,16 @@ class TestEnvGuard:
         monkeypatch.setenv("FORGE_ENV", "prod")
         monkeypatch.delenv("FORGE_ENV_TAG", raising=False)
         monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
-        result = cli_runner.invoke(main, ["run", "--help"])
+        result = cli_runner.invoke(main, ["run"])
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert "explicit act" in result.stderr
 
-    def test_test_env_proceeds(self, cli_runner: CliRunner) -> None:
-        # FORGE_ENV=test is set by the autouse forge_env fixture, so the guard
-        # passes and the command runs (here: reaches `run --help`).
-        result = cli_runner.invoke(main, ["run", "--help"])
-        assert result.exit_code == 0
-        assert "--task-id" in result.output
+    def test_test_env_proceeds_past_guard(self, cli_runner: CliRunner) -> None:
+        # FORGE_ENV=test (autouse) passes the guard, so `run` reaches its own body
+        # and fails on its usage rule — never the guard's 78.
+        result = cli_runner.invoke(main, ["run"])
+        assert result.exit_code != EXIT_CONFIG_ERROR
+        assert "Provide either" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -2760,36 +2774,39 @@ class TestEnvProfileFlag:
         (envs / "dev.env").write_text("FORGE_ENV_TAG=prod\n")
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
-        result = cli_runner.invoke(main, ["--env", "dev", "run", "--help"])
+        # Real execution (not --help), so the per-command guard actually runs.
+        result = cli_runner.invoke(main, ["--env", "dev", "run"])
 
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert "does not match" in result.stderr
 
-    def test_env_prod_still_requires_ack(
+    def test_env_prod_still_requires_ack_both_positions(
         self,
         cli_runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         restore_environ: None,
     ) -> None:
-        # The non-bypass proof: --env prod loads a prod-tagged profile but never
-        # supplies FORGE_PROD_ACK, so the guard still refuses.
+        # The non-bypass proof, in BOTH positions: --env prod loads a prod-tagged
+        # profile but never supplies FORGE_PROD_ACK, so the guard still refuses
+        # whether --env sits before or after the subcommand.
         envs = tmp_path / "config" / "forge" / "envs"
         envs.mkdir(parents=True)
         (envs / "prod.env").write_text("FORGE_ENV_TAG=prod\nFORGE_DB_URL=sqlite:///prod.db\n")
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
         monkeypatch.delenv("FORGE_PROD_ACK", raising=False)
 
-        result = cli_runner.invoke(main, ["--env", "prod", "run", "--help"])
-
-        assert result.exit_code == EXIT_CONFIG_ERROR
-        assert "explicit act" in result.stderr
+        for argv in (["--env", "prod", "run"], ["run", "--env", "prod"]):
+            result = cli_runner.invoke(main, argv)
+            assert result.exit_code == EXIT_CONFIG_ERROR, argv
+            assert "explicit act" in result.stderr, argv
 
     def test_missing_file_exits_78(
         self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
     ) -> None:
         missing = tmp_path / "nope.env"
-        result = cli_runner.invoke(main, ["--env", str(missing), "run", "--help"])
+        # apply-profile fails inside the group callback, before any subcommand.
+        result = cli_runner.invoke(main, ["--env", str(missing), "run"])
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert str(missing) in result.stderr
 
@@ -2798,9 +2815,49 @@ class TestEnvProfileFlag:
     ) -> None:
         profile = tmp_path / "notag.env"
         profile.write_text("FORGE_DB_URL=sqlite:///x.db\n")
-        result = cli_runner.invoke(main, ["--env", str(profile), "run", "--help"])
+        # apply-profile fails inside the group callback, before any subcommand.
+        result = cli_runner.invoke(main, ["--env", str(profile), "run"])
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert "FORGE_ENV_TAG" in result.stderr
+
+    def test_applies_in_subcommand_position(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_environ: None,
+    ) -> None:
+        # --env after the subcommand is parsed by the command (not the group), so
+        # its profile is applied and guarded there. A tag mismatch proves it took
+        # effect: without the subcommand-position apply the autouse FORGE_ENV=test
+        # would pass the guard and reach the body, not exit 78.
+        envs = tmp_path / "config" / "forge" / "envs"
+        envs.mkdir(parents=True)
+        (envs / "dev.env").write_text("FORGE_ENV_TAG=prod\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+        result = cli_runner.invoke(main, ["run", "--env", "dev"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "does not match" in result.stderr
+
+    def test_subcommand_env_wins_over_group_env(
+        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    ) -> None:
+        # --env at both levels: the command-level profile applies last, so its
+        # value wins. Both are dev-tagged so the guard passes; `run` then reaches
+        # its own usage error, and the applied FORGE_DB_URL reflects the winner.
+        group_profile = tmp_path / "group.env"
+        group_profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///group.db\n")
+        cmd_profile = tmp_path / "cmd.env"
+        cmd_profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///cmd.db\n")
+
+        result = cli_runner.invoke(
+            main, ["--env", str(group_profile), "run", "--env", str(cmd_profile)]
+        )
+
+        assert result.exit_code != EXIT_CONFIG_ERROR
+        assert os.environ["FORGE_DB_URL"] == "sqlite:///cmd.db"
 
 
 # ---------------------------------------------------------------------------

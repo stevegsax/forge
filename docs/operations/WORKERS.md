@@ -41,7 +41,7 @@ Every worker and CLI is fronted by an explicit-environment guard (D102): it read
   ```
 
 - **Non-prod work** uses the `dev` profile (`~/.config/forge/envs/dev.env`, `FORGE_ENV_TAG=dev`, no ack): `set -a; source …/envs/dev.env; set +a; export FORGE_ENV=dev`. It points at the local `forge_dev` database and MinIO, so no interactive command reaches production without `FORGE_ENV=prod` and the ack.
-- **The `--env` flag** loads a profile without a manual `set -a; source`: every CLI accepts `--env <name-or-path>` on its top-level group — the flag goes **before** the subcommand (`uv run --package ocr ocr --env dev tracker-status`; placed after the subcommand it is never parsed, and a bare shell fails the guard first). A bare name resolves to `$XDG_CONFIG_HOME/forge/envs/<name>.env` (and sets `FORGE_ENV` to that name); a path — or any value ending `.env` — is read verbatim and takes `FORGE_ENV` from the file's `FORGE_ENV_TAG`. The profile parser tolerates a leading `export`, strips one surrounding quote pair, and expands `${VAR}` references (braced form only, against the current environment) — never any command execution. It never supplies `FORGE_PROD_ACK`, so `--env prod` still fails unless the ack is exported separately; a missing file, malformed line, or path-form profile without a `FORGE_ENV_TAG` exits 78.
+- **The `--env` flag** loads a profile without a manual `set -a; source`: every CLI accepts `--env <name-or-path>` in **either position** — before or after the subcommand (`uv run --package ocr ocr tracker-status --env dev` and `uv run --package ocr ocr --env dev tracker-status` are equivalent; given at both levels, the value after the subcommand wins). A bare shell with no `--env` fails the guard when the command runs. A bare name resolves to `$XDG_CONFIG_HOME/forge/envs/<name>.env` (and sets `FORGE_ENV` to that name); a path — or any value ending `.env` — is read verbatim and takes `FORGE_ENV` from the file's `FORGE_ENV_TAG`. The profile parser tolerates a leading `export`, strips one surrounding quote pair, and expands `${VAR}` references (braced form only, against the current environment) — never any command execution. It never supplies `FORGE_PROD_ACK`, so `--env prod` still fails unless the ack is exported separately; a missing file, malformed line, or path-form profile without a `FORGE_ENV_TAG` exits 78.
 
 ### Staging lane (dev namespace)
 
@@ -63,6 +63,8 @@ uv run --package ocr ocr worker --env dev  # ocr worker in forge-dev
 ```
 
 The dev ocr worker installs its own `ocr-batch-tracker` Schedule inside `forge-dev`, separate from production's in `default`. A dev CLI submits into `forge-dev` too, so it only ever reaches the dev workers.
+
+**A functional lane needs the forge worker even for pure-OCR flows.** ocr's ledger writes (`persist_block` → `forge-task-queue`) are cross-queue activity calls, so with only a dev ocr worker running, an OCR submission blocks at its first ledger persist and the tracker cannot route hints (the live job has no routable `batch_jobs` row — the tracker logs a warning and skips it). Start the pair: `make dev-worker` and `make dev-worker WORKER=forge` (add `WORKER=pbook` if exercising ingestion).
 
 ## Checking Whether Workers Are Running
 
