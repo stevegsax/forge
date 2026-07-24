@@ -15,7 +15,7 @@
 
 .PHONY: help lint typecheck lint-imports test gates replay-histories \
 	stack-up stack-down stack-logs stack-psql db-migrate backup-app-dbs \
-	workers-restart workers-status dev-worker
+	workers-restart workers-status dev-worker dev-worker-restart
 
 # Bare `make` prints the target list instead of running the first target.
 .DEFAULT_GOAL := help
@@ -116,25 +116,41 @@ db-migrate:
 backup-app-dbs:
 	deploy/local-stack/backup-app-dbs.sh
 
-# Every launchd-supervised worker now drains gracefully on SIGTERM (exit 0)
-# instead of dying on Python's default handler — launchd's unconditional
-# KeepAlive then relaunches it from whatever code is on disk. Leading `-`
-# so an absent worker (e.g. pbook, which is opt-in) doesn't fail the target.
-# Signal all workers; launchd KeepAlive relaunches them on current on-disk
-# code. A worker with no matching process (e.g. pbook, which is opt-in) is
-# expected and fine — the target says so instead of surfacing pkill's exit 1.
+# Restart the PRODUCTION workers only, resolving each launchd label to its
+# pid and signalling that pid — never a command-line pattern. The dev tmux
+# workers run byte-identical command lines (the env split lives in
+# environment variables, invisible to pkill), so the old pkill-by-pattern
+# restart took the staging lane down with production (observed 2026-07-24).
+# SIGTERM is deliberate: workers drain gracefully (stop polling, finish
+# in-flight activities, exit 0) and launchd's unconditional KeepAlive
+# relaunches them from whatever code is on disk. Restart the dev lane
+# independently with dev-worker-restart.
+WORKER_LABELS = com.saxcapital.forge-worker-1 com.saxcapital.forge-worker-2 \
+	com.saxcapital.ocr-worker com.saxcapital.pbook-worker
 workers-restart:
-	@pkill -TERM -f "uv run forge worker" \
-		&& echo "forge workers: SIGTERM sent — launchd relaunches on current code" \
-		|| echo "forge workers: none running — nothing to restart (expected if not installed)"
-	@pkill -TERM -f "uv run --package ocr ocr worker" \
-		&& echo "ocr worker: SIGTERM sent — launchd relaunches on current code" \
-		|| echo "ocr worker: none running — nothing to restart (expected if not installed)"
-	@pkill -TERM -f "uv run pbook worker" \
-		&& echo "pbook worker: SIGTERM sent — launchd relaunches on current code" \
-		|| echo "pbook worker: none running — nothing to restart (expected: pbook is opt-in)"
+	@for label in $(WORKER_LABELS); do \
+		info="$$(launchctl print "gui/$$(id -u)/$$label" 2>/dev/null)" \
+			|| { echo "$$label: not installed — skipped"; continue; }; \
+		pid="$$(printf '%s\n' "$$info" | awk '/[[:space:]]pid = /{print $$3; exit}')"; \
+		if [ -n "$$pid" ]; then \
+			kill -TERM "$$pid" \
+				&& echo "$$label (pid $$pid): SIGTERM — drains, launchd relaunches on current code"; \
+		else \
+			echo "$$label: installed but not running — launchd relaunch pending"; \
+		fi; \
+	done
 workers-status:
-	-pgrep -fl "uv run forge worker|uv run --package ocr ocr worker|uv run pbook worker"
+	@echo "prod (launchd):"
+	@launchctl list | grep com.saxcapital || echo "  none installed"
+	@echo "dev (tmux):"
+	@found=0; for s in $$(tmux ls -F '#{session_name}' 2>/dev/null | grep '^dev-' || true); do \
+		found=1; \
+		if tmux list-panes -t "$$s" -F '#{pane_dead}' | grep -q 1; then \
+			echo "  $$s: CRASHED (dead pane holds final output)"; \
+		else \
+			echo "  $$s: running"; \
+		fi; \
+	done; [ "$$found" = 1 ] || echo "  none running"
 
 # Staging-lane worker (T0.9 dev namespace) in a detached tmux session, so it
 # doesn't hold the terminal. Sources the dev profile with `set -a` (works for
@@ -181,3 +197,11 @@ dev-worker:
 			echo "dev-$(WORKER)-worker started — attach: tmux attach -t dev-$(WORKER)-worker | stop: tmux kill-session -t dev-$(WORKER)-worker | log: $(DEV_WORKER_LOG)"; \
 		fi; \
 	fi
+
+# Restart one staging-lane worker (make dev-worker-restart WORKER=forge).
+# Kills the tmux session — including a dead crash-capture pane — and starts
+# fresh. Complements dev-worker, which refuses to clobber a crashed session
+# so its forensics survive. Dev-lane counterpart of workers-restart.
+dev-worker-restart:
+	@tmux kill-session -t dev-$(WORKER)-worker 2>/dev/null || true
+	@$(MAKE) dev-worker WORKER=$(WORKER)

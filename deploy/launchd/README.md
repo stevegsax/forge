@@ -73,40 +73,49 @@ the stack agent has Temporal listening.
 ## Operate
 
 ```bash
-make workers-status                                             # running workers (all)
-make workers-restart                                            # restart all (standard — see below)
+make workers-status                                             # both lanes: prod (launchd) + dev (tmux)
+make workers-restart                                            # restart PROD workers only (see below)
+make dev-worker-restart WORKER=ocr                              # restart one DEV worker (tmux lane)
 launchctl print gui/$UID/com.saxcapital.forge-worker-1 | head   # one agent's launchd status
-launchctl kickstart -k gui/$UID/com.saxcapital.forge-worker-1   # force-restart one agent (fallback)
+launchctl kickstart -k gui/$UID/com.saxcapital.forge-worker-1   # force-restart one agent (fallback; SIGKILL — skips the drain)
 tail -f ~/.local/state/forge/logs/forge-worker-1.log            # logs
 ```
 
-`make workers-restart` is the standard way to restart; the `launchctl
-kickstart` line above is a per-agent troubleshooting fallback.
+`make workers-restart` is the standard way to restart production; the
+`launchctl kickstart` line above is a per-agent troubleshooting fallback
+(it kills without the graceful drain).
 
-`pbook migrate` is NOT automatic (the pbook worker never auto-migrates):
-run `uv run pbook migrate` once before first enabling the pbook agent,
-and after upgrades that ship pbook migrations. The forge worker runs its
-own migrations at startup.
+Both the forge and pbook workers run their own migrations at startup
+(verified from the pbook worker's startup log, 2026-07-24: "Database
+migrations applied (head)" — the earlier "never auto-migrates" claim
+predated the T3.4 worker scaffold). `uv run pbook migrate` remains
+available for migrating without starting a worker.
 
 ## Restarting workers
 
-`make workers-restart` sends `SIGTERM` to every running forge/ocr/pbook
-worker process. Each worker now handles `SIGTERM` (and `SIGINT`, for
-foreground runs) by draining gracefully — it stops polling for new
-work, waits up to `graceful_shutdown_timeout` (5 minutes) for in-flight
-activities to finish, then exits 0. launchd's `KeepAlive` is
+`make workers-restart` restarts the **production lane only**: it resolves
+each launchd worker label to its pid and sends `SIGTERM` to that pid —
+never a command-line pattern. (The dev tmux workers run byte-identical
+command lines — the env split lives in environment variables — so the
+earlier pkill-by-pattern restart took the staging lane down with
+production; observed 2026-07-24. The dev lane restarts independently via
+`make dev-worker-restart WORKER=<name>`.) Each worker handles `SIGTERM`
+(and `SIGINT`, for foreground runs) by draining gracefully — it stops
+polling for new work, waits up to `graceful_shutdown_timeout` (5 minutes)
+for in-flight activities to finish, then exits 0. launchd's `KeepAlive` is
 unconditional, so a clean exit relaunches the agent immediately from
 whatever code is on disk in the repo checkout (`ThrottleInterval` is
 10s, so the relaunch is near-immediate). This is the standard way to
 pick up newly merged code without a manual `launchctl kickstart` per
 agent — no plist changes, no install.
 
-It prints one line per worker type (forge/ocr/pbook). A `none running —
-nothing to restart` line for the ocr or pbook worker is expected when that
-agent is not installed (both are opt-in) — it is not an error.
+It prints one line per worker label. A `not installed — skipped` line is
+expected for any agent not installed on this machine (ocr and pbook are
+opt-in) — it is not an error.
 
-`make workers-status` lists the currently running worker processes
-(read-only, safe to run anytime).
+`make workers-status` shows both lanes — the launchd production agents and
+the dev tmux sessions, with crashed dev panes called out (read-only, safe
+to run anytime).
 
 ## Nightly backups (`--with-backup`)
 
