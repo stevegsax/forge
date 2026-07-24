@@ -203,6 +203,7 @@ Worker/CLI environment (the launchd agents read these from
 | `FORGE_PROD_ACK` | **Required for `prod`.** The explicit production acknowledgement; set by the plist (or interactive shell), never by a profile | `yes` |
 | `FORGE_ENV_TAG` | Declared **inside** each profile; the loader aborts if it disagrees with `FORGE_ENV` | `prod` |
 | `FORGE_TEMPORAL_ADDRESS` | Temporal frontend | `127.0.0.1:7233` |
+| `FORGE_TEMPORAL_NAMESPACE` | Temporal namespace; coherence-checked against `FORGE_ENV` before every connect (prod must use `default`, dev/test must not — the staging lane's isolation; see [WORKERS.md](WORKERS.md#staging-lane-dev-namespace)) | `default` (prod, by omission) / `forge-dev` (dev profile) |
 | `FORGE_DB_URL` | **Required.** Forge store (local `forge` database). Unset → hard error | `postgresql+psycopg://forge:…@127.0.0.1:5433/forge` |
 | `FORGE_OCR_S3_BUCKET` | S3 bucket for blobs. The **ocr worker fails fast at startup if unset** (T3.6; previously a first-use error); forge needs it for OCR/batch-blob work | bucket name |
 | `FORGE_OCR_S3_PREFIX` | Optional key prefix for blobs | e.g. `ocr/` |

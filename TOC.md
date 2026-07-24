@@ -10,7 +10,9 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 - [PHASES.md](docs/PHASES.md) — the 14-phase roadmap (1–12 + 14 done with module map; 13 deferred).
 - [development-plans/TASKS.md](development-plans/TASKS.md) — live task list (completed vs uncompleted).
 - [development-plans/PROCESS.md](development-plans/PROCESS.md) — how to pick up and work a task.
-- [development-plans/HANDOFF-2026-07-19-phase4-start.md](development-plans/HANDOFF-2026-07-19-phase4-start.md) — current state: Phases 0–3 complete; Phase 0 closeout details; next task is T4.1 (read the parked T4.2 owner proposal first).
+- [development-plans/HANDOFF-2026-07-23-phase5-start.md](development-plans/HANDOFF-2026-07-23-phase5-start.md) — **current state**: Phases 0–4 + T4.4 + T0.9 + staging lane complete; operating notes (env guard, dev namespace, worker pair); next task is T5.1.
+- [development-plans/HANDOFF-2026-07-21-phase5-start.md](development-plans/HANDOFF-2026-07-21-phase5-start.md) — the Phase 4 close record (T4.1–T4.3 detail; T4.4 spec adoption).
+- [development-plans/HANDOFF-2026-07-19-phase4-start.md](development-plans/HANDOFF-2026-07-19-phase4-start.md) — Phases 0–3 complete; Phase 0 closeout details; the Phase 4 kickoff.
 - [development-plans/HANDOFF-2026-07-18-phase3-complete.md](development-plans/HANDOFF-2026-07-18-phase3-complete.md) — the Phase 3 record: the platform library as it stands, composition roots (D93), the four-package workspace; its "What to know" section still applies.
 - [development-plans/HANDOFF-2026-07-17-phase3.md](development-plans/HANDOFF-2026-07-17-phase3.md) — lead-up: Phase 2 close (root gates/CI, mypy strict) and Phase 3 T3.1–T3.3.
 - [development-plans/HANDOFF-2026-07-16-monorepo-deployment.md](development-plans/HANDOFF-2026-07-16-monorepo-deployment.md) — lead-up: the monorepo consolidation (D98) and local-first deployment (D99).
