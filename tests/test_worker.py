@@ -184,7 +184,6 @@ class TestRunWorkerComposition:
             "commit_changes_activity",
             "create_worktree_activity",
             "detect_file_conflicts_activity",
-            "evaluate_transition",
             "remove_worktree_activity",
             "reset_worktree_activity",
             "validate_output",

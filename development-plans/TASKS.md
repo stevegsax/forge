@@ -74,7 +74,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 
 ### Phase 5 — Workflow consolidation (forge)
 
-- [ ] [T5.1 — Pure step logic](tasks/T5.1-pure-step-logic.md)
+- [x] [T5.1 — Pure step logic](tasks/T5.1-pure-step-logic.md) *(landed 2026-07-24)*
 - [ ] [T5.2 — Single step block](tasks/T5.2-single-step-block.md)
 - [ ] [T5.3 — Single gather + dispatch](tasks/T5.3-single-gather-dispatch.md)
 - [ ] [T5.4 — Split the monolith](tasks/T5.4-split-the-monolith.md)

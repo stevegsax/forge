@@ -54,7 +54,6 @@ from forge.models import (
     TaskDefinition,
     TaskResult,
     ThinkingPolicy,
-    TransitionInput,
     TransitionSignal,
     ValidateOutputInput,
     ValidationResult,
@@ -173,6 +172,33 @@ def _make_parsed(
     )
 
 
+# Since T5.1 the transition is inlined (step_logic.determine_transition) and the
+# evaluate_transition activity is gone. These tests used to script the signal
+# directly; now the signal is derived from the validation result plus the attempt.
+# This helper translates a group's scripted transition sequence into the
+# validation result a mock validate_output returns, so the inlined transition
+# reproduces the intended signal. A trailing "failure_terminal" is sticky (left in
+# the sequence) so a single terminal token keeps failing every remaining attempt
+# and lands a terminal signal at max_attempts.
+_PASS_VALIDATION = ValidationResult(check_name="ruff_lint", passed=True, summary="ruff_lint passed")
+_FAIL_VALIDATION = ValidationResult(
+    check_name="ruff_lint", passed=False, summary="ruff_lint failed"
+)
+
+
+def _validation_for_transition(sequence: list[str]) -> list[ValidationResult]:
+    """Return the validation result that drives the next scripted transition."""
+    if not sequence:
+        return [_PASS_VALIDATION]
+    token = sequence[0]
+    if token == TransitionSignal.FAILURE_TERMINAL.value:
+        return [_FAIL_VALIDATION]  # sticky: keep the token, keep failing
+    sequence.pop(0)
+    if token == TransitionSignal.SUCCESS.value:
+        return [_PASS_VALIDATION]
+    return [_FAIL_VALIDATION]  # failure_retryable
+
+
 @activity.defn(name="detect_file_conflicts_activity")
 async def mock_detect_file_conflicts(
     input: DetectFileConflictsInput,
@@ -192,7 +218,6 @@ async def mock_detect_file_conflicts(
 # Mutable state shared across mock activities within a single test.
 # Each test gets a fresh worker so there's no cross-test contamination.
 _call_log: list[str] = []
-_attempt_counter: int = 0
 _transition_sequence: list[str] = []
 
 
@@ -204,9 +229,8 @@ def _single_step_parse_handler(input: ParseResponseInput) -> ParsedLLMResponse:
 def _reset_mock_state(
     transitions: list[str] | None = None,
 ) -> None:
-    global _attempt_counter, _parse_handler
+    global _parse_handler
     _call_log.clear()
-    _attempt_counter = 0
     _transition_sequence.clear()
     _parse_handler = _single_step_parse_handler
     if transitions:
@@ -270,18 +294,7 @@ async def mock_write_output(input: WriteOutputInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _call_log.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="ruff_lint passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_evaluate_transition(input: TransitionInput) -> str:
-    global _attempt_counter
-    _call_log.append("evaluate_transition")
-    _attempt_counter += 1
-
-    if _transition_sequence:
-        return _transition_sequence.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_transition_sequence)
 
 
 # All mock activities in registration order
@@ -294,7 +307,6 @@ _MOCK_ACTIVITIES = [
     mock_call_llm,
     mock_write_output,
     mock_validate_output,
-    mock_evaluate_transition,
     mock_submit_batch,
     mock_batch_status_ended,
     mock_fetch_batch,
@@ -428,10 +440,11 @@ class TestTerminalFailure:
             ]
         )
         result = await _run_workflow(env)
-        # Mock validate_output returns all-passed, but the transition was forced
-        # to FAILURE_TERMINAL. Error is empty because no validations failed.
-        # This tests the error-joining logic doesn't crash on no failures.
-        assert result.error == ""
+        # A terminal transition now means validation actually failed (the inlined
+        # determine_transition derives the signal from the validation result), so
+        # the error carries the joined failing summary and failure_kind is set.
+        assert result.error == "ruff_lint failed"
+        assert result.failure_kind == "validation"
 
     @pytest.mark.asyncio
     async def test_both_attempts_fail(self, env: WorkflowEnvironment) -> None:
@@ -582,15 +595,7 @@ async def mock_plan_write_output(input: WriteOutputInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_plan_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _PLAN_CALL_LOG.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="ruff_lint passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_plan_evaluate_transition(input: TransitionInput) -> str:
-    _PLAN_CALL_LOG.append("evaluate_transition")
-    if _PLAN_TRANSITION_SEQUENCE:
-        return _PLAN_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_PLAN_TRANSITION_SEQUENCE)
 
 
 @activity.defn(name="commit_changes_activity")
@@ -619,7 +624,6 @@ _PLAN_MOCK_ACTIVITIES = [
     mock_plan_call_llm,
     mock_plan_write_output,
     mock_plan_validate_output,
-    mock_plan_evaluate_transition,
     mock_plan_commit_changes,
     mock_reset_worktree,
     mock_submit_batch,
@@ -945,15 +949,7 @@ async def mock_subtask_write_output(input: WriteOutputInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_subtask_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _SUBTASK_CALL_LOG.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_subtask_evaluate_transition(input: TransitionInput) -> str:
-    _SUBTASK_CALL_LOG.append("evaluate_transition")
-    if _SUBTASK_TRANSITION_SEQUENCE:
-        return _SUBTASK_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_SUBTASK_TRANSITION_SEQUENCE)
 
 
 _SUBTASK_MOCK_ACTIVITIES = [
@@ -964,7 +960,6 @@ _SUBTASK_MOCK_ACTIVITIES = [
     mock_subtask_call_llm,
     mock_subtask_write_output,
     mock_subtask_validate_output,
-    mock_subtask_evaluate_transition,
     mock_submit_batch,
     mock_batch_status_ended,
     mock_fetch_batch,
@@ -1294,18 +1289,12 @@ async def mock_fanout_write_files(input: WriteFilesInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_fanout_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _FANOUT_CALL_LOG.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_fanout_evaluate_transition(input: TransitionInput) -> str:
-    _FANOUT_CALL_LOG.append("evaluate_transition")
-    # Use step transitions for parent validation, subtask transitions for children
+    # Children (sub-task validations) run first and drain the subtask transitions;
+    # the parent's merged-output validation then drives from the step transitions.
+    # The inlined determine_transition derives the signal from this result.
     if _FANOUT_SUBTASK_TRANSITIONS:
-        return _FANOUT_SUBTASK_TRANSITIONS.pop(0)
-    if _FANOUT_STEP_TRANSITIONS:
-        return _FANOUT_STEP_TRANSITIONS.pop(0)
-    return TransitionSignal.SUCCESS.value
+        return _validation_for_transition(_FANOUT_SUBTASK_TRANSITIONS)
+    return _validation_for_transition(_FANOUT_STEP_TRANSITIONS)
 
 
 @activity.defn(name="commit_changes_activity")
@@ -1362,7 +1351,6 @@ _FANOUT_MOCK_ACTIVITIES = [
     mock_fanout_write_output,
     mock_fanout_write_files,
     mock_fanout_validate_output,
-    mock_fanout_evaluate_transition,
     mock_fanout_commit_changes,
     mock_fanout_reset_worktree,
     mock_fanout_assemble_cr_context,
@@ -1574,8 +1562,11 @@ class TestFanOutConflictResolution:
         assert "call_conflict_resolution" in _FANOUT_CALL_LOG
         sr = result.step_results[0]
         assert sr.conflict_resolution is not None
-        assert "shared.py" in sr.output_files
-        assert "merged" in sr.output_files["shared.py"]
+        # File contents live once, in the top-level TaskResult.output_files (T5.1);
+        # the embedded step carries only paths + digests.
+        assert "shared.py" in result.output_files
+        assert "merged" in result.output_files["shared.py"]
+        assert "shared.py" in sr.output_digests
 
     @pytest.mark.asyncio
     async def test_resolution_missing_path_fails(self, env: WorkflowEnvironment) -> None:
@@ -1643,10 +1634,10 @@ class TestFanOutConflictResolution:
         )
         result = await _run_fanout_workflow(env)
         assert result.status == TransitionSignal.SUCCESS
-        sr = result.step_results[0]
-        assert sr.output_files["shared.py"] == "# merged shared\n"
-        assert sr.output_files["unique_a.py"] == "# unique a\n"
-        assert sr.output_files["unique_b.py"] == "# unique b\n"
+        # File contents live once, in the top-level TaskResult.output_files (T5.1).
+        assert result.output_files["shared.py"] == "# merged shared\n"
+        assert result.output_files["unique_a.py"] == "# unique a\n"
+        assert result.output_files["unique_b.py"] == "# unique b\n"
 
     @pytest.mark.asyncio
     async def test_resolution_disabled_falls_back_to_terminal(
@@ -1882,7 +1873,6 @@ _MIXED_MOCK_ACTIVITIES = [
     mock_fanout_write_output,
     mock_fanout_write_files,
     mock_fanout_validate_output,
-    mock_fanout_evaluate_transition,
     mock_fanout_commit_changes,
     mock_fanout_reset_worktree,
     mock_detect_file_conflicts,
@@ -2042,17 +2032,12 @@ async def mock_p8_write_output(input: WriteOutputInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_p8_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _P8_CALL_LOG.append("validate_output")
+    # Explicit validate_responses drive the inlined transition where a test needs
+    # a specific failing result (prior_errors threading); otherwise fall back to
+    # the scripted transition sequence.
     if _P8_VALIDATE_RESPONSES:
         return _P8_VALIDATE_RESPONSES.pop(0)
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_p8_evaluate_transition(input: TransitionInput) -> str:
-    _P8_CALL_LOG.append("evaluate_transition")
-    if _P8_TRANSITION_SEQUENCE:
-        return _P8_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_P8_TRANSITION_SEQUENCE)
 
 
 _P8_MOCK_ACTIVITIES = [
@@ -2064,7 +2049,6 @@ _P8_MOCK_ACTIVITIES = [
     mock_p8_call_llm,
     mock_p8_write_output,
     mock_p8_validate_output,
-    mock_p8_evaluate_transition,
     mock_submit_batch,
     mock_batch_status_ended,
     mock_fetch_batch,
@@ -2277,15 +2261,7 @@ async def mock_p8s_validate_output(input: ValidateOutputInput) -> list[Validatio
     _P8_STEP_CALL_LOG.append("validate_output")
     if _P8_STEP_VALIDATE_RESPONSES:
         return _P8_STEP_VALIDATE_RESPONSES.pop(0)
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_p8s_evaluate_transition(input: TransitionInput) -> str:
-    _P8_STEP_CALL_LOG.append("evaluate_transition")
-    if _P8_STEP_TRANSITION_SEQUENCE:
-        return _P8_STEP_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_P8_STEP_TRANSITION_SEQUENCE)
 
 
 @activity.defn(name="commit_changes_activity")
@@ -2308,7 +2284,6 @@ _P8_STEP_MOCK_ACTIVITIES = [
     mock_p8s_call_llm,
     mock_p8s_write_output,
     mock_p8s_validate_output,
-    mock_p8s_evaluate_transition,
     mock_p8s_commit,
     mock_p8s_reset_worktree,
     mock_submit_batch,
@@ -2474,15 +2449,7 @@ async def mock_p8st_validate_output(input: ValidateOutputInput) -> list[Validati
     _P8_ST_CALL_LOG.append("validate_output")
     if _P8_ST_VALIDATE_RESPONSES:
         return _P8_ST_VALIDATE_RESPONSES.pop(0)
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_p8st_evaluate_transition(input: TransitionInput) -> str:
-    _P8_ST_CALL_LOG.append("evaluate_transition")
-    if _P8_ST_TRANSITION_SEQUENCE:
-        return _P8_ST_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_P8_ST_TRANSITION_SEQUENCE)
 
 
 _P8_ST_MOCK_ACTIVITIES = [
@@ -2493,7 +2460,6 @@ _P8_ST_MOCK_ACTIVITIES = [
     mock_p8st_call_llm,
     mock_p8st_write_output,
     mock_p8st_validate_output,
-    mock_p8st_evaluate_transition,
     mock_submit_batch,
     mock_batch_status_ended,
     mock_fetch_batch,
@@ -2735,15 +2701,7 @@ async def mock_recursive_write_files(input: WriteFilesInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_recursive_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _RECURSIVE_CALL_LOG.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_recursive_evaluate_transition(input: TransitionInput) -> str:
-    _RECURSIVE_CALL_LOG.append("evaluate_transition")
-    if _RECURSIVE_TRANSITION_SEQUENCE:
-        return _RECURSIVE_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_RECURSIVE_TRANSITION_SEQUENCE)
 
 
 @activity.defn(name="assemble_conflict_resolution_context")
@@ -2786,7 +2744,6 @@ _RECURSIVE_MOCK_ACTIVITIES = [
     mock_recursive_write_output,
     mock_recursive_write_files,
     mock_recursive_validate_output,
-    mock_recursive_evaluate_transition,
     mock_recursive_assemble_cr_context,
     mock_recursive_call_conflict_resolution,
     mock_detect_file_conflicts,
@@ -3546,15 +3503,7 @@ async def mock_sc_write_output(input: WriteOutputInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_sc_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _SC_CALL_LOG.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_sc_evaluate_transition(input: TransitionInput) -> str:
-    _SC_CALL_LOG.append("evaluate_transition")
-    if _SC_TRANSITION_SEQUENCE:
-        return _SC_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_SC_TRANSITION_SEQUENCE)
 
 
 @activity.defn(name="commit_changes_activity")
@@ -3608,7 +3557,6 @@ _SC_MOCK_ACTIVITIES = [
     mock_sc_call_llm,
     mock_sc_write_output,
     mock_sc_validate_output,
-    mock_sc_evaluate_transition,
     mock_sc_commit_changes,
     mock_sc_reset_worktree,
     mock_assemble_sanity_check_context,
@@ -4095,15 +4043,7 @@ async def mock_batch_write_output(input: WriteOutputInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_batch_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _BATCH_CALL_LOG.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_batch_evaluate_transition(input: TransitionInput) -> str:
-    _BATCH_CALL_LOG.append("evaluate_transition")
-    if _BATCH_TRANSITION_SEQUENCE:
-        return _BATCH_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_BATCH_TRANSITION_SEQUENCE)
 
 
 _BATCH_MOCK_ACTIVITIES = [
@@ -4118,7 +4058,6 @@ _BATCH_MOCK_ACTIVITIES = [
     mock_batch_parse,
     mock_batch_write_output,
     mock_batch_validate_output,
-    mock_batch_evaluate_transition,
 ]
 
 # Same as above but the batch never ends, so the poll loop runs to the 25h
@@ -4135,7 +4074,6 @@ _BATCH_TIMEOUT_ACTIVITIES = [
     mock_batch_parse,
     mock_batch_write_output,
     mock_batch_validate_output,
-    mock_batch_evaluate_transition,
 ]
 
 # The batch ends but the fetch returns an error — the fast-failure path.
@@ -4151,7 +4089,6 @@ _BATCH_FETCH_ERROR_ACTIVITIES = [
     mock_batch_parse,
     mock_batch_write_output,
     mock_batch_validate_output,
-    mock_batch_evaluate_transition,
 ]
 
 # The provider reports the batch FAILED — the terminal-status fast-fail path.
@@ -4167,7 +4104,6 @@ _BATCH_FAILED_STATUS_ACTIVITIES = [
     mock_batch_parse,
     mock_batch_write_output,
     mock_batch_validate_output,
-    mock_batch_evaluate_transition,
 ]
 
 
@@ -4349,7 +4285,6 @@ _SUBTASK_TIMEOUT_ACTIVITIES = [
     mock_assemble_sub_task_context,
     mock_subtask_write_output,
     mock_subtask_validate_output,
-    mock_subtask_evaluate_transition,
     mock_batch_submit,  # echoes request_id
     mock_batch_status_pending,  # in_progress forever → 25h ceiling
     mock_fetch_batch,  # never reached
@@ -4610,15 +4545,7 @@ async def mock_bp_write_output(input: WriteOutputInput) -> WriteResult:
 @activity.defn(name="validate_output")
 async def mock_bp_validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     _BATCH_PLAN_CALL_LOG.append("validate_output")
-    return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
-
-
-@activity.defn(name="evaluate_transition")
-async def mock_bp_evaluate_transition(input: TransitionInput) -> str:
-    _BATCH_PLAN_CALL_LOG.append("evaluate_transition")
-    if _BATCH_PLAN_TRANSITION_SEQUENCE:
-        return _BATCH_PLAN_TRANSITION_SEQUENCE.pop(0)
-    return TransitionSignal.SUCCESS.value
+    return _validation_for_transition(_BATCH_PLAN_TRANSITION_SEQUENCE)
 
 
 @activity.defn(name="commit_changes_activity")
@@ -4643,7 +4570,6 @@ _BATCH_PLAN_MOCK_ACTIVITIES = [
     mock_bp_assemble_step,
     mock_bp_write_output,
     mock_bp_validate_output,
-    mock_bp_evaluate_transition,
     mock_bp_commit,
     mock_bp_reset_worktree,
 ]
@@ -4917,11 +4843,6 @@ async def mock_st3c_validate(input: ValidateOutputInput) -> list[ValidationResul
     return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
 
 
-@activity.defn(name="evaluate_transition")
-async def mock_st3c_transition(input: TransitionInput) -> str:
-    return TransitionSignal.SUCCESS.value
-
-
 _ST3C_MOCK_ACTIVITIES = [
     mock_st3c_persist,
     mock_st3c_create_worktree,
@@ -4936,7 +4857,6 @@ _ST3C_MOCK_ACTIVITIES = [
     mock_st3c_write_output,
     mock_st3c_write_files,
     mock_st3c_validate,
-    mock_st3c_transition,
     mock_detect_file_conflicts,
 ]
 

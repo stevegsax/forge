@@ -96,7 +96,8 @@ _LLM_TIMEOUT = timedelta(minutes=5)
 _SUBMIT_TIMEOUT = timedelta(seconds=60)
 _PARSE_TIMEOUT = timedelta(seconds=30)
 # One source of truth for the 25h ceiling: sax_platform.temporal.polling owns it
-# (T4.2 ST1); forge.models re-exports it for _child_timeout / derive_execution_timeout.
+# (T4.2 ST1); forge.models re-exports it for step_logic.child_timeout /
+# derive_execution_timeout.
 _BATCH_WAIT_TIMEOUT = BATCH_WAIT_CEILING
 _BATCH_STATUS_TIMEOUT = timedelta(seconds=60)
 _BATCH_FETCH_TIMEOUT = timedelta(minutes=5)

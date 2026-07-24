@@ -81,8 +81,6 @@ from forge.models import (
     ResetWorktreeInput,
     SubTask,
     TaskDefinition,
-    TransitionInput,
-    TransitionSignal,
     ValidateOutputInput,
     ValidationResult,
     WriteFilesInput,
@@ -321,11 +319,6 @@ async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
     return [ValidationResult(check_name="ruff_lint", passed=True, summary="passed")]
 
 
-@activity.defn(name="evaluate_transition")
-async def evaluate_transition(input: TransitionInput) -> str:
-    return TransitionSignal.SUCCESS.value
-
-
 @activity.defn(name="detect_file_conflicts_activity")
 async def detect_file_conflicts_activity(
     input: DetectFileConflictsInput,
@@ -351,7 +344,6 @@ _ACTIVITIES = [
     write_output,
     write_files,
     validate_output,
-    evaluate_transition,
     detect_file_conflicts_activity,
 ]
 

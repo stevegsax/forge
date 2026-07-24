@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import StrEnum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # BatchJobStatus is the cross-queue wire contract; it now lives in sax-platform
 # (T3.4, ST7) and is re-exported here so existing `from forge.models import ...`
@@ -41,7 +44,7 @@ from sax_platform.llm.tiers import (
 # The per-wait batch ceiling now lives in ``sax_platform.temporal.polling`` (T4.2
 # ST1), the module that owns the shared batch poll loop. It is re-exported here so
 # forge's execution-timeout math (``_batch_execution_timeout`` /
-# ``derive_execution_timeout``) and ``forge.workflows._child_timeout`` keep
+# ``derive_execution_timeout``) and ``forge.step_logic.child_timeout`` keep
 # importing the 25h ceiling from ``forge.models`` unchanged.
 from sax_platform.temporal.polling import (
     BATCH_WAIT_CEILING as BATCH_WAIT_CEILING,
@@ -199,6 +202,59 @@ class ValidationResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Run outcome classification (T5.1, D95)
+# ---------------------------------------------------------------------------
+
+# One-field terminal-failure classifier set on Task/Step/SubTaskResult (None on
+# success). The values map 1:1 to the terminal construction sites that the pure
+# step_logic result builders route through, so a failure's category is a typed
+# field rather than something a reader must recover from the free-text ``error``.
+FailureKind = Literal[
+    "validation",  # terminal validation failure (incl. leaf sub-tasks)
+    "batch_wait",  # the batch wait gave up / provider reported terminal / fetch error
+    "step_failed",  # TaskResult: a planned step failed
+    "sub_task_failed",  # fan-out gather saw failed children
+    "sanity_abort",  # sanity check returned ABORT
+    "duplicate_sub_task_ids",  # fan-out sub-task ids not unique
+    "conflict_unresolved",  # D27: conflicts with resolve_conflicts=False
+    "conflict_incomplete",  # conflict resolution left paths unresolved
+    "merged_validation",  # merged fan-out output failed validation
+]
+
+
+class LLMRunTotals(BaseModel):
+    """Run-level aggregate of every LLM call in a finished result tree (D97).
+
+    Summed across models, so there is deliberately no ``model_name`` (it would
+    lie) and the latency field is named ``llm_time_ms`` — the sum of per-call
+    latencies is total LLM time, not wall-clock time, which for parallel fan-out
+    children is much less than the sum. This is result-level spend *visibility*;
+    the interactions table remains the authoritative accounting record, and stats
+    of earlier retried attempts are not in the tree (only surviving calls count).
+    """
+
+    call_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    llm_time_ms: float = 0.0
+
+    @classmethod
+    def from_stats(cls, stats: Iterable[LLMStats]) -> LLMRunTotals:
+        """Sum per-call stats into run totals (the field mapping lives here)."""
+        stats_list = list(stats)
+        return cls(
+            call_count=len(stats_list),
+            input_tokens=sum(s.input_tokens for s in stats_list),
+            output_tokens=sum(s.output_tokens for s in stats_list),
+            cache_creation_input_tokens=sum(s.cache_creation_input_tokens for s in stats_list),
+            cache_read_input_tokens=sum(s.cache_read_input_tokens for s in stats_list),
+            llm_time_ms=sum(s.latency_ms for s in stats_list),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Planning models
 # ---------------------------------------------------------------------------
 
@@ -256,12 +312,37 @@ class SubTaskResult(BaseModel):
     sub_task_id: str
     status: TransitionSignal
     output_files: dict[str, str] = Field(default_factory=dict)
+    output_digests: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "path -> sha256 hex of this node's own produced output (T5.1). "
+            "Mutually exclusive with output_files: the parent's conflict "
+            "detection consumes output_files during gather, then the slim "
+            "builders empty it into digests, so contents travel at most once "
+            "— in the top-level TaskResult.output_files for folded successful "
+            "steps; a failed step's contents are dropped from the result and "
+            "survive only in its worktree."
+        ),
+    )
     validation_results: list[ValidationResult] = Field(default_factory=list)
     digest: str = Field(default="", description="From LLMResponse.explanation (D18).")
     error: str | None = None
+    failure_kind: FailureKind | None = None
     llm_stats: LLMStats | None = None
     sub_task_results: list[SubTaskResult] = Field(default_factory=list)
     conflict_resolution: ConflictResolutionCallResult | None = None
+
+    @model_validator(mode="after")
+    def _contents_travel_once(self) -> Self:
+        if self.output_files and self.output_digests:
+            msg = "output_files and output_digests are mutually exclusive (contents travel once)"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def file_count(self) -> int:
+        """Number of output files this node produced, in either lifecycle state."""
+        return len(self.output_files) + len(self.output_digests)
 
 
 class StepResult(BaseModel):
@@ -270,9 +351,17 @@ class StepResult(BaseModel):
     step_id: str
     status: TransitionSignal
     output_files: dict[str, str] = Field(default_factory=dict)
+    output_digests: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "path -> sha256 hex of this step's own produced output (T5.1). "
+            "Mutually exclusive with output_files. See SubTaskResult.output_digests."
+        ),
+    )
     validation_results: list[ValidationResult] = Field(default_factory=list)
     commit_sha: str | None = None
     error: str | None = None
+    failure_kind: FailureKind | None = None
     sub_task_results: list[SubTaskResult] = Field(default_factory=list)
     llm_stats: LLMStats | None = None
     digest: str = Field(
@@ -280,6 +369,18 @@ class StepResult(BaseModel):
         description="Compact summary of step outcome for sanity check consumption.",
     )
     conflict_resolution: ConflictResolutionCallResult | None = None
+
+    @model_validator(mode="after")
+    def _contents_travel_once(self) -> Self:
+        if self.output_files and self.output_digests:
+            msg = "output_files and output_digests are mutually exclusive (contents travel once)"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def file_count(self) -> int:
+        """Number of output files this step produced, in either lifecycle state."""
+        return len(self.output_files) + len(self.output_digests)
 
 
 class TaskResult(BaseModel):
@@ -296,6 +397,7 @@ class TaskResult(BaseModel):
         default=None,
         description="If the task failed, a concise explanation of why.",
     )
+    failure_kind: FailureKind | None = None
     worktree_path: str | None = None
     worktree_branch: str | None = None
     step_results: list[StepResult] = Field(default_factory=list)
@@ -303,6 +405,13 @@ class TaskResult(BaseModel):
     llm_stats: LLMStats | None = None
     planner_stats: LLMStats | None = None
     context_stats: ContextStats | None = None
+    llm_totals: LLMRunTotals | None = Field(
+        default=None,
+        description=(
+            "Run-level LLM spend aggregated across the finished result tree "
+            "(D97), computed once before the run is persisted."
+        ),
+    )
     sanity_check_count: int = 0
 
 
@@ -744,14 +853,6 @@ class ValidateOutputInput(BaseModel):
     worktree_path: str
     files: list[str]
     validation: ValidationConfig
-
-
-class TransitionInput(BaseModel):
-    """Input to the evaluate_transition activity."""
-
-    validation_results: list[ValidationResult]
-    attempt: int
-    max_attempts: int = 2
 
 
 # ---------------------------------------------------------------------------

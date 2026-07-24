@@ -50,7 +50,7 @@ Every operation in Forge—code generation, planning, exploration, conflict reso
 Construct → Send → Receive → Serialize → Transition
 ```
 
-Each phase is implemented as a separate Temporal **activity** (a unit of work with its own timeout and retry policy). The **workflow** orchestrates these activities in sequence.
+The first four phases are Temporal **activities** (each a unit of work with its own timeout and retry policy); the fifth, Transition, is a pure decision inlined into the **workflow** (`forge.step_logic.determine_transition`, T5.1/D95) — deterministic work is not dressed up as external work. The workflow orchestrates them in sequence.
 
 ```mermaid
 flowchart TD
@@ -58,7 +58,7 @@ flowchart TD
     B["② Send<br/><i>call_llm</i>"]
     C["③ Receive + Serialize<br/><i>write_output</i>"]
     D["④ Validate<br/><i>validate_output</i>"]
-    E["⑤ Transition<br/><i>evaluate_transition</i>"]
+    E["⑤ Transition<br/><i>determine_transition (inlined, pure)</i>"]
 
     A --> B --> C --> D --> E
 
@@ -75,7 +75,7 @@ flowchart TD
 | 2 | **Send** | `call_llm` | Packages the assembled prompt into an Anthropic API structured-outputs call (`sax_platform.llm.AnthropicLLM.complete`; `messages.parse` on the sync lane, `output_config.format` on the batch lane — D90/T3.5). Sends it. Records latency and token usage. |
 | 3 | **Receive + Serialize** | `write_output` | Extracts the Pydantic-validated response returned by the structured-outputs call. Writes new files to the worktree. Applies search/replace edits to existing files using a four-level matching fallback chain (exact → whitespace-normalized → indentation-normalized → fuzzy). |
 | 4 | **Validate** | `validate_output` | Runs deterministic checks: `ruff` lint, `ruff` format, and optionally a test suite. Produces a list of pass/fail results with error details. |
-| 5 | **Transition** | `evaluate_transition` | Maps validation results to a signal: `SUCCESS` (all checks pass), `FAILURE_RETRYABLE` (checks failed but attempts remain), or `FAILURE_TERMINAL` (no retries left or unrecoverable). |
+| 5 | **Transition** | `determine_transition` (pure, inlined — not an activity) | Maps validation results plus the attempt number to a signal: `SUCCESS` (all checks pass), `FAILURE_RETRYABLE` (checks failed but attempts remain), or `FAILURE_TERMINAL` (no retries left or unrecoverable). Runs in-workflow with no round-trip (T5.1/D95). |
 
 ---
 

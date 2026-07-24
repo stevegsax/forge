@@ -18,7 +18,6 @@ from forge.activities import (
     commit_changes_activity,
     create_worktree_activity,
     detect_file_conflicts_activity,
-    evaluate_transition,
     remove_worktree_activity,
     reset_worktree_activity,
     validate_output,
@@ -250,7 +249,6 @@ _REAL_ACTIVITIES = [
     commit_changes_activity,
     write_output,
     validate_output,
-    evaluate_transition,
 ]
 
 
@@ -592,7 +590,6 @@ _PLANNED_REAL_ACTIVITIES = [
     commit_changes_activity,
     write_output,
     validate_output,
-    evaluate_transition,
     mock_e2e_assemble_planner_context,
     mock_e2e_call_planner,
 ]
@@ -935,7 +932,6 @@ _FANOUT_REAL_ACTIVITIES = [
     write_output,
     write_files,
     validate_output,
-    evaluate_transition,
     mock_e2e_fanout_assemble_planner_context,
     mock_e2e_fanout_call_planner,
     mock_e2e_fanout_call_llm,

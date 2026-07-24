@@ -69,7 +69,7 @@ def build_step_digest(step_result: StepResult) -> str:
     Format: "{step_id}: {status} -- wrote {file_count} files"
     Includes error summary if the step failed.
     """
-    file_count = len(step_result.output_files)
+    file_count = step_result.file_count
     digest = f"{step_result.step_id}: {step_result.status.value} -- wrote {file_count} files"
     if step_result.error:
         digest += f" (error: {step_result.error})"

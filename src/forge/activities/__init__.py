@@ -4,8 +4,10 @@ Two kinds are registered by ``forge.worker``:
 
 - **Free-function activities** — no process-wide dependency to inject (git,
   validate, output, the pure ``assemble_*_context`` prompt builders,
-  ``detect_file_conflicts_activity``, ``evaluate_transition``,
-  ``validate_playbook_entry``). Exported here as functions.
+  ``detect_file_conflicts_activity``, ``validate_playbook_entry``). Exported
+  here as functions. (Transition evaluation is no longer an activity — it is the
+  pure ``forge.step_logic.determine_transition``, inlined into the workflows,
+  D95/T5.1.)
 - **Composition-root classes** (T3.6, ``forge.activities.roots``) — every
   activity that carries a dependency (store engine, LLM client, batch SDK
   client, blob store, Temporal client, OCR client) is a bound method on
@@ -38,7 +40,6 @@ from forge.activities.roots import (
     StoreActivities,
 )
 from forge.activities.sanity_check import assemble_sanity_check_context
-from forge.activities.transition import evaluate_transition
 from forge.activities.validate import validate_output
 
 __all__ = [
@@ -53,7 +54,6 @@ __all__ = [
     "commit_changes_activity",
     "create_worktree_activity",
     "detect_file_conflicts_activity",
-    "evaluate_transition",
     "remove_worktree_activity",
     "reset_worktree_activity",
     "validate_output",

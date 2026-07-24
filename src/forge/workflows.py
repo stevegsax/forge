@@ -22,7 +22,6 @@ with workflow.unsafe.imports_passed_through():
     from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
     from forge.models import (
-        BATCH_WAIT_CEILING,
         AssembleContextInput,
         AssembledContext,
         AssembleSanityCheckContextInput,
@@ -66,7 +65,6 @@ with workflow.unsafe.imports_passed_through():
         TaskDomain,
         TaskResult,
         ThinkingPolicy,
-        TransitionInput,
         TransitionSignal,
         ValidateOutputInput,
         ValidationResult,
@@ -77,6 +75,28 @@ with workflow.unsafe.imports_passed_through():
         resolve_model,
     )
     from forge.providers import PROVIDER_SPECS
+    from forge.step_logic import (
+        MissingResolutions,
+        child_timeout,
+        compound_sub_task_id,
+        determine_transition,
+        failure_summary,
+        fan_out_step_failure,
+        fan_out_success,
+        llm_totals,
+        merge_resolution,
+        nested_fan_out_failure,
+        nested_fan_out_success,
+        planned_failure,
+        single_step_terminal,
+        slim_result,
+        step_terminal,
+        sub_task_batch_wait_failure,
+        sub_task_terminal,
+        sub_task_workflow_id,
+        subtask_failure_summary,
+        task_batch_wait_failure,
+    )
 
 # The LLM-family result types accepted by ``build_persist_interaction``.
 _PersistResult = (
@@ -96,7 +116,6 @@ _CONTEXT_TIMEOUT = timedelta(seconds=30)
 _LLM_TIMEOUT = timedelta(minutes=5)
 _WRITE_TIMEOUT = timedelta(seconds=30)
 _VALIDATE_TIMEOUT = timedelta(minutes=2)
-_TRANSITION_TIMEOUT = timedelta(seconds=10)
 _EXPLORATION_LLM_TIMEOUT = timedelta(minutes=5)
 _EXPLORATION_FULFILL_TIMEOUT = timedelta(minutes=2)
 _SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
@@ -127,37 +146,6 @@ _WRITE_RETRY = RetryPolicy(
     maximum_attempts=2,
     non_retryable_error_types=["OutputWriteError", "EditApplicationError"],
 )
-
-_CHILD_BASE_MINUTES = 15
-_CHILD_OVERHEAD_MINUTES_PER_LEVEL = 5
-
-
-def _child_timeout(depth: int, max_depth: int, *, sync_mode: bool, max_attempts: int) -> timedelta:
-    """Execution timeout for a spawned child workflow, derived from its wait budget.
-
-    ``remaining = max_depth - depth`` is the number of nesting levels below the child.
-    The orchestration margin (non-batch git/context/write/validate activity time
-    accumulated across the child's subtree) is the pre-T4.1 sync formula:
-    ``15 + 5*remaining`` minutes.
-
-    - **sync mode** → the orchestration margin alone; no batch waits. Unchanged from
-      pre-T4.1 behavior.
-    - **batch mode** → the child performs up to ``max_attempts`` sequential generation
-      waits at a leaf, and each nesting level below it adds one conflict-resolution wait
-      after its children gather, so the child's own sequential batch-wait budget is
-      ``max_attempts + remaining`` waits, each bounded by the 25h ``BATCH_WAIT_CEILING``
-      (T4.1 ST3c — closes the timeout tree so a slow batch no longer kills the child)::
-
-          (max_attempts + remaining) * BATCH_WAIT_CEILING  +  (15 + 5*remaining) min
-    """
-    remaining = max_depth - depth
-    orchestration = timedelta(
-        minutes=_CHILD_BASE_MINUTES + _CHILD_OVERHEAD_MINUTES_PER_LEVEL * remaining
-    )
-    if sync_mode:
-        return orchestration
-    waits = max_attempts + remaining
-    return waits * BATCH_WAIT_CEILING + orchestration
 
 
 async def _assemble_conflict_resolution(
@@ -243,10 +231,14 @@ class ForgeTaskWorkflow:
 
     Dispatches between two paths:
 
+    The transition decision is pure and inlined (``step_logic.determine_transition``,
+    D95): validation results plus the attempt number determine the signal — there is
+    no ``evaluate_transition`` activity.
+
     plan=False (Phase 1):
         for attempt in 1..max_attempts:
             create_worktree
-            assemble_context → call_llm → write_output → validate_output → evaluate_transition
+            assemble_context → call_llm → write_output → validate_output → determine_transition
             match signal:
                 SUCCESS         → commit("success"), return TaskResult(SUCCESS)
                 FAILURE_RETRYABLE → remove_worktree, continue loop
@@ -257,7 +249,7 @@ class ForgeTaskWorkflow:
         assemble_planner_context → call_planner → Plan
         for step in plan.steps:
             for attempt in 1..max_step_attempts:
-                assemble_step_context → call_llm → write_output → validate → transition
+                assemble_step_context → call_llm → write_output → validate → determine_transition
                 SUCCESS → commit(step), break to next step
                 FAILURE_RETRYABLE → reset_worktree, continue retry
                 FAILURE_TERMINAL → return TaskResult(FAILURE_TERMINAL)
@@ -331,11 +323,10 @@ class ForgeTaskWorkflow:
             # worktree and record a terminal failure so the run never crashes out
             # leaving no row and an orphaned worktree (T1.6b).
             await _cleanup_worktree_after_failure(input.repo_root, input.task.task_id, exc)
-            result = TaskResult(
-                task_id=input.task.task_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
-                error=f"Batch wait failed: {type(exc).__name__}: {exc}",
-            )
+            result = task_batch_wait_failure(task_id=input.task.task_id, exc=exc)
+        # Aggregate run-level LLM spend across the finished result tree (D97) once,
+        # covering success, terminal-failure, and batch-wait paths alike.
+        result = result.model_copy(update={"llm_totals": llm_totals(result)})
         # Survivably persist the run result (idempotent on (workflow_id, run_id)) so
         # every execution records a row — including a batch-wait failure and
         # fire-and-forget submissions, which the old CLI-side _persist_run never
@@ -723,19 +714,8 @@ class ForgeTaskWorkflow:
                 result_type=list[ValidationResult],
             )
 
-            # --- Evaluate transition ---
-            signal_value = await workflow.execute_activity(
-                "evaluate_transition",
-                TransitionInput(
-                    validation_results=validation_results,
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                ),
-                start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=str,
-            )
-            signal = TransitionSignal(signal_value)
+            # --- Evaluate transition inline (deterministic; D95) ---
+            signal = determine_transition(validation_results, attempt, max_attempts)
             workflow.logger.info(
                 "Transition: task_id=%s signal=%s attempt=%d/%d",
                 task.task_id,
@@ -788,13 +768,10 @@ class ForgeTaskWorkflow:
                 retry_policy=_GIT_RETRY,
                 result_type=CommitChangesOutput,
             )
-            error = "; ".join(r.summary for r in validation_results if not r.passed)
-            return TaskResult(
+            return single_step_terminal(
                 task_id=task.task_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
                 output_files=output_files,
                 validation_results=validation_results,
-                error=error,
                 worktree_path=wt_output.worktree_path,
                 worktree_branch=wt_output.branch_name,
                 llm_stats=build_llm_stats(llm_result),
@@ -914,13 +891,17 @@ class ForgeTaskWorkflow:
                     step_results,
                     step_model=step_model,
                 )
-                step_results.append(step_result)
-                if step_result.status != TransitionSignal.SUCCESS:
-                    return TaskResult(
+                succeeded = step_result.status == TransitionSignal.SUCCESS
+                if succeeded:
+                    # Fold contents into the top-level map, then embed the slim copy.
+                    all_output_files.update(step_result.output_files)
+                step_results.append(slim_result(step_result))
+                if not succeeded:
+                    return planned_failure(
                         task_id=task.task_id,
-                        status=TransitionSignal.FAILURE_TERMINAL,
-                        output_files=all_output_files,
+                        failure_kind="step_failed",
                         error=f"Step {step.step_id} fan-out failed: {step_result.error}",
+                        output_files=all_output_files,
                         worktree_path=wt_output.worktree_path,
                         worktree_branch=wt_output.branch_name,
                         step_results=step_results,
@@ -928,7 +909,6 @@ class ForgeTaskWorkflow:
                         planner_stats=p_stats,
                         sanity_check_count=sanity_check_count,
                     )
-                all_output_files.update(step_result.output_files)
                 step_index += 1
                 continue
 
@@ -941,13 +921,16 @@ class ForgeTaskWorkflow:
                 wt_output=wt_output,
                 step_results=step_results,
             )
-            step_results.append(step_result)
-            if step_result.status != TransitionSignal.SUCCESS:
-                return TaskResult(
+            succeeded = step_result.status == TransitionSignal.SUCCESS
+            if succeeded:
+                all_output_files.update(step_result.output_files)
+            step_results.append(slim_result(step_result))
+            if not succeeded:
+                return planned_failure(
                     task_id=task.task_id,
-                    status=TransitionSignal.FAILURE_TERMINAL,
-                    output_files=all_output_files,
+                    failure_kind="step_failed",
                     error=f"Step {step.step_id} failed: {step_result.error}",
+                    output_files=all_output_files,
                     worktree_path=wt_output.worktree_path,
                     worktree_branch=wt_output.branch_name,
                     step_results=step_results,
@@ -955,7 +938,6 @@ class ForgeTaskWorkflow:
                     planner_stats=p_stats,
                     sanity_check_count=sanity_check_count,
                 )
-            all_output_files.update(step_result.output_files)
 
             # --- Sanity check trigger ---
             if (
@@ -974,11 +956,11 @@ class ForgeTaskWorkflow:
                 )
 
                 if sanity_result.response.verdict == SanityCheckVerdict.ABORT:
-                    return TaskResult(
+                    return planned_failure(
                         task_id=task.task_id,
-                        status=TransitionSignal.FAILURE_TERMINAL,
-                        output_files=all_output_files,
+                        failure_kind="sanity_abort",
                         error=f"Sanity check aborted: {sanity_result.response.explanation}",
+                        output_files=all_output_files,
                         worktree_path=wt_output.worktree_path,
                         worktree_branch=wt_output.branch_name,
                         step_results=step_results,
@@ -1102,19 +1084,8 @@ class ForgeTaskWorkflow:
                 result_type=list[ValidationResult],
             )
 
-            # --- Evaluate transition ---
-            signal_value = await workflow.execute_activity(
-                "evaluate_transition",
-                TransitionInput(
-                    validation_results=validation_results,
-                    attempt=attempt,
-                    max_attempts=max_step_attempts,
-                ),
-                start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=str,
-            )
-            signal = TransitionSignal(signal_value)
+            # --- Evaluate transition inline (deterministic; D95) ---
+            signal = determine_transition(validation_results, attempt, max_step_attempts)
             workflow.logger.info(
                 "Step transition: step_id=%s signal=%s attempt=%d/%d",
                 step.step_id,
@@ -1165,13 +1136,10 @@ class ForgeTaskWorkflow:
                 continue
 
             # FAILURE_TERMINAL — step failed
-            error = "; ".join(r.summary for r in validation_results if not r.passed)
-            return StepResult(
+            return step_terminal(
                 step_id=step.step_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
                 output_files=output_files,
                 validation_results=validation_results,
-                error=error,
                 llm_stats=build_llm_stats(llm_result),
             )
 
@@ -1249,15 +1217,15 @@ class ForgeTaskWorkflow:
         # --- Validate unique sub-task IDs ---
         sub_task_ids = [st.sub_task_id for st in sub_tasks]
         if len(sub_task_ids) != len(set(sub_task_ids)):
-            return StepResult(
+            return fan_out_step_failure(
                 step_id=step.step_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
+                failure_kind="duplicate_sub_task_ids",
                 error="Duplicate sub-task IDs detected",
             )
 
         # --- Start child workflows in parallel ---
         workflow.logger.info("Fan-out: step_id=%s sub_tasks=%d", step.step_id, len(sub_tasks))
-        child_timeout = _child_timeout(
+        child_exec_timeout = child_timeout(
             0,
             input.max_fan_out_depth,
             sync_mode=input.sync_mode,
@@ -1284,13 +1252,13 @@ class ForgeTaskWorkflow:
                 log_messages=self._log_messages,
                 batch_poll_interval_seconds=input.batch_poll_interval_seconds,
             )
-            compound_id = f"{task.task_id}.sub.{st.sub_task_id}"
+            compound_id = compound_sub_task_id(task.task_id, st.sub_task_id)
             handle = await workflow.start_child_workflow(
                 ForgeSubTaskWorkflow.run,
                 child_input,
-                id=f"forge-subtask-{compound_id}",
+                id=sub_task_workflow_id(compound_id),
                 task_queue=FORGE_TASK_QUEUE,
-                execution_timeout=child_timeout,
+                execution_timeout=child_exec_timeout,
             )
             handles.append(handle)
 
@@ -1310,12 +1278,11 @@ class ForgeTaskWorkflow:
             len(failures),
         )
         if failures:
-            error_parts = [f"{r.sub_task_id}: {r.error}" for r in failures]
-            return StepResult(
+            return fan_out_step_failure(
                 step_id=step.step_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
+                failure_kind="sub_task_failed",
+                error=subtask_failure_summary(failures),
                 sub_task_results=sub_task_results,
-                error="; ".join(error_parts),
             )
 
         # --- Detect and resolve file conflicts ---
@@ -1355,30 +1322,26 @@ class ForgeTaskWorkflow:
             )
             conflict_resolution_result = await self._call_conflict_resolution(call_input)
 
-            conflict_paths = {c.file_path for c in conflicts}
-            resolved_paths = set(conflict_resolution_result.resolved_files.keys())
-            missing = conflict_paths - resolved_paths
-            if missing:
-                return StepResult(
+            merged = merge_resolution(
+                conflicts, conflict_resolution_result.resolved_files, non_conflicting
+            )
+            if isinstance(merged, MissingResolutions):
+                return fan_out_step_failure(
                     step_id=step.step_id,
-                    status=TransitionSignal.FAILURE_TERMINAL,
+                    failure_kind="conflict_incomplete",
+                    error=merged.message,
                     sub_task_results=sub_task_results,
                     conflict_resolution=conflict_resolution_result,
-                    error=(
-                        f"Conflict resolution incomplete: "
-                        f"missing resolved files: {', '.join(sorted(missing))}"
-                    ),
                 )
-
-            merged_files = {**non_conflicting, **conflict_resolution_result.resolved_files}
+            merged_files = merged.files
         elif conflicts:
             # resolve_conflicts=False: fall back to D27 terminal error
             conflict_paths_str = ", ".join(c.file_path for c in conflicts)
-            return StepResult(
+            return fan_out_step_failure(
                 step_id=step.step_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
-                sub_task_results=sub_task_results,
+                failure_kind="conflict_unresolved",
                 error=f"File conflict: {conflict_paths_str} produced by multiple sub-tasks",
+                sub_task_results=sub_task_results,
             )
         else:
             merged_files = non_conflicting
@@ -1412,29 +1375,17 @@ class ForgeTaskWorkflow:
                 result_type=list[ValidationResult],
             )
 
-            # --- Evaluate transition (single attempt for merged output) ---
-            signal_value = await workflow.execute_activity(
-                "evaluate_transition",
-                TransitionInput(
-                    validation_results=validation_results,
-                    attempt=1,
-                    max_attempts=1,
-                ),
-                start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=str,
-            )
-            signal = TransitionSignal(signal_value)
+            # --- Evaluate transition inline (single attempt for merged output) ---
+            signal = determine_transition(validation_results, attempt=1, max_attempts=1)
 
             if signal != TransitionSignal.SUCCESS:
-                error = "; ".join(r.summary for r in validation_results if not r.passed)
-                return StepResult(
+                return fan_out_step_failure(
                     step_id=step.step_id,
-                    status=TransitionSignal.FAILURE_TERMINAL,
+                    failure_kind="merged_validation",
+                    error=f"Merged output validation failed: {failure_summary(validation_results)}",
                     output_files=merged_files,
                     validation_results=validation_results,
                     sub_task_results=sub_task_results,
-                    error=f"Merged output validation failed: {error}",
                 )
         else:
             validation_results = []
@@ -1454,9 +1405,8 @@ class ForgeTaskWorkflow:
             result_type=CommitChangesOutput,
         )
 
-        return StepResult(
+        return fan_out_success(
             step_id=step.step_id,
-            status=TransitionSignal.SUCCESS,
             output_files=merged_files,
             validation_results=validation_results,
             commit_sha=commit_output.commit_sha,
@@ -1479,7 +1429,7 @@ class ForgeSubTaskWorkflow:
     Single-step (leaf or depth >= max_depth):
         1. Create worktree (compound ID, branched from parent branch)
         2. Retry loop:
-           - assemble_sub_task_context → call_llm → write_output → validate → transition
+           - assemble_sub_task_context → call_llm → write_output → validate → determine_transition
            - SUCCESS: collect output_files, remove worktree, return SubTaskResult
            - FAILURE_RETRYABLE: remove worktree, recreate on next iteration
            - FAILURE_TERMINAL: remove worktree, return failure SubTaskResult
@@ -1556,13 +1506,9 @@ class ForgeSubTaskWorkflow:
             # node's own worktree and return a terminal SubTaskResult instead of
             # crashing out. Sub-tasks write no run row of their own — returning a
             # normal failure lets the parent's failure handling record the run row.
-            compound_id = f"{input.parent_task_id}.sub.{input.sub_task.sub_task_id}"
+            compound_id = compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id)
             await _cleanup_worktree_after_failure(input.repo_root, compound_id, exc)
-            return SubTaskResult(
-                sub_task_id=input.sub_task.sub_task_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
-                error=f"Batch wait failed: {type(exc).__name__}: {exc}",
-            )
+            return sub_task_batch_wait_failure(sub_task_id=input.sub_task.sub_task_id, exc=exc)
 
     # ------------------------------------------------------------------
     # LLM dispatch methods (delegating to module-level shared functions)
@@ -1618,7 +1564,7 @@ class ForgeSubTaskWorkflow:
 
     async def _run_single_step(self, input: SubTaskInput) -> SubTaskResult:
         """Execute a leaf sub-task: LLM call with retry loop."""
-        compound_id = f"{input.parent_task_id}.sub.{input.sub_task.sub_task_id}"
+        compound_id = compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id)
         prior_errors: list[ValidationResult] = []
 
         for attempt in range(1, input.max_attempts + 1):
@@ -1693,19 +1639,8 @@ class ForgeSubTaskWorkflow:
                 result_type=list[ValidationResult],
             )
 
-            # --- Evaluate transition ---
-            signal_value = await workflow.execute_activity(
-                "evaluate_transition",
-                TransitionInput(
-                    validation_results=validation_results,
-                    attempt=attempt,
-                    max_attempts=input.max_attempts,
-                ),
-                start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=str,
-            )
-            signal = TransitionSignal(signal_value)
+            # --- Evaluate transition inline (deterministic; D95) ---
+            signal = determine_transition(validation_results, attempt, input.max_attempts)
             workflow.logger.info(
                 "Sub-task transition: sub_task_id=%s signal=%s attempt=%d/%d",
                 input.sub_task.sub_task_id,
@@ -1732,12 +1667,9 @@ class ForgeSubTaskWorkflow:
                 )
 
             if signal == TransitionSignal.FAILURE_TERMINAL:
-                error = "; ".join(r.summary for r in validation_results if not r.passed)
-                return SubTaskResult(
+                return sub_task_terminal(
                     sub_task_id=input.sub_task.sub_task_id,
-                    status=TransitionSignal.FAILURE_TERMINAL,
                     validation_results=validation_results,
-                    error=error,
                     llm_stats=build_llm_stats(llm_result),
                 )
 
@@ -1750,7 +1682,7 @@ class ForgeSubTaskWorkflow:
 
     async def _run_nested_fan_out(self, input: SubTaskInput) -> SubTaskResult:
         """Execute a sub-task that itself contains nested sub-tasks."""
-        compound_id = f"{input.parent_task_id}.sub.{input.sub_task.sub_task_id}"
+        compound_id = compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id)
         nested_sub_tasks = input.sub_task.sub_tasks
         assert nested_sub_tasks  # Caller guarantees this
 
@@ -1771,14 +1703,14 @@ class ForgeSubTaskWorkflow:
         nested_ids = [st.sub_task_id for st in nested_sub_tasks]
         if len(nested_ids) != len(set(nested_ids)):
             await _remove_worktree(input.repo_root, compound_id)
-            return SubTaskResult(
+            return nested_fan_out_failure(
                 sub_task_id=input.sub_task.sub_task_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
+                failure_kind="duplicate_sub_task_ids",
                 error="Duplicate nested sub-task IDs detected",
             )
 
         # --- Start child workflows in parallel ---
-        child_timeout = _child_timeout(
+        child_exec_timeout = child_timeout(
             input.depth + 1,
             input.max_depth,
             sync_mode=input.sync_mode,
@@ -1805,13 +1737,13 @@ class ForgeSubTaskWorkflow:
                 log_messages=self._log_messages,
                 batch_poll_interval_seconds=input.batch_poll_interval_seconds,
             )
-            child_compound_id = f"{compound_id}.sub.{st.sub_task_id}"
+            child_compound_id = compound_sub_task_id(compound_id, st.sub_task_id)
             handle = await workflow.start_child_workflow(
                 ForgeSubTaskWorkflow.run,
                 child_input,
-                id=f"forge-subtask-{child_compound_id}",
+                id=sub_task_workflow_id(child_compound_id),
                 task_queue=FORGE_TASK_QUEUE,
-                execution_timeout=child_timeout,
+                execution_timeout=child_exec_timeout,
             )
             handles.append(handle)
 
@@ -1825,12 +1757,11 @@ class ForgeSubTaskWorkflow:
         failures = [r for r in sub_task_results if r.status != TransitionSignal.SUCCESS]
         if failures:
             await _remove_worktree(input.repo_root, compound_id)
-            error_parts = [f"{r.sub_task_id}: {r.error}" for r in failures]
-            return SubTaskResult(
+            return nested_fan_out_failure(
                 sub_task_id=input.sub_task.sub_task_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
+                failure_kind="sub_task_failed",
+                error=subtask_failure_summary(failures),
                 sub_task_results=sub_task_results,
-                error="; ".join(error_parts),
             )
 
         # --- Detect and resolve file conflicts ---
@@ -1865,33 +1796,29 @@ class ForgeSubTaskWorkflow:
             )
             conflict_resolution_result = await self._call_conflict_resolution(cr_call_input)
 
-            conflict_paths = {c.file_path for c in conflicts}
-            resolved_paths = set(conflict_resolution_result.resolved_files.keys())
-            missing = conflict_paths - resolved_paths
-            if missing:
+            merged = merge_resolution(
+                conflicts, conflict_resolution_result.resolved_files, non_conflicting
+            )
+            if isinstance(merged, MissingResolutions):
                 await _remove_worktree(input.repo_root, compound_id)
-                return SubTaskResult(
+                return nested_fan_out_failure(
                     sub_task_id=input.sub_task.sub_task_id,
-                    status=TransitionSignal.FAILURE_TERMINAL,
+                    failure_kind="conflict_incomplete",
+                    error=merged.message,
                     sub_task_results=sub_task_results,
                     conflict_resolution=conflict_resolution_result,
-                    error=(
-                        f"Conflict resolution incomplete: "
-                        f"missing resolved files: {', '.join(sorted(missing))}"
-                    ),
                 )
-
-            merged_files = {**non_conflicting, **conflict_resolution_result.resolved_files}
+            merged_files = merged.files
         elif conflicts:
             # resolve_conflicts=False: fall back to D27 terminal error. A nested
             # node owns its worktree, so remove it before returning (D16).
             await _remove_worktree(input.repo_root, compound_id)
             conflict_paths_str = ", ".join(c.file_path for c in conflicts)
-            return SubTaskResult(
+            return nested_fan_out_failure(
                 sub_task_id=input.sub_task.sub_task_id,
-                status=TransitionSignal.FAILURE_TERMINAL,
-                sub_task_results=sub_task_results,
+                failure_kind="conflict_unresolved",
                 error=f"File conflict: {conflict_paths_str} produced by multiple sub-tasks",
+                sub_task_results=sub_task_results,
             )
         else:
             merged_files = non_conflicting
@@ -1925,37 +1852,25 @@ class ForgeSubTaskWorkflow:
                 result_type=list[ValidationResult],
             )
 
-            signal_value = await workflow.execute_activity(
-                "evaluate_transition",
-                TransitionInput(
-                    validation_results=validation_results,
-                    attempt=1,
-                    max_attempts=1,
-                ),
-                start_to_close_timeout=_TRANSITION_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=str,
-            )
-            signal = TransitionSignal(signal_value)
+            # --- Evaluate transition inline (single attempt for merged output) ---
+            signal = determine_transition(validation_results, attempt=1, max_attempts=1)
 
             if signal != TransitionSignal.SUCCESS:
                 await _remove_worktree(input.repo_root, compound_id)
-                error = "; ".join(r.summary for r in validation_results if not r.passed)
-                return SubTaskResult(
+                return nested_fan_out_failure(
                     sub_task_id=input.sub_task.sub_task_id,
-                    status=TransitionSignal.FAILURE_TERMINAL,
+                    failure_kind="merged_validation",
+                    error=f"Merged output validation failed: {failure_summary(validation_results)}",
                     output_files=merged_files,
                     validation_results=validation_results,
                     sub_task_results=sub_task_results,
-                    error=f"Merged output validation failed: {error}",
                 )
 
         # --- Remove worktree (sub-tasks never commit, D16) ---
         await _remove_worktree(input.repo_root, compound_id)
 
-        return SubTaskResult(
+        return nested_fan_out_success(
             sub_task_id=input.sub_task.sub_task_id,
-            status=TransitionSignal.SUCCESS,
             output_files=merged_files,
             validation_results=validation_results,
             sub_task_results=sub_task_results,
