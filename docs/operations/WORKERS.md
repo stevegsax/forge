@@ -64,7 +64,7 @@ uv run --package ocr ocr worker --env dev  # ocr worker in forge-dev
 
 The dev ocr worker installs its own `ocr-batch-tracker` Schedule inside `forge-dev`, separate from production's in `default`. A dev CLI submits into `forge-dev` too, so it only ever reaches the dev workers.
 
-**A functional lane needs the forge worker even for pure-OCR flows.** ocr's ledger writes (`persist_block` → `forge-task-queue`) are cross-queue activity calls, so with only a dev ocr worker running, an OCR submission blocks at its first ledger persist and the tracker cannot route hints (the live job has no routable `batch_jobs` row — the tracker logs a warning and skips it). Start the pair: `make dev-worker` and `make dev-worker WORKER=forge` (add `WORKER=pbook` if exercising ingestion).
+**A functional lane needs the forge worker even for pure-OCR flows.** ocr's ledger writes (`persist_block` → `forge-task-queue`) are cross-queue activity calls, so with only a dev ocr worker running, an OCR submission blocks at its first ledger persist and the tracker cannot route hints (the live job has no routable `batch_jobs` row — the tracker logs a warning and skips it). Start the pair: `make dev-worker` and `make dev-worker WORKER=forge` (add `WORKER=pbook` if exercising ingestion). Restart one with `make dev-worker-restart WORKER=<name>` — the dev lane restarts independently of production, and `make workers-restart` is production-only by construction (it signals launchd-resolved pids, never command-line patterns, so it cannot touch the tmux workers).
 
 ## Checking Whether Workers Are Running
 

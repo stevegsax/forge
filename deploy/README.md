@@ -26,9 +26,9 @@ deploy/
 ```bash
 podman machine start
 make stack-up                                     # Postgres + Temporal + UI + MinIO
-cp deploy/launchd/forge.env.example ~/.config/forge/forge.env
-chmod 600 ~/.config/forge/forge.env               # fill in the CHANGEMEs
-deploy/launchd/install.sh                         # --with-pbook for ingestion
+cp deploy/launchd/envs/prod.env.example ~/.config/forge/envs/prod.env
+chmod 600 ~/.config/forge/envs/prod.env           # fill in the CHANGEMEs (per-env profiles, T0.9)
+deploy/launchd/install.sh                         # --with-pbook / --with-ocr / --with-backup
 open http://localhost:8233                        # Temporal UI
 ```
 
