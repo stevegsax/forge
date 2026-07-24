@@ -2,6 +2,35 @@
 
 This document describes the workflow for working on tasks in `development-plans/`.
 
+## Creating a Task File
+
+New tasks enter by owner decision or adoption of a parked proposal. Create
+`tasks/T<phase>.<n>-<kebab-slug>.md`, add its entry to
+[TASKS.md](TASKS.md) (dated parenthetical noting the origin, and update the
+task count), and structure the file in this order:
+
+1. Header block: **Status** (`NOT STARTED`), **Phase**, **Repos**,
+   **Depends on**, **Last updated**
+2. **Problem** — the dense, precise statement with grounding data
+3. **Background and Detailed Explanation** — required at creation; see below
+4. **Scope** (or **Design**) — what changes where
+5. **Acceptance Criteria** — checkboxes
+6. **References**
+7. **Plan**, **Sub-tasks**, **Development Notes** — placeholders; the
+   implementing session fills them per "Before Coding"
+
+The **Background and Detailed Explanation** section is written for a reader
+with no shared context, in plain language. Rules: a problem → fix → payoff
+narrative that explains *why* (which principle or cost is at stake), not
+just what; call out the buried gems and gotchas the dense spec implies;
+define project jargon inline at first use; complete sentences, no praise
+adjectives; timeless (no references to sessions or conversations); tense
+matches status (planned tasks present/future, completed tasks past); depth
+matches weight (substantial tasks 3–6 paragraphs, small mechanical ones
+1–2 — never pad). Reference examples at the bar:
+[T5.1](tasks/T5.1-pure-step-logic.md) (planned) and
+[T4.4](tasks/T4.4-mistral-status-tracker.md) (completed).
+
 ## Picking Up a Task
 
 1. Open [TASKS.md](TASKS.md) and find the next unchecked task
@@ -31,9 +60,12 @@ This document describes the workflow for working on tasks in `development-plans/
 ## After Coding
 
 1. Run the verification steps listed in the task file
-2. Update the task file's **Status** to `DONE`
-3. Check off the task in [TASKS.md](TASKS.md) immediately
-4. Append a row to [CHANGELOG.md](CHANGELOG.md)
+2. Revisit the **Background and Detailed Explanation**: flip it to past
+   tense and fold in what actually shipped (Development-Note surprises,
+   superseded pieces) so the explanation stays true of the as-built work
+3. Update the task file's **Status** to `DONE`
+4. Check off the task in [TASKS.md](TASKS.md) immediately
+5. Append a row to [CHANGELOG.md](CHANGELOG.md)
 
 ## Specification Changes
 
