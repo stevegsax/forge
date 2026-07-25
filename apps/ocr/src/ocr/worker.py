@@ -27,7 +27,7 @@ from sax_platform.contracts.s3_blobs import S3Blobs
 from sax_platform.db import get_store_engine
 from sax_platform.logging import setup_logging, silence_noisy_loggers
 from sax_platform.temporal.client import connect_temporal
-from sax_platform.temporal.identity import stamped_worker_identity
+from sax_platform.temporal.identity import require_clean_prod_code, stamped_worker_identity
 from sax_platform.temporal.worker import run_worker as _run_worker
 from temporalio.client import (
     Schedule,
@@ -207,6 +207,11 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     explicitly declared environment.
     """
     env = resolve_forge_env(os.environ)
+    # Prod may only run a commit (D103): the worker execs `uv run` out of its
+    # checkout, so a dirty or unverifiable tree would deploy code no commit
+    # describes. Exits 78 before migrations/logging/Mistral setup; dev and test
+    # are unaffected.
+    require_clean_prod_code(env)
 
     from datetime import timedelta
 

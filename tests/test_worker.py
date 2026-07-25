@@ -105,6 +105,7 @@ class _Composition:
         self.connect = AsyncMock(return_value=self.client)
         self.init_tracing = MagicMock()
         self.shutdown_tracing = MagicMock()
+        self.clean_prod_guard = MagicMock()
 
     @contextlib.contextmanager
     def apply(self) -> Iterator[None]:
@@ -113,6 +114,7 @@ class _Composition:
             patch.object(worker_mod, "_init_store", self.init_store),
             patch.object(worker_mod, "connect_temporal", self.connect),
             patch.object(worker_mod, "stamped_worker_identity", _fake_stamp),
+            patch.object(worker_mod, "require_clean_prod_code", self.clean_prod_guard),
             patch.object(worker_mod, "_run_platform_worker", self.run_platform_worker),
             patch("forge.tracing.init_tracing", self.init_tracing),
             patch("forge.tracing.shutdown_tracing", self.shutdown_tracing),
@@ -297,6 +299,22 @@ class TestEnvGuard:
             await worker_mod.run_worker()
 
         assert "forge worker starting: env=test" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_clean_prod_guard_runs_with_the_resolved_env(self) -> None:
+        """The D103 guard is called with the resolved env, before store setup.
+
+        It is a no-op off prod (the suite runs as ``test``); what this pins is the
+        wiring — prod can only ever start on a committed checkout because every
+        worker asks before it does anything else.
+        """
+        from sax_platform.config import ForgeEnv
+
+        comp = _Composition()
+        with comp.apply():
+            await worker_mod.run_worker()
+
+        comp.clean_prod_guard.assert_called_once_with(ForgeEnv.TEST)
 
 
 class TestNamespaceCoherence:

@@ -1,10 +1,10 @@
-"""Tests for worker identity version stamping (``sax_platform.temporal.identity``).
+"""Tests for the launch-time code version (``sax_platform.temporal.identity``).
 
-Two layers, matching the module's Functional-Core / Imperative-Shell split:
+Layered to match the module's Functional-Core / Imperative-Shell split:
 
-* **Composition** — ``compose_identity`` is pure, so it is a plain table: what a
-  present/absent base and a present/absent version compose to, and that the
-  fallback base is consulted only when the caller supplied none.
+* **Composition** — ``compose_identity`` and ``clean_prod_violation`` are pure,
+  so they are plain tables: what a present/absent base and a present/absent
+  version compose to, and which (env, version) pairs production may start on.
 * **Discovery** — ``code_version`` and ``stamped_worker_identity`` shell out to
   ``git``, so they run against real temporary repositories (clean, modified,
   untracked) and real failure modes: a directory that is not a repository, a
@@ -12,6 +12,10 @@ Two layers, matching the module's Functional-Core / Imperative-Shell split:
   ``git`` that exits non-zero on the dirty check, and a timeout. The contract
   under test in every failure case is the same: ``None``, never an exception —
   version stamping must not be able to stop a worker from starting.
+* **The prod guard** — ``require_clean_prod_code`` is the one place where an
+  unknown version is fatal instead of ignorable (D103), so it is exercised
+  against the same real repositories: dirty and unverifiable prod checkouts
+  exit 78, a clean one proceeds, and dev/test are never constrained.
 """
 
 import os
@@ -21,10 +25,14 @@ from pathlib import Path
 
 import pytest
 
+from sax_platform.config import ForgeEnv
 from sax_platform.temporal import identity
 from sax_platform.temporal.identity import (
+    EXIT_CONFIG_ERROR,
+    clean_prod_violation,
     code_version,
     compose_identity,
+    require_clean_prod_code,
     stamped_worker_identity,
 )
 
@@ -189,6 +197,87 @@ class TestStampedWorkerIdentity:
         assert stamped_worker_identity() is None
 
 
+# ---------------------------------------------------------------------------
+# The production clean-code guard (D103)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanProdViolation:
+    @pytest.mark.parametrize(
+        ("env", "version"),
+        [
+            (ForgeEnv.PROD, "bb64d88"),
+            (ForgeEnv.DEV, "bb64d88-dirty"),
+            (ForgeEnv.DEV, None),
+            (ForgeEnv.TEST, "bb64d88-dirty"),
+            (ForgeEnv.TEST, None),
+        ],
+    )
+    def test_allowed(self, env: ForgeEnv, version: str | None) -> None:
+        assert clean_prod_violation(env, version) is None
+
+    def test_prod_dirty_is_a_violation_naming_the_version(self) -> None:
+        reason = clean_prod_violation(ForgeEnv.PROD, "bb64d88-dirty")
+        assert reason is not None
+        assert "uncommitted" in reason
+        assert "bb64d88-dirty" in reason
+
+    def test_prod_unknown_version_is_a_violation(self) -> None:
+        reason = clean_prod_violation(ForgeEnv.PROD, None)
+        assert reason is not None
+        assert "could not be determined" in reason
+
+
+class TestRequireCleanProdCode:
+    def test_prod_clean_checkout_proceeds(self, git_repo: Path) -> None:
+        assert require_clean_prod_code(ForgeEnv.PROD, git_repo) is None
+
+    def test_prod_dirty_checkout_exits_78(
+        self, git_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (git_repo / "tracked.txt").write_text("edited at launch\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            require_clean_prod_code(ForgeEnv.PROD, git_repo)
+
+        assert excinfo.value.code == EXIT_CONFIG_ERROR == 78
+        message = capsys.readouterr().err
+        # The operator must learn what is wrong, which tree, and the way out.
+        assert "uncommitted changes" in message
+        assert str(git_repo) in message
+        assert "deploy/prod-deploy.sh" in message
+
+    def test_prod_unverifiable_checkout_exits_78(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Not a repository: prod treats "cannot prove it is clean" as "not clean".
+        with pytest.raises(SystemExit) as excinfo:
+            require_clean_prod_code(ForgeEnv.PROD, tmp_path)
+
+        assert excinfo.value.code == EXIT_CONFIG_ERROR
+        assert "could not be determined" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("env", [ForgeEnv.DEV, ForgeEnv.TEST])
+    def test_non_prod_never_blocks(
+        self, env: ForgeEnv, git_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Editing the checkout under a running dev worker is the point of dev.
+        (git_repo / "tracked.txt").write_text("edited\n")
+        assert require_clean_prod_code(env, git_repo) is None
+        assert require_clean_prod_code(env, tmp_path / "not-a-repo") is None
+        assert capsys.readouterr().err == ""
+
+    def test_defaults_to_process_working_directory(
+        self, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The worker passes no cwd: the checkout it was exec'd from is the one
+        # that must be clean.
+        (git_repo / "tracked.txt").write_text("edited\n")
+        monkeypatch.chdir(git_repo)
+        with pytest.raises(SystemExit):
+            require_clean_prod_code(ForgeEnv.PROD)
+
+
 class TestPackageExport:
     def test_lazy_exports_resolve(self) -> None:
         from sax_platform import temporal
@@ -196,3 +285,5 @@ class TestPackageExport:
         assert temporal.stamped_worker_identity is stamped_worker_identity
         assert temporal.compose_identity is compose_identity
         assert temporal.code_version is code_version
+        assert temporal.require_clean_prod_code is require_clean_prod_code
+        assert temporal.clean_prod_violation is clean_prod_violation

@@ -95,10 +95,17 @@ class TestRunWorker:
                 worker_mod, "connect_temporal", AsyncMock(return_value=client_sentinel)
             ) as mock_connect,
             patch.object(worker_mod, "stamped_worker_identity", _fake_stamp),
+            patch.object(worker_mod, "require_clean_prod_code") as mock_clean_prod,
             patch.object(worker_mod, "_ensure_schedule", AsyncMock()) as mock_ensure_schedule,
             patch.object(worker_mod, "_run_worker", AsyncMock()) as mock_run_worker,
         ):
             await worker_mod.run_worker(identity="worker-123")
+
+        # The D103 clean-prod guard runs with the resolved env (a no-op off prod;
+        # this pins the wiring — prod can only start on a committed checkout).
+        from sax_platform.config import ForgeEnv
+
+        mock_clean_prod.assert_called_once_with(ForgeEnv.TEST)
 
         # Settings drive migrations, logging, and the store engine.
         mock_init_store.assert_called_once_with("sqlite:///x.db")

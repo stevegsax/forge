@@ -1,9 +1,10 @@
 # Deployment: Local-First Forge on an Always-On Desktop
 
-Forge deploys to a single always-on macOS desktop (D99, D102). Temporal is
-**self-hosted in the local podman stack** with persistence in that stack's
+Forge deploys to a single always-on macOS desktop (D99, D102, D103). Temporal
+is **self-hosted in the local podman stack** with persistence in that stack's
 Postgres; the forge and pbook **workers run as launchd-supervised host
-processes** from the repo checkout; Forge's and pbook's application state
+processes** out of a **commit-pinned checkout** (`~/repos-sax/forge-prod`,
+deployed only by `deploy/prod-deploy.sh` — D103); Forge's and pbook's application state
 lives in **local Postgres** — the `forge` and `pbook` databases in that same
 podman stack, beside Temporal's (D102, rehomed off Supabase 2026-07-22);
 OCR/batch blobs live in **S3** with only references in the database. The
@@ -56,9 +57,9 @@ managed used to buy. Blobs stay on S3, which is already offsite.
 | Temporal server + UI | podman (`deploy/local-stack`) | Always up | Persistence → the stack's Postgres (`temporal`, `temporal_visibility`) |
 | Stack Postgres | podman, host port 5433 | Always up | Temporal (`temporal`, `temporal_visibility`) + the `forge`/`pbook` app databases (D102) + the `forge_dev` dev database |
 | MinIO | podman, host ports 9002/9003 | Dev only | Local S3 surface for dev; production blobs go to real S3 |
-| `forge worker` (×2) | launchd host processes | Always up | Poll `forge-task-queue`; need git/uv/ruff and repos on disk |
-| `pbook worker` | launchd host process | Optional | Only if transcript ingestion is used; polls `pbook-task-queue` |
-| `ocr worker` | launchd host process | Optional | Only if OCR is used (`install.sh --with-ocr`); polls `ocr-task-queue` |
+| `forge worker` (×2) | launchd host processes, from `~/repos-sax/forge-prod` | Always up | Poll `forge-task-queue`; need git/uv/ruff and repos on disk |
+| `pbook worker` | launchd host process, from `~/repos-sax/forge-prod` | Optional | Only if transcript ingestion is used; polls `pbook-task-queue` |
+| `ocr worker` | launchd host process, from `~/repos-sax/forge-prod` | Optional | Only if OCR is used (`install.sh --with-ocr`); polls `ocr-task-queue` |
 | `forge` / `pbook` CLIs | Host shell | On demand | Connect to `127.0.0.1:7233` |
 | Forge store | local Postgres (`forge` database) | Always up | interactions, runs, playbooks, batch_jobs, OCR records; forge + ocr Alembic chains in `public` |
 | pbook store | local Postgres (`pbook` database) | Optional | `PBOOK_DATABASE_URL` (set in the prod profile since D102); Postgres-only |
@@ -113,7 +114,62 @@ uv run pbook --help             # the same venv serves every worker
 uv run --package ocr ocr --help # ocr is not a forge dependency — use --package
 ```
 
-Pin deployments to a known-good commit or tag of this one repo.
+Pin deployments to a known-good commit or tag of this one repo — and since
+D103 that is mechanical, not advisory: production runs a separate,
+commit-pinned checkout (next section).
+
+## The production checkout (D103)
+
+Production does **not** run the working tree you edit. It runs a git
+worktree at `$HOME/repos-sax/forge-prod`, checked out at a detached
+commit:
+
+```text
+~/repos-sax/forge        # the working tree — edit, test, commit here
+~/repos-sax/forge-prod   # detached at <commit> — what the launchd agents exec
+```
+
+Why this shape. A worker execs `uv run` inside its checkout, so that
+tree's contents at launch *are* the running code; while production ran
+the live tree, an ordinary edit — or an installer run mid-edit, which is
+how it went wrong on 2026-07-25 — shipped code no commit described. A
+linked worktree shares the main repo's object store, so a deploy is a
+local checkout with no network and no clone, and it can only ever land a
+commit that already exists. Detached HEAD keeps the pin a fixed commit
+rather than a name that can move under the running system.
+
+Deploy:
+
+```bash
+make prod-deploy REF=main        # or: deploy/prod-deploy.sh <ref>
+```
+
+which resolves the ref to a commit, refuses a prod checkout with local
+modifications (nothing is touched — inspect it yourself), checks the
+commit out, copies the gitignored `deploy/local-stack/.env` port override
+in, runs `uv sync --all-packages` there, verifies the installed plists
+point at `forge-prod`, and only then restarts the workers. If the plists
+point elsewhere it prints the one-time installer command and exits 3
+**without** restarting — see [the launchd
+README](../../deploy/launchd/README.md#changing-a-plist-worker-identities-environment-keepalive)
+for why a restart cannot adopt a new checkout.
+
+Binding production to the checkout is one act, done once:
+
+```bash
+~/repos-sax/forge-prod/deploy/launchd/install.sh --with-pbook --with-ocr --with-backup
+```
+
+Every path in every plist — workers, the `forge-stack` agent, the
+`db-backup` agent — is rendered from the installer's own location, so
+running `forge-prod`'s copy moves all of them together. The stack agent
+moving is safe: the stack's data lives outside any checkout
+(`FORGE_PG_DATA` / `FORGE_MINIO_DATA` under `~/.local/share/forge/`).
+
+The workers enforce the pin. On `FORGE_ENV=prod`, each worker checks its
+checkout's git version at startup and exits **78** when it is `-dirty` or
+cannot be determined, before touching a database — production may only
+run code a commit fully describes. Dev and test are unaffected.
 
 ## Deployment process
 
@@ -162,15 +218,20 @@ chain at startup. The pbook worker applies its own chain (custom
 prod profile sets it since D102). Run `uv run pbook migrate` manually only to
 migrate without starting the worker.
 
-### 4. Install the launchd agents
+### 4. Create the production checkout and install the launchd agents
 
 ```bash
-deploy/launchd/install.sh             # add --with-pbook for ingestion
+make prod-deploy REF=main             # creates ~/repos-sax/forge-prod at that commit
+~/repos-sax/forge-prod/deploy/launchd/install.sh --with-pbook --with-ocr --with-backup
 ```
 
-Installs the stack agent (RunAtLoad: podman machine + `stack-up` at
-login) and the KeepAlive worker agents. Operation, logs, and restart
-commands: [deploy/launchd/README.md](../../deploy/launchd/README.md).
+The first command creates and syncs the pinned checkout (D103) and then
+stops short of restarting, because the agents do not exist yet or still
+point elsewhere; the second installs the stack agent (RunAtLoad: podman
+machine + `stack-up` at login) and the KeepAlive worker agents, with every
+path rooted at `forge-prod`. Afterwards `make prod-deploy REF=<ref>` is the
+whole deploy. Operation, logs, and restart commands:
+[deploy/launchd/README.md](../../deploy/launchd/README.md).
 
 ### 5. Verify
 
@@ -179,7 +240,13 @@ podman ps                                            # 4 containers healthy
 tail -f ~/.local/state/forge/logs/forge-worker-1.log # "worker started", polling
 uv run forge status --limit 3                        # CLI → Temporal + store
 open http://localhost:8233                           # workers visible under Workers
+temporal task-queue describe --task-queue forge-task-queue  # identities: prod-forge-worker-N@<sha>
 ```
+
+The last command is the deploy check: each poller's identity ends in the
+commit it is running, and a `-dirty` suffix on a production worker means
+something bypassed `prod-deploy.sh` (see
+[WORKERS.md](WORKERS.md#which-code-is-a-worker-running)).
 
 ### 6. Apply the S3 lifecycle policy (once)
 

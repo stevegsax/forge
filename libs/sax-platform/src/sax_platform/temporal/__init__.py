@@ -36,8 +36,10 @@ if TYPE_CHECKING:
         connect_temporal,
     )
     from sax_platform.temporal.identity import (
+        clean_prod_violation,
         code_version,
         compose_identity,
+        require_clean_prod_code,
         stamped_worker_identity,
     )
     from sax_platform.temporal.worker import (
@@ -60,8 +62,10 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "build_sandbox_runner": ("sax_platform.temporal.worker", "build_sandbox_runner"),
     "run_worker": ("sax_platform.temporal.worker", "run_worker"),
     "worker_kwargs": ("sax_platform.temporal.worker", "worker_kwargs"),
+    "clean_prod_violation": ("sax_platform.temporal.identity", "clean_prod_violation"),
     "code_version": ("sax_platform.temporal.identity", "code_version"),
     "compose_identity": ("sax_platform.temporal.identity", "compose_identity"),
+    "require_clean_prod_code": ("sax_platform.temporal.identity", "require_clean_prod_code"),
     "stamped_worker_identity": ("sax_platform.temporal.identity", "stamped_worker_identity"),
 }
 
@@ -91,10 +95,12 @@ __all__ = [
     "build_sandbox_runner",
     "build_tls_config",
     "classify_llm_error",
+    "clean_prod_violation",
     "code_version",
     "compose_identity",
     "connect_temporal",
     "heartbeat_during",
+    "require_clean_prod_code",
     "run_worker",
     "stamped_worker_identity",
     "wait_batch_ended",

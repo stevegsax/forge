@@ -21,7 +21,11 @@ from sax_platform.config import (
 from sax_platform.embeddings import OpenAIEmbeddings
 from sax_platform.llm import AnthropicLLM, make_client
 from sax_platform.logging import setup_logging
-from sax_platform.temporal import connect_temporal, stamped_worker_identity
+from sax_platform.temporal import (
+    connect_temporal,
+    require_clean_prod_code,
+    stamped_worker_identity,
+)
 from sax_platform.temporal.worker import run_worker as run_platform_worker
 
 from pbook.activities.cli_ops import get_session_text_activity
@@ -113,6 +117,11 @@ async def run_worker(address: str = "localhost:7233", *, identity: str | None = 
     git version before connecting — see :mod:`sax_platform.temporal.identity`.
     """
     env = resolve_forge_env(os.environ)
+    # Prod may only run a commit (D103): the worker execs `uv run` out of its
+    # checkout, so a dirty or unverifiable tree would deploy code no commit
+    # describes. Exits 78 before settings/store setup; dev and test are
+    # unaffected.
+    require_clean_prod_code(env)
     settings = PbookSettings()
     temporal_settings = TemporalSettings()
 

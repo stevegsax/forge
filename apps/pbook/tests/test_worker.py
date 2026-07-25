@@ -124,6 +124,31 @@ class TestRunWorkerComposition:
         oemb.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_clean_prod_guard_runs_with_the_resolved_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The D103 guard is called with the resolved env, before store setup.
+
+        A no-op off prod (the suite runs as ``test``); the wiring is the point —
+        prod can only ever start on a committed checkout.
+        """
+        from sax_platform.config import ForgeEnv
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
+        with (
+            p_log,
+            p_mig,
+            p_eng,
+            p_conn,
+            p_run,
+            patch.object(worker_mod, "require_clean_prod_code") as mock_clean_prod,
+        ):
+            await worker_mod.run_worker()
+
+        mock_clean_prod.assert_called_once_with(ForgeEnv.TEST)
+
+    @pytest.mark.asyncio
     async def test_connects_via_platform_chokepoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         p_log, p_mig, p_eng, p_conn, p_run = _base_patches()

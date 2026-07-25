@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from sax_platform.config import require_namespace_coherence, resolve_forge_env
 from sax_platform.contracts.constants import FORGE_TASK_QUEUE
-from sax_platform.temporal.identity import stamped_worker_identity
+from sax_platform.temporal.identity import require_clean_prod_code, stamped_worker_identity
 from sax_platform.temporal.worker import run_worker as _run_platform_worker
 
 from forge.activities import (
@@ -96,6 +96,11 @@ async def run_worker(
     without an explicitly declared environment.
     """
     env = resolve_forge_env(os.environ)
+    # Prod may only run a commit (D103): the worker execs `uv run` out of its
+    # checkout, so a dirty or unverifiable tree would deploy code no commit
+    # describes. Exits 78 before any settings/store/client setup; dev and test
+    # are unaffected.
+    require_clean_prod_code(env)
     logger.info("forge worker starting: env=%s", env)
 
     from sax_platform.contracts.s3_blobs import S3Blobs

@@ -21,10 +21,15 @@ agents poll; the tmux staging workers use `dev-<app>-worker`. See
 
 ## Install
 
+Run the installer **from the production checkout** (`~/repos-sax/forge-prod`,
+D103): `install.sh` renders every plist path from its own location, so the
+copy you run decides which checkout all of these agents execute.
+
 ```bash
 cp deploy/launchd/envs/prod.env.example ~/.config/forge/envs/prod.env
 chmod 600 ~/.config/forge/envs/prod.env   # then fill in the CHANGEMEs
-deploy/launchd/install.sh --with-backup   # + --with-pbook / --with-ocr as needed
+make prod-deploy REF=main                 # creates/pins ~/repos-sax/forge-prod
+~/repos-sax/forge-prod/deploy/launchd/install.sh --with-backup   # + --with-pbook / --with-ocr
 ```
 
 `install.sh` renders `com.saxcapital.forge.plist.in` (workers) and
@@ -35,6 +40,11 @@ they were installed). Logs land under `$XDG_STATE_HOME/forge/logs/` (one
 file per agent). The opt-in flags are `--with-pbook`, `--with-ocr`, and
 `--with-backup` (all default off — enable `--with-backup` on the
 production host so the databases have offsite durability).
+
+After this one-time install, code deploys are `make prod-deploy REF=<ref>`
+alone: it re-pins the checkout and restarts the workers. Re-run the
+installer only to change a job definition (identities, environment,
+`KeepAlive`) — see [Changing a plist](#changing-a-plist-worker-identities-environment-keepalive).
 
 ## Environment guard (T0.9)
 
@@ -80,17 +90,21 @@ the stack agent has Temporal listening.
 ## Operate
 
 ```bash
+make prod-deploy REF=main                                       # deploy code to PROD (pin + restart)
 make workers-status                                             # both lanes: prod (launchd) + dev (tmux)
-make workers-restart                                            # restart PROD workers only (see below)
+make workers-restart                                            # restart PROD workers in place (see below)
 make dev-worker-restart WORKER=ocr                              # restart one DEV worker (tmux lane)
 launchctl print gui/$UID/com.saxcapital.forge-worker-1 | head   # one agent's launchd status
 launchctl kickstart -k gui/$UID/com.saxcapital.forge-worker-1   # force-restart one agent (fallback; SIGKILL — skips the drain)
 tail -f ~/.local/state/forge/logs/forge-worker-1.log            # logs
 ```
 
-`make workers-restart` is the standard way to restart production; the
-`launchctl kickstart` line above is a per-agent troubleshooting fallback
-(it kills without the graceful drain).
+`make prod-deploy REF=<ref>` is how production gets new code (D103): it
+re-pins `~/repos-sax/forge-prod` to that commit, syncs it, and then
+restarts. `make workers-restart` restarts the workers *on the code already
+pinned there* — the right tool after an environment-profile change, not a
+way to ship a commit; the `launchctl kickstart` line is a per-agent
+troubleshooting fallback (it kills without the graceful drain).
 
 Both the forge and pbook workers run their own migrations at startup
 (verified from the pbook worker's startup log, 2026-07-24: "Database
@@ -111,10 +125,15 @@ production; observed 2026-07-24. The dev lane restarts independently via
 polling for new work, waits up to `graceful_shutdown_timeout` (5 minutes)
 for in-flight activities to finish, then exits 0. launchd's `KeepAlive` is
 unconditional, so a clean exit relaunches the agent immediately from
-whatever code is on disk in the repo checkout (`ThrottleInterval` is
-10s, so the relaunch is near-immediate). This is the standard way to
-pick up newly merged code without a manual `launchctl kickstart` per
-agent — no plist changes, no install.
+whatever code is on disk in the **pinned production checkout**
+(`ThrottleInterval` is 10s, so the relaunch is near-immediate).
+
+Since D103 that checkout is `~/repos-sax/forge-prod`, pinned to a commit,
+so a bare restart re-runs the same code it was already running. To ship a
+commit, use `make prod-deploy REF=<ref>`, which re-pins the checkout and
+then runs exactly this restart. A worker that finds its prod checkout
+dirty or unverifiable refuses to start (exit 78) — production may only run
+a commit.
 
 It prints one line per worker label. A `not installed — skipped` line is
 expected for any agent not installed on this machine (ocr and pbook are

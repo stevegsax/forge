@@ -15,7 +15,7 @@
 
 .PHONY: help lint typecheck lint-imports test gates replay-histories \
 	stack-up stack-down stack-logs stack-psql db-migrate backup-app-dbs \
-	workers-restart workers-status dev-worker dev-worker-restart
+	workers-restart workers-status dev-worker dev-worker-restart prod-deploy
 
 # Bare `make` prints the target list instead of running the first target.
 .DEFAULT_GOAL := help
@@ -84,6 +84,7 @@ help:
 	@echo "  MinIO console: http://localhost:$${FORGE_MINIO_CONSOLE_PORT:-9003} (user/pass: forge / forge-minio-secret)"
 	@echo ""
 	@echo "Workers (launchd-supervised; SIGTERM drains gracefully, KeepAlive restarts)"
+	@echo "  make prod-deploy REF=<ref>  pin the prod worktree to a commit and restart (D103)"
 	@echo "  make workers-restart   signal forge/ocr/pbook workers; launchd relaunches from disk"
 	@echo "  make workers-status    list running worker processes"
 	@echo "  make dev-worker        start a staging-lane worker (forge-dev namespace) in detached tmux [WORKER=ocr|forge|pbook]"
@@ -115,6 +116,14 @@ db-migrate:
 # shell (the script loads the matching profile for the bucket + AWS creds).
 backup-app-dbs:
 	deploy/local-stack/backup-app-dbs.sh
+
+# Deploy production from a pinned commit (D103): checks REF out into the
+# forge-prod worktree, syncs it, and restarts the launchd workers — the only
+# sanctioned way to change what production runs. Thin wrapper; the mechanism and
+# its guards live in deploy/prod-deploy.sh.
+prod-deploy:
+	@test -n "$(REF)" || { echo "usage: make prod-deploy REF=<ref>   (e.g. REF=main)"; exit 64; }
+	deploy/prod-deploy.sh "$(REF)"
 
 # Restart the PRODUCTION workers only, resolving each launchd label to its
 # pid and signalling that pid — never a command-line pattern. The dev tmux
