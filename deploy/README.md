@@ -20,6 +20,7 @@ deploy/
 ├── launchd/        worker + stack supervision: install.sh, run-worker.sh,
 │                   plist template, forge.env.example
 ├── prod-deploy.sh  pin ~/repos-sax/forge-prod to a commit + restart (D103)
+├── prod-ocr        run one ocr CLI command against prod, from that checkout
 ├── s3/             bucket lifecycle policy (apply once with aws s3api)
 └── README.md
 ```

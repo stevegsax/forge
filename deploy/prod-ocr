@@ -1,0 +1,71 @@
+#!/usr/bin/env zsh
+#
+# prod-ocr <ocr-args...>
+#
+# Run an ocr CLI command against PRODUCTION, from the pinned production
+# checkout. Operator convenience: it replaces the four-step ceremony (export
+# FORGE_ENV, export the ack, source the prod profile, remember --package ocr)
+# with one command whose name states the blast radius.
+#
+# Usage:
+#   deploy/prod-ocr tracker-status
+#   deploy/prod-ocr list
+#   deploy/prod-ocr submit <file>
+#   PROD_ROOT=/elsewhere/forge-prod deploy/prod-ocr tracker-status
+#
+# It runs from $PROD_ROOT, not from the working tree. That is the point: the
+# CLI client then executes the same commit as the workers serving it (D103), so
+# a submit-side input model can never skew against the pinned workers — an edit
+# in the live tree plays no part in a production command. If the pinned checkout
+# is missing, this refuses rather than falling back to the live tree, because
+# production code comes only from `make prod-deploy REF=<ref>`.
+#
+# The environment comes from launchd/load-env.sh — the same loader run-worker.sh
+# and the nightly backup use — rather than `set -a; source prod.env`. The loader
+# parses the profile line-by-line and NEVER shell-evaluates a value (T0.7/G35),
+# so a key containing `&`, `;`, or `$(...)` is inert, and it enforces the
+# FORGE_ENV_TAG match and the chmod-600 check for free. It is written to be
+# sourced from both bash and zsh (see its header), so this zsh script can reuse
+# it unchanged.
+#
+# Embedding FORGE_PROD_ACK=yes is sanctioned, not a bypass. D102 requires that
+# reaching production be an explicit act; running a script named `prod-ocr` IS
+# that act — the same reasoning by which the launchd plists declare FORGE_ENV=prod
+# and FORGE_PROD_ACK=yes statically. The ceremony exists to prevent *accidental*
+# production use, not to add friction to deliberate use.
+#
+# zsh (not the bash of the deploy/launchd family): that convention covers the
+# launchd-executed install chain. This is interactive operator tooling.
+set -euo pipefail
+
+PROD_ROOT="${PROD_ROOT:-$HOME/repos-sax/forge-prod}"
+
+script_dir="${0:A:h}"
+
+if [[ ! -d "$PROD_ROOT" ]] || ! git -C "$PROD_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  print -u2 "prod-ocr: no production checkout at $PROD_ROOT"
+  print -u2 "  Production runs a commit-pinned worktree (D103); this script will not"
+  print -u2 "  fall back to the live working tree. Create it with:"
+  print -u2 "    make prod-deploy REF=<ref>"
+  exit 78  # EX_CONFIG, matching the environment-guard family
+fi
+
+# Declare the environment BEFORE the loader: load-env.sh requires FORGE_ENV to
+# already be set (it has no default) and selects the profile from it.
+export FORGE_ENV=prod
+export FORGE_PROD_ACK=yes
+
+# Loads $XDG_CONFIG_HOME/forge/envs/prod.env (FORGE_DB_URL, API keys, S3) and
+# exits 78 itself on a missing/mis-permissioned/mis-tagged profile.
+. "$script_dir/launchd/load-env.sh"
+
+commit="$(git -C "$PROD_ROOT" rev-parse --short HEAD)"
+
+# stderr, so piping or redirecting the command's output stays clean while the
+# operator still always sees which environment and which code answered.
+print -u2 "prod-ocr: PRODUCTION (namespace ${FORGE_TEMPORAL_NAMESPACE:-default}) — checkout $commit — ocr $*"
+
+cd "$PROD_ROOT"
+# --package is required: ocr is a workspace member but not a forge dependency, so
+# a bare `uv run` would prune it from the shared venv.
+exec uv run --package ocr ocr "$@"
