@@ -53,7 +53,6 @@ with workflow.unsafe.imports_passed_through():
         PlanCallResult,
         PlannerInput,
         PlanStep,
-        ResetWorktreeInput,
         SanityCheckCallResult,
         SanityCheckInput,
         SanityCheckResponse,
@@ -69,7 +68,6 @@ with workflow.unsafe.imports_passed_through():
         ValidateOutputInput,
         ValidationResult,
         WriteFilesInput,
-        WriteOutputInput,
         WriteResult,
         build_llm_stats,
         resolve_model,
@@ -197,6 +195,11 @@ async def _assemble_conflict_resolution(
 # ---------------------------------------------------------------------------
 
 with workflow.unsafe.imports_passed_through():
+    from forge.blocks.step import (
+        StepSpec,
+        cleanup_worktree_after_exception,
+        run_step_attempts,
+    )
     from forge.persist_models import PersistRun
     from forge.persist_models import build_interaction_idempotency_key as _build_interaction_key
     from forge.persist_models import build_persist_interaction as _build_persist_interaction
@@ -229,30 +232,25 @@ with workflow.unsafe.imports_passed_through():
 class ForgeTaskWorkflow:
     """Execute a Forge task with optional planning and multi-step execution.
 
-    Dispatches between two paths:
-
-    The transition decision is pure and inlined (``step_logic.determine_transition``,
-    D95): validation results plus the attempt number determine the signal — there is
-    no ``evaluate_transition`` activity.
+    Every step — single-step, planned step, sub-task — runs through the one
+    pipeline in ``forge.blocks.step`` (T5.2); this class supplies the mode's
+    :class:`StepSpec` and turns the neutral outcome into a result. The
+    transition decision inside that block is pure and inlined
+    (``step_logic.determine_transition``, D95): validation results plus the
+    attempt number determine the signal — there is no ``evaluate_transition``
+    activity.
 
     plan=False (Phase 1):
-        for attempt in 1..max_attempts:
-            create_worktree
-            assemble_context → call_llm → write_output → validate_output → determine_transition
-            match signal:
-                SUCCESS         → commit("success"), return TaskResult(SUCCESS)
-                FAILURE_RETRYABLE → remove_worktree, continue loop
-                FAILURE_TERMINAL  → commit("failure"), return TaskResult(FAILURE_TERMINAL)
+        run_step_attempts(mode="single_step") — fresh worktree per attempt,
+        task-level commit on success and on terminal failure → TaskResult
 
     plan=True (Phase 2):
         create_worktree (once)
         assemble_planner_context → call_planner → Plan
         for step in plan.steps:
-            for attempt in 1..max_step_attempts:
-                assemble_step_context → call_llm → write_output → validate → determine_transition
-                SUCCESS → commit(step), break to next step
-                FAILURE_RETRYABLE → reset_worktree, continue retry
-                FAILURE_TERMINAL → return TaskResult(FAILURE_TERMINAL)
+            fan-out steps → child workflows, gathered and merged
+            regular steps → run_step_attempts(mode="planned_step") in the
+            borrowed worktree; a terminal step failure fails the task
         All steps done → return TaskResult(SUCCESS)
     """
 
@@ -361,7 +359,8 @@ class ForgeTaskWorkflow:
             poll_interval=self._poll_interval,
         )
 
-    async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
+    async def call_generation(self, context: AssembledContext) -> LLMCallResult:
+        """Persisting LLM generation dispatch — the ``StepHost`` seam for blocks/step.py."""
         result = await _call_generation_dispatch(
             self._sync_mode, context, poll_interval=self._poll_interval
         )
@@ -597,190 +596,79 @@ class ForgeTaskWorkflow:
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
-    # Phase 1: Single-step execution (unchanged from Phase 1)
+    # Phase 1: Single-step execution (the shared step block, fresh-keep mode)
     # ------------------------------------------------------------------
 
     async def _run_single_step(self, input: ForgeTaskInput) -> TaskResult:
+        """Run the task as one step through the shared step block."""
         task = input.task
-        max_attempts = input.max_attempts
-        prior_errors: list[ValidationResult] = []
-
-        # Resolve models for this workflow
         generation_model = resolve_model(CapabilityTier.GENERATION, input.model_routing)
         exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
 
-        for attempt in range(1, max_attempts + 1):
-            workflow.logger.info(
-                "Single-step attempt %d/%d: task_id=%s", attempt, max_attempts, task.task_id
+        async def explore(context: AssembledContext, worktree_path: str) -> AssembledContext:
+            """Phase 7 exploration for one attempt, against that attempt's own worktree."""
+            exploration_results = await self._run_exploration_loop(
+                task=task,
+                repo_root=input.repo_root,
+                worktree_path=worktree_path,
+                max_rounds=input.max_exploration_rounds,
+                model_name=exploration_model,
             )
-
-            # --- Create worktree ---
-            wt_output = await workflow.execute_activity(
-                "create_worktree_activity",
-                CreateWorktreeInput(
-                    repo_root=input.repo_root,
-                    task_id=task.task_id,
-                    base_branch=task.base_branch,
-                ),
-                start_to_close_timeout=_GIT_TIMEOUT,
-                retry_policy=_GIT_RETRY,
-                result_type=CreateWorktreeOutput,
-            )
-
-            # --- Assemble context ---
-            context = await workflow.execute_activity(
-                "assemble_context",
-                AssembleContextInput(
-                    task_id=task.task_id,
-                    description=task.description,
-                    target_files=task.target_files,
-                    context_files=task.context_files,
-                    context_config=task.context,
-                    repo_root=input.repo_root,
-                    worktree_path=wt_output.worktree_path,
-                    prior_errors=prior_errors,
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                ),
-                start_to_close_timeout=_CONTEXT_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=AssembledContext,
-            )
-
-            # --- Exploration loop (Phase 7) ---
-            if input.max_exploration_rounds > 0:
-                exploration_results = await self._run_exploration_loop(
-                    task=task,
-                    repo_root=input.repo_root,
-                    worktree_path=wt_output.worktree_path,
-                    max_rounds=input.max_exploration_rounds,
-                    model_name=exploration_model,
-                )
-                exploration_section = self._format_exploration_context(exploration_results)
-                if exploration_section:
-                    context = AssembledContext(
-                        task_id=context.task_id,
-                        system_prompt=context.system_prompt + exploration_section,
-                        user_prompt=context.user_prompt,
-                        context_stats=context.context_stats,
-                        step_id=context.step_id,
-                        sub_task_id=context.sub_task_id,
-                    )
-
-            # --- Set model_name and log_messages on context ---
-            context = context.model_copy(
-                update={
-                    "model_name": generation_model,
-                    "log_messages": self._log_messages,
-                    "worktree_path": wt_output.worktree_path,
-                }
-            )
-
-            # --- Call LLM ---
-            llm_result = await self._call_generation(context)
-            workflow.logger.info(
-                "Generation complete: task_id=%s model=%s tokens=%din/%dout latency=%.0fms",
-                task.task_id,
-                llm_result.model_name,
-                llm_result.input_tokens,
-                llm_result.output_tokens,
-                llm_result.latency_ms,
-            )
-
-            # --- Write output ---
-            write_result = await workflow.execute_activity(
-                "write_output",
-                WriteOutputInput(
-                    llm_result=llm_result,
-                    worktree_path=wt_output.worktree_path,
-                ),
-                start_to_close_timeout=_WRITE_TIMEOUT,
-                retry_policy=_WRITE_RETRY,
-                result_type=WriteResult,
-            )
-
-            # --- Validate output ---
-            validation_results = await workflow.execute_activity(
-                "validate_output",
-                ValidateOutputInput(
-                    task_id=task.task_id,
-                    worktree_path=wt_output.worktree_path,
-                    files=write_result.files_written,
-                    validation=task.validation,
-                ),
-                start_to_close_timeout=_VALIDATE_TIMEOUT,
-                heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=IO_RETRY,
-                result_type=list[ValidationResult],
-            )
-
-            # --- Evaluate transition inline (deterministic; D95) ---
-            signal = determine_transition(validation_results, attempt, max_attempts)
-            workflow.logger.info(
-                "Transition: task_id=%s signal=%s attempt=%d/%d",
-                task.task_id,
-                signal.value,
-                attempt,
-                max_attempts,
-            )
-
-            # --- Collect output files ---
-            output_files = write_result.output_files
-
-            # --- Act on signal ---
-            if signal == TransitionSignal.SUCCESS:
-                await workflow.execute_activity(
-                    "commit_changes_activity",
-                    CommitChangesInput(
-                        repo_root=input.repo_root,
-                        task_id=task.task_id,
-                        status="success",
-                    ),
-                    start_to_close_timeout=_GIT_TIMEOUT,
-                    retry_policy=_GIT_RETRY,
-                    result_type=CommitChangesOutput,
-                )
-                return TaskResult(
-                    task_id=task.task_id,
-                    status=TransitionSignal.SUCCESS,
-                    output_files=output_files,
-                    validation_results=validation_results,
-                    worktree_path=wt_output.worktree_path,
-                    worktree_branch=wt_output.branch_name,
-                    llm_stats=build_llm_stats(llm_result),
-                    context_stats=context.context_stats,
-                )
-
-            if signal == TransitionSignal.FAILURE_RETRYABLE:
-                prior_errors = validation_results
-                await _remove_worktree(input.repo_root, task.task_id)
-                continue
-
-            # FAILURE_TERMINAL
-            await workflow.execute_activity(
-                "commit_changes_activity",
-                CommitChangesInput(
-                    repo_root=input.repo_root,
-                    task_id=task.task_id,
-                    status="failure",
-                ),
-                start_to_close_timeout=_GIT_TIMEOUT,
-                retry_policy=_GIT_RETRY,
-                result_type=CommitChangesOutput,
-            )
-            return single_step_terminal(
-                task_id=task.task_id,
-                output_files=output_files,
-                validation_results=validation_results,
-                worktree_path=wt_output.worktree_path,
-                worktree_branch=wt_output.branch_name,
-                llm_stats=build_llm_stats(llm_result),
+            exploration_section = self._format_exploration_context(exploration_results)
+            if not exploration_section:
+                return context
+            return AssembledContext(
+                task_id=context.task_id,
+                system_prompt=context.system_prompt + exploration_section,
+                user_prompt=context.user_prompt,
                 context_stats=context.context_stats,
+                step_id=context.step_id,
+                sub_task_id=context.sub_task_id,
             )
 
-        # Should not be reachable, but satisfy the type checker.
-        msg = "Exhausted all attempts without a terminal transition"
-        raise RuntimeError(msg)
+        spec = StepSpec(
+            mode="single_step",
+            task_id=task.task_id,
+            repo_root=input.repo_root,
+            base_branch=task.base_branch,
+            assemble_input=AssembleContextInput(
+                task_id=task.task_id,
+                description=task.description,
+                target_files=task.target_files,
+                context_files=task.context_files,
+                context_config=task.context,
+                repo_root=input.repo_root,
+                worktree_path="",
+                max_attempts=input.max_attempts,
+            ),
+            max_attempts=input.max_attempts,
+            validation=task.validation,
+            model_name=generation_model,
+            log_messages=self._log_messages,
+            exploration_rounds=input.max_exploration_rounds,
+        )
+        outcome = await run_step_attempts(spec, self, explore)
+
+        if outcome.signal == TransitionSignal.SUCCESS:
+            return TaskResult(
+                task_id=task.task_id,
+                status=TransitionSignal.SUCCESS,
+                output_files=outcome.output_files,
+                validation_results=outcome.validation_results,
+                worktree_path=outcome.worktree_path,
+                worktree_branch=outcome.worktree_branch,
+                llm_stats=build_llm_stats(outcome.llm_result),
+                context_stats=outcome.context_stats,
+            )
+        return single_step_terminal(
+            task_id=task.task_id,
+            output_files=outcome.output_files,
+            validation_results=outcome.validation_results,
+            worktree_path=outcome.worktree_path,
+            worktree_branch=outcome.worktree_branch,
+            llm_stats=build_llm_stats(outcome.llm_result),
+            context_stats=outcome.context_stats,
+        )
 
     # ------------------------------------------------------------------
     # Phase 2: Planned multi-step execution
@@ -846,6 +734,14 @@ class ForgeTaskWorkflow:
         return plan, build_llm_stats(planner_result)
 
     async def _run_planned(self, input: ForgeTaskInput) -> TaskResult:
+        """Create the plan's worktree, drive the plan in it, and own its cleanup.
+
+        The planned worktree is created once and borrowed by every step, so this
+        method — not the step block — carries the cleanup wrap: any exception
+        from the planner, a step, or a sanity check removes the worktree and its
+        branch before re-raising. A leaked worktree/branch used to make the next
+        run of the same task id fail permanently.
+        """
         task = input.task
 
         # --- Create worktree (once) ---
@@ -860,6 +756,22 @@ class ForgeTaskWorkflow:
             retry_policy=_GIT_RETRY,
             result_type=CreateWorktreeOutput,
         )
+
+        try:
+            return await self._drive_plan(input, wt_output)
+        except Exception as exc:
+            # run() already cleans this worktree for the batch-wait shapes
+            # (T1.6b) and records a terminal result, so cleaning here too would
+            # only duplicate the removal.
+            if not isinstance(exc, BATCH_WAIT_FAILURES):
+                await cleanup_worktree_after_exception(input.repo_root, task.task_id, exc)
+            raise
+
+    async def _drive_plan(
+        self, input: ForgeTaskInput, wt_output: CreateWorktreeOutput
+    ) -> TaskResult:
+        """Plan the task, then run every step in the borrowed worktree."""
+        task = input.task
 
         plan, p_stats = await self._plan_task(input, wt_output)
         step_results: list[StepResult] = []
@@ -1013,139 +925,55 @@ class ForgeTaskWorkflow:
         wt_output: CreateWorktreeOutput,
         step_results: list[StepResult],
     ) -> StepResult:
-        """Execute a single step through its retry loop.
+        """Execute a single planned step through the shared step block.
+
+        Borrowed-worktree mode: the plan's worktree belongs to ``_run_planned``,
+        so the block resets it between attempts and never creates or removes it.
 
         Returns StepResult with SUCCESS or FAILURE_TERMINAL status.
-        Raises RuntimeError if retries exhaust without a terminal signal.
         """
         task = input.task
-        max_step_attempts = input.max_step_attempts
-        prior_errors: list[ValidationResult] = []
+        spec = StepSpec(
+            mode="planned_step",
+            task_id=task.task_id,
+            repo_root=input.repo_root,
+            base_branch=task.base_branch,
+            borrowed_worktree=wt_output,
+            assemble_input=AssembleStepContextInput(
+                task_id=task.task_id,
+                task_description=task.description,
+                context_config=task.context,
+                step=step,
+                step_index=step_index,
+                total_steps=total_steps,
+                completed_steps=step_results,
+                repo_root=input.repo_root,
+                worktree_path=wt_output.worktree_path,
+                max_attempts=input.max_step_attempts,
+            ),
+            max_attempts=input.max_step_attempts,
+            validation=task.validation,
+            model_name=step_model,
+            log_messages=self._log_messages,
+            commit_message=f"forge({task.task_id}): step {step.step_id} success",
+        )
+        outcome = await run_step_attempts(spec, self)
 
-        for attempt in range(1, max_step_attempts + 1):
-            # --- Assemble step context ---
-            context = await workflow.execute_activity(
-                "assemble_step_context",
-                AssembleStepContextInput(
-                    task_id=task.task_id,
-                    task_description=task.description,
-                    context_config=task.context,
-                    step=step,
-                    step_index=step_index,
-                    total_steps=total_steps,
-                    completed_steps=step_results,
-                    repo_root=input.repo_root,
-                    worktree_path=wt_output.worktree_path,
-                    prior_errors=prior_errors,
-                    attempt=attempt,
-                    max_attempts=max_step_attempts,
-                ),
-                start_to_close_timeout=_CONTEXT_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=AssembledContext,
-            )
-
-            # --- Set model_name and log_messages on context ---
-            context = context.model_copy(
-                update={
-                    "model_name": step_model,
-                    "log_messages": self._log_messages,
-                    "worktree_path": wt_output.worktree_path,
-                }
-            )
-
-            # --- Call LLM ---
-            llm_result = await self._call_generation(context)
-
-            # --- Write output ---
-            write_result = await workflow.execute_activity(
-                "write_output",
-                WriteOutputInput(
-                    llm_result=llm_result,
-                    worktree_path=wt_output.worktree_path,
-                ),
-                start_to_close_timeout=_WRITE_TIMEOUT,
-                retry_policy=_WRITE_RETRY,
-                result_type=WriteResult,
-            )
-
-            # --- Validate output ---
-            validation_results = await workflow.execute_activity(
-                "validate_output",
-                ValidateOutputInput(
-                    task_id=task.task_id,
-                    worktree_path=wt_output.worktree_path,
-                    files=write_result.files_written,
-                    validation=task.validation,
-                ),
-                start_to_close_timeout=_VALIDATE_TIMEOUT,
-                heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=IO_RETRY,
-                result_type=list[ValidationResult],
-            )
-
-            # --- Evaluate transition inline (deterministic; D95) ---
-            signal = determine_transition(validation_results, attempt, max_step_attempts)
-            workflow.logger.info(
-                "Step transition: step_id=%s signal=%s attempt=%d/%d",
-                step.step_id,
-                signal.value,
-                attempt,
-                max_step_attempts,
-            )
-
-            output_files = write_result.output_files
-
-            if signal == TransitionSignal.SUCCESS:
-                # Commit this step's changes
-                commit_msg = f"forge({task.task_id}): step {step.step_id} success"
-                commit_output = await workflow.execute_activity(
-                    "commit_changes_activity",
-                    CommitChangesInput(
-                        repo_root=input.repo_root,
-                        task_id=task.task_id,
-                        status="success",
-                        message=commit_msg,
-                    ),
-                    start_to_close_timeout=_GIT_TIMEOUT,
-                    retry_policy=_GIT_RETRY,
-                    result_type=CommitChangesOutput,
-                )
-                return StepResult(
-                    step_id=step.step_id,
-                    status=TransitionSignal.SUCCESS,
-                    output_files=output_files,
-                    validation_results=validation_results,
-                    commit_sha=commit_output.commit_sha,
-                    llm_stats=build_llm_stats(llm_result),
-                )
-
-            if signal == TransitionSignal.FAILURE_RETRYABLE:
-                prior_errors = validation_results
-                # Reset worktree (discard uncommitted changes) and retry
-                await workflow.execute_activity(
-                    "reset_worktree_activity",
-                    ResetWorktreeInput(
-                        repo_root=input.repo_root,
-                        task_id=task.task_id,
-                    ),
-                    start_to_close_timeout=_GIT_TIMEOUT,
-                    retry_policy=_GIT_RETRY,
-                    result_type=type(None),
-                )
-                continue
-
-            # FAILURE_TERMINAL — step failed
-            return step_terminal(
+        if outcome.signal == TransitionSignal.SUCCESS:
+            return StepResult(
                 step_id=step.step_id,
-                output_files=output_files,
-                validation_results=validation_results,
-                llm_stats=build_llm_stats(llm_result),
+                status=TransitionSignal.SUCCESS,
+                output_files=outcome.output_files,
+                validation_results=outcome.validation_results,
+                commit_sha=outcome.commit_sha,
+                llm_stats=build_llm_stats(outcome.llm_result),
             )
-
-        # Exhausted retries for this step — should have hit TERMINAL above
-        msg = f"Step {step.step_id} exhausted all attempts without a terminal transition"
-        raise RuntimeError(msg)
+        return step_terminal(
+            step_id=step.step_id,
+            output_files=outcome.output_files,
+            validation_results=outcome.validation_results,
+            llm_stats=build_llm_stats(outcome.llm_result),
+        )
 
     # ------------------------------------------------------------------
     # Sanity check helper
@@ -1427,12 +1255,11 @@ class ForgeSubTaskWorkflow:
     Routes between two execution paths:
 
     Single-step (leaf or depth >= max_depth):
-        1. Create worktree (compound ID, branched from parent branch)
-        2. Retry loop:
-           - assemble_sub_task_context → call_llm → write_output → validate → determine_transition
-           - SUCCESS: collect output_files, remove worktree, return SubTaskResult
-           - FAILURE_RETRYABLE: remove worktree, recreate on next iteration
-           - FAILURE_TERMINAL: remove worktree, return failure SubTaskResult
+        run_step_attempts(mode="sub_task") — the shared step block (T5.2) in
+        fresh-dispose mode: a worktree per attempt (compound ID, branched from
+        the parent branch), removed at the end of every attempt including
+        success, and no commit at any point (D16). The output travels home in
+        the returned SubTaskResult.
 
     Nested fan-out (has sub_tasks and depth < max_depth):
         1. Create worktree (compound ID, branched from parent branch)
@@ -1530,7 +1357,8 @@ class ForgeSubTaskWorkflow:
             poll_interval=self._poll_interval,
         )
 
-    async def _call_generation(self, context: AssembledContext) -> LLMCallResult:
+    async def call_generation(self, context: AssembledContext) -> LLMCallResult:
+        """Persisting LLM generation dispatch — the ``StepHost`` seam for blocks/step.py."""
         result = await _call_generation_dispatch(
             self._sync_mode, context, poll_interval=self._poll_interval
         )
@@ -1563,122 +1391,48 @@ class ForgeSubTaskWorkflow:
         return result
 
     async def _run_single_step(self, input: SubTaskInput) -> SubTaskResult:
-        """Execute a leaf sub-task: LLM call with retry loop."""
+        """Execute a leaf sub-task through the shared step block.
+
+        Fresh-dispose mode: each attempt gets its own worktree and gives it back
+        at the end of the attempt, success included — sub-tasks never commit
+        (D16); their output travels home in the result.
+        """
         compound_id = compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id)
-        prior_errors: list[ValidationResult] = []
+        spec = StepSpec(
+            mode="sub_task",
+            task_id=compound_id,
+            repo_root=input.repo_root,
+            base_branch=input.parent_branch,
+            assemble_input=AssembleSubTaskContextInput(
+                parent_task_id=input.parent_task_id,
+                parent_description=input.parent_description,
+                sub_task=input.sub_task,
+                worktree_path="",
+                repo_root=input.repo_root,
+                max_attempts=input.max_attempts,
+                domain=input.domain,
+            ),
+            max_attempts=input.max_attempts,
+            validation=input.validation,
+            model_name=input.model_name,
+            log_messages=self._log_messages,
+        )
+        outcome = await run_step_attempts(spec, self)
 
-        for attempt in range(1, input.max_attempts + 1):
-            # --- Create worktree ---
-            wt_output = await workflow.execute_activity(
-                "create_worktree_activity",
-                CreateWorktreeInput(
-                    repo_root=input.repo_root,
-                    task_id=compound_id,
-                    base_branch=input.parent_branch,
-                ),
-                start_to_close_timeout=_GIT_TIMEOUT,
-                retry_policy=_GIT_RETRY,
-                result_type=CreateWorktreeOutput,
+        if outcome.signal == TransitionSignal.SUCCESS:
+            return SubTaskResult(
+                sub_task_id=input.sub_task.sub_task_id,
+                status=TransitionSignal.SUCCESS,
+                output_files=outcome.output_files,
+                validation_results=outcome.validation_results,
+                digest=outcome.llm_result.response.explanation,
+                llm_stats=build_llm_stats(outcome.llm_result),
             )
-
-            # --- Assemble sub-task context ---
-            context = await workflow.execute_activity(
-                "assemble_sub_task_context",
-                AssembleSubTaskContextInput(
-                    parent_task_id=input.parent_task_id,
-                    parent_description=input.parent_description,
-                    sub_task=input.sub_task,
-                    worktree_path=wt_output.worktree_path,
-                    repo_root=input.repo_root,
-                    prior_errors=prior_errors,
-                    attempt=attempt,
-                    max_attempts=input.max_attempts,
-                    domain=input.domain,
-                ),
-                start_to_close_timeout=_CONTEXT_TIMEOUT,
-                retry_policy=IO_RETRY,
-                result_type=AssembledContext,
-            )
-
-            # --- Set model_name, log_messages from parent ---
-            ctx_update: dict[str, object] = {
-                "log_messages": self._log_messages,
-                "worktree_path": wt_output.worktree_path,
-            }
-            if input.model_name:
-                ctx_update["model_name"] = input.model_name
-            context = context.model_copy(update=ctx_update)
-
-            # --- Call LLM ---
-            llm_result = await self._call_generation(context)
-
-            # --- Write output ---
-            write_result = await workflow.execute_activity(
-                "write_output",
-                WriteOutputInput(
-                    llm_result=llm_result,
-                    worktree_path=wt_output.worktree_path,
-                ),
-                start_to_close_timeout=_WRITE_TIMEOUT,
-                retry_policy=_WRITE_RETRY,
-                result_type=WriteResult,
-            )
-
-            # --- Validate output ---
-            validation_results = await workflow.execute_activity(
-                "validate_output",
-                ValidateOutputInput(
-                    task_id=compound_id,
-                    worktree_path=wt_output.worktree_path,
-                    files=write_result.files_written,
-                    validation=input.validation,
-                ),
-                start_to_close_timeout=_VALIDATE_TIMEOUT,
-                heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=IO_RETRY,
-                result_type=list[ValidationResult],
-            )
-
-            # --- Evaluate transition inline (deterministic; D95) ---
-            signal = determine_transition(validation_results, attempt, input.max_attempts)
-            workflow.logger.info(
-                "Sub-task transition: sub_task_id=%s signal=%s attempt=%d/%d",
-                input.sub_task.sub_task_id,
-                signal.value,
-                attempt,
-                input.max_attempts,
-            )
-
-            # --- Collect output files before cleanup ---
-            output_files = write_result.output_files
-            digest = llm_result.response.explanation
-
-            # --- Remove worktree (always — sub-tasks don't commit) ---
-            await _remove_worktree(input.repo_root, compound_id)
-
-            if signal == TransitionSignal.SUCCESS:
-                return SubTaskResult(
-                    sub_task_id=input.sub_task.sub_task_id,
-                    status=TransitionSignal.SUCCESS,
-                    output_files=output_files,
-                    validation_results=validation_results,
-                    digest=digest,
-                    llm_stats=build_llm_stats(llm_result),
-                )
-
-            if signal == TransitionSignal.FAILURE_TERMINAL:
-                return sub_task_terminal(
-                    sub_task_id=input.sub_task.sub_task_id,
-                    validation_results=validation_results,
-                    llm_stats=build_llm_stats(llm_result),
-                )
-
-            # FAILURE_RETRYABLE — worktree already removed, loop will recreate
-            prior_errors = validation_results
-
-        # Should not be reachable, but satisfy the type checker.
-        msg = f"Sub-task {input.sub_task.sub_task_id} exhausted all attempts"
-        raise RuntimeError(msg)
+        return sub_task_terminal(
+            sub_task_id=input.sub_task.sub_task_id,
+            validation_results=outcome.validation_results,
+            llm_stats=build_llm_stats(outcome.llm_result),
+        )
 
     async def _run_nested_fan_out(self, input: SubTaskInput) -> SubTaskResult:
         """Execute a sub-task that itself contains nested sub-tasks."""

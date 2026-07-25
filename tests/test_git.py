@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from typing import TYPE_CHECKING
 
 import pytest
@@ -129,10 +130,64 @@ class TestCreateWorktree:
         result = _run_git("branch", "--list", "forge/task-2", cwd=git_repo)
         assert "forge/task-2" in result.stdout
 
-    def test_raises_on_duplicate(self, git_repo: Path) -> None:
-        create_worktree(git_repo, "dup-task")
+    def test_recreates_over_leftover_branch(self, git_repo: Path) -> None:
+        """A crashed run that left only the branch behind does not block a rerun."""
+        wt = create_worktree(git_repo, "leftover-branch")
+        shutil.rmtree(wt)
+
+        from forge.git import _run_git
+
+        _run_git("worktree", "prune", cwd=git_repo)
+        branches = _run_git("branch", "--list", "forge/leftover-branch", cwd=git_repo)
+        assert "forge/leftover-branch" in branches.stdout
+
+        recreated = create_worktree(git_repo, "leftover-branch")
+
+        assert recreated == wt
+        assert (recreated / "README.md").exists()
+
+    def test_recreates_over_stale_registration(self, git_repo: Path) -> None:
+        """A registration whose directory vanished is pruned, not fatal."""
+        wt = create_worktree(git_repo, "stale-reg")
+        shutil.rmtree(wt)
+
+        recreated = create_worktree(git_repo, "stale-reg")
+
+        assert recreated == wt
+        assert (recreated / "README.md").exists()
+
+    def test_recreates_over_crashed_leftover(self, git_repo: Path) -> None:
+        """Branch, registration, and dirty directory left behind are all cleared."""
+        wt = create_worktree(git_repo, "crashed-task")
+        (wt / "committed.txt").write_text("from the crashed run\n")
+        commit_changes(git_repo, "crashed-task", "success")
+        (wt / "uncommitted.txt").write_text("dirty\n")
+
+        recreated = create_worktree(git_repo, "crashed-task")
+
+        assert recreated == wt
+        assert (recreated / "README.md").exists()
+        assert not (recreated / "committed.txt").exists()
+        assert not (recreated / "uncommitted.txt").exists()
+
+        from forge.git import _run_git
+
+        # ``worktree add -B`` reset the branch back onto the base branch.
+        assert (
+            _run_git("rev-parse", "HEAD", cwd=recreated).stdout
+            == _run_git("rev-parse", "main", cwd=git_repo).stdout
+        )
+
+    def test_raises_on_unregistered_leftover_directory(self, git_repo: Path) -> None:
+        """A directory git does not know about is never deleted — it is an error."""
+        stray = worktree_path(git_repo, "stray-dir")
+        stray.mkdir(parents=True)
+        (stray / "not-a-worktree.txt").write_text("who put this here\n")
+
         with pytest.raises(WorktreeCreateError):
-            create_worktree(git_repo, "dup-task")
+            create_worktree(git_repo, "stray-dir")
+
+        assert (stray / "not-a-worktree.txt").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -153,9 +208,42 @@ class TestRemoveWorktree:
         result = _run_git("branch", "--list", "forge/rm-task", cwd=git_repo)
         assert result.stdout == ""
 
-    def test_raises_on_nonexistent(self, git_repo: Path) -> None:
+    def test_noop_on_nonexistent(self, git_repo: Path) -> None:
+        """Removing a worktree that was never created is a no-op, not an error."""
+        remove_worktree(git_repo, "ghost")
+
+        assert not worktree_exists(git_repo, "ghost")
+
+    def test_noop_on_repeated_removal(self, git_repo: Path) -> None:
+        """A retried removal after one that landed succeeds (activity idempotency)."""
+        create_worktree(git_repo, "retry-rm")
+        remove_worktree(git_repo, "retry-rm")
+
+        remove_worktree(git_repo, "retry-rm")
+
+        assert not worktree_exists(git_repo, "retry-rm")
+
+    def test_noop_on_stale_registration(self, git_repo: Path) -> None:
+        """A registration left behind by a vanished directory is pruned, not fatal."""
+        wt = create_worktree(git_repo, "stale-rm")
+        shutil.rmtree(wt)
+
+        remove_worktree(git_repo, "stale-rm")
+
+        from forge.git import _run_git
+
+        listing = _run_git("worktree", "list", "--porcelain", cwd=git_repo)
+        assert str(wt) not in listing.stdout
+
+    def test_raises_on_dirty_worktree_without_force(self, git_repo: Path) -> None:
+        """A real removal failure still raises."""
+        wt = create_worktree(git_repo, "dirty-nonforce")
+        (wt / "uncommitted.txt").write_text("dirty content\n")
+
         with pytest.raises(WorktreeRemoveError):
-            remove_worktree(git_repo, "ghost")
+            remove_worktree(git_repo, "dirty-nonforce")
+
+        assert wt.is_dir()
 
     def test_force_removes_dirty_worktree(self, git_repo: Path) -> None:
         wt = create_worktree(git_repo, "dirty-task")
@@ -224,6 +312,41 @@ class TestCommitChanges:
 
         result = _run_git("log", "-1", "--format=%s", cwd=wt)
         assert result.stdout == "step 1: create module"
+
+    def test_retry_after_landed_commit_returns_same_sha(self, git_repo: Path) -> None:
+        """A retried commit whose commit already landed returns HEAD's SHA."""
+        wt = create_worktree(git_repo, "retry-task")
+        (wt / "hello.py").write_text("print('hello')\n")
+
+        first = commit_changes(git_repo, "retry-task", "success")
+        second = commit_changes(git_repo, "retry-task", "success")
+
+        assert second == first
+
+        from forge.git import _run_git
+
+        # No empty second commit was created.
+        assert _run_git("rev-list", "--count", "HEAD", cwd=wt).stdout == "2"
+
+    def test_retry_with_custom_message_returns_same_sha(self, git_repo: Path) -> None:
+        wt = create_worktree(git_repo, "retry-custom")
+        (wt / "file.txt").write_text("content\n")
+
+        first = commit_changes(git_repo, "retry-custom", "success", message="step 1: create module")
+        second = commit_changes(
+            git_repo, "retry-custom", "success", message="step 1: create module"
+        )
+
+        assert second == first
+
+    def test_raises_when_head_message_differs(self, git_repo: Path) -> None:
+        """Nothing staged and a different HEAD message is a genuine empty commit."""
+        wt = create_worktree(git_repo, "stale-head")
+        (wt / "file.txt").write_text("content\n")
+        commit_changes(git_repo, "stale-head", "success")
+
+        with pytest.raises(CommitError, match="Nothing to commit"):
+            commit_changes(git_repo, "stale-head", "failure")
 
 
 # ---------------------------------------------------------------------------

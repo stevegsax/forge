@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 from temporalio import activity
+from temporalio.client import WorkflowFailureError
+from temporalio.exceptions import ApplicationError
 from temporalio.worker import Worker
 
 from forge.activities.conflict_resolution import classify_file_conflicts
@@ -26,13 +28,18 @@ from forge.models import (
     ConflictResolutionCallResult,
     ConflictResolutionInput,
     ConflictResolutionResponse,
+    ContextRequest,
+    ContextResult,
     CreateWorktreeInput,
     CreateWorktreeOutput,
     DetectFileConflictsInput,
     DetectFileConflictsOutput,
+    ExplorationInput,
+    ExplorationResponse,
     FetchBatchResultInput,
     FileOutput,
     ForgeTaskInput,
+    FulfillContextInput,
     LLMCallResult,
     LLMResponse,
     ModelConfig,
@@ -4940,3 +4947,325 @@ class TestBatchFanOutChildTimeoutDerivation:
             r for r in _ST3C_PERSISTED if r.kind == "batch_outcome" and r.status == "missing"
         ]
         assert len(missing) == 1
+
+
+# ===========================================================================
+# T5.2: step-block worktree cleanup and per-attempt exploration
+#
+# These sections build their mock activities inside each helper, closing over a
+# per-test recorder — no module-global scenario state (T5.5 removes the older
+# globals above; nothing new joins them).
+# ===========================================================================
+
+
+def _step_block_activities(
+    calls: list[str],
+    *,
+    raise_in: str = "",
+    plan: Plan | None = None,
+    worktree_paths: list[str] | None = None,
+    fail_first_validation: bool = False,
+) -> list[Callable[..., object]]:
+    """By-name mocks bound to *calls*.
+
+    ``raise_in`` names an activity that fails with a non-retryable
+    ApplicationError — the mid-step exception the cleanup wrap must survive.
+    ``worktree_paths`` hands out a distinct worktree path per create call, so a
+    test can tell which attempt's worktree an activity received.
+    """
+    created = 0
+
+    def _fail_if_selected(name: str) -> None:
+        if name == raise_in:
+            raise ApplicationError(f"{name} blew up", non_retryable=True)
+
+    @activity.defn(name="persist_to_store")
+    async def persist_to_store(req: PersistRequest) -> PersistResult:
+        return PersistResult(kind=req.kind, applied=True)
+
+    @activity.defn(name="create_worktree_activity")
+    async def create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+        nonlocal created
+        path = (
+            worktree_paths[created]
+            if worktree_paths
+            else f"/tmp/repo/.forge-worktrees/{input.task_id}"
+        )
+        created += 1
+        calls.append(f"create_worktree:{path}")
+        return CreateWorktreeOutput(worktree_path=path, branch_name=f"forge/{input.task_id}")
+
+    @activity.defn(name="remove_worktree_activity")
+    async def remove_worktree(input: RemoveWorktreeInput) -> None:
+        # force=True is what makes the activity delete the forge/<task_id>
+        # branch too (tests/test_git.py pins the real branch deletion).
+        calls.append(f"remove_worktree:{input.task_id}:force={input.force}")
+
+    @activity.defn(name="reset_worktree_activity")
+    async def reset_worktree(input: ResetWorktreeInput) -> None:
+        calls.append("reset_worktree")
+
+    @activity.defn(name="commit_changes_activity")
+    async def commit_changes(input: CommitChangesInput) -> CommitChangesOutput:
+        calls.append(f"commit:{input.status}")
+        return CommitChangesOutput(commit_sha="c" * 40)
+
+    @activity.defn(name="assemble_context")
+    async def assemble_context(input: AssembleContextInput) -> AssembledContext:
+        calls.append(f"assemble_context:{input.worktree_path}")
+        return AssembledContext(
+            task_id=input.task_id, system_prompt="system prompt", user_prompt="user prompt"
+        )
+
+    @activity.defn(name="assemble_planner_context")
+    async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
+        calls.append("assemble_planner_context")
+        return PlannerInput(
+            task_id=input.task_id, system_prompt="planner system", user_prompt="planner user"
+        )
+
+    @activity.defn(name="call_planner")
+    async def call_planner(input: PlannerInput) -> PlanCallResult:
+        calls.append("call_planner")
+        assert plan is not None
+        return PlanCallResult(
+            task_id=input.task_id,
+            plan=plan,
+            model_name="mock-planner",
+            input_tokens=300,
+            output_tokens=150,
+            latency_ms=500.0,
+        )
+
+    @activity.defn(name="assemble_step_context")
+    async def assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
+        calls.append(f"assemble_step_context:{input.step.step_id}")
+        return AssembledContext(
+            task_id=input.task_id, system_prompt="step system", user_prompt="step user"
+        )
+
+    @activity.defn(name="assemble_sub_task_context")
+    async def assemble_sub_task_context(input: AssembleSubTaskContextInput) -> AssembledContext:
+        calls.append(f"assemble_sub_task_context:{input.worktree_path}")
+        return AssembledContext(
+            task_id=input.parent_task_id, system_prompt="sub system", user_prompt="sub user"
+        )
+
+    @activity.defn(name="call_exploration_llm")
+    async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
+        calls.append(f"call_exploration_llm:{input.worktree_path}")
+        return ExplorationResponse(
+            requests=[ContextRequest(provider="file_content", reasoning="need a peek")]
+        )
+
+    @activity.defn(name="fulfill_context_requests")
+    async def fulfill_context_requests(input: FulfillContextInput) -> list[ContextResult]:
+        calls.append(f"fulfill_context_requests:{input.worktree_path}")
+        return [
+            ContextResult(provider="file_content", content="explored content", estimated_tokens=10)
+        ]
+
+    @activity.defn(name="call_llm")
+    async def call_llm(context: AssembledContext) -> LLMCallResult:
+        calls.append(f"call_llm:{context.worktree_path}")
+        return LLMCallResult(
+            task_id=context.task_id,
+            response=LLMResponse(
+                files=[FileOutput(file_path="hello.py", content="print('hello')\n")],
+                explanation="Created hello module."
+                + (" [explored]" if "Exploration Results" in context.system_prompt else ""),
+            ),
+            model_name="mock-model",
+            input_tokens=100,
+            output_tokens=50,
+            latency_ms=200.0,
+        )
+
+    @activity.defn(name="write_output")
+    async def write_output(input: WriteOutputInput) -> WriteResult:
+        calls.append("write_output")
+        _fail_if_selected("write_output")
+        files = input.llm_result.response.files
+        return WriteResult(
+            task_id=input.llm_result.task_id,
+            files_written=[f.file_path for f in files],
+            output_files={f.file_path: f.content for f in files},
+        )
+
+    @activity.defn(name="validate_output")
+    async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+        calls.append("validate_output")
+        # Attempt 1 fails, every later attempt passes: enough to exercise the
+        # retry path without any scripted global state.
+        failures = sum(1 for c in calls if c == "validate_output")
+        return (
+            [_PASS_VALIDATION] if failures > 1 or not fail_first_validation else [_FAIL_VALIDATION]
+        )
+
+    return [
+        persist_to_store,
+        create_worktree,
+        remove_worktree,
+        reset_worktree,
+        commit_changes,
+        assemble_context,
+        assemble_planner_context,
+        call_planner,
+        assemble_step_context,
+        assemble_sub_task_context,
+        call_exploration_llm,
+        fulfill_context_requests,
+        call_llm,
+        write_output,
+        validate_output,
+    ]
+
+
+class TestStepBlockCleanup:
+    """A mid-step exception leaves no worktree and no branch behind (T5.2).
+
+    ``remove_worktree_activity`` is asserted with ``force=True``, which is what
+    makes the activity delete the ``forge/<task_id>`` branch as well; that the
+    branch really disappears is pinned against real git in
+    ``tests/test_git.py::TestRemoveWorktree``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_single_step_cleans_up(self, env: WorkflowEnvironment) -> None:
+        calls: list[str] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_step_block_activities(calls, raise_in="write_output"),
+        ):
+            with pytest.raises(WorkflowFailureError):
+                await env.client.execute_workflow(
+                    ForgeTaskWorkflow.run,
+                    ForgeTaskInput(
+                        task=TaskDefinition(task_id="boom-single", description="d"),
+                        repo_root="/tmp/repo",
+                        max_attempts=2,
+                        max_exploration_rounds=0,
+                        sync_mode=True,
+                    ),
+                    id="test-cleanup-single",
+                    task_queue=FORGE_TASK_QUEUE,
+                )
+        assert "remove_worktree:boom-single:force=True" in calls
+        # It failed inside the first attempt, so no second attempt ran.
+        assert calls.count("write_output") == 1
+
+    @pytest.mark.asyncio
+    async def test_planned_step_cleans_up_the_borrowed_worktree(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """The plan's worktree belongs to _run_planned, so its wrap does the cleanup."""
+        calls: list[str] = []
+        plan = Plan(
+            task_id="boom-planned",
+            steps=[PlanStep(step_id="step-1", description="d", target_files=["hello.py"])],
+            explanation="one step",
+        )
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_step_block_activities(calls, raise_in="write_output", plan=plan),
+        ):
+            with pytest.raises(WorkflowFailureError):
+                await env.client.execute_workflow(
+                    ForgeTaskWorkflow.run,
+                    ForgeTaskInput(
+                        task=TaskDefinition(task_id="boom-planned", description="d"),
+                        repo_root="/tmp/repo",
+                        plan=True,
+                        max_step_attempts=2,
+                        max_exploration_rounds=0,
+                        sync_mode=True,
+                    ),
+                    id="test-cleanup-planned",
+                    task_queue=FORGE_TASK_QUEUE,
+                )
+        assert "remove_worktree:boom-planned:force=True" in calls
+
+    @pytest.mark.asyncio
+    async def test_sub_task_cleans_up(self, env: WorkflowEnvironment) -> None:
+        calls: list[str] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeSubTaskWorkflow],
+            activities=_step_block_activities(calls, raise_in="write_output"),
+        ):
+            with pytest.raises(WorkflowFailureError):
+                await env.client.execute_workflow(
+                    ForgeSubTaskWorkflow.run,
+                    SubTaskInput(
+                        parent_task_id="boom-parent",
+                        parent_description="d",
+                        sub_task=SubTask(
+                            sub_task_id="st1", description="d", target_files=["hello.py"]
+                        ),
+                        repo_root="/tmp/repo",
+                        parent_branch="forge/boom-parent",
+                        max_attempts=2,
+                        sync_mode=True,
+                    ),
+                    id="test-cleanup-subtask",
+                    task_queue=FORGE_TASK_QUEUE,
+                )
+        assert "remove_worktree:boom-parent.sub.st1:force=True" in calls
+
+
+class TestExplorationPerAttempt:
+    @pytest.mark.asyncio
+    async def test_each_attempt_explores_its_own_worktree(self, env: WorkflowEnvironment) -> None:
+        """Exploration is a hook *inside* the attempt loop, so it sees that
+        attempt's worktree — not attempt 1's, which retry has already removed."""
+        calls: list[str] = []
+        paths = ["/tmp/repo/.forge-worktrees/explore-1", "/tmp/repo/.forge-worktrees/explore-2"]
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_step_block_activities(
+                calls, worktree_paths=paths, fail_first_validation=True
+            ),
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=TaskDefinition(task_id="explore-task", description="d"),
+                    repo_root="/tmp/repo",
+                    max_attempts=2,
+                    max_exploration_rounds=1,
+                    sync_mode=True,
+                ),
+                id="test-exploration-per-attempt",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.SUCCESS
+        # Ordering: exploration runs between assemble and the generation call,
+        # once per attempt, against that attempt's own worktree.
+        assert calls == [
+            f"create_worktree:{paths[0]}",
+            f"assemble_context:{paths[0]}",
+            f"call_exploration_llm:{paths[0]}",
+            f"fulfill_context_requests:{paths[0]}",
+            f"call_llm:{paths[0]}",
+            "write_output",
+            "validate_output",
+            "remove_worktree:explore-task:force=True",
+            f"create_worktree:{paths[1]}",
+            f"assemble_context:{paths[1]}",
+            f"call_exploration_llm:{paths[1]}",
+            f"fulfill_context_requests:{paths[1]}",
+            f"call_llm:{paths[1]}",
+            "write_output",
+            "validate_output",
+            "commit:success",
+        ]
+        # The explored context reached the generation call, not just the loop.
+        assert result.llm_stats is not None

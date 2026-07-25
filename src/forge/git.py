@@ -5,9 +5,15 @@ Each task gets its own worktree branched from the base branch, enabling parallel
 independent work without conflicts.
 
 Design follows Function Core / Imperative Shell:
-- Pure functions: worktree_path, branch_name, commit_message, _validate_task_id
+- Pure functions: worktree_path, branch_name, commit_message, _validate_task_id,
+  _registered_worktree_paths
 - Subprocess wrapper: _run_git (thin, never raises on non-zero; uses SubprocessResult)
 - Imperative shell: create_worktree, remove_worktree, commit_changes, etc.
+
+The worktree and commit seams are idempotent so they survive a Temporal activity
+retry and a crashed prior run: creating recreates over leftovers, committing
+recognises a commit that already landed, and removing an absent worktree is a
+no-op.
 """
 
 from __future__ import annotations
@@ -110,6 +116,22 @@ def commit_message(task_id: str, status: str) -> str:
     return f"forge({task_id}): {status}"
 
 
+_WORKTREE_LINE_PREFIX = "worktree "
+
+
+def _registered_worktree_paths(porcelain_stdout: str) -> frozenset[str]:
+    """Extract the worktree paths from ``git worktree list --porcelain`` output.
+
+    The porcelain format opens each record with a ``worktree <path>`` line;
+    every other line is an attribute of the record and is ignored here.
+    """
+    return frozenset(
+        line[len(_WORKTREE_LINE_PREFIX) :]
+        for line in porcelain_stdout.splitlines()
+        if line.startswith(_WORKTREE_LINE_PREFIX)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Subprocess wrapper
 # ---------------------------------------------------------------------------
@@ -161,11 +183,38 @@ def discover_repo_root(path: Path | None = None) -> Path:
     return Path(result.stdout)
 
 
+def _is_registered_worktree(repo_root: Path, wt_path: Path) -> bool:
+    """Report whether git currently registers *wt_path* as a worktree of the repo."""
+    result = _run_git("worktree", "list", "--porcelain", cwd=repo_root)
+    if not result.ok:
+        return False
+    return str(wt_path) in _registered_worktree_paths(result.stdout)
+
+
+def _delete_branch(repo_root: Path, br_name: str, *, force: bool) -> None:
+    """Delete a task branch, best effort.
+
+    Failure is acceptable (the branch may not exist, may already have been
+    deleted, or may be unmerged under a non-forced delete), so the result is
+    intentionally ignored.
+    """
+    _run_git("branch", "-D" if force else "-d", br_name, cwd=repo_root)
+
+
 def create_worktree(repo_root: Path, task_id: str, base_branch: str = "main") -> Path:
-    """Create a new git worktree for a task.
+    """Create a git worktree for a task, recreating over a crashed prior run.
 
     Creates branch ``forge/<task_id>`` from *base_branch* and checks it out
     into ``<repo_root>/.forge-worktrees/<task_id>``.
+
+    Leftovers from a prior run that died mid-task are cleared first: stale
+    registrations are pruned, a worktree still registered at the same path is
+    force-removed, and an existing branch is reset rather than rejected
+    (``worktree add -B``). Worktrees are disposable, and Temporal workflow-id
+    uniqueness already excludes two live runs of the same task id, so a
+    leftover is always debris rather than concurrent work. A leftover
+    *directory* that git does not know about is deliberately left alone and
+    surfaces as a create error — this function never deletes untracked paths.
 
     Args:
         repo_root: Path to the repository root.
@@ -181,7 +230,13 @@ def create_worktree(repo_root: Path, task_id: str, base_branch: str = "main") ->
     wt_path = worktree_path(repo_root, task_id)
     br_name = branch_name(task_id)
 
-    result = _run_git("worktree", "add", "-b", br_name, str(wt_path), base_branch, cwd=repo_root)
+    # Clear debris from a crashed prior run: prune drops registrations whose
+    # directories are gone; anything still registered at this path is removed.
+    _run_git("worktree", "prune", cwd=repo_root)
+    if _is_registered_worktree(repo_root, wt_path):
+        _run_git("worktree", "remove", "--force", str(wt_path), cwd=repo_root)
+
+    result = _run_git("worktree", "add", "-B", br_name, str(wt_path), base_branch, cwd=repo_root)
     if not result.ok:
         msg = f"Failed to create worktree for task {task_id!r}: {result.stderr}"
         raise WorktreeCreateError(msg)
@@ -192,16 +247,29 @@ def create_worktree(repo_root: Path, task_id: str, base_branch: str = "main") ->
 def remove_worktree(repo_root: Path, task_id: str, *, force: bool = False) -> None:
     """Remove a git worktree and its associated branch.
 
+    Removal is idempotent: when the worktree directory is already gone — a
+    retried removal, or a removal that landed before the activity was retried —
+    the stale registration (if any) is pruned, the branch delete still runs, and
+    the call returns successfully. Genuine removal failures, such as a worktree
+    with uncommitted changes and *force* unset, still raise.
+
     Args:
         repo_root: Path to the repository root.
         task_id: Unique task identifier.
         force: If True, remove even if the worktree has uncommitted changes.
 
     Raises:
-        WorktreeRemoveError: If the worktree could not be removed.
+        WorktreeRemoveError: If an existing worktree could not be removed.
     """
     wt_path = worktree_path(repo_root, task_id)
     br_name = branch_name(task_id)
+
+    if not wt_path.is_dir():
+        # Nothing left to remove. Prune clears a registration whose directory
+        # has vanished; without the directory `worktree remove` would only fail.
+        _run_git("worktree", "prune", cwd=repo_root)
+        _delete_branch(repo_root, br_name, force=force)
+        return
 
     remove_args = ["worktree", "remove", str(wt_path)]
     if force:
@@ -212,10 +280,7 @@ def remove_worktree(repo_root: Path, task_id: str, *, force: bool = False) -> No
         msg = f"Failed to remove worktree for task {task_id!r}: {result.stderr}"
         raise WorktreeRemoveError(msg)
 
-    # Clean up the branch. Failure is acceptable (branch may not exist or
-    # may have already been deleted), so we intentionally ignore the result.
-    delete_flag = "-D" if force else "-d"
-    _run_git("branch", delete_flag, br_name, cwd=repo_root)
+    _delete_branch(repo_root, br_name, force=force)
 
 
 def commit_changes(
@@ -227,6 +292,12 @@ def commit_changes(
 ) -> str:
     """Stage and commit changes in a task's worktree.
 
+    Committing is idempotent under activity retry: when nothing is staged, the
+    intended commit message is compared with HEAD's. A match means the commit
+    landed on a prior attempt, so HEAD's SHA is returned instead of failing; a
+    mismatch means there was genuinely nothing to commit, which is still an
+    error.
+
     Args:
         repo_root: Path to the repository root.
         task_id: Unique task identifier.
@@ -235,12 +306,15 @@ def commit_changes(
         message: Override the auto-generated commit message.
 
     Returns:
-        The commit SHA.
+        The commit SHA — the new commit's, or HEAD's when the commit had
+        already landed.
 
     Raises:
-        CommitError: If staging or committing fails.
+        CommitError: If staging or committing fails, or if there is nothing to
+            commit and HEAD is not the intended commit.
     """
     wt_path = worktree_path(repo_root, task_id)
+    msg_text = message if message is not None else commit_message(task_id, status)
 
     # Stage
     if file_paths:
@@ -252,20 +326,32 @@ def commit_changes(
         msg = f"Failed to stage changes for task {task_id!r}: {result.stderr}"
         raise CommitError(msg)
 
-    # Check if there's anything to commit
+    # Nothing staged: either this attempt is a retry of a commit that already
+    # landed (HEAD carries the intended message) or there is genuinely nothing
+    # to commit.
     diff_result = _run_git("diff", "--cached", "--quiet", cwd=wt_path)
     if diff_result.ok:
-        msg = f"Nothing to commit for task {task_id!r}"
-        raise CommitError(msg)
+        head_message = _run_git("log", "-1", "--format=%B", cwd=wt_path)
+        if not head_message.ok or head_message.stdout.strip() != msg_text.strip():
+            msg = f"Nothing to commit for task {task_id!r}"
+            raise CommitError(msg)
+        return _head_sha(wt_path, task_id)
 
     # Commit
-    msg_text = message if message is not None else commit_message(task_id, status)
     result = _run_git("commit", "-m", msg_text, cwd=wt_path)
     if not result.ok:
         msg = f"Failed to commit for task {task_id!r}: {result.stderr}"
         raise CommitError(msg)
 
-    # Get the commit SHA
+    return _head_sha(wt_path, task_id)
+
+
+def _head_sha(wt_path: Path, task_id: str) -> str:
+    """Read the worktree's HEAD commit SHA.
+
+    Raises:
+        CommitError: If the SHA could not be read.
+    """
     sha_result = _run_git("rev-parse", "HEAD", cwd=wt_path)
     if not sha_result.ok:
         msg = f"Failed to read commit SHA for task {task_id!r}: {sha_result.stderr}"
