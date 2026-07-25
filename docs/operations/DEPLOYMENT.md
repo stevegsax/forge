@@ -210,7 +210,7 @@ Worker/CLI environment (the launchd agents read these from
 | `FORGE_LOG_DIR` | App log directory (empty = no file logging) | `$XDG_STATE_HOME/forge/logs` |
 | `FORGE_OTEL_EXPORTER` | `console`/`otlp_grpc`/`otlp_http`/`none` (code default `console`) | `none` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for the `otlp_*` exporters — the standard OpenTelemetry SDK var (forge's own `FORGE_OTEL_ENDPOINT` was deleted at T3.6) | unset (exporter is `none`) |
-| `FORGE_WORKER_IDENTITY` | Worker identity in Temporal | set by the launchd agents (`desktop-forge-worker-1/2`) |
+| `FORGE_WORKER_IDENTITY` | *Base* worker identity in Temporal (the launch-time git version is appended); read by all three workers' `--worker-identity` option | set per lane: launchd agents `prod-forge-worker-1/2`, `prod-ocr-worker`, `prod-pbook-worker`; `make dev-worker` sets `dev-<app>-worker` |
 | `ANTHROPIC_API_KEY` | Anthropic SDK auth | key |
 | `MISTRAL_API_KEY` | OCR (ocr app). **Required by the ocr worker** — it submits and polls its own Mistral batches and fails fast at startup without it (T4.2). The forge worker never reads it (anthropic-only transport) | key |
 | `OPENAI_API_KEY` | pbook embeddings | key (if pbook used) |

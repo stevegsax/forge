@@ -154,8 +154,13 @@ workers-status:
 
 # Staging-lane worker (T0.9 dev namespace) in a detached tmux session, so it
 # doesn't hold the terminal. Sources the dev profile with `set -a` (works for
-# both plain and export-prefixed profile styles), declares FORGE_ENV=dev, and
-# runs the chosen worker. Crash-safe: the session is created with
+# both plain and export-prefixed profile styles), declares FORGE_ENV=dev plus the
+# lane's base Temporal identity (FORGE_WORKER_IDENTITY=dev-<worker>-worker, which
+# the worker version-stamps to dev-ocr-worker@<sha> — same string as the tmux
+# session name here and as the row `make workers-status` prints, so the lane a
+# poller belongs to reads the same everywhere), and runs the chosen worker.
+# Both exports land AFTER the profile source, so the lane can never be
+# contradicted by a stale value inside dev.env. Crash-safe: the session is created with
 # remain-on-exit on (a crashed worker leaves a dead pane holding the final
 # output instead of vaporizing the session and its scrollback) and the pane
 # output is tee'd to a persistent log, so post-mortems survive both crashes
@@ -181,7 +186,7 @@ dev-worker:
 	else \
 		mkdir -p "$$(dirname "$(DEV_WORKER_LOG)")"; \
 		tmux new-session -d -s dev-$(WORKER)-worker \
-			'set -a; . "$${XDG_CONFIG_HOME:-$$HOME/.config}/forge/envs/dev.env"; set +a; export FORGE_ENV=dev; $(DEV_WORKER_CMD) 2>&1 | tee -a "$(DEV_WORKER_LOG)"' \; \
+			'set -a; . "$${XDG_CONFIG_HOME:-$$HOME/.config}/forge/envs/dev.env"; set +a; export FORGE_ENV=dev FORGE_WORKER_IDENTITY=dev-$(WORKER)-worker; $(DEV_WORKER_CMD) 2>&1 | tee -a "$(DEV_WORKER_LOG)"' \; \
 			set-option -t dev-$(WORKER)-worker remain-on-exit on; \
 		sleep 3; \
 		if ! tmux has-session -t dev-$(WORKER)-worker 2>/dev/null; then \

@@ -84,21 +84,22 @@ class TestComposeIdentity:
     @pytest.mark.parametrize(
         ("base", "version", "expected"),
         [
-            ("desktop-forge-worker-1", "bb64d88", "desktop-forge-worker-1@bb64d88"),
-            ("desktop-forge-worker-1", "bb64d88-dirty", "desktop-forge-worker-1@bb64d88-dirty"),
-            (None, "bb64d88", "12345@desktop@bb64d88"),
-            ("desktop-forge-worker-1", None, "desktop-forge-worker-1"),
+            ("prod-forge-worker-1", "bb64d88", "prod-forge-worker-1@bb64d88"),
+            ("prod-forge-worker-1", "bb64d88-dirty", "prod-forge-worker-1@bb64d88-dirty"),
+            ("dev-ocr-worker", "bb64d88", "dev-ocr-worker@bb64d88"),
+            (None, "bb64d88", "12345@buchla@bb64d88"),
+            ("prod-forge-worker-1", None, "prod-forge-worker-1"),
             (None, None, None),
         ],
     )
     def test_composition_table(
         self, base: str | None, version: str | None, expected: str | None
     ) -> None:
-        assert compose_identity(base, version, "12345@desktop") == expected
+        assert compose_identity(base, version, "12345@buchla") == expected
 
     def test_empty_base_falls_back(self) -> None:
         # An empty string is as uninformative as None; the SDK-style default wins.
-        assert compose_identity("", "bb64d88", "12345@desktop") == "12345@desktop@bb64d88"
+        assert compose_identity("", "bb64d88", "12345@buchla") == "12345@buchla@bb64d88"
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +157,8 @@ class TestCodeVersion:
 class TestStampedWorkerIdentity:
     def test_stamps_supplied_base(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(git_repo)
-        expected = f"desktop-forge-worker-1@{_head_short_sha(git_repo)}"
-        assert stamped_worker_identity("desktop-forge-worker-1") == expected
+        expected = f"prod-forge-worker-1@{_head_short_sha(git_repo)}"
+        assert stamped_worker_identity("prod-forge-worker-1") == expected
 
     def test_stamps_sdk_default_base_when_none(
         self, git_repo: Path, monkeypatch: pytest.MonkeyPatch
@@ -178,7 +179,7 @@ class TestStampedWorkerIdentity:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        assert stamped_worker_identity("desktop-forge-worker-1") == "desktop-forge-worker-1"
+        assert stamped_worker_identity("prod-forge-worker-1") == "prod-forge-worker-1"
 
     def test_unknown_version_and_no_base_stays_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -7,10 +7,17 @@ up at login.
 | Agent | Behavior |
 | --- | --- |
 | `com.saxcapital.forge-stack` | RunAtLoad one-shot: `podman machine start` if needed, then `make stack-up` |
-| `com.saxcapital.forge-worker-1` / `-2` | KeepAlive: `uv run forge worker` (identities `desktop-forge-worker-1/2`, each suffixed with the git version at launch: `…-1@bb64d88`, `-dirty` if the tree was modified) |
-| `com.saxcapital.pbook-worker` | KeepAlive: `uv run pbook worker` (opt-in, `--with-pbook`) |
-| `com.saxcapital.ocr-worker` | KeepAlive: `uv run --package ocr ocr worker` (opt-in, `--with-ocr`) |
+| `com.saxcapital.forge-worker-1` / `-2` | KeepAlive: `uv run forge worker` (identities `prod-forge-worker-1/2`) |
+| `com.saxcapital.pbook-worker` | KeepAlive: `uv run pbook worker` (identity `prod-pbook-worker`; opt-in, `--with-pbook`) |
+| `com.saxcapital.ocr-worker` | KeepAlive: `uv run --package ocr ocr worker` (identity `prod-ocr-worker`; opt-in, `--with-ocr`) |
 | `com.saxcapital.db-backup` | Daily 03:30: `pg_dump` forge + pbook → S3 (opt-in, `--with-backup`) |
+
+Each worker identity is a *base*: the worker appends the git version of the
+tree it was launched from, so a poller reports `prod-forge-worker-1@bb64d88`
+(`-dirty` when the tree had uncommitted changes at launch). The `prod-` prefix
+names the lane, matching `FORGE_ENV=prod` and the `default` namespace these
+agents poll; the tmux staging workers use `dev-<app>-worker`. See
+[WORKERS.md](../../docs/operations/WORKERS.md#which-code-is-a-worker-running).
 
 ## Install
 
@@ -116,6 +123,46 @@ opt-in) — it is not an error.
 `make workers-status` shows both lanes — the launchd production agents and
 the dev tmux sessions, with crashed dev panes called out (read-only, safe
 to run anytime).
+
+### Changing a plist (worker identities, environment, KeepAlive)
+
+`make workers-restart` cannot adopt a changed **job definition**, by
+construction. It signals the running pid; `KeepAlive` relaunches the agent
+from the definition launchd already has loaded, which it read at the last
+`launchctl bootstrap`. Editing `install.sh` — or the rendered
+`~/Library/LaunchAgents/com.saxcapital.*.plist` — changes what the *next*
+bootstrap will load and nothing else. That asymmetry is the point: a restart
+picks up new **code** (the relaunch re-execs `uv run` against the live
+checkout) and is inert for **configuration** (`ProgramArguments`,
+`EnvironmentVariables`, `KeepAlive`).
+
+`install.sh` is the only thing that reloads a definition. Per agent it
+`launchctl bootout`s the label, waits for the teardown to finish, re-renders
+the plist from the template, then `launchctl bootstrap`s it again. So the
+sequence that adopts the lane-based identities (each agent's second
+`ProgramArguments` entry, e.g. `prod-forge-worker-1`) is:
+
+```bash
+deploy/launchd/install.sh --with-backup   # repeat the SAME opt-in flags used originally
+make workers-status                       # agents loaded
+temporal task-queue describe --task-queue forge-task-queue   # new identity + version stamp
+```
+
+Two things to know before running it:
+
+- **Repeat the original opt-in flags.** Agents not selected by the flags never
+  enter the installer's list, so they are neither booted out nor updated: a run
+  without `--with-ocr` leaves a running ocr agent on its old definition (old
+  identity included), silently.
+- **`bootout` terminates; it does not drain.** It will not wait out the
+  worker's 5-minute `graceful_shutdown_timeout`, so in-flight activities are
+  cut short and Temporal retries them on the relaunched worker. Nothing is
+  lost, but work is repeated — prefer a quiet queue.
+
+The dev lane has no such indirection: `make dev-worker-restart WORKER=<name>`
+kills the tmux session and rebuilds the command line — including
+`FORGE_WORKER_IDENTITY=dev-<worker>-worker` — from the current Makefile, so a
+changed base takes effect at that restart.
 
 ## Nightly backups (`--with-backup`)
 

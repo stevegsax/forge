@@ -403,11 +403,20 @@ def main(env_profile: str | None) -> None:
     default=DEFAULT_TEMPORAL_ADDRESS,
     show_default=True,
 )
-def worker_cmd(temporal_address: str) -> None:
+@click.option(
+    "--worker-identity",
+    envvar="FORGE_WORKER_IDENTITY",
+    default=None,
+    help=(
+        "Base worker identity reported to Temporal (default: {pid}@{hostname}); "
+        "the launch-time git version is appended when known."
+    ),
+)
+def worker_cmd(temporal_address: str, worker_identity: str | None) -> None:
     """Run the OCR Temporal worker (ocr-task-queue)."""
     from ocr.worker import run_worker
 
-    asyncio.run(run_worker(temporal_address))
+    asyncio.run(run_worker(temporal_address, identity=worker_identity))
 
 
 #: Config fail-fast message for ``ocr migrate`` when ``FORGE_DB_URL`` is unset.

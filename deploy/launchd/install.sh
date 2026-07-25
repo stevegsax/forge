@@ -52,12 +52,19 @@ $WITH_BACKUP && AGENTS+=(db-backup)
 $UNINSTALL && AGENTS=(forge-stack forge-worker-1 forge-worker-2 pbook-worker ocr-worker db-backup)
 
 program_args() {  # program_args <name> -> <string> elements, \n-escaped for awk -v
+  # Each worker's second argument is its BASE Temporal identity, which
+  # run-worker.sh exports as FORGE_WORKER_IDENTITY; the worker appends the
+  # launch-time git version (prod-forge-worker-1@<sha>). The base names the lane,
+  # not the machine: "desktop-" dated from the D99 EC2 retirement and stopped
+  # distinguishing anything once the desktop was the only host, whereas "prod-"
+  # agrees with FORGE_ENV=prod (set below) and the `default` namespace these
+  # agents poll — the dev lane's tmux workers use dev-<app>-worker.
   local w="$SCRIPT_DIR/run-worker.sh"
   case "$1" in
     forge-stack)    printf '        <string>%s</string>\\n' "$SCRIPT_DIR/start-stack.sh" ;;
-    forge-worker-*) printf '        <string>%s</string>\\n' "$w" forge "desktop-${1}" ;;
-    pbook-worker)   printf '        <string>%s</string>\\n' "$w" pbook ;;
-    ocr-worker)     printf '        <string>%s</string>\\n' "$w" ocr ;;
+    forge-worker-*) printf '        <string>%s</string>\\n' "$w" forge "prod-${1}" ;;
+    pbook-worker)   printf '        <string>%s</string>\\n' "$w" pbook "prod-${1}" ;;
+    ocr-worker)     printf '        <string>%s</string>\\n' "$w" ocr "prod-${1}" ;;
   esac
 }
 

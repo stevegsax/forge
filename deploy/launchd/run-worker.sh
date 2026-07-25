@@ -30,9 +30,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 worker="${1:?usage: run-worker.sh <forge|pbook|ocr> [worker-identity]}"
 cd "$REPO_ROOT"
 
+# Optional base identity, for every worker (install.sh passes prod-<agent-name>).
+# Each CLI reads FORGE_WORKER_IDENTITY through its own --worker-identity option,
+# and the worker appends the launch-time git version, so a poller reports e.g.
+# prod-ocr-worker@<sha>. Exported AFTER load-env.sh so the plist argument — the
+# thing that names this specific agent — wins over any profile value.
+[[ -n "${2:-}" ]] && export FORGE_WORKER_IDENTITY="$2"
+
 case "$worker" in
   forge)
-    [[ -n "${2:-}" ]] && export FORGE_WORKER_IDENTITY="$2"
     exec uv run forge worker
     ;;
   pbook)

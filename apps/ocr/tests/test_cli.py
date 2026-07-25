@@ -195,21 +195,46 @@ class TestStartSubmit:
 
 
 class TestWorkerCommand:
-    def test_runs_worker_with_default_address(self, cli_runner: CliRunner) -> None:
+    def test_runs_worker_with_default_address(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORGE_WORKER_IDENTITY", raising=False)
         with patch("ocr.worker.run_worker") as mock_run:
             mock_run.side_effect = _async_result(None)
             result = cli_runner.invoke(main, ["worker"])
             assert result.exit_code == 0
-            mock_run.assert_called_once_with("localhost:7233")
+            mock_run.assert_called_once_with("localhost:7233", identity=None)
 
-    def test_runs_worker_with_custom_address(self, cli_runner: CliRunner) -> None:
+    def test_runs_worker_with_custom_address(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORGE_WORKER_IDENTITY", raising=False)
         with patch("ocr.worker.run_worker") as mock_run:
             mock_run.side_effect = _async_result(None)
             result = cli_runner.invoke(
                 main, ["worker", "--temporal-address", "temporal.internal:7233"]
             )
             assert result.exit_code == 0
-            mock_run.assert_called_once_with("temporal.internal:7233")
+            mock_run.assert_called_once_with("temporal.internal:7233", identity=None)
+
+    def test_worker_identity_option_reaches_run_worker(self, cli_runner: CliRunner) -> None:
+        with patch("ocr.worker.run_worker") as mock_run:
+            mock_run.side_effect = _async_result(None)
+            result = cli_runner.invoke(main, ["worker", "--worker-identity", "prod-ocr-worker"])
+            assert result.exit_code == 0
+            mock_run.assert_called_once_with("localhost:7233", identity="prod-ocr-worker")
+
+    def test_worker_identity_env_var_reaches_run_worker(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The launchd/tmux lanes set the base this way (FORGE_WORKER_IDENTITY),
+        # never on the command line.
+        monkeypatch.setenv("FORGE_WORKER_IDENTITY", "dev-ocr-worker")
+        with patch("ocr.worker.run_worker") as mock_run:
+            mock_run.side_effect = _async_result(None)
+            result = cli_runner.invoke(main, ["worker"])
+            assert result.exit_code == 0
+            mock_run.assert_called_once_with("localhost:7233", identity="dev-ocr-worker")
 
 
 # ---------------------------------------------------------------------------

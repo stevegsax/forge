@@ -377,13 +377,22 @@ def main(ctx: click.Context, verbose: bool, env_profile: str | None) -> None:
     default="localhost:7233",
     help="Temporal server address.",
 )
-def worker(temporal_address: str) -> None:
+@click.option(
+    "--worker-identity",
+    envvar="FORGE_WORKER_IDENTITY",
+    default=None,
+    help=(
+        "Base worker identity reported to Temporal (default: {pid}@{hostname}); "
+        "the launch-time git version is appended when known."
+    ),
+)
+def worker(temporal_address: str, worker_identity: str | None) -> None:
     """Start the pbook Temporal worker."""
     import asyncio
 
     from pbook.worker import run_worker
 
-    asyncio.run(run_worker(address=temporal_address))
+    asyncio.run(run_worker(address=temporal_address, identity=worker_identity))
 
 
 @main.command(name="list")

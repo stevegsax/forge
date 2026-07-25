@@ -42,6 +42,47 @@ def _seed_entry(engine, **kwargs):
 
 
 # ---------------------------------------------------------------------------
+# worker command
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerCommand:
+    """``pbook worker`` forwards its address and base identity to run_worker.
+
+    The lanes set the base through ``FORGE_WORKER_IDENTITY`` (launchd passes
+    ``prod-pbook-worker``, ``make dev-worker WORKER=pbook`` passes
+    ``dev-pbook-worker``); the worker then appends the launch-time git version.
+    """
+
+    @staticmethod
+    def _capturing_run_worker(captured: dict[str, object]):
+        async def _fake(**kwargs: object) -> None:
+            captured.update(kwargs)
+
+        return _fake
+
+    def test_defaults_to_no_identity(self, monkeypatch) -> None:
+        monkeypatch.delenv("FORGE_WORKER_IDENTITY", raising=False)
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("pbook.worker.run_worker", self._capturing_run_worker(captured))
+
+        result = CliRunner().invoke(main, ["worker"])
+
+        assert result.exit_code == 0
+        assert captured == {"address": "localhost:7233", "identity": None}
+
+    def test_identity_env_var_reaches_run_worker(self, monkeypatch) -> None:
+        monkeypatch.setenv("FORGE_WORKER_IDENTITY", "prod-pbook-worker")
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("pbook.worker.run_worker", self._capturing_run_worker(captured))
+
+        result = CliRunner().invoke(main, ["worker"])
+
+        assert result.exit_code == 0
+        assert captured["identity"] == "prod-pbook-worker"
+
+
+# ---------------------------------------------------------------------------
 # list command
 # ---------------------------------------------------------------------------
 

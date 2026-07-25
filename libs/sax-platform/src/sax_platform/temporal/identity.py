@@ -7,8 +7,8 @@ started are the modules it will run until it is restarted. The working tree does
 not stand still — the launchd/tmux workers ``exec uv run`` straight out of the
 live repo (D99), so the tree can be several commits (or a half-finished edit)
 ahead of any given running process. Nothing in Temporal records which code a
-poller is actually executing: a static identity like ``desktop-forge-worker-1``
-names the slot, not the build.
+poller is actually executing: a static identity like ``prod-forge-worker-1``
+names the lane and the slot, not the build.
 
 Stamping the git version captured *once at startup* into the identity makes the
 server the authority::
@@ -20,14 +20,16 @@ running?" is a query rather than a guess.
 
 Shape of the stamped identity
 -----------------------------
-``<base>@<version>``, where *base* is the caller's identity (forge's
-``FORGE_WORKER_IDENTITY``) or, when it has none, the same ``{pid}@{hostname}``
-string the SDK would have defaulted to — stamping must never cost the
-process-identifying half of the answer::
+``<base>@<version>``, where *base* is the caller's identity
+(``FORGE_WORKER_IDENTITY`` / ``--worker-identity``, which every supervised
+worker sets to its lane: ``prod-forge-worker-1``, ``dev-ocr-worker``) or, when
+it has none, the same ``{pid}@{hostname}`` string the SDK would have defaulted
+to — stamping must never cost the process-identifying half of the answer::
 
-    desktop-forge-worker-1@bb64d88
-    desktop-forge-worker-1@bb64d88-dirty
-    12345@desktop@bb64d88
+    prod-forge-worker-1@bb64d88
+    prod-forge-worker-1@bb64d88-dirty
+    dev-ocr-worker@bb64d88
+    12345@buchla@bb64d88
 
 The ``-dirty`` suffix is load-bearing rather than cosmetic: because the worker
 execs the live tree, a launch from a modified tree means the commit alone does

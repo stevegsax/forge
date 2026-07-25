@@ -96,13 +96,20 @@ pgrep -f "forge worker"
 
 Each worker reports an identity string to the Temporal server. By default, the Python SDK sets this to `{pid}@{hostname}`. This identity appears in workflow history events and in the task queue poller list, so you can trace which worker executed a given activity.
 
-The default identity is adequate for single-machine development. In multi-machine or containerized deployments, the default is often unhelpful (container PIDs are always `1`, cloud hostnames are random strings). In those environments, set a custom identity that maps back to the machine or deployment unit (e.g., ECS task ID, k8s pod name).
+**The base names the lane.** Every supervised worker is given a base identity that says which lane it belongs to, so the identity agrees with the other two things that already encode the lane — `FORGE_ENV` and the Temporal namespace — instead of quietly contradicting them:
 
-Set a custom identity via the `--worker-identity` flag or `FORGE_WORKER_IDENTITY` environment variable:
+| Lane | Started by | Base identity | `FORGE_ENV` | Namespace |
+| --- | --- | --- | --- | --- |
+| production | launchd (`install.sh`) | `prod-forge-worker-1`, `prod-forge-worker-2`, `prod-ocr-worker`, `prod-pbook-worker` | `prod` | `default` |
+| staging | tmux (`make dev-worker`) | `dev-forge-worker`, `dev-ocr-worker`, `dev-pbook-worker` | `dev` | `forge-dev` |
+
+The dev base is also the tmux session name and the row `make workers-status` prints, so one string identifies a dev worker everywhere you might meet it. (These bases replaced a `desktop-` prefix that dated from the D99 EC2 retirement: once the desktop became the only host, "desktop" distinguished nothing, while the lane distinguishes the thing an operator actually needs to know before acting.)
+
+Set a base identity by hand via the `--worker-identity` flag (present on `forge worker`, `ocr worker`, and `pbook worker`) or the `FORGE_WORKER_IDENTITY` environment variable:
 
 ```bash
-forge worker --worker-identity "worker-us-east-1a-01"
-FORGE_WORKER_IDENTITY="pod-abc123" forge worker
+forge worker --worker-identity "prod-forge-worker-3"
+FORGE_WORKER_IDENTITY="dev-forge-worker" forge worker --env dev
 ```
 
 When omitted, the SDK default (`{pid}@{hostname}`) is used. Either way the identity is the *base* — every worker appends the git version it was launched from, as described next.
@@ -113,9 +120,10 @@ Each worker stamps the git version of the tree it was launched from onto its ide
 
 | Worker | Identity |
 | --- | --- |
-| forge (launchd) | `desktop-forge-worker-1@bb64d88` |
-| ocr / pbook (no base set) | `12345@desktop@bb64d88` |
-| any worker launched from a modified tree | `desktop-forge-worker-1@bb64d88-dirty` |
+| production forge worker 1 (launchd) | `prod-forge-worker-1@bb64d88` |
+| staging ocr worker (tmux) | `dev-ocr-worker@bb64d88` |
+| a worker with no base set | `12345@buchla.local@bb64d88` |
+| any worker launched from a modified tree | `prod-forge-worker-1@bb64d88-dirty` |
 
 The server is the authority — ask it which code is polling a queue:
 
@@ -127,6 +135,8 @@ temporal task-queue describe --task-queue forge-task-queue --namespace forge-dev
 ```
 
 This exists because a Python worker binds its code at import: the modules loaded when the process started are the modules it runs until it is restarted, while the working tree it was launched from keeps moving — the launchd and tmux workers `exec uv run` straight out of the live repo (D99). So the stamp records the tree **as it was at that worker's launch**. It does not change when you commit, pull, or edit; a worker picks up new code, and a new stamp, only at its next restart (`make workers-restart` for production, `make dev-worker-restart WORKER=<name>` for the dev lane). A worker started before this change carries no version suffix at all.
+
+Changing a *base* identity is a different operation from restarting. The production bases live in each launchd agent's `ProgramArguments`, and `make workers-restart` relaunches from the job definition launchd already has loaded — so a rewritten plist is adopted only when `deploy/launchd/install.sh` boots the agents out and bootstraps them again. The command sequence, the opt-in-flag trap, and the drain caveat are in [deploy/launchd/README.md](../../deploy/launchd/README.md#changing-a-plist-worker-identities-environment-keepalive). The dev lane has no such step: `make dev-worker-restart WORKER=<name>` rebuilds the tmux command line from the Makefile.
 
 A `-dirty` suffix means the tree had uncommitted changes at launch — modified tracked files or untracked files (`git status --porcelain` was non-empty). Since the worker runs the live tree, the commit alone then does not describe the running code: `bb64d88` names the last commit and whatever was uncommitted at launch is loaded on top of it. Reproducing that worker's behavior needs the commit plus those local changes, so treat a `-dirty` production poller as a signal to restart it from a clean tree once the work is committed.
 

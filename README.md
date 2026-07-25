@@ -158,7 +158,7 @@ forge worker --temporal-address temporal.example.com:7233
 | Option | Default | Description |
 | -------- | --------- | ------------- |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
-| `--worker-identity` | `{pid}@{hostname}` | Custom worker identity reported to Temporal (env: `FORGE_WORKER_IDENTITY`) |
+| `--worker-identity` | `{pid}@{hostname}` | *Base* worker identity reported to Temporal — the launch-time git version is appended, e.g. `prod-forge-worker-1@bb64d88` (env: `FORGE_WORKER_IDENTITY`) |
 
 ### `forge status`
 
