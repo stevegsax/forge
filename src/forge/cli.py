@@ -1048,7 +1048,10 @@ def run(
     "--worker-identity",
     envvar="FORGE_WORKER_IDENTITY",
     default=None,
-    help="Custom worker identity reported to Temporal (default: {pid}@{hostname}).",
+    help=(
+        "Base worker identity reported to Temporal (default: {pid}@{hostname}); "
+        "the launch-time git version is appended when known."
+    ),
 )
 def worker(
     temporal_address: str,

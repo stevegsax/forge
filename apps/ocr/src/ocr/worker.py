@@ -27,6 +27,7 @@ from sax_platform.contracts.s3_blobs import S3Blobs
 from sax_platform.db import get_store_engine
 from sax_platform.logging import setup_logging, silence_noisy_loggers
 from sax_platform.temporal.client import connect_temporal
+from sax_platform.temporal.identity import stamped_worker_identity
 from sax_platform.temporal.worker import run_worker as _run_worker
 from temporalio.client import (
     Schedule,
@@ -236,6 +237,13 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     logger.info("OCR worker: store engine + blobs + Mistral OCR ready")
 
     store = OcrStoreActivities(engine, blobs, mistral)
+
+    # Stamp the launch-time git version onto the identity (see
+    # sax_platform.temporal.identity): the worker binds its code at import while the
+    # tree it was exec'd from moves on, so `temporal task-queue describe
+    # --task-queue ocr-task-queue` is where "which code is this worker running?"
+    # gets answered. An undiscoverable version leaves the identity unchanged.
+    identity = stamped_worker_identity(identity)
 
     client = await connect_temporal(
         address or settings.temporal.address,

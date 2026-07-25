@@ -17,6 +17,16 @@ import pytest
 import ocr.worker as worker_mod
 
 
+def _fake_stamp(base: str | None = None) -> str:
+    """Deterministic stand-in for the git-version identity stamp.
+
+    ``sax_platform.temporal.identity`` owns (and tests) version discovery; here
+    only the wiring matters — that run_worker stamps the identity it was handed
+    before connecting — so the real ``git`` call is replaced with a fixed suffix.
+    """
+    return f"{base or 'pid@host'}@testver"
+
+
 def _fake_settings(
     *,
     bucket: str = "bkt",
@@ -84,6 +94,7 @@ class TestRunWorker:
             patch.object(
                 worker_mod, "connect_temporal", AsyncMock(return_value=client_sentinel)
             ) as mock_connect,
+            patch.object(worker_mod, "stamped_worker_identity", _fake_stamp),
             patch.object(worker_mod, "_ensure_schedule", AsyncMock()) as mock_ensure_schedule,
             patch.object(worker_mod, "_run_worker", AsyncMock()) as mock_run_worker,
         ):
@@ -103,10 +114,11 @@ class TestRunWorker:
         mock_activity_methods.assert_called_once_with(store_sentinel)
 
         # Connect via settings (address falls back to settings.temporal.address);
-        # the resolved namespace is threaded so the worker joins the right lane.
+        # the resolved namespace is threaded so the worker joins the right lane, and
+        # the identity carries the launch-time code version.
         mock_connect.assert_awaited_once_with(
             "settings-temporal:7233",
-            identity="worker-123",
+            identity="worker-123@testver",
             namespace="forge-test",
             settings=settings.temporal,
         )
@@ -146,14 +158,16 @@ class TestRunWorker:
             patch.object(
                 worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())
             ) as mock_connect,
+            patch.object(worker_mod, "stamped_worker_identity", _fake_stamp),
             patch.object(worker_mod, "_ensure_schedule", AsyncMock()),
             patch.object(worker_mod, "_run_worker", AsyncMock()),
         ):
             await worker_mod.run_worker("override:7233")
 
+        # No caller identity: the stamp falls back to the SDK-style {pid}@{hostname}.
         mock_connect.assert_awaited_once_with(
             "override:7233",
-            identity=None,
+            identity="pid@host@testver",
             namespace="forge-test",
             settings=settings.temporal,
         )

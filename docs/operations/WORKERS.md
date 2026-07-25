@@ -105,7 +105,32 @@ forge worker --worker-identity "worker-us-east-1a-01"
 FORGE_WORKER_IDENTITY="pod-abc123" forge worker
 ```
 
-When omitted, the SDK default (`{pid}@{hostname}`) is used.
+When omitted, the SDK default (`{pid}@{hostname}`) is used. Either way the identity is the *base* — every worker appends the git version it was launched from, as described next.
+
+### Which code is a worker running?
+
+Each worker stamps the git version of the tree it was launched from onto its identity, giving `<base>@<commit>`:
+
+| Worker | Identity |
+| --- | --- |
+| forge (launchd) | `desktop-forge-worker-1@bb64d88` |
+| ocr / pbook (no base set) | `12345@desktop@bb64d88` |
+| any worker launched from a modified tree | `desktop-forge-worker-1@bb64d88-dirty` |
+
+The server is the authority — ask it which code is polling a queue:
+
+```bash
+temporal task-queue describe --task-queue forge-task-queue
+temporal task-queue describe --task-queue ocr-task-queue
+temporal task-queue describe --task-queue pbook-task-queue
+temporal task-queue describe --task-queue forge-task-queue --namespace forge-dev   # dev lane
+```
+
+This exists because a Python worker binds its code at import: the modules loaded when the process started are the modules it runs until it is restarted, while the working tree it was launched from keeps moving — the launchd and tmux workers `exec uv run` straight out of the live repo (D99). So the stamp records the tree **as it was at that worker's launch**. It does not change when you commit, pull, or edit; a worker picks up new code, and a new stamp, only at its next restart (`make workers-restart` for production, `make dev-worker-restart WORKER=<name>` for the dev lane). A worker started before this change carries no version suffix at all.
+
+A `-dirty` suffix means the tree had uncommitted changes at launch — modified tracked files or untracked files (`git status --porcelain` was non-empty). Since the worker runs the live tree, the commit alone then does not describe the running code: `bb64d88` names the last commit and whatever was uncommitted at launch is loaded on top of it. Reproducing that worker's behavior needs the commit plus those local changes, so treat a `-dirty` production poller as a signal to restart it from a clean tree once the work is committed.
+
+If the version cannot be determined (no `git` on `PATH`, the directory is not a repository, the command fails or times out), nothing is stamped and the identity is exactly the base. Version discovery is best-effort by design and can never keep a worker from starting.
 
 ## Scaling
 

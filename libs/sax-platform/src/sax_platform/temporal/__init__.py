@@ -4,10 +4,12 @@
 ``temporalio.activity`` / ``temporalio.workflow`` plus stdlib — cheap and
 workflow/activity-sandbox safe — so they may be imported eagerly. ``client`` and
 ``worker`` import ``temporalio.client`` / ``temporalio.worker`` (real connection
-and worker machinery), so — mirroring ``sax_platform.llm`` and
-``sax_platform.contracts`` — they are exported lazily via PEP 562:
+and worker machinery), and ``identity`` runs ``git`` at worker startup
+(``subprocess``, ``socket``), so — mirroring ``sax_platform.llm`` and
+``sax_platform.contracts`` — all three are exported lazily via PEP 562:
 `import sax_platform.temporal` or `from sax_platform.temporal import retries`
-inside a Temporal workflow sandbox must never drag in the worker stack.
+inside a Temporal workflow sandbox must never drag in the worker stack or the
+sandbox-restricted stdlib that version stamping needs.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -33,6 +35,11 @@ if TYPE_CHECKING:
         build_tls_config,
         connect_temporal,
     )
+    from sax_platform.temporal.identity import (
+        code_version,
+        compose_identity,
+        stamped_worker_identity,
+    )
     from sax_platform.temporal.worker import (
         DEFAULT_GRACEFUL_SHUTDOWN,
         DEFAULT_MAX_CONCURRENT_ACTIVITIES,
@@ -53,11 +60,14 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "build_sandbox_runner": ("sax_platform.temporal.worker", "build_sandbox_runner"),
     "run_worker": ("sax_platform.temporal.worker", "run_worker"),
     "worker_kwargs": ("sax_platform.temporal.worker", "worker_kwargs"),
+    "code_version": ("sax_platform.temporal.identity", "code_version"),
+    "compose_identity": ("sax_platform.temporal.identity", "compose_identity"),
+    "stamped_worker_identity": ("sax_platform.temporal.identity", "stamped_worker_identity"),
 }
 
 
 def __getattr__(name: str) -> Any:
-    """PEP 562 lazy export of the client/worker-importing surfaces (see module docstring)."""
+    """PEP 562 lazy export of the client/worker/identity surfaces (see module docstring)."""
     try:
         module_name, attr = _LAZY_EXPORTS[name]
     except KeyError:
@@ -81,9 +91,12 @@ __all__ = [
     "build_sandbox_runner",
     "build_tls_config",
     "classify_llm_error",
+    "code_version",
+    "compose_identity",
     "connect_temporal",
     "heartbeat_during",
     "run_worker",
+    "stamped_worker_identity",
     "wait_batch_ended",
     "worker_kwargs",
 ]

@@ -50,6 +50,16 @@ class TestForgeSettingsFailFast:
 # ---------------------------------------------------------------------------
 
 
+def _fake_stamp(base: str | None = None) -> str:
+    """Deterministic stand-in for the git-version identity stamp.
+
+    ``sax_platform.temporal.identity`` owns (and tests) version discovery; here
+    only the wiring matters — that run_worker stamps the identity it was handed
+    before connecting — so the real ``git`` call is replaced with a fixed suffix.
+    """
+    return f"{base or 'pid@host'}@testver"
+
+
 def _fake_settings(
     *,
     bucket: str | None = "b",
@@ -102,6 +112,7 @@ class _Composition:
             patch("forge.settings.ForgeSettings", return_value=self.settings),
             patch.object(worker_mod, "_init_store", self.init_store),
             patch.object(worker_mod, "connect_temporal", self.connect),
+            patch.object(worker_mod, "stamped_worker_identity", _fake_stamp),
             patch.object(worker_mod, "_run_platform_worker", self.run_platform_worker),
             patch("forge.tracing.init_tracing", self.init_tracing),
             patch("forge.tracing.shutdown_tracing", self.shutdown_tracing),
@@ -137,9 +148,11 @@ class TestRunWorkerComposition:
 
         comp.init_store.assert_called_once_with(comp.settings.db.url)
         comp.init_tracing.assert_called_once_with(comp.settings.tracing.exporter)
+        # The identity reaching Temporal is the caller's, stamped with the
+        # launch-time code version (real discovery lives in sax_platform).
         comp.connect.assert_awaited_once_with(
             "settings-host:7233",
-            identity="worker-1",
+            identity="worker-1@testver",
             namespace="forge-test",
             settings=comp.settings.temporal,
         )
@@ -220,9 +233,10 @@ class TestRunWorkerComposition:
         with comp.apply():
             await worker_mod.run_worker(address="override:7233")
 
+        # No caller identity: the stamp falls back to the SDK-style {pid}@{hostname}.
         comp.connect.assert_awaited_once_with(
             "override:7233",
-            identity=None,
+            identity="pid@host@testver",
             namespace="forge-test",
             settings=comp.settings.temporal,
         )

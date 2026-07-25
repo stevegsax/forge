@@ -10,6 +10,16 @@ import pytest
 import pbook.worker as worker_mod
 
 
+def _fake_stamp(base: str | None = None) -> str:
+    """Deterministic stand-in for the git-version identity stamp.
+
+    ``sax_platform.temporal.identity`` owns (and tests) version discovery; here
+    only the wiring matters — that run_worker stamps the identity it was handed
+    before connecting — so the real ``git`` call is replaced with a fixed suffix.
+    """
+    return f"{base or 'pid@host'}@testver"
+
+
 def _base_patches():
     """Patch the I/O boundary of run_worker (logging, migrations, engine,
     Temporal connect, and the platform worker scaffold) so composition can be
@@ -117,7 +127,14 @@ class TestRunWorkerComposition:
     async def test_connects_via_platform_chokepoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
-        with p_log, p_mig, p_eng, p_conn as conn, p_run:
+        with (
+            p_log,
+            p_mig,
+            p_eng,
+            p_conn as conn,
+            p_run,
+            patch.object(worker_mod, "stamped_worker_identity", _fake_stamp),
+        ):
             await worker_mod.run_worker(address="host:1234")
         conn.assert_awaited_once()
         # address is passed positionally; TLS settings + the resolved namespace
@@ -125,6 +142,9 @@ class TestRunWorkerComposition:
         assert conn.call_args.args[0] == "host:1234"
         assert "settings" in conn.call_args.kwargs
         assert conn.call_args.kwargs["namespace"] == "forge-test"
+        # The identity carries the launch-time code version; pbook's CLI supplies
+        # no base, so the stamp falls back to the SDK-style {pid}@{hostname}.
+        assert conn.call_args.kwargs["identity"] == "pid@host@testver"
 
 
 class TestEnvGuard:

@@ -7,7 +7,7 @@ up at login.
 | Agent | Behavior |
 | --- | --- |
 | `com.saxcapital.forge-stack` | RunAtLoad one-shot: `podman machine start` if needed, then `make stack-up` |
-| `com.saxcapital.forge-worker-1` / `-2` | KeepAlive: `uv run forge worker` (identities `desktop-forge-worker-1/2`) |
+| `com.saxcapital.forge-worker-1` / `-2` | KeepAlive: `uv run forge worker` (identities `desktop-forge-worker-1/2`, each suffixed with the git version at launch: `…-1@bb64d88`, `-dirty` if the tree was modified) |
 | `com.saxcapital.pbook-worker` | KeepAlive: `uv run pbook worker` (opt-in, `--with-pbook`) |
 | `com.saxcapital.ocr-worker` | KeepAlive: `uv run --package ocr ocr worker` (opt-in, `--with-ocr`) |
 | `com.saxcapital.db-backup` | Daily 03:30: `pg_dump` forge + pbook → S3 (opt-in, `--with-backup`) |

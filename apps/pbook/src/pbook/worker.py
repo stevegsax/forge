@@ -21,7 +21,7 @@ from sax_platform.config import (
 from sax_platform.embeddings import OpenAIEmbeddings
 from sax_platform.llm import AnthropicLLM, make_client
 from sax_platform.logging import setup_logging
-from sax_platform.temporal import connect_temporal
+from sax_platform.temporal import connect_temporal, stamped_worker_identity
 from sax_platform.temporal.worker import run_worker as run_platform_worker
 
 from pbook.activities.cli_ops import get_session_text_activity
@@ -100,13 +100,17 @@ def _migrate_if_configured(db: PbookDbSettings) -> None:
     logger.info("Database migrations applied (head)")
 
 
-async def run_worker(address: str = "localhost:7233") -> None:
+async def run_worker(address: str = "localhost:7233", *, identity: str | None = None) -> None:
     """Connect to Temporal and run the pbook worker (composition root).
 
     The environment guard runs FIRST, before settings/store setup: an unset or
     invalid ``FORGE_ENV`` raises :class:`ForgeEnvError` (its message is complete
     and actionable) so the worker can never reach a database without an
     explicitly declared environment.
+
+    ``identity`` is the base worker identity (pbook's CLI supplies none, so the
+    default is the SDK's ``{pid}@{hostname}``); it is stamped with the launch-time
+    git version before connecting — see :mod:`sax_platform.temporal.identity`.
     """
     env = resolve_forge_env(os.environ)
     settings = PbookSettings()
@@ -149,8 +153,16 @@ async def run_worker(address: str = "localhost:7233") -> None:
     ]
 
     logger.info("Connecting to Temporal at %s", address)
+    # Stamp the launch-time git version onto the identity (see
+    # sax_platform.temporal.identity): the worker binds its code at import while the
+    # tree it was exec'd from moves on, so `temporal task-queue describe
+    # --task-queue pbook-task-queue` is where "which code is this worker running?"
+    # gets answered. An undiscoverable version leaves the identity unchanged.
     client = await connect_temporal(
-        address, namespace=temporal_settings.namespace, settings=temporal_settings
+        address,
+        identity=stamped_worker_identity(identity),
+        namespace=temporal_settings.namespace,
+        settings=temporal_settings,
     )
 
     logger.info("pbook worker starting on queue %s", PBOOK_TASK_QUEUE)

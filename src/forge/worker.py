@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from sax_platform.config import require_namespace_coherence, resolve_forge_env
 from sax_platform.contracts.constants import FORGE_TASK_QUEUE
+from sax_platform.temporal.identity import stamped_worker_identity
 from sax_platform.temporal.worker import run_worker as _run_platform_worker
 
 from forge.activities import (
@@ -119,6 +120,15 @@ async def run_worker(
     silence_noisy_loggers()
 
     resolved_address = settings.temporal.address if address is None else address
+
+    # Stamp the launch-time git version onto the identity, here rather than in the
+    # CLI, so every entry point (CLI, launchd, tmux) reports it. The process binds
+    # its code at import while the tree it was exec'd from keeps moving, so the
+    # identity is what makes `temporal task-queue describe --task-queue
+    # forge-task-queue` answer "which code is this worker running?". Unknown
+    # version ⇒ unchanged identity (see sax_platform.temporal.identity).
+    identity = stamped_worker_identity(identity)
+
     client = await connect_temporal(
         resolved_address,
         identity=identity,
