@@ -10,6 +10,19 @@ Git and worktrees serve as the general-purpose data store and isolation mechanis
 
 - The local stack running: `make stack-up` brings up [Temporal](https://temporal.io/), Postgres, and MinIO under podman (see [deploy/local-stack/](deploy/local-stack/)). Any Temporal server reachable at `FORGE_TEMPORAL_ADDRESS` works; the default is `localhost:7233`.
 - The workspace synced: `uv sync --all-packages` from the repo root. The root is a uv workspace (`apps/pbook`, `apps/ocr`, `libs/sax-platform`) and is self-contained — a bare clone resolves with no sibling checkouts.
+- **A declared environment.** Every command is fronted by the environment guard: `FORGE_ENV` must be one of `prod` / `dev` / `test` and has **no default**, so a command run in a bare shell exits **78** instead of guessing which database to touch. Declare it either way:
+
+  ```bash
+  forge --env dev status                       # loads ~/.config/forge/envs/dev.env
+  forge status --env dev                       # identical — either position works
+
+  set -a; source ~/.config/forge/envs/dev.env; set +a   # or export it yourself
+  export FORGE_ENV=dev
+  ```
+
+  A bare `--env NAME` resolves to `$XDG_CONFIG_HOME/forge/envs/<NAME>.env` and sets `FORGE_ENV`; a path (or any value ending in `.env`) is read verbatim and takes `FORGE_ENV` from the file's `FORGE_ENV_TAG`. The profile is also where the rest of the runtime configuration comes from — `FORGE_DB_URL` (required by every command that reads the store), `ANTHROPIC_API_KEY`, and the S3 settings. `--env` never supplies `FORGE_PROD_ACK`, so it cannot by itself grant production access; production is a separate ceremony documented in [docs/operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) and CLAUDE.md's "Running the System".
+
+  `--help` and `--version` are exempt by design (the guard runs at the command seam, after parsing short-circuits), so `forge run --help` works in any shell.
 
 ## Architecture
 
@@ -31,19 +44,31 @@ forge run  ──►  Temporal Server  ◄──  forge worker
 Start the worker in one terminal:
 
 ```bash
-forge worker
+forge worker --env dev
 ```
 
 Submit a task in another:
 
 ```bash
-forge run \
+forge run --env dev \
     --task-id my-task \
     --description "Add error handling to the API client" \
     --target-file src/forge/api/client.py
 ```
 
+Both examples assume the `dev` profile; with `FORGE_ENV` already exported, drop the `--env` flag.
+
 ## Commands
+
+Every command accepts the global options below in addition to its own:
+
+| Option | Default | Description |
+| -------- | --------- | ------------- |
+| `--env` | — | Load an env profile (`NAME` or path) before the guard runs; sets `FORGE_ENV`. Valid before or after the subcommand — given at both, the subcommand's value wins. The bare `forge playbooks` group takes it only in the leading position |
+| `-v` / `-vv` | off | Increase log verbosity (`-v` INFO, `-vv` DEBUG); leading position only |
+| `--version` | — | Print the installed version and exit (no environment needed); leading position only |
+
+Examples below show `--env dev`; substitute your own profile, or drop the flag once `FORGE_ENV` is exported.
 
 ### `forge run`
 
@@ -98,7 +123,9 @@ forge run --task-file task.json
 | `--no-lint` | off | Disable ruff lint check |
 | `--no-format` | off | Disable ruff format check |
 | `--run-tests` | off | Enable test validation |
-| `--test-command` | — | Custom test command (implies `--run-tests`) |
+| `--test-command` | — | Custom test command; pass `--run-tests` as well, since it does not enable tests by itself |
+
+The domain (`--domain`) supplies the validation baseline and these flags adjust it: `code_generation` runs ruff lint and format, every other domain runs neither, and none run tests unless `--run-tests` is passed.
 
 **Context discovery options:**
 
@@ -143,14 +170,15 @@ forge run --task-file task.json
 | -------- | --------- | ------------- |
 | `--base-branch` | `main` | Branch to create worktree from |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
+| `--env` | — | Env profile to load before the guard (see [Prerequisites](#prerequisites)) |
 
 ### `forge worker`
 
 Start the Temporal worker. The worker polls for queued workflows and executes activities. It must be running for `forge run` tasks to execute.
 
 ```bash
-forge worker
-forge worker --temporal-address temporal.example.com:7233
+forge worker --env dev
+forge worker --env dev --temporal-address temporal.example.com:7233
 ```
 
 **Options:**
@@ -159,15 +187,18 @@ forge worker --temporal-address temporal.example.com:7233
 | -------- | --------- | ------------- |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 | `--worker-identity` | `{pid}@{hostname}` | *Base* worker identity reported to Temporal — the launch-time git version is appended, e.g. `prod-forge-worker-1@bb64d88` (env: `FORGE_WORKER_IDENTITY`) |
+| `--env` | — | Env profile to load before the guard (see [Prerequisites](#prerequisites)) |
+
+On `FORGE_ENV=prod` the worker additionally refuses to start unless its checkout is a clean commit (exit 78) — production is deployed from a pinned checkout, see [docs/operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md).
 
 ### `forge status`
 
-List recent workflow runs or show details for a specific workflow.
+List recent workflow runs or show details for a specific workflow. Reads the store directly (`FORGE_DB_URL`), so it works whether or not a worker is running.
 
 ```bash
-forge status                              # List recent runs
-forge status --workflow-id <id>           # Details for a specific run
-forge status --workflow-id <id> --verbose # Full prompts and interaction details
+forge status --env dev                              # List recent runs
+forge status --env dev --workflow-id <id>           # Details for a specific run
+forge status --env dev --workflow-id <id> --verbose # Full prompts and interaction details
 ```
 
 **Options:**
@@ -178,14 +209,15 @@ forge status --workflow-id <id> --verbose # Full prompts and interaction details
 | `--verbose` | off | Show full interaction details (prompts, tokens, latency) |
 | `--limit` | `20` | Number of recent runs to show |
 | `--json` | off | Machine-readable JSON output |
+| `--env` | — | Env profile to load before the guard (see [Prerequisites](#prerequisites)) |
 
 ### `forge eval-planner`
 
-Evaluate planner output against an eval corpus. Runs deterministic checks and optionally LLM-as-judge scoring.
+Evaluate planner output against an eval corpus. Runs deterministic checks and optionally LLM-as-judge scoring. No corpus ships in the repo — point `--corpus-dir` at your own directory of eval-case JSON files (`tests/fixtures/eval/cases` and `.../plans` show the shape).
 
 ```bash
-forge eval-planner --corpus-dir eval/corpus
-forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
+forge eval-planner --env dev --corpus-dir <corpus-dir>
+forge eval-planner --env dev --corpus-dir <corpus-dir> --plans-dir <plans-dir> --judge
 ```
 
 **Options:**
@@ -202,12 +234,14 @@ forge eval-planner --corpus-dir eval/corpus --plans-dir eval/plans --judge
 
 ### `forge playbooks`
 
-List, add, and export playbook entries. `playbooks` is a command group; invoked bare it lists entries.
+List, add, and export playbook entries. `playbooks` is a command group; invoked bare it lists entries (reading the store directly).
+
+`--env` is the one exception to the either-position rule: the bare listing form is the group itself, which takes the flag only in the leading position. Its subcommands (`add`, `export`) accept it in either.
 
 ```bash
-forge playbooks                        # List recent playbooks
-forge playbooks --tag python           # Filter by tag
-forge playbooks --task-id my-task      # Filter by source task
+forge --env dev playbooks                        # List recent playbooks
+forge --env dev playbooks --tag python           # Filter by tag
+forge --env dev playbooks --task-id my-task      # Filter by source task
 ```
 
 **Options (listing):**
@@ -221,11 +255,11 @@ forge playbooks --task-id my-task      # Filter by source task
 
 #### `forge playbooks add`
 
-Add a playbook entry with LLM review (runs `ManualPlaybookWorkflow`).
+Add a playbook entry with LLM review (runs `ManualPlaybookWorkflow`, so a worker must be polling `forge-task-queue`). `--schema` prints locally but still passes the environment guard first, like every command.
 
 ```bash
-forge playbooks add --schema           # Print the PlaybookEntry JSON schema
-forge playbooks add --file entry.json  # Submit an entry from a JSON file
+forge playbooks add --env dev --schema           # Print the PlaybookEntry JSON schema
+forge playbooks add --env dev --file entry.json  # Submit an entry from a JSON file
 ```
 
 **Options:**
@@ -238,11 +272,11 @@ forge playbooks add --file entry.json  # Submit an entry from a JSON file
 
 #### `forge playbooks export`
 
-Export entries as `PlaybookEntry`-compatible JSON for backup or sharing.
+Export entries as `PlaybookEntry`-compatible JSON for backup or sharing. Runs `ExportPlaybookWorkflow`, so a worker must be polling `forge-task-queue` (unlike the bare `forge playbooks` listing, which reads the store directly).
 
 ```bash
-forge playbooks export                            # All entries to stdout
-forge playbooks export --tag python -o out.json   # Filtered, to a file
+forge playbooks export --env dev                            # All entries to stdout
+forge playbooks export --env dev --tag python -o out.json   # Filtered, to a file
 ```
 
 **Options:**
@@ -260,11 +294,11 @@ forge playbooks export --tag python -o out.json   # Filtered, to a file
 Ingest Claude Code conversation transcripts into pbook's knowledge store. Reads JSONL session files, analyzes them via the batch API, and hands extracted experiences to pbook's ExtractionWorkflow cross-queue.
 
 ```bash
-forge ingest ~/.claude/projects/<id>/session.jsonl          # Single session
-forge ingest --all                                          # All sessions from ~/.claude/projects/
-forge ingest --all --project forge                          # Filter by project name
-forge ingest --all --dry-run                                # Preview without submitting
-forge ingest --all --force                                  # Reprocess already-ingested sessions
+forge ingest --env dev ~/.claude/projects/<id>/session.jsonl  # Single session
+forge ingest --env dev --all                                  # All sessions from ~/.claude/projects/
+forge ingest --env dev --all --project forge                  # Filter by project name
+forge ingest --env dev --all --dry-run                        # Preview without submitting
+forge ingest --env dev --all --force                          # Reprocess already-ingested sessions
 ```
 
 **Options:**
@@ -279,15 +313,15 @@ forge ingest --all --force                                  # Reprocess already-
 | `--json` | off | Machine-readable JSON output |
 | `--temporal-address` | `localhost:7233` | Temporal server address (env: `FORGE_TEMPORAL_ADDRESS`) |
 
-Requires pbook to be installed. Sessions already recorded in pbook's `ingested_sessions` table are skipped unless `--force` is passed.
+Sessions already recorded in pbook's `pbk_ingested_sessions` table are skipped unless `--force` is passed; when pbook's store is unavailable the filter is skipped rather than failing. pbook is a workspace member and is always installed, but the command still fails with a clear message if its import fails.
 
 ### `forge start`
 
-Start an arbitrary registered Temporal workflow by name, without a Python script. Workflows registered on `forge-task-queue`: `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`, `ExportPlaybookWorkflow`, and `ManualPlaybookWorkflow`. (OCR workflows live in the `apps/ocr` workspace member, on `ocr-task-queue` with its own CLI: `uv run --package ocr ocr <cmd>`.)
+Start an arbitrary registered Temporal workflow by name, without a Python script. Workflows registered on `forge-task-queue`: `ForgeTaskWorkflow`, `ForgeSubTaskWorkflow`, `ExportPlaybookWorkflow`, `ManualPlaybookWorkflow`, plus `TranscriptIngestionWorkflow` and `BatchIngestionWorkflow` (registered whenever pbook imports, which is the normal case — the worker logs a warning and skips them otherwise). (OCR workflows live in the `apps/ocr` workspace member, on `ocr-task-queue` with its own CLI: `uv run --package ocr ocr <cmd>`.)
 
 ```bash
-forge start <WorkflowName> '{"field": "value"}' --wait # any registered workflow taking JSON input
-forge start <WorkflowName> --input-file input.json      # read JSON input from a file instead
+forge start --env dev <WorkflowName> '{"field": "value"}' --wait # any registered workflow taking JSON input
+forge start --env dev <WorkflowName> --input-file input.json     # read JSON input from a file instead
 ```
 
 **Options:**

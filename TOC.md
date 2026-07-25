@@ -10,7 +10,8 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 - [PHASES.md](docs/PHASES.md) — the 14-phase roadmap (1–12 + 14 done with module map; 13 deferred).
 - [development-plans/TASKS.md](development-plans/TASKS.md) — live task list (completed vs uncompleted).
 - [development-plans/PROCESS.md](development-plans/PROCESS.md) — how to pick up and work a task.
-- [development-plans/HANDOFF-2026-07-24-t5.2-start.md](development-plans/HANDOFF-2026-07-24-t5.2-start.md) — **current state**: T5.1 (pure step logic) complete + lane-scoped worker restarts + pbook in prod; operating notes (which lane restarts how, step_logic conventions); next task is T5.2.
+- [development-plans/HANDOFF-2026-07-25-t5.3-start.md](development-plans/HANDOFF-2026-07-25-t5.3-start.md) — **current state**: T5.2 (single step block) complete + versioned worker identities + the D103 pinned-prod deploy model (adopted live); operating notes (prod deploys via `make prod-deploy`, step-block conventions, replay status); next task is T5.3.
+- [development-plans/HANDOFF-2026-07-24-t5.2-start.md](development-plans/HANDOFF-2026-07-24-t5.2-start.md) — T5.1 (pure step logic) complete + lane-scoped worker restarts + pbook in prod; operating notes (which lane restarts how, step_logic conventions).
 - [development-plans/HANDOFF-2026-07-23-phase5-start.md](development-plans/HANDOFF-2026-07-23-phase5-start.md) — Phases 0–4 + T4.4 + T0.9 + staging lane complete; operating notes (env guard, dev namespace, worker pair).
 - [development-plans/HANDOFF-2026-07-21-phase5-start.md](development-plans/HANDOFF-2026-07-21-phase5-start.md) — the Phase 4 close record (T4.1–T4.3 detail; T4.4 spec adoption).
 - [development-plans/HANDOFF-2026-07-19-phase4-start.md](development-plans/HANDOFF-2026-07-19-phase4-start.md) — Phases 0–3 complete; Phase 0 closeout details; the Phase 4 kickoff.
