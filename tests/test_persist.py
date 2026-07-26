@@ -15,6 +15,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from temporalio import activity, workflow
 from temporalio.client import WorkflowFailureError
 from temporalio.common import RetryPolicy
@@ -36,7 +37,6 @@ from forge.persist_models import (
     restore_legacy_interaction_key,
 )
 from forge.store import get_run, get_store_engine, run_migrations
-from forge.workflows import FORGE_TASK_QUEUE
 
 with workflow.unsafe.imports_passed_through():
     from sax_platform.contracts.persist import persist_block

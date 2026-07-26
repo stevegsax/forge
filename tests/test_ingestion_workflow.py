@@ -15,6 +15,7 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from temporalio import activity, workflow
 from temporalio.worker import Worker
 
@@ -35,7 +36,6 @@ from forge.models import (
     ThinkingPolicy,
 )
 from forge.persist_models import PersistRequest, PersistResult
-from forge.workflows import FORGE_TASK_QUEUE
 
 if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment

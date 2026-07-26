@@ -46,6 +46,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from temporalio import activity
 from temporalio.client import WorkflowHistory
 from temporalio.testing import WorkflowEnvironment
@@ -88,7 +89,7 @@ from forge.models import (
     WriteResult,
 )
 from forge.persist_models import PersistRequest, PersistResult
-from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
+from forge.workflows import ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 HISTORIES_DIR = Path(__file__).parent / "histories"
 

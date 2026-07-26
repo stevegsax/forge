@@ -31,6 +31,7 @@ from sax_platform.contracts.persist import (
 
 from forge.models import (
     ConflictResolutionCallResult,
+    ExplorationCallResult,
     ExtractionCallResult,
     LLMCallResult,
     PlanCallResult,
@@ -44,11 +45,14 @@ if TYPE_CHECKING:
 
 # The LLM-family result types that an interaction row can be built from. They all
 # carry model_name/input_tokens/output_tokens/latency_ms and the cache token fields.
-_LLMResult = (
+# Public because every dispatch arm persists through it (T5.3): the workflow
+# classes no longer keep their own copy of this union.
+PersistableLLMResult = (
     LLMCallResult
     | PlanCallResult
     | SanityCheckCallResult
     | ConflictResolutionCallResult
+    | ExplorationCallResult
     | ExtractionCallResult
 )
 
@@ -181,7 +185,7 @@ def build_persist_interaction(
     task_id: str,
     system_prompt: str,
     user_prompt: str,
-    result: _LLMResult,
+    result: PersistableLLMResult,
     step_id: str | None = None,
     sub_task_id: str | None = None,
     context_stats: ContextStats | None = None,
@@ -190,12 +194,13 @@ def build_persist_interaction(
 
     Explanation-field rule (inherited from the deleted ``build_interaction_dict``):
     explanation comes from ``result.response.explanation`` (LLM/sanity), else
-    ``result.plan.explanation`` (planner), else "" (conflict-resolution/extraction).
+    ``result.plan.explanation`` (planner), else "" (conflict-resolution/extraction,
+    and exploration — whose ``response`` carries provider requests, no prose).
     """
     explanation = ""
     response = getattr(result, "response", None)
     if response is not None:
-        explanation = response.explanation
+        explanation = getattr(response, "explanation", "")
     else:
         plan = getattr(result, "plan", None)
         if plan is not None:

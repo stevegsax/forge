@@ -442,6 +442,25 @@ def sub_task_terminal(
     )
 
 
+def crashed_child(*, sub_task_id: str, error: str) -> SubTaskResult:
+    """Terminal SubTaskResult for a child workflow that raised instead of returning.
+
+    The gather catches the raise and passes the already-formatted *error* string
+    (this module stays free of ``temporalio``, so it never sees the exception
+    type). ``child_crashed`` is deliberately its own ``failure_kind``: unlike
+    every other kind, the diagnosis is not in this result at all — the child's
+    own workflow history has it. A child that fails *cleanly* still returns its
+    own result with its own kind (``validation`` / ``batch_wait``); this kind
+    means the child never got to answer.
+    """
+    return SubTaskResult(
+        sub_task_id=sub_task_id,
+        status=TransitionSignal.FAILURE_TERMINAL,
+        error=f"Child workflow failed: {error}",
+        failure_kind="child_crashed",
+    )
+
+
 def sub_task_batch_wait_failure(*, sub_task_id: str, exc: BaseException) -> SubTaskResult:
     """Terminal SubTaskResult when this node's batch wait failed."""
     return SubTaskResult(

@@ -110,7 +110,7 @@ A **sanity check** can run periodically between steps: a reasoning-tier LLM revi
 
 When a planned step contains sub-tasks, each sub-task is dispatched as a **child workflow** running in its own git worktree. All children execute in parallel. After all children complete, their output files are merged into the parent worktree. If multiple sub-tasks modify the same file, a conflict resolution LLM resolves the differences. The merged result is validated and committed.
 
-Sub-tasks can themselves contain nested sub-tasks, bounded by a configurable `max_fan_out_depth`.
+Sub-tasks can themselves contain nested sub-tasks, bounded by a configurable `max_fan_out_depth`. Since T5.3 both levels run the one gather in `forge.blocks.gather` — the top-level step borrows the plan's worktree and commits, a nested node creates its own and removes it on every exit without committing (D16) — and child failure is isolated: a child that *raises* (its execution timeout, an escaping activity failure) becomes a failed sub-task result while its siblings run to completion, so the parent still returns a `TaskResult` and writes its run record. Children are started with an explicit `ParentClosePolicy.TERMINATE`, which now fires only if the parent itself dies.
 
 ---
 
@@ -341,7 +341,7 @@ Every LLM call in Forge can run in two modes:
 - **Batch mode** (default) — The activity submits the request to the Anthropic Batch API; the workflow then polls `batch_status` on a `workflow.sleep` loop until the batch ends and fetches its own result line via `fetch_batch_result` (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal). (Forge's batch transport is anthropic-only, T4.2; Mistral batch lives entirely in the `apps/ocr` app.)
 - **Sync mode** (opt-in via `--sync`) — The activity calls the provider's messages API directly and waits for the response.
 
-`ForgeTaskInput.sync_mode` defaults to `False`, so batch is the default path. The prompt construction is identical in both modes. The workflow dispatch methods (`_call_generation`, `_call_planner_llm`, `_call_exploration`, `_call_sanity_check_llm`, `_call_conflict_resolution`) check `self._sync_mode` and route accordingly. This is why every LLM call must be a self-contained document completion—batch APIs don't support multi-turn conversations.
+`ForgeTaskInput.sync_mode` defaults to `False`, so batch is the default path. The prompt construction is identical in both modes. Since T5.3 the lane fork exists once, in `forge.blocks.dispatch`: the five arms (generation, planner, sanity check, conflict resolution, exploration) differ only by the row they occupy in the pure `ARMS` table — sync activity, its timeout, batch output type, and batch `max_tokens` — and each arm's call, either lane, writes one interaction record. This is why every LLM call must be a self-contained document completion—batch APIs don't support multi-turn conversations.
 
 ```mermaid
 flowchart TD

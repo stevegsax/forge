@@ -218,8 +218,8 @@ class TestExecuteExplorationCall:
 
         result = await execute_exploration_call(self._make_input(), llm)
 
-        assert len(result.requests) == 1
-        assert result.requests[0].provider == "read_file"
+        assert len(result.response.requests) == 1
+        assert result.response.requests[0].provider == "read_file"
 
     @pytest.mark.asyncio
     async def test_empty_requests_signals_ready(self) -> None:
@@ -228,7 +228,32 @@ class TestExecuteExplorationCall:
 
         result = await execute_exploration_call(self._make_input(), llm)
 
-        assert result.requests == []
+        assert result.response.requests == []
+
+    @pytest.mark.asyncio
+    async def test_result_carries_spend_and_the_prompts_it_built(self) -> None:
+        """T5.3: the counts that used to die in a trace span come home, with the
+        prompts the activity assembled — an interaction row needs both."""
+        llm = build_mock_llm(
+            output=ExplorationResponse(requests=[]),
+            model="claude-haiku-4-5",
+            input_tokens=321,
+            output_tokens=21,
+            cache_creation_input_tokens=11,
+            cache_read_input_tokens=13,
+        )
+
+        result = await execute_exploration_call(self._make_input(), llm)
+
+        assert result.task_id == "explore-task"
+        assert result.model_name == "claude-haiku-4-5"
+        assert (result.input_tokens, result.output_tokens) == (321, 21)
+        assert (result.cache_creation_input_tokens, result.cache_read_input_tokens) == (11, 13)
+        assert result.stop_reason == "end_turn"
+        assert result.latency_ms >= 0.0
+        expected_system, expected_user = build_exploration_prompt(self._make_input())
+        assert result.system_prompt == expected_system
+        assert result.user_prompt == expected_user
 
     @pytest.mark.asyncio
     async def test_calls_llm_complete_with_expected_kwargs(self) -> None:

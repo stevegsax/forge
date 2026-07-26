@@ -6,6 +6,14 @@ so they must be called from within a Temporal workflow.
 
 Extracted from workflows.py to enable composition into purpose-built workflows
 (e.g., OCR, research) without duplicating batch dispatch logic.
+
+What remains here is the transport and the worktree cleanup shared by both
+workflow classes: ``batch_submit_and_wait`` is the one submit/poll/fetch/parse
+implementation (T4.1, D88), imported by ``forge.blocks.dispatch`` and by
+``forge.ingestion_workflow``. The *typed* dispatch that used to sit on top of it
+in two hand-rolled copies (``generation_dispatch`` /
+``conflict_resolution_dispatch``) moved into ``forge.blocks.dispatch``, where all
+five arms share one implementation (T5.3).
 """
 
 from __future__ import annotations
@@ -35,12 +43,7 @@ with workflow.unsafe.imports_passed_through():
         BatchStatusResult,
         BatchSubmitInput,
         BatchSubmitResult,
-        ConflictResolutionCallInput,
-        ConflictResolutionCallResult,
-        ConflictResolutionResponse,
         FetchBatchResultInput,
-        LLMCallResult,
-        LLMResponse,
         ParsedLLMResponse,
         ParseResponseInput,
         RemoveWorktreeInput,
@@ -54,8 +57,6 @@ __all__ = [
     "THINKING_MAX_TOKENS",
     "batch_submit_and_wait",
     "cleanup_worktree_after_failure",
-    "conflict_resolution_dispatch",
-    "generation_dispatch",
     "persist_block",
     "remove_worktree",
 ]
@@ -270,96 +271,6 @@ async def batch_submit_and_wait(
         result_type=ParsedLLMResponse,
     )
     return parsed
-
-
-# ---------------------------------------------------------------------------
-# Generation dispatch
-# ---------------------------------------------------------------------------
-
-
-async def generation_dispatch(
-    sync_mode: bool,
-    context: AssembledContext,
-    *,
-    poll_interval: timedelta = _BATCH_POLL_INTERVAL,
-) -> LLMCallResult:
-    """Route LLM generation call through sync or batch path."""
-    if sync_mode:
-        sync_result: LLMCallResult = await workflow.execute_activity(
-            "call_llm",
-            context,
-            start_to_close_timeout=_LLM_TIMEOUT,
-            heartbeat_timeout=_LLM_HEARTBEAT,
-            retry_policy=LLM_RETRY,
-            result_type=LLMCallResult,
-        )
-        return sync_result
-    # Generation stays thinking-disabled, as today. Omitting `thinking` relies
-    # on batch_submit_and_wait's shared fallback (disabled by default).
-    parsed = await batch_submit_and_wait(context, "LLMResponse", poll_interval=poll_interval)
-    return LLMCallResult(
-        task_id=context.task_id,
-        response=LLMResponse.model_validate_json(parsed.parsed_json),
-        model_name=parsed.model_name,
-        input_tokens=parsed.input_tokens,
-        output_tokens=parsed.output_tokens,
-        latency_ms=parsed.latency_ms,
-        cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-        cache_read_input_tokens=parsed.cache_read_input_tokens,
-        stop_reason=parsed.stop_reason,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Conflict resolution dispatch
-# ---------------------------------------------------------------------------
-
-
-async def conflict_resolution_dispatch(
-    sync_mode: bool,
-    call_input: ConflictResolutionCallInput,
-    *,
-    poll_interval: timedelta = _BATCH_POLL_INTERVAL,
-) -> ConflictResolutionCallResult:
-    """Dispatch conflict resolution LLM call via sync or batch path."""
-    if sync_mode:
-        sync_result: ConflictResolutionCallResult = await workflow.execute_activity(
-            "call_conflict_resolution",
-            call_input,
-            start_to_close_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
-            heartbeat_timeout=_LLM_HEARTBEAT,
-            retry_policy=LLM_RETRY,
-            result_type=ConflictResolutionCallResult,
-        )
-        return sync_result
-    context = AssembledContext(
-        task_id=call_input.task_id,
-        system_prompt=call_input.system_prompt,
-        user_prompt=call_input.user_prompt,
-        model_name=call_input.model_name,
-        log_messages=call_input.log_messages,
-        worktree_path=call_input.worktree_path,
-    )
-    parsed = await batch_submit_and_wait(
-        context,
-        "ConflictResolutionResponse",
-        thinking=call_input.thinking,
-        max_tokens=THINKING_MAX_TOKENS,
-        poll_interval=poll_interval,
-    )
-    response = ConflictResolutionResponse.model_validate_json(parsed.parsed_json)
-    return ConflictResolutionCallResult(
-        task_id=call_input.task_id,
-        resolved_files={f.file_path: f.content for f in response.resolved_files},
-        explanation=response.explanation,
-        model_name=parsed.model_name,
-        input_tokens=parsed.input_tokens,
-        output_tokens=parsed.output_tokens,
-        latency_ms=parsed.latency_ms,
-        cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-        cache_read_input_tokens=parsed.cache_read_input_tokens,
-        stop_reason=parsed.stop_reason,
-    )
 
 
 # ---------------------------------------------------------------------------

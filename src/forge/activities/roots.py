@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
 from sax_platform.temporal.heartbeat import heartbeat_during
@@ -78,8 +77,8 @@ from forge.models import (
     ConflictResolutionCallInput,
     ConflictResolutionCallResult,
     ContextResult,
+    ExplorationCallResult,
     ExplorationInput,
-    ExplorationResponse,
     ExportSinglePlaybookInput,
     ExtractionCallResult,
     ExtractionInput,
@@ -349,7 +348,7 @@ class LlmActivities:
             return result
 
     @activity.defn
-    async def call_exploration_llm(self, input: ExplorationInput) -> ExplorationResponse:
+    async def call_exploration_llm(self, input: ExplorationInput) -> ExplorationCallResult:
         """Call the exploration LLM to decide what context to request."""
         from pathlib import Path
 
@@ -372,21 +371,34 @@ class LlmActivities:
                     _read_project_instructions(Path(input.repo_root))
                 )
 
-            start = time.monotonic()
             async with heartbeat_during():
-                response = await execute_exploration_call(input, self._llm, project_instructions)
-            elapsed_ms = (time.monotonic() - start) * 1000
+                result = await execute_exploration_call(input, self._llm, project_instructions)
             logger.info(
-                "Exploration result: task_id=%s requests=%d", input.task_id, len(response.requests)
+                "Exploration result: task_id=%s requests=%d",
+                input.task_id,
+                len(result.response.requests),
+            )
+            # Exploration's spend is a real interaction record now (T5.3), so the
+            # span carries the same standard LLM attributes as every other arm
+            # alongside the two exploration-specific ones.
+            span.set_attributes(
+                llm_call_attributes(
+                    model_name=result.model_name,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    latency_ms=result.latency_ms,
+                    task_id=input.task_id,
+                    cache_creation_input_tokens=result.cache_creation_input_tokens,
+                    cache_read_input_tokens=result.cache_read_input_tokens,
+                )
             )
             span.set_attributes(
                 {
                     "forge.exploration.round": input.round_number,
-                    "forge.exploration.requests_count": len(response.requests),
-                    "forge.exploration.latency_ms": elapsed_ms,
+                    "forge.exploration.requests_count": len(result.response.requests),
                 }
             )
-            return response
+            return result
 
     @activity.defn
     async def call_sanity_check(self, input: SanityCheckInput) -> SanityCheckCallResult:

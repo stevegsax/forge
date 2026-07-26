@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from temporalio import activity
 from temporalio.worker import Worker
 
@@ -16,7 +17,6 @@ from forge.models import (
     FetchPlaybookIdsInput,
     PlaybookEntry,
 )
-from forge.workflows import FORGE_TASK_QUEUE
 
 if TYPE_CHECKING:
     from temporalio.testing import WorkflowEnvironment

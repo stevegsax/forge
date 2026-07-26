@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from temporalio import activity
@@ -23,6 +24,7 @@ from forge.models import (
     AssembledContext,
     CapabilityTier,
     ContextResult,
+    ExplorationCallResult,
     ExplorationInput,
     ExplorationResponse,
     ModelConfig,
@@ -190,16 +192,22 @@ async def execute_exploration_call(
     input: ExplorationInput,
     llm: AnthropicLLM,
     project_instructions: str = "",
-) -> ExplorationResponse:
-    """Call the LLM for exploration and return the structured response.
+) -> ExplorationCallResult:
+    """Call the LLM for exploration and return the response, spend, and prompts.
 
     Separated from the imperative shell so tests can inject a mock client.
+
+    The prompts are built here, so they travel home in the result (T5.3): the
+    workflow persists an interaction record for this call like it does for every
+    other arm, and an interaction row needs the prompts that produced it. The
+    token counts used to be measured into a trace span and dropped.
     """
     from sax_platform.llm.tiers import split_provider
 
     system_prompt, user_prompt = build_exploration_prompt(input, project_instructions)
     full_model = input.model_name or DEFAULT_EXPLORATION_MODEL
     _, model = split_provider(full_model)
+    start = time.monotonic()
 
     completion = await llm.complete(
         [{"role": "user", "content": user_prompt}],
@@ -225,7 +233,21 @@ async def execute_exploration_call(
             input.worktree_path, "explore-response", completion.output.model_dump_json(indent=2)
         )
 
-    return completion.output
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    return ExplorationCallResult(
+        task_id=input.task_id,
+        response=completion.output,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_name=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        latency_ms=elapsed_ms,
+        cache_creation_input_tokens=completion.cache_creation_input_tokens,
+        cache_read_input_tokens=completion.cache_read_input_tokens,
+        stop_reason=completion.stop_reason,
+    )
 
 
 # ---------------------------------------------------------------------------

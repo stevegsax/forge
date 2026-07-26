@@ -214,6 +214,7 @@ FailureKind = Literal[
     "batch_wait",  # the batch wait gave up / provider reported terminal / fetch error
     "step_failed",  # TaskResult: a planned step failed
     "sub_task_failed",  # fan-out gather saw failed children
+    "child_crashed",  # a child workflow raised instead of returning a result (T5.3)
     "sanity_abort",  # sanity check returned ABORT
     "duplicate_sub_task_ids",  # fan-out sub-task ids not unique
     "conflict_unresolved",  # D27: conflicts with resolve_conflicts=False
@@ -553,6 +554,23 @@ class ExplorationInput(BaseModel):
     model_name: str = ""
     log_messages: bool = False
     worktree_path: str = ""
+
+
+class ExplorationCallResult(LLMStats):
+    """Output of the exploration dispatch arm — response, spend, and prompts.
+
+    The other four arms already return an ``LLMStats`` subclass; exploration
+    returned a bare ``ExplorationResponse``, so its token counts died in a trace
+    span and there was nothing to write to the interactions store (T5.3). The
+    prompts travel with the result because the sync lane assembles them *inside*
+    the activity — the workflow never sees them otherwise, and an interaction row
+    without its prompts is not an interaction record.
+    """
+
+    task_id: str
+    response: ExplorationResponse
+    system_prompt: str
+    user_prompt: str
 
 
 # ---------------------------------------------------------------------------

@@ -18,8 +18,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from sax_platform.contracts.constants import FORGE_TASK_QUEUE
-    from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
+    from sax_platform.temporal.retries import IO_RETRY
 
     from forge.models import (
         AssembleContextInput,
@@ -28,61 +27,34 @@ with workflow.unsafe.imports_passed_through():
         AssembleStepContextInput,
         AssembleSubTaskContextInput,
         CapabilityTier,
-        CommitChangesInput,
-        CommitChangesOutput,
-        ConflictResolutionCallInput,
-        ConflictResolutionCallResult,
-        ConflictResolutionInput,
         ContextResult,
-        ContextStats,
         CreateWorktreeInput,
         CreateWorktreeOutput,
-        DetectFileConflictsInput,
-        DetectFileConflictsOutput,
         ExplorationInput,
-        ExplorationResponse,
-        ExtractionCallResult,
-        FileConflict,
         ForgeTaskInput,
         FulfillContextInput,
-        LLMCallResult,
         LLMStats,
-        ModelConfig,
-        ParsedLLMResponse,
         Plan,
-        PlanCallResult,
         PlannerInput,
         PlanStep,
         SanityCheckCallResult,
         SanityCheckInput,
-        SanityCheckResponse,
         SanityCheckVerdict,
         StepResult,
         SubTaskInput,
         SubTaskResult,
         TaskDefinition,
-        TaskDomain,
         TaskResult,
-        ThinkingPolicy,
         TransitionSignal,
-        ValidateOutputInput,
-        ValidationResult,
-        WriteFilesInput,
-        WriteResult,
         build_llm_stats,
         resolve_model,
     )
     from forge.providers import PROVIDER_SPECS
     from forge.step_logic import (
-        MissingResolutions,
-        child_timeout,
         compound_sub_task_id,
-        determine_transition,
-        failure_summary,
         fan_out_step_failure,
         fan_out_success,
         llm_totals,
-        merge_resolution,
         nested_fan_out_failure,
         nested_fan_out_success,
         planned_failure,
@@ -91,145 +63,57 @@ with workflow.unsafe.imports_passed_through():
         step_terminal,
         sub_task_batch_wait_failure,
         sub_task_terminal,
-        sub_task_workflow_id,
-        subtask_failure_summary,
         task_batch_wait_failure,
     )
 
-# The LLM-family result types accepted by ``build_persist_interaction``.
-_PersistResult = (
-    LLMCallResult
-    | PlanCallResult
-    | SanityCheckCallResult
-    | ConflictResolutionCallResult
-    | ExtractionCallResult
-)
-
 # ---------------------------------------------------------------------------
-# Activity timeout presets
+# Activity timeout and retry presets
+#
+# What is left here belongs to the plan driver: the LLM-call timeouts moved
+# into blocks/dispatch.py with their arms, and the write/validate ones into
+# blocks/gather.py with the gather (T5.3). IO_RETRY is the shared preset from
+# sax_platform.temporal.retries (T3.4). ST8 gives the remainder one home.
 # ---------------------------------------------------------------------------
 
 _GIT_TIMEOUT = timedelta(seconds=30)
 _CONTEXT_TIMEOUT = timedelta(seconds=30)
-_LLM_TIMEOUT = timedelta(minutes=5)
-_WRITE_TIMEOUT = timedelta(seconds=30)
-_VALIDATE_TIMEOUT = timedelta(minutes=2)
-_EXPLORATION_LLM_TIMEOUT = timedelta(minutes=5)
 _EXPLORATION_FULFILL_TIMEOUT = timedelta(minutes=2)
-_SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
 
-# ---------------------------------------------------------------------------
-# Heartbeat timeouts — detect worker crashes during long-running activities
-# ---------------------------------------------------------------------------
-
-_LLM_HEARTBEAT = timedelta(seconds=60)
-# Validation subprocesses run via asyncio.to_thread (T1.4), so the heartbeat
-# loop keeps firing (every 30s) during a check. 60s makes this a real crash
-# detector rather than the 120s workaround for a blocked event loop.
-_VALIDATE_HEARTBEAT = timedelta(seconds=60)
-
-# ---------------------------------------------------------------------------
-# Activity retry policies
-# ---------------------------------------------------------------------------
-
-# LLM_RETRY and IO_RETRY are the shared presets from sax_platform.temporal.retries
-# (T3.4, ST7) — forge's former per-module _LLM_RETRY/_LOCAL_RETRY copies are
-# retired in favor of the single platform source. _GIT_RETRY/_WRITE_RETRY stay
-# forge-unique (not duplicated elsewhere).
 _GIT_RETRY = RetryPolicy(
     maximum_attempts=2,
     non_retryable_error_types=["CommitError", "RepoDiscoveryError"],
 )
-_WRITE_RETRY = RetryPolicy(
-    maximum_attempts=2,
-    non_retryable_error_types=["OutputWriteError", "EditApplicationError"],
-)
-
-
-async def _assemble_conflict_resolution(
-    task_id: str,
-    step_id: str,
-    conflicts: list[FileConflict],
-    non_conflicting: dict[str, str],
-    task_description: str,
-    step_description: str,
-    repo_root: str,
-    worktree_path: str,
-    domain: TaskDomain,
-    model_routing: ModelConfig,
-    thinking: ThinkingPolicy,
-    *,
-    log_messages: bool = False,
-) -> ConflictResolutionCallInput:
-    """Assemble conflict resolution context via activity. Module-level, called from any workflow."""
-    reasoning_model = resolve_model(CapabilityTier.REASONING, model_routing)
-
-    resolution_input = ConflictResolutionInput(
-        task_id=task_id,
-        step_id=step_id,
-        conflicts=conflicts,
-        non_conflicting_files=non_conflicting,
-        task_description=task_description,
-        step_description=step_description,
-        repo_root=repo_root,
-        worktree_path=worktree_path,
-        domain=domain,
-        model_name=reasoning_model,
-        thinking=thinking,
-    )
-
-    call_input: ConflictResolutionCallInput = await workflow.execute_activity(
-        "assemble_conflict_resolution_context",
-        resolution_input,
-        start_to_close_timeout=_CONTEXT_TIMEOUT,
-        retry_policy=IO_RETRY,
-        result_type=ConflictResolutionCallInput,
-    )
-    return call_input.model_copy(
-        update={"log_messages": log_messages, "worktree_path": worktree_path}
-    )
 
 
 # ---------------------------------------------------------------------------
-# Shared dispatch helpers — imported from workflow_blocks.py
+# Shared blocks — the step pipeline, the gather, the LLM dispatch arms
 # ---------------------------------------------------------------------------
 
 with workflow.unsafe.imports_passed_through():
+    from forge.blocks.dispatch import (
+        dispatch_exploration,
+        dispatch_planner,
+        dispatch_sanity_check,
+    )
+    from forge.blocks.gather import GatherFailure, GatherSpec, run_fan_out_gather
+    from forge.blocks.host import DispatchHostBase
     from forge.blocks.step import (
         StepSpec,
         cleanup_worktree_after_exception,
         run_step_attempts,
     )
     from forge.persist_models import PersistRun
-    from forge.persist_models import build_interaction_idempotency_key as _build_interaction_key
-    from forge.persist_models import build_persist_interaction as _build_persist_interaction
-    from forge.workflow_blocks import (
-        _BATCH_POLL_INTERVAL,
-        BATCH_WAIT_FAILURES,
-        THINKING_MAX_TOKENS,
-    )
-    from forge.workflow_blocks import (
-        batch_submit_and_wait as _call_llm_batch_dispatch,
-    )
+    from forge.workflow_blocks import BATCH_WAIT_FAILURES
     from forge.workflow_blocks import (
         cleanup_worktree_after_failure as _cleanup_worktree_after_failure,
     )
     from forge.workflow_blocks import (
-        conflict_resolution_dispatch as _call_conflict_resolution_dispatch,
-    )
-    from forge.workflow_blocks import (
-        generation_dispatch as _call_generation_dispatch,
-    )
-    from forge.workflow_blocks import (
         persist_block as _persist_block,
-    )
-    from forge.workflow_blocks import (
-        remove_worktree as _remove_worktree,
     )
 
 
 @workflow.defn
-class ForgeTaskWorkflow:
+class ForgeTaskWorkflow(DispatchHostBase):
     """Execute a Forge task with optional planning and multi-step execution.
 
     Every step — single-step, planned step, sub-task — runs through the one
@@ -240,6 +124,11 @@ class ForgeTaskWorkflow:
     attempt number determine the signal — there is no ``evaluate_transition``
     activity.
 
+    Every LLM call goes through ``forge.blocks.dispatch`` (T5.3) over the
+    lane/cadence/persist state inherited from :class:`DispatchHostBase`, which
+    ``ForgeSubTaskWorkflow`` inherits too — the dispatch shape and the
+    interaction persist exist once for both classes.
+
     plan=False (Phase 1):
         run_step_attempts(mode="single_step") — fresh worktree per attempt,
         task-level commit on success and on terminal failure → TaskResult
@@ -248,62 +137,21 @@ class ForgeTaskWorkflow:
         create_worktree (once)
         assemble_planner_context → call_planner → Plan
         for step in plan.steps:
-            fan-out steps → child workflows, gathered and merged
+            fan-out steps → run_fan_out_gather(mode="fan_out_step") in the
+            borrowed worktree — children gathered with per-child failure
+            isolation, merged, validated, and committed by the block (T5.3)
             regular steps → run_step_attempts(mode="planned_step") in the
             borrowed worktree; a terminal step failure fails the task
         All steps done → return TaskResult(SUCCESS)
     """
 
-    def __init__(self) -> None:
-        self._sync_mode: bool = True
-        self._log_messages: bool = False
-        # Timer-loop batch poll cadence (D88); overridden from the workflow input
-        # in run(). Held in workflow state so it replays identically.
-        self._poll_interval: timedelta = _BATCH_POLL_INTERVAL
-        # Per-role occurrence counters for deterministic, replay-stable
-        # interaction idempotency keys (Phase C survivable writes). Held in
-        # workflow state so they replay identically; per-role so a repeated
-        # same-role call never collides (T1.6a).
-        self._persist_occurrences: dict[str, int] = {}
-
-    async def _persist_interaction(
-        self,
-        *,
-        role: str,
-        task_id: str,
-        system_prompt: str,
-        user_prompt: str,
-        result: _PersistResult,
-        step_id: str | None = None,
-        sub_task_id: str | None = None,
-        context_stats: ContextStats | None = None,
-    ) -> None:
-        """Survivably persist one LLM interaction (idempotent on a per-run key)."""
-        occurrence = self._persist_occurrences.get(role, 0)
-        self._persist_occurrences[role] = occurrence + 1
-        req = _build_persist_interaction(
-            idempotency_key=_build_interaction_key(
-                workflow_id=workflow.info().workflow_id,
-                run_id=workflow.info().run_id,
-                role=role,
-                occurrence=occurrence,
-            ),
-            role=role,
-            task_id=task_id,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            result=result,
-            step_id=step_id,
-            sub_task_id=sub_task_id,
-            context_stats=context_stats,
-        )
-        await _persist_block(req)
-
     @workflow.run
     async def run(self, input: ForgeTaskInput) -> TaskResult:
-        self._sync_mode = input.sync_mode
-        self._log_messages = input.log_messages
-        self._poll_interval = timedelta(seconds=input.batch_poll_interval_seconds)
+        self.configure(
+            sync_mode=input.sync_mode,
+            log_messages=input.log_messages,
+            batch_poll_interval_seconds=input.batch_poll_interval_seconds,
+        )
         workflow.logger.info(
             "Workflow started: task_id=%s plan=%s sync=%s",
             input.task.task_id,
@@ -336,175 +184,6 @@ class ForgeTaskWorkflow:
                 run_id=workflow.info().run_id,
                 task_result=result,
             )
-        )
-        return result
-
-    # ------------------------------------------------------------------
-    # LLM dispatch methods (delegating to module-level shared functions)
-    # ------------------------------------------------------------------
-
-    async def _call_llm_batch(
-        self,
-        context: AssembledContext,
-        output_type_name: str,
-        *,
-        thinking: ThinkingPolicy | None = None,
-        max_tokens: int = 4096,
-    ) -> ParsedLLMResponse:
-        return await _call_llm_batch_dispatch(
-            context,
-            output_type_name,
-            thinking=thinking,
-            max_tokens=max_tokens,
-            poll_interval=self._poll_interval,
-        )
-
-    async def call_generation(self, context: AssembledContext) -> LLMCallResult:
-        """Persisting LLM generation dispatch — the ``StepHost`` seam for blocks/step.py."""
-        result = await _call_generation_dispatch(
-            self._sync_mode, context, poll_interval=self._poll_interval
-        )
-        await self._persist_interaction(
-            role="llm",
-            task_id=context.task_id,
-            system_prompt=context.system_prompt,
-            user_prompt=context.user_prompt,
-            result=result,
-            step_id=context.step_id,
-            sub_task_id=context.sub_task_id,
-            context_stats=context.context_stats,
-        )
-        return result
-
-    async def _call_planner_llm(self, planner_input: PlannerInput) -> PlanCallResult:
-        """Dispatch planner LLM call via sync or batch path."""
-        if self._sync_mode:
-            result: PlanCallResult = await workflow.execute_activity(
-                "call_planner",
-                planner_input,
-                start_to_close_timeout=_LLM_TIMEOUT,
-                heartbeat_timeout=_LLM_HEARTBEAT,
-                retry_policy=LLM_RETRY,
-                result_type=PlanCallResult,
-            )
-        else:
-            context = AssembledContext(
-                task_id=planner_input.task_id,
-                system_prompt=planner_input.system_prompt,
-                user_prompt=planner_input.user_prompt,
-                model_name=planner_input.model_name,
-                log_messages=planner_input.log_messages,
-                worktree_path=planner_input.worktree_path,
-            )
-            parsed = await self._call_llm_batch(
-                context,
-                "Plan",
-                thinking=planner_input.thinking,
-                max_tokens=THINKING_MAX_TOKENS,
-            )
-            result = PlanCallResult(
-                task_id=planner_input.task_id,
-                plan=Plan.model_validate_json(parsed.parsed_json),
-                model_name=parsed.model_name,
-                input_tokens=parsed.input_tokens,
-                output_tokens=parsed.output_tokens,
-                latency_ms=parsed.latency_ms,
-                cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-                cache_read_input_tokens=parsed.cache_read_input_tokens,
-                stop_reason=parsed.stop_reason,
-            )
-        await self._persist_interaction(
-            role="planner",
-            task_id=planner_input.task_id,
-            system_prompt=planner_input.system_prompt,
-            user_prompt=planner_input.user_prompt,
-            result=result,
-        )
-        return result
-
-    async def _call_exploration(self, exploration_input: ExplorationInput) -> ExplorationResponse:
-        """Dispatch exploration LLM call via sync or batch path."""
-        if self._sync_mode:
-            response: ExplorationResponse = await workflow.execute_activity(
-                "call_exploration_llm",
-                exploration_input,
-                start_to_close_timeout=_EXPLORATION_LLM_TIMEOUT,
-                heartbeat_timeout=_LLM_HEARTBEAT,
-                retry_policy=LLM_RETRY,
-                result_type=ExplorationResponse,
-            )
-            return response
-        context: AssembledContext = await workflow.execute_activity(
-            "assemble_exploration_context",
-            exploration_input,
-            start_to_close_timeout=_CONTEXT_TIMEOUT,
-            retry_policy=IO_RETRY,
-            result_type=AssembledContext,
-        )
-        # Exploration stays thinking-disabled, as today. Omitting `thinking`
-        # relies on the shared batch dispatch fallback (disabled by default).
-        parsed = await self._call_llm_batch(context, "ExplorationResponse")
-        return ExplorationResponse.model_validate_json(parsed.parsed_json)
-
-    async def _call_sanity_check_llm(self, sanity_input: SanityCheckInput) -> SanityCheckCallResult:
-        """Dispatch sanity check LLM call via sync or batch path."""
-        if self._sync_mode:
-            result: SanityCheckCallResult = await workflow.execute_activity(
-                "call_sanity_check",
-                sanity_input,
-                start_to_close_timeout=_SANITY_CHECK_TIMEOUT,
-                heartbeat_timeout=_LLM_HEARTBEAT,
-                retry_policy=LLM_RETRY,
-                result_type=SanityCheckCallResult,
-            )
-        else:
-            context = AssembledContext(
-                task_id=sanity_input.task_id,
-                system_prompt=sanity_input.system_prompt,
-                user_prompt=sanity_input.user_prompt,
-                model_name=sanity_input.model_name,
-                log_messages=sanity_input.log_messages,
-                worktree_path=sanity_input.worktree_path,
-            )
-            parsed = await self._call_llm_batch(
-                context,
-                "SanityCheckResponse",
-                thinking=sanity_input.thinking,
-                max_tokens=THINKING_MAX_TOKENS,
-            )
-            result = SanityCheckCallResult(
-                task_id=sanity_input.task_id,
-                response=SanityCheckResponse.model_validate_json(parsed.parsed_json),
-                model_name=parsed.model_name,
-                input_tokens=parsed.input_tokens,
-                output_tokens=parsed.output_tokens,
-                latency_ms=parsed.latency_ms,
-                cache_creation_input_tokens=parsed.cache_creation_input_tokens,
-                cache_read_input_tokens=parsed.cache_read_input_tokens,
-                stop_reason=parsed.stop_reason,
-            )
-        await self._persist_interaction(
-            role="sanity_check",
-            task_id=sanity_input.task_id,
-            system_prompt=sanity_input.system_prompt,
-            user_prompt=sanity_input.user_prompt,
-            result=result,
-        )
-        return result
-
-    async def _call_conflict_resolution(
-        self, call_input: ConflictResolutionCallInput
-    ) -> ConflictResolutionCallResult:
-        result = await _call_conflict_resolution_dispatch(
-            self._sync_mode, call_input, poll_interval=self._poll_interval
-        )
-        await self._persist_interaction(
-            role="conflict_resolution",
-            task_id=call_input.task_id,
-            system_prompt=call_input.system_prompt,
-            user_prompt=call_input.user_prompt,
-            result=result,
-            step_id=call_input.step_id,
         )
         return result
 
@@ -547,20 +226,21 @@ class ForgeTaskWorkflow:
                 log_messages=self._log_messages,
                 worktree_path=worktree_path,
             )
-            exploration_result = await self._call_exploration(exploration_input)
+            exploration_call = await dispatch_exploration(self, exploration_input)
+            requests = exploration_call.response.requests
             workflow.logger.debug(
                 "Exploration round %d: %d provider requests",
                 round_num,
-                len(exploration_result.requests),
+                len(requests),
             )
 
-            if not exploration_result.requests:
+            if not requests:
                 break  # LLM is ready to generate
 
             context_results = await workflow.execute_activity(
                 "fulfill_context_requests",
                 FulfillContextInput(
-                    requests=exploration_result.requests,
+                    requests=requests,
                     repo_root=repo_root,
                     worktree_path=worktree_path,
                 ),
@@ -728,7 +408,7 @@ class ForgeTaskWorkflow:
         planner_input = planner_input.model_copy(update=planner_update)
 
         # --- Call planner ---
-        planner_result = await self._call_planner_llm(planner_input)
+        planner_result = await dispatch_planner(self, planner_input)
         plan: Plan = planner_result.plan
         workflow.logger.info("Plan created: task_id=%s steps=%d", task.task_id, len(plan.steps))
         return plan, build_llm_stats(planner_result)
@@ -800,7 +480,6 @@ class ForgeTaskWorkflow:
                     input,
                     step,
                     wt_output,
-                    step_results,
                     step_model=step_model,
                 )
                 succeeded = step_result.status == TransitionSignal.SUCCESS
@@ -1015,7 +694,7 @@ class ForgeTaskWorkflow:
         }
         sanity_input = sanity_input.model_copy(update=update)
 
-        return await self._call_sanity_check_llm(sanity_input)
+        return await dispatch_sanity_check(self, sanity_input)
 
     # ------------------------------------------------------------------
     # Phase 3: Fan-out step execution
@@ -1026,220 +705,59 @@ class ForgeTaskWorkflow:
         input: ForgeTaskInput,
         step: PlanStep,
         wt_output: CreateWorktreeOutput,
-        prior_step_results: list[StepResult],
         step_model: str = "",
     ) -> StepResult:
-        """Execute a fan-out step by spawning child workflows in parallel.
+        """Execute a fan-out step through the shared gather block.
 
-        1. Validate sub-task ID uniqueness
-        2. Start child workflows in parallel
-        3. Await all children
-        4. Check for file conflicts
-        5. Write merged files to parent worktree
-        6. Validate and commit
+        Borrowed-worktree mode: the plan's worktree belongs to ``_run_planned``,
+        so the block writes the merged output in it and commits, but never
+        creates or removes it.
         """
         task = input.task
         sub_tasks = step.sub_tasks
         assert sub_tasks  # Caller guarantees this
 
-        # --- Validate unique sub-task IDs ---
-        sub_task_ids = [st.sub_task_id for st in sub_tasks]
-        if len(sub_task_ids) != len(set(sub_task_ids)):
-            return fan_out_step_failure(
-                step_id=step.step_id,
-                failure_kind="duplicate_sub_task_ids",
-                error="Duplicate sub-task IDs detected",
-            )
-
-        # --- Start child workflows in parallel ---
-        workflow.logger.info("Fan-out: step_id=%s sub_tasks=%d", step.step_id, len(sub_tasks))
-        child_exec_timeout = child_timeout(
-            0,
-            input.max_fan_out_depth,
+        spec = GatherSpec(
+            mode="fan_out_step",
+            task_id=task.task_id,
+            step_id=step.step_id,
+            repo_root=input.repo_root,
+            borrowed_worktree=wt_output,
+            sub_tasks=sub_tasks,
+            task_description=task.description,
+            step_description=step.description,
+            validation=task.validation,
+            domain=task.domain,
+            child_depth=0,
+            max_depth=input.max_fan_out_depth,
+            child_max_attempts=input.max_sub_task_attempts,
+            child_model_name=step_model,
+            resolve_conflicts=input.resolve_conflicts,
+            model_routing=input.model_routing,
+            thinking=input.thinking,
             sync_mode=input.sync_mode,
-            max_attempts=input.max_sub_task_attempts,
+            log_messages=self._log_messages,
+            batch_poll_interval_seconds=input.batch_poll_interval_seconds,
         )
-        handles = []
-        for st in sub_tasks:
-            child_input = SubTaskInput(
-                parent_task_id=task.task_id,
-                parent_description=task.description,
-                sub_task=st,
-                repo_root=input.repo_root,
-                parent_branch=wt_output.branch_name,
-                validation=task.validation,
-                max_attempts=input.max_sub_task_attempts,
-                model_name=step_model,
-                domain=task.domain,
-                depth=0,
-                max_depth=input.max_fan_out_depth,
-                resolve_conflicts=input.resolve_conflicts,
-                model_routing=input.model_routing,
-                thinking=input.thinking,
-                sync_mode=input.sync_mode,
-                log_messages=self._log_messages,
-                batch_poll_interval_seconds=input.batch_poll_interval_seconds,
-            )
-            compound_id = compound_sub_task_id(task.task_id, st.sub_task_id)
-            handle = await workflow.start_child_workflow(
-                ForgeSubTaskWorkflow.run,
-                child_input,
-                id=sub_task_workflow_id(compound_id),
-                task_queue=FORGE_TASK_QUEUE,
-                execution_timeout=child_exec_timeout,
-            )
-            handles.append(handle)
+        outcome = await run_fan_out_gather(spec, self)
 
-        # --- Await all children ---
-        sub_task_results: list[SubTaskResult] = []
-        for handle in handles:
-            result: SubTaskResult = await handle
-            sub_task_results.append(result)
-
-        # --- Check for failures ---
-        failures = [r for r in sub_task_results if r.status != TransitionSignal.SUCCESS]
-        successes = len(sub_task_results) - len(failures)
-        workflow.logger.info(
-            "Fan-out gather: step_id=%s successes=%d failures=%d",
-            step.step_id,
-            successes,
-            len(failures),
-        )
-        if failures:
+        if isinstance(outcome, GatherFailure):
             return fan_out_step_failure(
                 step_id=step.step_id,
-                failure_kind="sub_task_failed",
-                error=subtask_failure_summary(failures),
-                sub_task_results=sub_task_results,
+                failure_kind=outcome.failure_kind,
+                error=outcome.error,
+                sub_task_results=outcome.sub_task_results,
+                output_files=outcome.output_files,
+                validation_results=outcome.validation_results,
+                conflict_resolution=outcome.conflict_resolution,
             )
-
-        # --- Detect and resolve file conflicts ---
-        detect_result = await workflow.execute_activity(
-            "detect_file_conflicts_activity",
-            DetectFileConflictsInput(
-                sub_task_results=sub_task_results,
-                worktree_path=wt_output.worktree_path,
-            ),
-            start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=IO_RETRY,
-            result_type=DetectFileConflictsOutput,
-        )
-        non_conflicting = detect_result.non_conflicting_files
-        conflicts = detect_result.conflicts
-        conflict_resolution_result: ConflictResolutionCallResult | None = None
-
-        if conflicts:
-            workflow.logger.info(
-                "Conflict resolution: step_id=%s conflicts=%d", step.step_id, len(conflicts)
-            )
-
-        if conflicts and input.resolve_conflicts:
-            call_input = await _assemble_conflict_resolution(
-                task_id=task.task_id,
-                step_id=step.step_id,
-                conflicts=conflicts,
-                non_conflicting=non_conflicting,
-                task_description=task.description,
-                step_description=step.description,
-                repo_root=input.repo_root,
-                worktree_path=wt_output.worktree_path,
-                domain=task.domain,
-                model_routing=input.model_routing,
-                thinking=input.thinking,
-                log_messages=self._log_messages,
-            )
-            conflict_resolution_result = await self._call_conflict_resolution(call_input)
-
-            merged = merge_resolution(
-                conflicts, conflict_resolution_result.resolved_files, non_conflicting
-            )
-            if isinstance(merged, MissingResolutions):
-                return fan_out_step_failure(
-                    step_id=step.step_id,
-                    failure_kind="conflict_incomplete",
-                    error=merged.message,
-                    sub_task_results=sub_task_results,
-                    conflict_resolution=conflict_resolution_result,
-                )
-            merged_files = merged.files
-        elif conflicts:
-            # resolve_conflicts=False: fall back to D27 terminal error
-            conflict_paths_str = ", ".join(c.file_path for c in conflicts)
-            return fan_out_step_failure(
-                step_id=step.step_id,
-                failure_kind="conflict_unresolved",
-                error=f"File conflict: {conflict_paths_str} produced by multiple sub-tasks",
-                sub_task_results=sub_task_results,
-            )
-        else:
-            merged_files = non_conflicting
-
-        # --- Write merged files to parent worktree ---
-        if merged_files:
-            write_result = await workflow.execute_activity(
-                "write_files",
-                WriteFilesInput(
-                    task_id=task.task_id,
-                    worktree_path=wt_output.worktree_path,
-                    files=merged_files,
-                ),
-                start_to_close_timeout=_WRITE_TIMEOUT,
-                retry_policy=_WRITE_RETRY,
-                result_type=WriteResult,
-            )
-
-            # --- Validate merged output ---
-            validation_results = await workflow.execute_activity(
-                "validate_output",
-                ValidateOutputInput(
-                    task_id=task.task_id,
-                    worktree_path=wt_output.worktree_path,
-                    files=write_result.files_written,
-                    validation=task.validation,
-                ),
-                start_to_close_timeout=_VALIDATE_TIMEOUT,
-                heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=IO_RETRY,
-                result_type=list[ValidationResult],
-            )
-
-            # --- Evaluate transition inline (single attempt for merged output) ---
-            signal = determine_transition(validation_results, attempt=1, max_attempts=1)
-
-            if signal != TransitionSignal.SUCCESS:
-                return fan_out_step_failure(
-                    step_id=step.step_id,
-                    failure_kind="merged_validation",
-                    error=f"Merged output validation failed: {failure_summary(validation_results)}",
-                    output_files=merged_files,
-                    validation_results=validation_results,
-                    sub_task_results=sub_task_results,
-                )
-        else:
-            validation_results = []
-
-        # --- Commit ---
-        commit_msg = f"forge({task.task_id}): step {step.step_id} fan-out gather"
-        commit_output = await workflow.execute_activity(
-            "commit_changes_activity",
-            CommitChangesInput(
-                repo_root=input.repo_root,
-                task_id=task.task_id,
-                status="success",
-                message=commit_msg,
-            ),
-            start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=_GIT_RETRY,
-            result_type=CommitChangesOutput,
-        )
-
         return fan_out_success(
             step_id=step.step_id,
-            output_files=merged_files,
-            validation_results=validation_results,
-            commit_sha=commit_output.commit_sha,
-            sub_task_results=sub_task_results,
-            conflict_resolution=conflict_resolution_result,
+            output_files=outcome.output_files,
+            validation_results=outcome.validation_results,
+            commit_sha=outcome.commit_sha,
+            sub_task_results=outcome.sub_task_results,
+            conflict_resolution=outcome.conflict_resolution,
         )
 
 
@@ -1249,7 +767,7 @@ class ForgeTaskWorkflow:
 
 
 @workflow.defn
-class ForgeSubTaskWorkflow:
+class ForgeSubTaskWorkflow(DispatchHostBase):
     """Execute a single sub-task within a fan-out step.
 
     Routes between two execution paths:
@@ -1262,62 +780,26 @@ class ForgeSubTaskWorkflow:
         the returned SubTaskResult.
 
     Nested fan-out (has sub_tasks and depth < max_depth):
-        1. Create worktree (compound ID, branched from parent branch)
-        2. Validate nested sub-task ID uniqueness
-        3. Start child ForgeSubTaskWorkflow instances in parallel (depth+1)
-        4. Await all children, check failures / file conflicts
-        5. Write merged files to worktree, validate merged output
-        6. Remove worktree (sub-tasks never commit, D16)
-        7. Return SubTaskResult with merged output_files and nested sub_task_results
+        run_fan_out_gather(mode="nested_fan_out") — the shared gather block
+        (T5.3) in owned-worktree mode: it creates this node's worktree from the
+        parent branch, starts one child per nested sub-task at depth+1, awaits
+        them with per-child failure isolation, merges (resolving conflicts when
+        asked), validates the merged output, and removes the worktree on every
+        exit without committing (D16). The merged output travels home in the
+        returned SubTaskResult.
+
+    Its LLM dispatch (generation, and conflict resolution on the nested path) is
+    the one inherited from :class:`DispatchHostBase`, shared with
+    ``ForgeTaskWorkflow`` — T5.3 retired the verbatim second copy that lived here.
     """
-
-    def __init__(self) -> None:
-        self._sync_mode: bool = True
-        self._log_messages: bool = False
-        # Timer-loop batch poll cadence (D88); overridden from the workflow input
-        # in run(). Held in workflow state so it replays identically.
-        self._poll_interval: timedelta = _BATCH_POLL_INTERVAL
-        # Per-role occurrence counters for replay-stable interaction keys (T1.6a).
-        self._persist_occurrences: dict[str, int] = {}
-
-    async def _persist_interaction(
-        self,
-        *,
-        role: str,
-        task_id: str,
-        system_prompt: str,
-        user_prompt: str,
-        result: _PersistResult,
-        step_id: str | None = None,
-        sub_task_id: str | None = None,
-        context_stats: ContextStats | None = None,
-    ) -> None:
-        """Survivably persist one LLM interaction (idempotent on a per-run key)."""
-        occurrence = self._persist_occurrences.get(role, 0)
-        self._persist_occurrences[role] = occurrence + 1
-        req = _build_persist_interaction(
-            idempotency_key=_build_interaction_key(
-                workflow_id=workflow.info().workflow_id,
-                run_id=workflow.info().run_id,
-                role=role,
-                occurrence=occurrence,
-            ),
-            role=role,
-            task_id=task_id,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            result=result,
-            step_id=step_id,
-            sub_task_id=sub_task_id,
-            context_stats=context_stats,
-        )
-        await _persist_block(req)
 
     @workflow.run
     async def run(self, input: SubTaskInput) -> SubTaskResult:
-        self._sync_mode = input.sync_mode
-        self._log_messages = input.log_messages
-        self._poll_interval = timedelta(seconds=input.batch_poll_interval_seconds)
+        self.configure(
+            sync_mode=input.sync_mode,
+            log_messages=input.log_messages,
+            batch_poll_interval_seconds=input.batch_poll_interval_seconds,
+        )
         workflow.logger.info(
             "Sub-task started: sub_task_id=%s depth=%d/%d",
             input.sub_task.sub_task_id,
@@ -1336,59 +818,6 @@ class ForgeSubTaskWorkflow:
             compound_id = compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id)
             await _cleanup_worktree_after_failure(input.repo_root, compound_id, exc)
             return sub_task_batch_wait_failure(sub_task_id=input.sub_task.sub_task_id, exc=exc)
-
-    # ------------------------------------------------------------------
-    # LLM dispatch methods (delegating to module-level shared functions)
-    # ------------------------------------------------------------------
-
-    async def _call_llm_batch(
-        self,
-        context: AssembledContext,
-        output_type_name: str,
-        *,
-        thinking: ThinkingPolicy | None = None,
-        max_tokens: int = 4096,
-    ) -> ParsedLLMResponse:
-        return await _call_llm_batch_dispatch(
-            context,
-            output_type_name,
-            thinking=thinking,
-            max_tokens=max_tokens,
-            poll_interval=self._poll_interval,
-        )
-
-    async def call_generation(self, context: AssembledContext) -> LLMCallResult:
-        """Persisting LLM generation dispatch — the ``StepHost`` seam for blocks/step.py."""
-        result = await _call_generation_dispatch(
-            self._sync_mode, context, poll_interval=self._poll_interval
-        )
-        await self._persist_interaction(
-            role="llm",
-            task_id=context.task_id,
-            system_prompt=context.system_prompt,
-            user_prompt=context.user_prompt,
-            result=result,
-            step_id=context.step_id,
-            sub_task_id=context.sub_task_id,
-            context_stats=context.context_stats,
-        )
-        return result
-
-    async def _call_conflict_resolution(
-        self, call_input: ConflictResolutionCallInput
-    ) -> ConflictResolutionCallResult:
-        result = await _call_conflict_resolution_dispatch(
-            self._sync_mode, call_input, poll_interval=self._poll_interval
-        )
-        await self._persist_interaction(
-            role="conflict_resolution",
-            task_id=call_input.task_id,
-            system_prompt=call_input.system_prompt,
-            user_prompt=call_input.user_prompt,
-            result=result,
-            step_id=call_input.step_id,
-        )
-        return result
 
     async def _run_single_step(self, input: SubTaskInput) -> SubTaskResult:
         """Execute a leaf sub-task through the shared step block.
@@ -1435,198 +864,54 @@ class ForgeSubTaskWorkflow:
         )
 
     async def _run_nested_fan_out(self, input: SubTaskInput) -> SubTaskResult:
-        """Execute a sub-task that itself contains nested sub-tasks."""
-        compound_id = compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id)
+        """Execute a sub-task that itself contains nested sub-tasks.
+
+        Owned-worktree mode: the block creates this node's worktree from the
+        parent branch and removes it (with its branch) on every exit — success,
+        failure, or exception. Nothing is committed here (D16); the merged
+        output travels home in the returned SubTaskResult.
+        """
         nested_sub_tasks = input.sub_task.sub_tasks
         assert nested_sub_tasks  # Caller guarantees this
 
-        # --- Create worktree ---
-        wt_output = await workflow.execute_activity(
-            "create_worktree_activity",
-            CreateWorktreeInput(
-                repo_root=input.repo_root,
-                task_id=compound_id,
-                base_branch=input.parent_branch,
-            ),
-            start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=_GIT_RETRY,
-            result_type=CreateWorktreeOutput,
-        )
-
-        # --- Validate unique sub-task IDs ---
-        nested_ids = [st.sub_task_id for st in nested_sub_tasks]
-        if len(nested_ids) != len(set(nested_ids)):
-            await _remove_worktree(input.repo_root, compound_id)
-            return nested_fan_out_failure(
-                sub_task_id=input.sub_task.sub_task_id,
-                failure_kind="duplicate_sub_task_ids",
-                error="Duplicate nested sub-task IDs detected",
-            )
-
-        # --- Start child workflows in parallel ---
-        child_exec_timeout = child_timeout(
-            input.depth + 1,
-            input.max_depth,
+        spec = GatherSpec(
+            mode="nested_fan_out",
+            task_id=compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id),
+            step_id=input.sub_task.sub_task_id,
+            repo_root=input.repo_root,
+            base_branch=input.parent_branch,
+            sub_tasks=nested_sub_tasks,
+            task_description=input.parent_description,
+            step_description=input.sub_task.description,
+            validation=input.validation,
+            domain=input.domain,
+            child_depth=input.depth + 1,
+            max_depth=input.max_depth,
+            child_max_attempts=input.max_attempts,
+            child_model_name=input.model_name,
+            resolve_conflicts=input.resolve_conflicts,
+            model_routing=input.model_routing,
+            thinking=input.thinking,
             sync_mode=input.sync_mode,
-            max_attempts=input.max_attempts,
+            log_messages=self._log_messages,
+            batch_poll_interval_seconds=input.batch_poll_interval_seconds,
         )
-        handles = []
-        for st in nested_sub_tasks:
-            child_input = SubTaskInput(
-                parent_task_id=compound_id,
-                parent_description=input.parent_description,
-                sub_task=st,
-                repo_root=input.repo_root,
-                parent_branch=wt_output.branch_name,
-                validation=input.validation,
-                max_attempts=input.max_attempts,
-                model_name=input.model_name,
-                domain=input.domain,
-                depth=input.depth + 1,
-                max_depth=input.max_depth,
-                resolve_conflicts=input.resolve_conflicts,
-                model_routing=input.model_routing,
-                thinking=input.thinking,
-                sync_mode=input.sync_mode,
-                log_messages=self._log_messages,
-                batch_poll_interval_seconds=input.batch_poll_interval_seconds,
-            )
-            child_compound_id = compound_sub_task_id(compound_id, st.sub_task_id)
-            handle = await workflow.start_child_workflow(
-                ForgeSubTaskWorkflow.run,
-                child_input,
-                id=sub_task_workflow_id(child_compound_id),
-                task_queue=FORGE_TASK_QUEUE,
-                execution_timeout=child_exec_timeout,
-            )
-            handles.append(handle)
+        outcome = await run_fan_out_gather(spec, self)
 
-        # --- Await all children ---
-        sub_task_results: list[SubTaskResult] = []
-        for handle in handles:
-            result: SubTaskResult = await handle
-            sub_task_results.append(result)
-
-        # --- Check for failures ---
-        failures = [r for r in sub_task_results if r.status != TransitionSignal.SUCCESS]
-        if failures:
-            await _remove_worktree(input.repo_root, compound_id)
+        if isinstance(outcome, GatherFailure):
             return nested_fan_out_failure(
                 sub_task_id=input.sub_task.sub_task_id,
-                failure_kind="sub_task_failed",
-                error=subtask_failure_summary(failures),
-                sub_task_results=sub_task_results,
+                failure_kind=outcome.failure_kind,
+                error=outcome.error,
+                sub_task_results=outcome.sub_task_results,
+                output_files=outcome.output_files,
+                validation_results=outcome.validation_results,
+                conflict_resolution=outcome.conflict_resolution,
             )
-
-        # --- Detect and resolve file conflicts ---
-        detect_result = await workflow.execute_activity(
-            "detect_file_conflicts_activity",
-            DetectFileConflictsInput(
-                sub_task_results=sub_task_results,
-                worktree_path=wt_output.worktree_path,
-            ),
-            start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=IO_RETRY,
-            result_type=DetectFileConflictsOutput,
-        )
-        non_conflicting = detect_result.non_conflicting_files
-        conflicts = detect_result.conflicts
-        conflict_resolution_result: ConflictResolutionCallResult | None = None
-
-        if conflicts and input.resolve_conflicts:
-            cr_call_input = await _assemble_conflict_resolution(
-                task_id=compound_id,
-                step_id=input.sub_task.sub_task_id,
-                conflicts=conflicts,
-                non_conflicting=non_conflicting,
-                task_description=input.parent_description,
-                step_description=input.sub_task.description,
-                repo_root=input.repo_root,
-                worktree_path=wt_output.worktree_path,
-                domain=input.domain,
-                model_routing=input.model_routing,
-                thinking=input.thinking,
-                log_messages=self._log_messages,
-            )
-            conflict_resolution_result = await self._call_conflict_resolution(cr_call_input)
-
-            merged = merge_resolution(
-                conflicts, conflict_resolution_result.resolved_files, non_conflicting
-            )
-            if isinstance(merged, MissingResolutions):
-                await _remove_worktree(input.repo_root, compound_id)
-                return nested_fan_out_failure(
-                    sub_task_id=input.sub_task.sub_task_id,
-                    failure_kind="conflict_incomplete",
-                    error=merged.message,
-                    sub_task_results=sub_task_results,
-                    conflict_resolution=conflict_resolution_result,
-                )
-            merged_files = merged.files
-        elif conflicts:
-            # resolve_conflicts=False: fall back to D27 terminal error. A nested
-            # node owns its worktree, so remove it before returning (D16).
-            await _remove_worktree(input.repo_root, compound_id)
-            conflict_paths_str = ", ".join(c.file_path for c in conflicts)
-            return nested_fan_out_failure(
-                sub_task_id=input.sub_task.sub_task_id,
-                failure_kind="conflict_unresolved",
-                error=f"File conflict: {conflict_paths_str} produced by multiple sub-tasks",
-                sub_task_results=sub_task_results,
-            )
-        else:
-            merged_files = non_conflicting
-
-        # --- Write merged files to worktree and validate ---
-        validation_results: list[ValidationResult] = []
-        if merged_files:
-            write_result = await workflow.execute_activity(
-                "write_files",
-                WriteFilesInput(
-                    task_id=compound_id,
-                    worktree_path=wt_output.worktree_path,
-                    files=merged_files,
-                ),
-                start_to_close_timeout=_WRITE_TIMEOUT,
-                retry_policy=_WRITE_RETRY,
-                result_type=WriteResult,
-            )
-
-            validation_results = await workflow.execute_activity(
-                "validate_output",
-                ValidateOutputInput(
-                    task_id=compound_id,
-                    worktree_path=wt_output.worktree_path,
-                    files=write_result.files_written,
-                    validation=input.validation,
-                ),
-                start_to_close_timeout=_VALIDATE_TIMEOUT,
-                heartbeat_timeout=_VALIDATE_HEARTBEAT,
-                retry_policy=IO_RETRY,
-                result_type=list[ValidationResult],
-            )
-
-            # --- Evaluate transition inline (single attempt for merged output) ---
-            signal = determine_transition(validation_results, attempt=1, max_attempts=1)
-
-            if signal != TransitionSignal.SUCCESS:
-                await _remove_worktree(input.repo_root, compound_id)
-                return nested_fan_out_failure(
-                    sub_task_id=input.sub_task.sub_task_id,
-                    failure_kind="merged_validation",
-                    error=f"Merged output validation failed: {failure_summary(validation_results)}",
-                    output_files=merged_files,
-                    validation_results=validation_results,
-                    sub_task_results=sub_task_results,
-                )
-
-        # --- Remove worktree (sub-tasks never commit, D16) ---
-        await _remove_worktree(input.repo_root, compound_id)
-
         return nested_fan_out_success(
             sub_task_id=input.sub_task.sub_task_id,
-            output_files=merged_files,
-            validation_results=validation_results,
-            sub_task_results=sub_task_results,
-            conflict_resolution=conflict_resolution_result,
+            output_files=outcome.output_files,
+            validation_results=outcome.validation_results,
+            sub_task_results=outcome.sub_task_results,
+            conflict_resolution=outcome.conflict_resolution,
         )

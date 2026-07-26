@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from temporalio import activity
 from temporalio.worker import Worker
 
@@ -51,7 +52,7 @@ from forge.models import (
 )
 from forge.persist_models import PersistRequest, PersistResult
 from forge.store import get_store_engine
-from forge.workflows import FORGE_TASK_QUEUE, ForgeSubTaskWorkflow, ForgeTaskWorkflow
+from forge.workflows import ForgeSubTaskWorkflow, ForgeTaskWorkflow
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -978,7 +978,7 @@ def run(
     # --- Warn when --effort/--no-thinking are explicitly passed but inert ---
     # Single-step mode (plan=False) has no thinking-configurable LLM call: the
     # sole call on that path is generation, which always runs thinking-disabled
-    # (workflow_blocks.generation_dispatch). Only warn when the user explicitly
+    # (blocks.dispatch's generation arm). Only warn when the user explicitly
     # passed one of these flags — the flags' own defaults must stay silent.
     if not use_plan:
         ctx = click.get_current_context()

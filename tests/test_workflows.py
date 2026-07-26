@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from temporalio import activity
 from temporalio.client import WorkflowFailureError
 from temporalio.exceptions import ApplicationError
@@ -34,6 +35,7 @@ from forge.models import (
     CreateWorktreeOutput,
     DetectFileConflictsInput,
     DetectFileConflictsOutput,
+    ExplorationCallResult,
     ExplorationInput,
     ExplorationResponse,
     FetchBatchResultInput,
@@ -68,10 +70,9 @@ from forge.models import (
     WriteOutputInput,
     WriteResult,
 )
-from forge.persist_models import PersistRequest, PersistResult
+from forge.persist_models import PersistInteraction, PersistRequest, PersistResult, PersistRun
 from forge.workflow_blocks import THINKING_MAX_TOKENS
 from forge.workflows import (
-    FORGE_TASK_QUEUE,
     ForgeSubTaskWorkflow,
     ForgeTaskWorkflow,
 )
@@ -4160,7 +4161,7 @@ class TestBatchSingleStep:
         # Verify sync path was NOT called
         assert "call_llm" not in _BATCH_CALL_LOG
         assert result.output_files == {"hello.py": "print('hello')\n"}
-        # generation_dispatch omits `thinking`; the shared fallback in
+        # The generation arm omits `thinking`; the shared fallback in
         # batch_submit_and_wait must resolve it to disabled — not to
         # ThinkingPolicy()'s own enabled=True default (D94) and not to the
         # task-level ForgeTaskInput.thinking (enabled=True here).
@@ -4965,6 +4966,7 @@ def _step_block_activities(
     plan: Plan | None = None,
     worktree_paths: list[str] | None = None,
     fail_first_validation: bool = False,
+    persisted: list[PersistRequest] | None = None,
 ) -> list[Callable[..., object]]:
     """By-name mocks bound to *calls*.
 
@@ -4972,6 +4974,8 @@ def _step_block_activities(
     ApplicationError — the mid-step exception the cleanup wrap must survive.
     ``worktree_paths`` hands out a distinct worktree path per create call, so a
     test can tell which attempt's worktree an activity received.
+    ``persisted`` collects every survivable write, for tests that assert on the
+    interaction records a run produced.
     """
     created = 0
 
@@ -4981,6 +4985,8 @@ def _step_block_activities(
 
     @activity.defn(name="persist_to_store")
     async def persist_to_store(req: PersistRequest) -> PersistResult:
+        if persisted is not None:
+            persisted.append(req)
         return PersistResult(kind=req.kind, applied=True)
 
     @activity.defn(name="create_worktree_activity")
@@ -5052,10 +5058,25 @@ def _step_block_activities(
         )
 
     @activity.defn(name="call_exploration_llm")
-    async def call_exploration_llm(input: ExplorationInput) -> ExplorationResponse:
+    async def call_exploration_llm(input: ExplorationInput) -> ExplorationCallResult:
         calls.append(f"call_exploration_llm:{input.worktree_path}")
-        return ExplorationResponse(
-            requests=[ContextRequest(provider="file_content", reasoning="need a peek")]
+        # T5.3: the sync activity returns the full envelope — the prompts it
+        # assembled internally plus the call's spend — so the workflow has an
+        # interaction record to persist for this arm like every other one.
+        return ExplorationCallResult(
+            task_id=input.task_id,
+            response=ExplorationResponse(
+                requests=[ContextRequest(provider="file_content", reasoning="need a peek")]
+            ),
+            system_prompt="exploration system",
+            user_prompt="exploration user",
+            model_name="mock-explorer",
+            input_tokens=41,
+            output_tokens=17,
+            latency_ms=90.0,
+            cache_creation_input_tokens=3,
+            cache_read_input_tokens=5,
+            stop_reason="end_turn",
         )
 
     @activity.defn(name="fulfill_context_requests")
@@ -5269,3 +5290,601 @@ class TestExplorationPerAttempt:
         ]
         # The explored context reached the generation call, not just the loop.
         assert result.llm_stats is not None
+
+
+# ===========================================================================
+# T5.3: the exploration arm's interaction record
+#
+# Exploration was the one dispatch arm of five that wrote nothing to the
+# interactions store — up to 20 LLM calls per task with no token or cost
+# record, which also left T7.4's budget enforcement nothing to enforce
+# against. Both lanes now persist, with the call's real token counts.
+# ===========================================================================
+
+
+def _interactions(persisted: list[PersistRequest]) -> list[PersistInteraction]:
+    return [req for req in persisted if isinstance(req, PersistInteraction)]
+
+
+def _exploration_batch_activities(
+    calls: list[str],
+    persisted: list[PersistRequest],
+) -> list[Callable[..., object]]:
+    """By-name batch-lane mocks for a single-step run with one exploration round."""
+
+    @activity.defn(name="persist_to_store")
+    async def persist_to_store(req: PersistRequest) -> PersistResult:
+        persisted.append(req)
+        return PersistResult(kind=req.kind, applied=True)
+
+    @activity.defn(name="create_worktree_activity")
+    async def create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+        return CreateWorktreeOutput(
+            worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+            branch_name=f"forge/{input.task_id}",
+        )
+
+    @activity.defn(name="remove_worktree_activity")
+    async def remove_worktree(input: RemoveWorktreeInput) -> None:
+        return None
+
+    @activity.defn(name="commit_changes_activity")
+    async def commit_changes(input: CommitChangesInput) -> CommitChangesOutput:
+        return CommitChangesOutput(commit_sha="f" * 40)
+
+    @activity.defn(name="assemble_context")
+    async def assemble_context(input: AssembleContextInput) -> AssembledContext:
+        calls.append("assemble_context")
+        return AssembledContext(
+            task_id=input.task_id, system_prompt="system prompt", user_prompt="user prompt"
+        )
+
+    @activity.defn(name="assemble_exploration_context")
+    async def assemble_exploration_context(input: ExplorationInput) -> AssembledContext:
+        calls.append("assemble_exploration_context")
+        return AssembledContext(
+            task_id=input.task_id,
+            system_prompt="explore system",
+            user_prompt="explore user",
+        )
+
+    @activity.defn(name="submit_batch_request")
+    async def submit_batch_request(input: BatchSubmitInput) -> BatchSubmitResult:
+        calls.append(f"submit_batch_request:{input.output_type_name}")
+        return BatchSubmitResult(
+            request_id=input.request_id,
+            batch_id=f"batch-{input.request_id}",
+            provider="anthropic",
+        )
+
+    @activity.defn(name="batch_status")
+    async def batch_status(input: BatchStatusInput) -> BatchStatusResult:
+        return BatchStatusResult(batch_id=input.batch_id, state="ended")
+
+    @activity.defn(name="fetch_batch_result")
+    async def fetch_batch_result(input: FetchBatchResultInput) -> BatchFetchResult:
+        return BatchFetchResult(raw_response_json='{"mock": true}')
+
+    @activity.defn(name="parse_llm_response")
+    async def parse_llm_response(input: ParseResponseInput) -> ParsedLLMResponse:
+        calls.append(f"parse_llm_response:{input.output_type_name}")
+        if input.output_type_name == "ExplorationResponse":
+            return ParsedLLMResponse(
+                parsed_json=ExplorationResponse(requests=[]).model_dump_json(),
+                model_name="mock-explorer",
+                input_tokens=123,
+                output_tokens=45,
+                cache_creation_input_tokens=7,
+                cache_read_input_tokens=9,
+                stop_reason="end_turn",
+            )
+        return ParsedLLMResponse(
+            parsed_json=_LLM_RESPONSE.model_dump_json(),
+            model_name="mock-batch-model",
+            input_tokens=100,
+            output_tokens=50,
+        )
+
+    @activity.defn(name="write_output")
+    async def write_output(input: WriteOutputInput) -> WriteResult:
+        files = input.llm_result.response.files
+        return WriteResult(
+            task_id=input.llm_result.task_id,
+            files_written=[f.file_path for f in files],
+            output_files={f.file_path: f.content for f in files},
+        )
+
+    @activity.defn(name="validate_output")
+    async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+        return [_PASS_VALIDATION]
+
+    return [
+        persist_to_store,
+        create_worktree,
+        remove_worktree,
+        commit_changes,
+        assemble_context,
+        assemble_exploration_context,
+        submit_batch_request,
+        batch_status,
+        fetch_batch_result,
+        parse_llm_response,
+        write_output,
+        validate_output,
+    ]
+
+
+class TestExplorationInteractionRecord:
+    @pytest.mark.asyncio
+    async def test_sync_lane_persists_role_and_tokens(self, env: WorkflowEnvironment) -> None:
+        """The sync activity's envelope carries the prompts and spend into the row."""
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_step_block_activities(calls, persisted=persisted),
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=TaskDefinition(task_id="explore-persist", description="d"),
+                    repo_root="/tmp/repo",
+                    max_attempts=1,
+                    max_exploration_rounds=1,
+                    sync_mode=True,
+                ),
+                id="test-exploration-persist-sync",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.SUCCESS
+        rows = _interactions(persisted)
+        # Every arm this run touched produced exactly one row.
+        assert [row.role for row in rows] == ["exploration", "llm"]
+        explore_row = rows[0]
+        assert explore_row.model_name == "mock-explorer"
+        assert (explore_row.input_tokens, explore_row.output_tokens) == (41, 17)
+        assert (explore_row.cache_creation_input_tokens, explore_row.cache_read_input_tokens) == (
+            3,
+            5,
+        )
+        assert explore_row.stop_reason == "end_turn"
+        assert explore_row.latency_ms == 90.0
+        # The prompts the activity assembled internally travelled home with it.
+        assert explore_row.system_prompt == "exploration system"
+        assert explore_row.user_prompt == "exploration user"
+        # A second exploration round would collide on the idempotency key if the
+        # per-role occurrence counter were shared with the generation arm.
+        assert explore_row.idempotency_key.endswith(":exploration:0")
+
+    @pytest.mark.asyncio
+    async def test_batch_lane_persists_the_parsed_tokens(self, env: WorkflowEnvironment) -> None:
+        """The batch lane assembles its own context, then persists the parsed spend."""
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow],
+            activities=_exploration_batch_activities(calls, persisted),
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=TaskDefinition(task_id="explore-batch", description="d"),
+                    repo_root="/tmp/repo",
+                    max_attempts=1,
+                    max_exploration_rounds=1,
+                    sync_mode=False,
+                ),
+                id="test-exploration-persist-batch",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.SUCCESS
+        # The exploration arm's batch lane assembles its context first, then runs
+        # the same transport as every other arm.
+        assert calls == [
+            "assemble_context",
+            "assemble_exploration_context",
+            "submit_batch_request:ExplorationResponse",
+            "parse_llm_response:ExplorationResponse",
+            "submit_batch_request:LLMResponse",
+            "parse_llm_response:LLMResponse",
+        ]
+        rows = _interactions(persisted)
+        assert [row.role for row in rows] == ["exploration", "llm"]
+        explore_row = rows[0]
+        assert explore_row.model_name == "mock-explorer"
+        assert (explore_row.input_tokens, explore_row.output_tokens) == (123, 45)
+        assert (explore_row.cache_creation_input_tokens, explore_row.cache_read_input_tokens) == (
+            7,
+            9,
+        )
+        # Prompts come from the assembled context on this lane.
+        assert explore_row.system_prompt == "explore system"
+        assert explore_row.user_prompt == "explore user"
+
+
+# ===========================================================================
+# T5.3: the shared gather block — per-child isolation and owned-worktree cleanup
+#
+# Local mock factories closing over per-test recorders; no module-global
+# scenario state joins the older sections above.
+# ===========================================================================
+
+
+def _gather_activities(
+    calls: list[str],
+    persisted: list[PersistRequest],
+    *,
+    crash_sub_task: str = "",
+    raise_in: str = "",
+    plan: Plan | None = None,
+    conflicts: bool = False,
+) -> list[Callable[..., object]]:
+    """By-name mocks for a fan-out gather (parent or nested), sync mode.
+
+    ``crash_sub_task`` names the sub-task whose context assembly fails
+    non-retryably — that child's workflow fails, so the parent's await raises,
+    which is the shape per-child isolation must absorb. ``raise_in`` fails one
+    named gather activity outright (the mid-gather exception an owned worktree
+    must be cleaned up after). ``conflicts`` makes both children write the same
+    path so the conflict branch runs.
+    """
+
+    @activity.defn(name="persist_to_store")
+    async def persist_to_store(req: PersistRequest) -> PersistResult:
+        persisted.append(req)
+        return PersistResult(kind=req.kind, applied=True)
+
+    @activity.defn(name="create_worktree_activity")
+    async def create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+        calls.append(f"create_worktree:{input.task_id}")
+        return CreateWorktreeOutput(
+            worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+            branch_name=f"forge/{input.task_id}",
+        )
+
+    @activity.defn(name="remove_worktree_activity")
+    async def remove_worktree(input: RemoveWorktreeInput) -> None:
+        calls.append(f"remove_worktree:{input.task_id}:force={input.force}")
+
+    @activity.defn(name="reset_worktree_activity")
+    async def reset_worktree(input: ResetWorktreeInput) -> None:
+        calls.append("reset_worktree")
+
+    @activity.defn(name="commit_changes_activity")
+    async def commit_changes(input: CommitChangesInput) -> CommitChangesOutput:
+        calls.append(f"commit:{input.message or input.status}")
+        return CommitChangesOutput(commit_sha="g" * 40)
+
+    @activity.defn(name="assemble_planner_context")
+    async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
+        return PlannerInput(
+            task_id=input.task_id, system_prompt="planner system", user_prompt="planner user"
+        )
+
+    @activity.defn(name="call_planner")
+    async def call_planner(input: PlannerInput) -> PlanCallResult:
+        assert plan is not None
+        return PlanCallResult(
+            task_id=input.task_id,
+            plan=plan,
+            model_name="mock-planner",
+            input_tokens=300,
+            output_tokens=150,
+            latency_ms=500.0,
+        )
+
+    @activity.defn(name="assemble_sub_task_context")
+    async def assemble_sub_task_context(input: AssembleSubTaskContextInput) -> AssembledContext:
+        sub_task_id = input.sub_task.sub_task_id
+        calls.append(f"assemble_sub_task_context:{sub_task_id}")
+        if sub_task_id == crash_sub_task:
+            raise ApplicationError(f"{sub_task_id} context blew up", non_retryable=True)
+        return AssembledContext(
+            task_id=input.parent_task_id,
+            system_prompt=f"sub system for {sub_task_id}",
+            user_prompt=f"execute {sub_task_id}",
+        )
+
+    @activity.defn(name="call_llm")
+    async def call_llm(context: AssembledContext) -> LLMCallResult:
+        sub_task_id = context.system_prompt.rsplit(" ", 1)[-1]
+        file_path = "shared.py" if conflicts else f"{sub_task_id}.py"
+        calls.append(f"call_llm:{sub_task_id}")
+        return LLMCallResult(
+            task_id=context.task_id,
+            response=LLMResponse(
+                files=[FileOutput(file_path=file_path, content=f"# from {sub_task_id}\n")],
+                explanation=f"{sub_task_id} output",
+            ),
+            model_name="mock-model",
+            input_tokens=50,
+            output_tokens=25,
+            latency_ms=100.0,
+        )
+
+    @activity.defn(name="write_output")
+    async def write_output(input: WriteOutputInput) -> WriteResult:
+        files = input.llm_result.response.files
+        return WriteResult(
+            task_id=input.llm_result.task_id,
+            files_written=[f.file_path for f in files],
+            output_files={f.file_path: f.content for f in files},
+        )
+
+    @activity.defn(name="write_files")
+    async def write_files(input: WriteFilesInput) -> WriteResult:
+        calls.append(f"write_files:{sorted(input.files)}")
+        return WriteResult(task_id=input.task_id, files_written=sorted(input.files))
+
+    @activity.defn(name="validate_output")
+    async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+        return [_PASS_VALIDATION]
+
+    @activity.defn(name="detect_file_conflicts_activity")
+    async def detect_file_conflicts(
+        input: DetectFileConflictsInput,
+    ) -> DetectFileConflictsOutput:
+        calls.append("detect_file_conflicts")
+        if raise_in == "detect_file_conflicts_activity":
+            raise ApplicationError("detect blew up", non_retryable=True)
+        non_conflicting, found = classify_file_conflicts(input.sub_task_results)
+        return DetectFileConflictsOutput(non_conflicting_files=non_conflicting, conflicts=found)
+
+    return [
+        persist_to_store,
+        create_worktree,
+        remove_worktree,
+        reset_worktree,
+        commit_changes,
+        assemble_planner_context,
+        call_planner,
+        assemble_sub_task_context,
+        call_llm,
+        write_output,
+        write_files,
+        validate_output,
+        detect_file_conflicts,
+    ]
+
+
+_TWO_CHILD_PLAN = Plan(
+    task_id="isolation-task",
+    steps=[
+        PlanStep(
+            step_id="fan-step",
+            description="Two-child fan-out step.",
+            target_files=[],
+            sub_tasks=[
+                SubTask(sub_task_id="st1", description="Produce st1.", target_files=["st1.py"]),
+                SubTask(sub_task_id="st2", description="Produce st2.", target_files=["st2.py"]),
+            ],
+        )
+    ],
+    explanation="One fan-out step, two sub-tasks.",
+)
+
+
+class TestFanOutChildCrashIsolation:
+    """A child that *raises* becomes a failed SubTaskResult (T5.3).
+
+    Before the shared gather, both gathers bare-awaited their children, so one
+    crashed child propagated a ChildWorkflowError out of run(): no TaskResult,
+    no run record, and every in-flight sibling terminated with the parent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_crashed_child_becomes_a_failed_result(self, env: WorkflowEnvironment) -> None:
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
+            activities=_gather_activities(
+                calls, persisted, crash_sub_task="st2", plan=_TWO_CHILD_PLAN
+            ),
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=TaskDefinition(task_id="isolation-task", description="d"),
+                    repo_root="/tmp/repo",
+                    plan=True,
+                    max_sub_task_attempts=1,
+                    max_exploration_rounds=0,
+                    sync_mode=True,
+                ),
+                id="test-gather-child-crash",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        # The parent returned a TaskResult instead of crashing out.
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.failure_kind == "step_failed"
+
+        children = {r.sub_task_id: r for r in result.step_results[0].sub_task_results}
+        assert set(children) == {"st1", "st2"}
+        # The sibling ran to completion rather than being terminated mid-flight.
+        assert children["st1"].status == TransitionSignal.SUCCESS
+        assert "call_llm:st1" in calls
+        # The crashed child is a normal failed result carrying its own kind.
+        assert children["st2"].status == TransitionSignal.FAILURE_TERMINAL
+        assert children["st2"].failure_kind == "child_crashed"
+        assert children["st2"].error.startswith("Child workflow failed: ")
+        # ...and the gather's own failure names it.
+        assert "st2" in result.step_results[0].error
+
+    @pytest.mark.asyncio
+    async def test_run_record_is_still_written(self, env: WorkflowEnvironment) -> None:
+        """The headline consequence: a crashed child no longer costs the run its row."""
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
+            activities=_gather_activities(
+                calls, persisted, crash_sub_task="st2", plan=_TWO_CHILD_PLAN
+            ),
+        ):
+            await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=TaskDefinition(task_id="isolation-task", description="d"),
+                    repo_root="/tmp/repo",
+                    plan=True,
+                    max_sub_task_attempts=1,
+                    max_exploration_rounds=0,
+                    sync_mode=True,
+                ),
+                id="test-gather-child-crash-run-row",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        runs = [req for req in persisted if isinstance(req, PersistRun)]
+        assert len(runs) == 1
+        assert runs[0].task_result.status == TransitionSignal.FAILURE_TERMINAL
+
+
+class TestNestedGatherWorktreeCleanup:
+    """An owned gather removes its worktree — and its branch — on every exit."""
+
+    @staticmethod
+    def _nested_input() -> SubTaskInput:
+        return SubTaskInput(
+            parent_task_id="parent-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Nested node.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(sub_task_id="gc1", description="Produce gc1.", target_files=["gc1.py"]),
+                    SubTask(sub_task_id="gc2", description="Produce gc2.", target_files=["gc2.py"]),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/parent-task",
+            max_attempts=1,
+            depth=0,
+            max_depth=2,
+            sync_mode=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_mid_gather_exception_cleans_worktree_and_branch(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        """The leak T5.2 left: the nested gather created its worktree with no
+        exception wrap, so any raise between creation and a result-path removal
+        left the worktree *and* its forge/<id> branch behind — and the next run
+        of that id then failed on ``worktree add``."""
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeSubTaskWorkflow],
+            activities=_gather_activities(
+                calls, persisted, raise_in="detect_file_conflicts_activity"
+            ),
+        ):
+            with pytest.raises(WorkflowFailureError):
+                await env.client.execute_workflow(
+                    ForgeSubTaskWorkflow.run,
+                    self._nested_input(),
+                    id="test-nested-gather-cleanup",
+                    task_queue=FORGE_TASK_QUEUE,
+                )
+
+        # force=True is what makes the activity delete the branch too
+        # (tests/test_git.py pins the real branch deletion).
+        assert "remove_worktree:parent-task.sub.st1:force=True" in calls
+        # The failure happened after the children gathered, not before.
+        assert "detect_file_conflicts" in calls
+
+    @pytest.mark.asyncio
+    async def test_success_removes_the_owned_worktree_exactly_once(
+        self, env: WorkflowEnvironment
+    ) -> None:
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeSubTaskWorkflow],
+            activities=_gather_activities(calls, persisted),
+        ):
+            result = await env.client.execute_workflow(
+                ForgeSubTaskWorkflow.run,
+                self._nested_input(),
+                id="test-nested-gather-success",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.SUCCESS
+        assert sorted(result.output_files) == ["gc1.py", "gc2.py"]
+        nested_removals = [c for c in calls if c.startswith("remove_worktree:parent-task.sub.st1:")]
+        assert len(nested_removals) == 1
+        # A nested node never commits (D16) — its output travels home instead.
+        assert not [c for c in calls if c.startswith("commit:")]
+
+
+class TestGatherDuplicateSubTaskIds:
+    """Colliding sub-task ids fail the gather before any child is started.
+
+    Two children with the same id would share a compound id — one worktree, one
+    child-workflow id — so the second would silently reset the first's work.
+    """
+
+    @pytest.mark.asyncio
+    async def test_duplicate_ids_fail_the_step(self, env: WorkflowEnvironment) -> None:
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        dup_plan = Plan(
+            task_id="dup-task",
+            steps=[
+                PlanStep(
+                    step_id="fan-step",
+                    description="Two sub-tasks with the same id.",
+                    target_files=[],
+                    sub_tasks=[
+                        SubTask(sub_task_id="st1", description="a", target_files=["a.py"]),
+                        SubTask(sub_task_id="st1", description="b", target_files=["b.py"]),
+                    ],
+                )
+            ],
+            explanation="Duplicate ids.",
+        )
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
+            activities=_gather_activities(calls, persisted, plan=dup_plan),
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=TaskDefinition(task_id="dup-task", description="d"),
+                    repo_root="/tmp/repo",
+                    plan=True,
+                    max_exploration_rounds=0,
+                    sync_mode=True,
+                ),
+                id="test-gather-duplicate-ids",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        step_result = result.step_results[0]
+        assert step_result.failure_kind == "duplicate_sub_task_ids"
+        assert step_result.error == "Duplicate sub-task IDs detected"
+        # No child ran: nothing was assembled, nothing was merged.
+        assert not [c for c in calls if c.startswith("assemble_sub_task_context:")]
+        assert "detect_file_conflicts" not in calls
