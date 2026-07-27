@@ -18,6 +18,7 @@ from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from sax_platform.temporal.retries import IO_RETRY
 
+    from forge.blocks.transport import batch_submit_and_wait
     from forge.models import (
         AssembledContext,
         CapabilityTier,
@@ -25,7 +26,6 @@ with workflow.unsafe.imports_passed_through():
         ParsedLLMResponse,
         resolve_model,
     )
-    from forge.workflow_blocks import batch_submit_and_wait
 
 PBOOK_TASK_QUEUE = "pbook-task-queue"
 

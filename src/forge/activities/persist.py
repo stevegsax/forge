@@ -2,7 +2,7 @@
 
 Every store write a workflow needs is funneled through ``persist_to_store``, a
 dedicated, idempotent activity invoked with a generous-but-finite retry policy
-(see ``_PERSIST_RETRY`` in ``workflow_blocks``). A transient DB outage retries only
+(see ``PERSIST_RETRY`` in ``sax_platform.contracts.persist``). A transient DB outage retries only
 this cheap write — the expensive LLM/OCR/batch call already returned to the workflow
 and is never re-run. A prolonged outage exhausts the schedule-to-close cap and fails
 the workflow loudly. Duplicate re-applies are absorbed by ``insert_or_ignore``.

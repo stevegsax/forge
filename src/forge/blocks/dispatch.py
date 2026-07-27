@@ -4,7 +4,7 @@ Five forge LLM calls share one shape: pick a lane (sync activity, or the
 Phase-4 batch transport), turn what comes back into the arm's typed result, and
 write one interaction record. Before T5.3 that shape existed five times —
 planner and sanity check inline in ``workflows.py``, generation and conflict
-resolution as hand-rolled twins in ``workflow_blocks.py``, and exploration
+resolution as hand-rolled twins in the old ``workflow_blocks.py``, and exploration
 inline, divergent, and persisting nothing at all.
 
 Only four things actually differ between the arms, and they live in one pure
@@ -13,7 +13,7 @@ take, which output type the batch lane asks for, and the batch ``max_tokens``
 cap. Everything else — the lane fork, the eight stats fields mapped off
 ``ParsedLLMResponse``, the persist — is written once here.
 
-The transport itself is *not* duplicated: ``workflow_blocks.batch_submit_and_wait``
+The transport itself is *not* duplicated: ``blocks.transport.batch_submit_and_wait``
 (T4.1, D88) stays the one submit/poll/fetch/parse implementation and this module
 imports it, the same import direction ``blocks/step.py`` chose. Splitting the
 monolith is T5.4's business.
@@ -37,6 +37,7 @@ from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
+    from forge.blocks.transport import batch_submit_and_wait
     from forge.models import (
         AssembledContext,
         ConflictResolutionCallInput,
@@ -68,7 +69,6 @@ with workflow.unsafe.imports_passed_through():
         SANITY_CHECK_TIMEOUT,
         THINKING_MAX_TOKENS,
     )
-    from forge.workflow_blocks import batch_submit_and_wait
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping

@@ -1,7 +1,7 @@
 """Activity timeout, retry, and token presets for forge's workflows (T5.3 ST8).
 
 One home for the values every workflow module schedules activities with. They
-lived in four copies — ``workflows.py``, ``workflow_blocks.py``,
+lived in four copies — ``workflows.py``, the former ``workflow_blocks.py``,
 ``blocks/step.py``, and ``blocks/dispatch.py`` — where three of them carried
 hand-synchronized duplicates of the same git/context/write/validate numbers, and
 ``blocks/gather.py`` had to reach into another block's privates to avoid minting

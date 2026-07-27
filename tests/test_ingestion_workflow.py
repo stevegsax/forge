@@ -61,7 +61,7 @@ _EXTRACTION_RESULT: dict = {"entries_created": 0}
 
 # Captured submit_batch_request inputs — regression coverage for the shared
 # thinking fallback: transcript analysis omits `thinking` entirely and must
-# land disabled via workflow_blocks.batch_submit_and_wait's shared fallback.
+# land disabled via blocks.transport.batch_submit_and_wait's shared fallback.
 _SUBMIT_BATCH_INPUTS: list[BatchSubmitInput] = []
 
 

@@ -21,12 +21,15 @@ place to persist through.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
+    from sax_platform.contracts.persist import persist_block
+
     from forge.blocks.dispatch import PersistFields, dispatch_generation
     from forge.persist_models import (
         PersistableLLMResult,
@@ -34,12 +37,42 @@ with workflow.unsafe.imports_passed_through():
         build_persist_interaction,
     )
     from forge.presets import BATCH_POLL_INTERVAL
-    from forge.workflow_blocks import persist_block
 
 if TYPE_CHECKING:
     from forge.models import AssembledContext, LLMCallResult
 
-__all__ = ["DispatchHostBase"]
+__all__ = ["DispatchHostBase", "RunSettings"]
+
+
+class RunInput(Protocol):
+    """The three per-run dispatch fields both workflow inputs carry."""
+
+    sync_mode: bool
+    log_messages: bool
+    batch_poll_interval_seconds: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RunSettings:
+    """How this run dispatches: which lane, whether to log messages, how often to poll.
+
+    Frozen and set once, so there is no half-configured state and no code path
+    that can flip a run's lane mid-flight. The defaults are the safe ones a
+    freshly constructed workflow instance holds until ``run`` configures it.
+    """
+
+    sync_mode: bool = True
+    log_messages: bool = False
+    poll_interval: timedelta = BATCH_POLL_INTERVAL
+
+    @classmethod
+    def from_input(cls, input: RunInput) -> RunSettings:
+        """Read the settings off a workflow input (``ForgeTaskInput``/``SubTaskInput``)."""
+        return cls(
+            sync_mode=input.sync_mode,
+            log_messages=input.log_messages,
+            poll_interval=timedelta(seconds=input.batch_poll_interval_seconds),
+        )
 
 
 class DispatchHostBase:
@@ -51,34 +84,35 @@ class DispatchHostBase:
     """
 
     def __init__(self) -> None:
-        self._sync_mode: bool = True
-        self._log_messages: bool = False
-        # Timer-loop batch poll cadence (D88); overridden from the workflow input
-        # in run(). Held in workflow state so it replays identically.
-        self._poll_interval: timedelta = BATCH_POLL_INTERVAL
+        # Replaced wholesale by run()'s configure(); held in workflow state so it
+        # replays identically.
+        self._settings = RunSettings()
         # Per-role occurrence counters for deterministic, replay-stable
         # interaction idempotency keys (Phase C survivable writes). Held in
         # workflow state so they replay identically; per-role so a repeated
-        # same-role call never collides (T1.6a).
+        # same-role call never collides (T1.6a). Genuinely mutable run state —
+        # this is why the host stays an object rather than becoming a value
+        # threaded through every block seam.
         self._persist_occurrences: dict[str, int] = {}
 
-    def configure(
-        self, *, sync_mode: bool, log_messages: bool, batch_poll_interval_seconds: int
-    ) -> None:
+    def configure(self, settings: RunSettings) -> None:
         """Adopt the run's dispatch settings (called once, at the top of ``run``)."""
-        self._sync_mode = sync_mode
-        self._log_messages = log_messages
-        self._poll_interval = timedelta(seconds=batch_poll_interval_seconds)
+        self._settings = settings
 
     @property
     def sync_mode(self) -> bool:
         """Whether this run calls the LLM synchronously instead of via batch."""
-        return self._sync_mode
+        return self._settings.sync_mode
 
     @property
     def poll_interval(self) -> timedelta:
         """The timer-loop batch poll cadence for this run (D88)."""
-        return self._poll_interval
+        return self._settings.poll_interval
+
+    @property
+    def log_messages(self) -> bool:
+        """Whether activities write their request/response logs into the worktree."""
+        return self._settings.log_messages
 
     async def persist_interaction(
         self, *, role: str, result: PersistableLLMResult, fields: PersistFields

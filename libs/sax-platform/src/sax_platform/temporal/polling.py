@@ -42,7 +42,8 @@ __all__ = [
 # The per-wait batch ceiling: a single batch wait may legally block a workflow up
 # to this long before the timer loop gives up. One source of truth for the 25h
 # number — forge re-exports it (``forge.models`` for the CLI/timeout math,
-# ``forge.workflow_blocks`` for the loop) rather than duplicating the literal.
+# ``forge.presets`` for the timer loop's wait ceiling) rather than duplicating
+# the literal.
 BATCH_WAIT_CEILING: Final = timedelta(hours=25)
 
 

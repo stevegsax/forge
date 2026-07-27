@@ -1,4 +1,4 @@
-"""Tests for forge.workflows — ForgeTaskWorkflow with mocked activities."""
+"""Tests for forge.workflows — the task and sub-task drivers, with mocked activities."""
 
 from __future__ import annotations
 
@@ -3910,7 +3910,7 @@ _BATCH_TRANSITION_SEQUENCE: list[str] = []
 _BATCH_PARSE_RESPONSES: list[ParsedLLMResponse] = []
 _BATCH_PERSISTED: list[PersistRequest] = []
 # Captured per submit_batch_request call — regression coverage for the shared
-# thinking fallback (workflow_blocks.py) and the thinking-enabled max_tokens
+# thinking fallback (blocks/transport.py) and the thinking-enabled max_tokens
 # bump (both owner-adjudicated per the 2026-07 Phase 3 code review).
 _BATCH_SUBMIT_INPUTS: list[BatchSubmitInput] = []
 
@@ -4650,7 +4650,7 @@ class TestBatchPlanned:
         assert "parse:LLMResponse" in _BATCH_PLAN_CALL_LOG
         assert result.plan is not None
         assert len(result.step_results) == 1
-        # Shared thinking fallback (workflow_blocks.py): the planner call
+        # Shared thinking fallback (blocks/transport.py): the planner call
         # passes an explicit thinking policy through unchanged...
         assert _BATCH_PLAN_SUBMIT_INPUTS["Plan"].thinking == _PLANNER_THINKING
         # ...while the generation call omits `thinking` entirely and must

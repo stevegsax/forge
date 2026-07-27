@@ -42,6 +42,9 @@ from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from sax_platform.temporal.retries import IO_RETRY
 
+    from forge.blocks.transport import BATCH_WAIT_FAILURES
+    from forge.blocks.worktree import cleanup_worktree_after_exception
+    from forge.blocks.worktree import remove_worktree as _remove_worktree
     from forge.models import (
         AssembleContextInput,
         AssembledContext,
@@ -71,8 +74,6 @@ with workflow.unsafe.imports_passed_through():
         WRITE_TIMEOUT,
     )
     from forge.step_logic import determine_transition
-    from forge.workflow_blocks import BATCH_WAIT_FAILURES, cleanup_worktree_after_exception
-    from forge.workflow_blocks import remove_worktree as _remove_worktree
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping

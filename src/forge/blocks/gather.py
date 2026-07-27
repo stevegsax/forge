@@ -61,6 +61,8 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.workflow import ParentClosePolicy
 
     from forge.blocks.dispatch import dispatch_conflict_resolution
+    from forge.blocks.transport import BATCH_WAIT_FAILURES
+    from forge.blocks.worktree import cleanup_worktree_after_exception, remove_worktree
     from forge.models import (
         CapabilityTier,
         CommitChangesInput,
@@ -106,11 +108,6 @@ with workflow.unsafe.imports_passed_through():
         merge_resolution,
         sub_task_workflow_id,
         subtask_failure_summary,
-    )
-    from forge.workflow_blocks import (
-        BATCH_WAIT_FAILURES,
-        cleanup_worktree_after_exception,
-        remove_worktree,
     )
 
 if TYPE_CHECKING:

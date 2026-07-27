@@ -1,19 +1,17 @@
-"""Shared workflow building blocks for Forge.
+"""The batch transport block (T4.1/D88) — one submit/poll/fetch/parse implementation.
 
-Reusable async functions that execute within a Temporal workflow context.
-These functions call workflow.execute_activity and workflow.sleep,
-so they must be called from within a Temporal workflow.
+Every forge batch wait goes through :func:`batch_submit_and_wait`: the requesting
+workflow mints its own ``request_id``, submits, polls on a timer until the batch
+ends, fetches its own result line, and classifies it. There is no shared poller
+and no signal — the requester is the recipient of its own result (D88, reversal
+R1).
 
-Extracted from workflows.py to enable composition into purpose-built workflows
-(e.g., OCR, research) without duplicating batch dispatch logic.
-
-What remains here is the transport and the worktree cleanup shared by both
-workflow classes: ``batch_submit_and_wait`` is the one submit/poll/fetch/parse
-implementation (T4.1, D88), imported by ``forge.blocks.dispatch`` and by
-``forge.ingestion_workflow``. The *typed* dispatch that used to sit on top of it
-in two hand-rolled copies (``generation_dispatch`` /
-``conflict_resolution_dispatch``) moved into ``forge.blocks.dispatch``, where all
-five arms share one implementation (T5.3).
+This module and :mod:`forge.blocks.worktree` are what remained of the former
+``forge/workflow_blocks.py`` once the typed dispatch layer moved into
+:mod:`forge.blocks.dispatch` (T5.3); T5.4 dissolved that module so every shape a
+workflow composes lives under ``blocks/``. Nothing about the transport changed in
+the move — it is imported by :mod:`forge.blocks.dispatch` (all five LLM arms) and
+by :mod:`forge.ingestion_workflow`.
 """
 
 from __future__ import annotations
@@ -21,14 +19,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from temporalio import workflow
-from temporalio.exceptions import ActivityError, ApplicationError
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from sax_platform.contracts.models import BatchJobStatus
-    from sax_platform.contracts.persist import (
-        PersistBatchSubmission,
-        persist_block,
-    )
+    from sax_platform.contracts.persist import PersistBatchSubmission, persist_block
     from sax_platform.temporal.polling import FixedInterval, wait_batch_ended
     from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
@@ -42,7 +37,6 @@ with workflow.unsafe.imports_passed_through():
         FetchBatchResultInput,
         ParsedLLMResponse,
         ParseResponseInput,
-        RemoveWorktreeInput,
         ThinkingPolicy,
     )
     from forge.persist_models import PersistBatchOutcome
@@ -53,11 +47,9 @@ with workflow.unsafe.imports_passed_through():
         BATCH_STATUS_TIMEOUT,
         BATCH_WAIT_TIMEOUT,
         DEFAULT_MAX_TOKENS,
-        GIT_TIMEOUT,
         PARSE_TIMEOUT,
         SUBMIT_TIMEOUT,
     )
-
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -65,9 +57,6 @@ if TYPE_CHECKING:
 __all__ = [
     "BATCH_WAIT_FAILURES",
     "batch_submit_and_wait",
-    "cleanup_worktree_after_exception",
-    "persist_block",
-    "remove_worktree",
 ]
 
 # A batch wait fails in exactly three shapes under the timer-loop transport
@@ -85,11 +74,6 @@ __all__ = [
 # untouched. (Before T4.1 a fourth shape existed — the ``wait_condition`` builtin
 # ``TimeoutError`` from the signal wait — but the signal path is gone.)
 BATCH_WAIT_FAILURES: tuple[type[BaseException], ...] = (ApplicationError,)
-
-
-# ---------------------------------------------------------------------------
-# Batch dispatch
-# ---------------------------------------------------------------------------
 
 
 async def batch_submit_and_wait(
@@ -240,56 +224,3 @@ async def batch_submit_and_wait(
         result_type=ParsedLLMResponse,
     )
     return parsed
-
-
-# ---------------------------------------------------------------------------
-# Worktree cleanup
-# ---------------------------------------------------------------------------
-
-
-async def remove_worktree(repo_root: str, task_id: str) -> None:
-    """Remove a worktree via activity. Shared by multiple workflow classes."""
-    await workflow.execute_activity(
-        "remove_worktree_activity",
-        RemoveWorktreeInput(
-            repo_root=repo_root,
-            task_id=task_id,
-            force=True,
-        ),
-        start_to_close_timeout=GIT_TIMEOUT,
-        retry_policy=IO_RETRY,
-        result_type=type(None),
-    )
-
-
-async def cleanup_worktree_after_exception(
-    repo_root: str, task_id: str, exc: BaseException
-) -> None:
-    """Remove a worktree and its branch after a failure; never masks *exc*.
-
-    The one cleanup helper for every owner of a worktree (T5.3 ST8 folded the
-    two same-bodied copies together). Two kinds of caller use it:
-
-    - the blocks that create a worktree (``blocks/step.py``'s fresh modes,
-      ``blocks/gather.py``'s owned mode) and ``_run_planned``, which own the
-      worktree an exception escaped from and re-raise afterwards;
-    - both workflow ``run()`` batch-wait handlers (T1.6b), where a wait that
-      gave up at the 25h ceiling or hit a provider-terminal status / error-bearing
-      fetch (T4.1) must leave no orphaned worktree, yet must still let the caller
-      record its terminal run row.
-
-    Removal is forced, so the activity deletes the ``forge/<task_id>`` branch too
-    — the leak that used to make the next run of the same task id fail on
-    ``worktree add``. It is also best-effort: only ``ActivityError`` is swallowed
-    (``CancelledError`` must still propagate), so a cleanup blip can neither
-    replace the real failure nor block the FAILURE_TERMINAL persist.
-    """
-    workflow.logger.warning("Cleaning worktree after failure: task_id=%s: %r", task_id, exc)
-    try:
-        await remove_worktree(repo_root, task_id)
-    except ActivityError as cleanup_exc:
-        workflow.logger.warning(
-            "Worktree cleanup did not complete: task_id=%s: %r",
-            task_id,
-            cleanup_exc,
-        )

@@ -384,8 +384,19 @@ These are the core Pydantic models that flow through the system:
 
 ```text
 src/forge/
-├── workflows.py               # Temporal workflows (main orchestration)
-├── workflow_blocks.py         # Shared workflow building blocks (incl. batch submit + timer-loop wait)
+├── workflows/                 # Temporal workflow drivers (T5.4)
+│   ├── task.py                # ForgeTaskWorkflow — single-step and planned runs
+│   └── subtask.py             # ForgeSubTaskWorkflow — one fan-out node
+├── blocks/                    # The shapes the drivers compose (T5.2-T5.4)
+│   ├── step.py                # The universal step pipeline (MODE_POLICIES)
+│   ├── gather.py              # The fan-out gather (GATHER_POLICIES)
+│   ├── dispatch.py            # Typed LLM dispatch, five arms (ARMS)
+│   ├── exploration.py         # LLM-guided context exploration loop
+│   ├── transport.py           # Batch submit + timer-loop wait (D88)
+│   ├── worktree.py            # Worktree removal + post-failure cleanup
+│   └── host.py                # DispatchHostBase / RunSettings (per-run state)
+├── presets.py                 # Activity timeouts, retry policies, token caps
+├── step_logic.py              # Pure step decisions (zero temporalio imports)
 ├── ingestion_workflow.py      # Transcript ingestion → pbook (cross-queue)
 ├── manual_playbook_workflow.py # Manual playbook add with LLM review
 ├── export_playbook_workflow.py # Playbook export
@@ -506,7 +517,7 @@ The universal workflow step is the spine, but several shipped subsystems run alo
 
 ### Batch execution (default path)
 
-All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to the Anthropic Batch API by default (`sync_mode=False`). Each workflow then runs its own timer loop: it records the submission in `batch_jobs`, polls `batch_status` on a `workflow.sleep` interval (min 300s, D88) until the batch ends or the 25h ceiling passes, fetches its own result line via `fetch_batch_result`, and records the final outcome. Submit/status/fetch/parse: `activities/batch_submit.py`, `activities/batch_fetch.py`, `activities/batch_parse.py`; the wait loop lives in `workflow_blocks.py`; lifecycle states: `models.py::BatchJobStatus`. Durable `workflow.sleep` timers keep all workflow state alive across the wait rather than terminate-and-restart (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal).
+All five LLM call sites (generation, planner, exploration, sanity check, conflict resolution) submit to the Anthropic Batch API by default (`sync_mode=False`). Each workflow then runs its own timer loop: it records the submission in `batch_jobs`, polls `batch_status` on a `workflow.sleep` interval (min 300s, D88) until the batch ends or the 25h ceiling passes, fetches its own result line via `fetch_batch_result`, and records the final outcome. Submit/status/fetch/parse: `activities/batch_submit.py`, `activities/batch_fetch.py`, `activities/batch_parse.py`; the wait loop lives in `blocks/transport.py`; lifecycle states: `models.py::BatchJobStatus`. Durable `workflow.sleep` timers keep all workflow state alive across the wait rather than terminate-and-restart (per-workflow timer-loop transport, D88/T4.1 — no shared poller, no signal).
 
 ### The OCR consumer app
 
