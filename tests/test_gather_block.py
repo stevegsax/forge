@@ -3,7 +3,7 @@
 No Temporal here: the two-row table, the spec's ownership invariant, the child
 input the gather builds (the T1.5 propagation fix, now in one place), and the
 duplicate-id / commit-message helpers are plain values and functions. The
-activity and child sequencing they drive is covered by tests/test_workflows.py.
+activity and child sequencing they drive is covered by the tests/workflows/ suites.
 """
 
 from __future__ import annotations

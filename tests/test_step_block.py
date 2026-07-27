@@ -2,7 +2,7 @@
 
 No Temporal here: the table, the spec's ownership invariant, and the context
 stamp are plain values and functions, so they get microsecond unit tests. The
-activity sequencing they drive is covered by tests/test_workflows.py.
+activity sequencing they drive is covered by the tests/workflows/ suites.
 """
 
 from __future__ import annotations

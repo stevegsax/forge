@@ -3,7 +3,7 @@
 No Temporal here: the table is a plain mapping and the batch-lane builders are
 pure functions of ``(context, ParsedLLMResponse)``, so they get microsecond unit
 tests. The lane fork and the activity sequencing they drive are covered by
-tests/test_workflows.py; the committed replay histories pin the batch planner
+the tests/workflows/ suites; the committed replay histories pin the batch planner
 and both generation lanes command-for-command.
 """
 

@@ -99,6 +99,9 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=6.0.0",
+    # T5.5: the workflow suites carry no shared module state, so they run
+    # under `pytest -n auto`. The coverage-gated run stays serial.
+    "pytest-xdist>=3.6",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "boto3>=1.34",

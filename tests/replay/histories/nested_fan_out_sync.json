@@ -1,0 +1,1186 @@
+{
+  "events": [
+    {
+      "eventId": "1",
+      "eventTime": "2026-07-27T18:57:05.399Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "ForgeTaskWorkflow"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrIjp7InRhc2tfaWQiOiJuZXN0ZWRfZmFuX291dF9zeW5jIiwiZGVzY3JpcHRpb24iOiJCdWlsZCBhIHRoaW5nLiIsImRvbWFpbiI6ImNvZGVfZ2VuZXJhdGlvbiIsInRhcmdldF9maWxlcyI6W10sImNvbnRleHRfZmlsZXMiOltdLCJ2YWxpZGF0aW9uIjp7ImF1dG9fZml4Ijp0cnVlLCJydW5fcnVmZl9saW50Ijp0cnVlLCJydW5fcnVmZl9mb3JtYXQiOnRydWUsInJ1bl90ZXN0cyI6ZmFsc2UsInRlc3RfY29tbWFuZCI6bnVsbCwidGVzdF90aW1lb3V0X3NlY29uZHMiOm51bGx9LCJiYXNlX2JyYW5jaCI6Im1haW4iLCJjb250ZXh0Ijp7ImF1dG9fZGlzY292ZXIiOnRydWUsImluY2x1ZGVfZGVwZW5kZW5jaWVzIjpmYWxzZSwidG9rZW5fYnVkZ2V0IjoxMDAwMDAsIm91dHB1dF9yZXNlcnZlIjoxNjAwMCwibWF4X2ltcG9ydF9kZXB0aCI6MiwiaW5jbHVkZV9yZXBvX21hcCI6dHJ1ZSwicmVwb19tYXBfdG9rZW5zIjoyMDQ4LCJwYWNrYWdlX25hbWUiOm51bGx9fSwicmVwb19yb290IjoiL3RtcC9yZXBvIiwibWF4X2F0dGVtcHRzIjoyLCJwbGFuIjp0cnVlLCJtYXhfc3RlcF9hdHRlbXB0cyI6MiwibWF4X3N1Yl90YXNrX2F0dGVtcHRzIjoyLCJtYXhfZXhwbG9yYXRpb25fcm91bmRzIjowLCJtYXhfZmFuX291dF9kZXB0aCI6Miwic2FuaXR5X2NoZWNrX2ludGVydmFsIjowLCJyZXNvbHZlX2NvbmZsaWN0cyI6dHJ1ZSwibW9kZWxfcm91dGluZyI6eyJyZWFzb25pbmciOiJhbnRocm9waWM6Y2xhdWRlLW9wdXMtNC04IiwiZ2VuZXJhdGlvbiI6ImFudGhyb3BpYzpjbGF1ZGUtc29ubmV0LTUiLCJzdW1tYXJpemF0aW9uIjoiYW50aHJvcGljOmNsYXVkZS1zb25uZXQtNSIsImNsYXNzaWZpY2F0aW9uIjoiYW50aHJvcGljOmNsYXVkZS1oYWlrdS00LTUifSwidGhpbmtpbmciOnsiZW5hYmxlZCI6dHJ1ZSwiZWZmb3J0IjoiaGlnaCJ9LCJzeW5jX21vZGUiOnRydWUsImxvZ19tZXNzYWdlcyI6ZmFsc2UsImJhdGNoX3BvbGxfaW50ZXJ2YWxfc2Vjb25kcyI6NjAwfQ=="
+            }
+          ]
+        },
+        "workflowExecutionTimeout": "315360000s",
+        "workflowRunTimeout": "315360000s",
+        "workflowTaskTimeout": "10s",
+        "originalExecutionRunId": "9d636254-2682-44dc-8c0f-ae40c5ea4dc3",
+        "identity": "95647@buchla.local",
+        "firstExecutionRunId": "9d636254-2682-44dc-8c0f-ae40c5ea4dc3",
+        "attempt": 1,
+        "firstWorkflowTaskBackoff": "0s",
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "2",
+      "eventTime": "2026-07-27T18:57:05.399Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "3",
+      "eventTime": "2026-07-27T18:57:05.399Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "1267"
+      }
+    },
+    {
+      "eventId": "4",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {
+          "coreUsedFlags": [
+            1,
+            2,
+            3
+          ],
+          "sdkName": "temporal-python",
+          "sdkVersion": "1.20.0"
+        },
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "5",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "create_worktree_activity"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyZXBvX3Jvb3QiOiIvdG1wL3JlcG8iLCJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsImJhc2VfYnJhbmNoIjoibWFpbiJ9"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "3",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "100s",
+          "maximumAttempts": 2,
+          "nonRetryableErrorTypes": [
+            "CommitError",
+            "RepoDiscoveryError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "6",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "5",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "7",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ3b3JrdHJlZV9wYXRoIjoiL3RtcC9yZXBvLy5mb3JnZS13b3JrdHJlZXMvbmVzdGVkX2Zhbl9vdXRfc3luYyIsImJyYW5jaF9uYW1lIjoiZm9yZ2UvbmVzdGVkX2Zhbl9vdXRfc3luYyJ9"
+            }
+          ]
+        },
+        "scheduledEventId": "5",
+        "startedEventId": "6",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "8",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "9",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "1963"
+      }
+    },
+    {
+      "eventId": "10",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "11",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "2",
+        "activityType": {
+          "name": "assemble_planner_context"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsImRlc2NyaXB0aW9uIjoiQnVpbGQgYSB0aGluZy4iLCJ0YXJnZXRfZmlsZXMiOltdLCJjb250ZXh0X2ZpbGVzIjpbXSwiY29udGV4dF9jb25maWciOnsiYXV0b19kaXNjb3ZlciI6dHJ1ZSwiaW5jbHVkZV9kZXBlbmRlbmNpZXMiOmZhbHNlLCJ0b2tlbl9idWRnZXQiOjEwMDAwMCwib3V0cHV0X3Jlc2VydmUiOjE2MDAwLCJtYXhfaW1wb3J0X2RlcHRoIjoyLCJpbmNsdWRlX3JlcG9fbWFwIjp0cnVlLCJyZXBvX21hcF90b2tlbnMiOjIwNDgsInBhY2thZ2VfbmFtZSI6bnVsbH0sInJlcG9fcm9vdCI6Ii90bXAvcmVwbyIsIndvcmt0cmVlX3BhdGgiOiIvdG1wL3JlcG8vLmZvcmdlLXdvcmt0cmVlcy9uZXN0ZWRfZmFuX291dF9zeW5jIiwicHJpb3JfZXJyb3JzIjpbXSwiYXR0ZW1wdCI6MSwibWF4X2F0dGVtcHRzIjoyfQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "9",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "100s",
+          "maximumAttempts": 2
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "12",
+      "eventTime": "2026-07-27T18:57:05.403Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "11",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "13",
+      "eventTime": "2026-07-27T18:57:05.404Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsInN5c3RlbV9wcm9tcHQiOiJwbGFubmVyIHN5c3RlbSBwcm9tcHQiLCJ1c2VyX3Byb21wdCI6InBsYW5uZXIgdXNlciBwcm9tcHQiLCJtb2RlbF9uYW1lIjoiIiwidGhpbmtpbmciOnsiZW5hYmxlZCI6dHJ1ZSwiZWZmb3J0IjoiaGlnaCJ9LCJsb2dfbWVzc2FnZXMiOmZhbHNlLCJ3b3JrdHJlZV9wYXRoIjoiIn0="
+            }
+          ]
+        },
+        "scheduledEventId": "11",
+        "startedEventId": "12",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "14",
+      "eventTime": "2026-07-27T18:57:05.404Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "15",
+      "eventTime": "2026-07-27T18:57:05.404Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "14",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "3062"
+      }
+    },
+    {
+      "eventId": "16",
+      "eventTime": "2026-07-27T18:57:05.404Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "14",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "17",
+      "eventTime": "2026-07-27T18:57:05.404Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "3",
+        "activityType": {
+          "name": "call_planner"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsInN5c3RlbV9wcm9tcHQiOiJwbGFubmVyIHN5c3RlbSBwcm9tcHQiLCJ1c2VyX3Byb21wdCI6InBsYW5uZXIgdXNlciBwcm9tcHQiLCJtb2RlbF9uYW1lIjoiYW50aHJvcGljOmNsYXVkZS1vcHVzLTQtOCIsInRoaW5raW5nIjp7ImVuYWJsZWQiOnRydWUsImVmZm9ydCI6ImhpZ2gifSwibG9nX21lc3NhZ2VzIjpmYWxzZSwid29ya3RyZWVfcGF0aCI6Ii90bXAvcmVwby8uZm9yZ2Utd29ya3RyZWVzL25lc3RlZF9mYW5fb3V0X3N5bmMifQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "300s",
+        "heartbeatTimeout": "60s",
+        "workflowTaskCompletedEventId": "15",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "100s",
+          "maximumAttempts": 3,
+          "nonRetryableErrorTypes": [
+            "BadRequestError",
+            "AuthenticationError",
+            "PermissionDeniedError",
+            "NotFoundError",
+            "LLMRefused",
+            "LLMTruncated"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "18",
+      "eventTime": "2026-07-27T18:57:05.404Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "17",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "19",
+      "eventTime": "2026-07-27T18:57:05.405Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJtb2RlbF9uYW1lIjoibW9jay1wbGFubmVyIiwiaW5wdXRfdG9rZW5zIjozMDAsIm91dHB1dF90b2tlbnMiOjE1MCwibGF0ZW5jeV9tcyI6NTAwLjAsImNhY2hlX2NyZWF0aW9uX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfcmVhZF9pbnB1dF90b2tlbnMiOjAsInN0b3BfcmVhc29uIjpudWxsLCJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsInBsYW4iOnsidGFza19pZCI6Im5lc3RlZF9mYW5fb3V0X3N5bmMiLCJzdGVwcyI6W3sic3RlcF9pZCI6ImZhbi1zdGVwIiwiZGVzY3JpcHRpb24iOiJPbmUgbmVzdGluZyBzdWItdGFzay4iLCJ0YXJnZXRfZmlsZXMiOltdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpbeyJzdWJfdGFza19pZCI6InN0MSIsImRlc2NyaXB0aW9uIjoiTmVzdGVkIG5vZGUuIiwidGFyZ2V0X2ZpbGVzIjpbXSwiY29udGV4dF9maWxlcyI6W10sInN1Yl90YXNrcyI6W3sic3ViX3Rhc2tfaWQiOiJnYzEiLCJkZXNjcmlwdGlvbiI6IlByb2R1Y2UgZ2MxLnB5LiIsInRhcmdldF9maWxlcyI6WyJnYzEucHkiXSwiY29udGV4dF9maWxlcyI6W10sInN1Yl90YXNrcyI6bnVsbH0seyJzdWJfdGFza19pZCI6ImdjMiIsImRlc2NyaXB0aW9uIjoiUHJvZHVjZSBnYzIucHkuIiwidGFyZ2V0X2ZpbGVzIjpbImdjMi5weSJdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpudWxsfV19XSwiY2FwYWJpbGl0eV90aWVyIjpudWxsfV0sImV4cGxhbmF0aW9uIjoiT25lIGZhbi1vdXQgc3RlcCwgb25lIG5lc3Rpbmcgc3ViLXRhc2suIn19"
+            }
+          ]
+        },
+        "scheduledEventId": "17",
+        "startedEventId": "18",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "20",
+      "eventTime": "2026-07-27T18:57:05.405Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "21",
+      "eventTime": "2026-07-27T18:57:05.405Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "20",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "4660"
+      }
+    },
+    {
+      "eventId": "22",
+      "eventTime": "2026-07-27T18:57:05.405Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "20",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "23",
+      "eventTime": "2026-07-27T18:57:05.405Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "4",
+        "activityType": {
+          "name": "persist_to_store"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJraW5kIjoiaW50ZXJhY3Rpb24iLCJpZGVtcG90ZW5jeV9rZXkiOiJuZXN0ZWRfZmFuX291dF9zeW5jOjlkNjM2MjU0LTI2ODItNDRkYy04YzBmLWFlNDBjNWVhNGRjMzpwbGFubmVyOjAiLCJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsInJvbGUiOiJwbGFubmVyIiwic3lzdGVtX3Byb21wdCI6InBsYW5uZXIgc3lzdGVtIHByb21wdCIsInVzZXJfcHJvbXB0IjoicGxhbm5lciB1c2VyIHByb21wdCIsIm1vZGVsX25hbWUiOiJtb2NrLXBsYW5uZXIiLCJpbnB1dF90b2tlbnMiOjMwMCwib3V0cHV0X3Rva2VucyI6MTUwLCJsYXRlbmN5X21zIjo1MDAuMCwic3RlcF9pZCI6bnVsbCwic3ViX3Rhc2tfaWQiOm51bGwsImV4cGxhbmF0aW9uIjoiT25lIGZhbi1vdXQgc3RlcCwgb25lIG5lc3Rpbmcgc3ViLXRhc2suIiwiY29udGV4dF9zdGF0c19qc29uIjpudWxsLCJjYWNoZV9jcmVhdGlvbl9pbnB1dF90b2tlbnMiOjAsImNhY2hlX3JlYWRfaW5wdXRfdG9rZW5zIjowLCJzdG9wX3JlYXNvbiI6bnVsbH0="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "1200s",
+        "scheduleToStartTimeout": "1200s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "21",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "60s",
+          "maximumAttempts": 20,
+          "nonRetryableErrorTypes": [
+            "ValueError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "24",
+      "eventTime": "2026-07-27T18:57:05.405Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "23",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "25",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJraW5kIjoiaW50ZXJhY3Rpb24iLCJhcHBsaWVkIjp0cnVlfQ=="
+            }
+          ]
+        },
+        "scheduledEventId": "23",
+        "startedEventId": "24",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "26",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "27",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "26",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "5657"
+      }
+    },
+    {
+      "eventId": "28",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "26",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "29",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED",
+      "startChildWorkflowExecutionInitiatedEventAttributes": {
+        "namespace": "default",
+        "workflowId": "forge-subtask-nested_fan_out_sync.sub.st1",
+        "workflowType": {
+          "name": "ForgeSubTaskWorkflow"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJwYXJlbnRfdGFza19pZCI6Im5lc3RlZF9mYW5fb3V0X3N5bmMiLCJwYXJlbnRfZGVzY3JpcHRpb24iOiJCdWlsZCBhIHRoaW5nLiIsInN1Yl90YXNrIjp7InN1Yl90YXNrX2lkIjoic3QxIiwiZGVzY3JpcHRpb24iOiJOZXN0ZWQgbm9kZS4iLCJ0YXJnZXRfZmlsZXMiOltdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpbeyJzdWJfdGFza19pZCI6ImdjMSIsImRlc2NyaXB0aW9uIjoiUHJvZHVjZSBnYzEucHkuIiwidGFyZ2V0X2ZpbGVzIjpbImdjMS5weSJdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpudWxsfSx7InN1Yl90YXNrX2lkIjoiZ2MyIiwiZGVzY3JpcHRpb24iOiJQcm9kdWNlIGdjMi5weS4iLCJ0YXJnZXRfZmlsZXMiOlsiZ2MyLnB5Il0sImNvbnRleHRfZmlsZXMiOltdLCJzdWJfdGFza3MiOm51bGx9XX0sInJlcG9fcm9vdCI6Ii90bXAvcmVwbyIsInBhcmVudF9icmFuY2giOiJmb3JnZS9uZXN0ZWRfZmFuX291dF9zeW5jIiwidmFsaWRhdGlvbiI6eyJhdXRvX2ZpeCI6dHJ1ZSwicnVuX3J1ZmZfbGludCI6dHJ1ZSwicnVuX3J1ZmZfZm9ybWF0Ijp0cnVlLCJydW5fdGVzdHMiOmZhbHNlLCJ0ZXN0X2NvbW1hbmQiOm51bGwsInRlc3RfdGltZW91dF9zZWNvbmRzIjpudWxsfSwibWF4X2F0dGVtcHRzIjoyLCJtb2RlbF9uYW1lIjoiYW50aHJvcGljOmNsYXVkZS1zb25uZXQtNSIsImRvbWFpbiI6ImNvZGVfZ2VuZXJhdGlvbiIsImRlcHRoIjowLCJtYXhfZGVwdGgiOjIsInJlc29sdmVfY29uZmxpY3RzIjp0cnVlLCJtb2RlbF9yb3V0aW5nIjp7InJlYXNvbmluZyI6ImFudGhyb3BpYzpjbGF1ZGUtb3B1cy00LTgiLCJnZW5lcmF0aW9uIjoiYW50aHJvcGljOmNsYXVkZS1zb25uZXQtNSIsInN1bW1hcml6YXRpb24iOiJhbnRocm9waWM6Y2xhdWRlLXNvbm5ldC01IiwiY2xhc3NpZmljYXRpb24iOiJhbnRocm9waWM6Y2xhdWRlLWhhaWt1LTQtNSJ9LCJ0aGlua2luZyI6eyJlbmFibGVkIjp0cnVlLCJlZmZvcnQiOiJoaWdoIn0sInN5bmNfbW9kZSI6dHJ1ZSwibG9nX21lc3NhZ2VzIjpmYWxzZSwiYmF0Y2hfcG9sbF9pbnRlcnZhbF9zZWNvbmRzIjo2MDB9"
+            }
+          ]
+        },
+        "workflowExecutionTimeout": "1500s",
+        "workflowRunTimeout": "0s",
+        "workflowTaskTimeout": "10s",
+        "parentClosePolicy": "PARENT_CLOSE_POLICY_TERMINATE",
+        "workflowTaskCompletedEventId": "27",
+        "workflowIdReusePolicy": "WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE",
+        "header": {},
+        "memo": {},
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "30",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED",
+      "childWorkflowExecutionStartedEventAttributes": {
+        "namespace": "default",
+        "initiatedEventId": "29",
+        "workflowExecution": {
+          "workflowId": "forge-subtask-nested_fan_out_sync.sub.st1",
+          "runId": "0bf2b669-6158-4ddc-8b6d-0ee152f06b1a"
+        },
+        "workflowType": {
+          "name": "ForgeSubTaskWorkflow"
+        }
+      }
+    },
+    {
+      "eventId": "31",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "32",
+      "eventTime": "2026-07-27T18:57:05.406Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "31",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "7216"
+      }
+    },
+    {
+      "eventId": "33",
+      "eventTime": "2026-07-27T18:57:05.408Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "31",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "34",
+      "eventTime": "2026-07-27T18:57:05.430Z",
+      "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED",
+      "childWorkflowExecutionCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJzdWJfdGFza19pZCI6InN0MSIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnsiZ2MxLnB5IjoiIyBnYzFcbiIsImdjMi5weSI6IiMgZ2MyXG4ifSwib3V0cHV0X2RpZ2VzdHMiOnt9LCJ2YWxpZGF0aW9uX3Jlc3VsdHMiOlt7ImNoZWNrX25hbWUiOiJydWZmX2xpbnQiLCJwYXNzZWQiOnRydWUsInN1bW1hcnkiOiJydWZmX2xpbnQgcGFzc2VkIiwiZGV0YWlscyI6bnVsbH1dLCJkaWdlc3QiOiIiLCJlcnJvciI6bnVsbCwiZmFpbHVyZV9raW5kIjpudWxsLCJsbG1fc3RhdHMiOm51bGwsInN1Yl90YXNrX3Jlc3VsdHMiOlt7InN1Yl90YXNrX2lkIjoiZ2MxIiwic3RhdHVzIjoic3VjY2VzcyIsIm91dHB1dF9maWxlcyI6e30sIm91dHB1dF9kaWdlc3RzIjp7ImdjMS5weSI6IjNkNDBkNmFlNWRlNDk1YjgwNzY5ZTM5OGNmZTYxZmM0MDIyZjc3MzAzYWE1YzRhYTczNGM0NzM4MWIzNGMzMmEifSwidmFsaWRhdGlvbl9yZXN1bHRzIjpbeyJjaGVja19uYW1lIjoicnVmZl9saW50IiwicGFzc2VkIjp0cnVlLCJzdW1tYXJ5IjoicnVmZl9saW50IHBhc3NlZCIsImRldGFpbHMiOm51bGx9XSwiZGlnZXN0IjoiQ3JlYXRlZCBnYzEucHkuIiwiZXJyb3IiOm51bGwsImZhaWx1cmVfa2luZCI6bnVsbCwibGxtX3N0YXRzIjp7Im1vZGVsX25hbWUiOiJtb2NrLW1vZGVsIiwiaW5wdXRfdG9rZW5zIjoxMDAsIm91dHB1dF90b2tlbnMiOjUwLCJsYXRlbmN5X21zIjoyMDAuMCwiY2FjaGVfY3JlYXRpb25faW5wdXRfdG9rZW5zIjowLCJjYWNoZV9yZWFkX2lucHV0X3Rva2VucyI6MCwic3RvcF9yZWFzb24iOm51bGx9LCJzdWJfdGFza19yZXN1bHRzIjpbXSwiY29uZmxpY3RfcmVzb2x1dGlvbiI6bnVsbH0seyJzdWJfdGFza19pZCI6ImdjMiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnt9LCJvdXRwdXRfZGlnZXN0cyI6eyJnYzIucHkiOiJhODdlMWRlMmE0MDVmN2UyOGY4Y2FmMDM0ZTgxNjdiNjRhMzJmOTA1MjI5NGQxMDUxNTI0OGJhN2UwMjY5NGExIn0sInZhbGlkYXRpb25fcmVzdWx0cyI6W3siY2hlY2tfbmFtZSI6InJ1ZmZfbGludCIsInBhc3NlZCI6dHJ1ZSwic3VtbWFyeSI6InJ1ZmZfbGludCBwYXNzZWQiLCJkZXRhaWxzIjpudWxsfV0sImRpZ2VzdCI6IkNyZWF0ZWQgZ2MyLnB5LiIsImVycm9yIjpudWxsLCJmYWlsdXJlX2tpbmQiOm51bGwsImxsbV9zdGF0cyI6eyJtb2RlbF9uYW1lIjoibW9jay1tb2RlbCIsImlucHV0X3Rva2VucyI6MTAwLCJvdXRwdXRfdG9rZW5zIjo1MCwibGF0ZW5jeV9tcyI6MjAwLjAsImNhY2hlX2NyZWF0aW9uX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfcmVhZF9pbnB1dF90b2tlbnMiOjAsInN0b3BfcmVhc29uIjpudWxsfSwic3ViX3Rhc2tfcmVzdWx0cyI6W10sImNvbmZsaWN0X3Jlc29sdXRpb24iOm51bGx9XSwiY29uZmxpY3RfcmVzb2x1dGlvbiI6bnVsbH0="
+            }
+          ]
+        },
+        "namespace": "default",
+        "workflowExecution": {
+          "workflowId": "forge-subtask-nested_fan_out_sync.sub.st1",
+          "runId": "0bf2b669-6158-4ddc-8b6d-0ee152f06b1a"
+        },
+        "workflowType": {
+          "name": "ForgeSubTaskWorkflow"
+        },
+        "initiatedEventId": "29",
+        "startedEventId": "30"
+      }
+    },
+    {
+      "eventId": "35",
+      "eventTime": "2026-07-27T18:57:05.430Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "36",
+      "eventTime": "2026-07-27T18:57:05.430Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "35",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "8989"
+      }
+    },
+    {
+      "eventId": "37",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "35",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "38",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "5",
+        "activityType": {
+          "name": "detect_file_conflicts_activity"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJzdWJfdGFza19yZXN1bHRzIjpbeyJzdWJfdGFza19pZCI6InN0MSIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnsiZ2MxLnB5IjoiIyBnYzFcbiIsImdjMi5weSI6IiMgZ2MyXG4ifSwib3V0cHV0X2RpZ2VzdHMiOnt9LCJ2YWxpZGF0aW9uX3Jlc3VsdHMiOlt7ImNoZWNrX25hbWUiOiJydWZmX2xpbnQiLCJwYXNzZWQiOnRydWUsInN1bW1hcnkiOiJydWZmX2xpbnQgcGFzc2VkIiwiZGV0YWlscyI6bnVsbH1dLCJkaWdlc3QiOiIiLCJlcnJvciI6bnVsbCwiZmFpbHVyZV9raW5kIjpudWxsLCJsbG1fc3RhdHMiOm51bGwsInN1Yl90YXNrX3Jlc3VsdHMiOlt7InN1Yl90YXNrX2lkIjoiZ2MxIiwic3RhdHVzIjoic3VjY2VzcyIsIm91dHB1dF9maWxlcyI6e30sIm91dHB1dF9kaWdlc3RzIjp7ImdjMS5weSI6IjNkNDBkNmFlNWRlNDk1YjgwNzY5ZTM5OGNmZTYxZmM0MDIyZjc3MzAzYWE1YzRhYTczNGM0NzM4MWIzNGMzMmEifSwidmFsaWRhdGlvbl9yZXN1bHRzIjpbeyJjaGVja19uYW1lIjoicnVmZl9saW50IiwicGFzc2VkIjp0cnVlLCJzdW1tYXJ5IjoicnVmZl9saW50IHBhc3NlZCIsImRldGFpbHMiOm51bGx9XSwiZGlnZXN0IjoiQ3JlYXRlZCBnYzEucHkuIiwiZXJyb3IiOm51bGwsImZhaWx1cmVfa2luZCI6bnVsbCwibGxtX3N0YXRzIjp7Im1vZGVsX25hbWUiOiJtb2NrLW1vZGVsIiwiaW5wdXRfdG9rZW5zIjoxMDAsIm91dHB1dF90b2tlbnMiOjUwLCJsYXRlbmN5X21zIjoyMDAuMCwiY2FjaGVfY3JlYXRpb25faW5wdXRfdG9rZW5zIjowLCJjYWNoZV9yZWFkX2lucHV0X3Rva2VucyI6MCwic3RvcF9yZWFzb24iOm51bGx9LCJzdWJfdGFza19yZXN1bHRzIjpbXSwiY29uZmxpY3RfcmVzb2x1dGlvbiI6bnVsbH0seyJzdWJfdGFza19pZCI6ImdjMiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnt9LCJvdXRwdXRfZGlnZXN0cyI6eyJnYzIucHkiOiJhODdlMWRlMmE0MDVmN2UyOGY4Y2FmMDM0ZTgxNjdiNjRhMzJmOTA1MjI5NGQxMDUxNTI0OGJhN2UwMjY5NGExIn0sInZhbGlkYXRpb25fcmVzdWx0cyI6W3siY2hlY2tfbmFtZSI6InJ1ZmZfbGludCIsInBhc3NlZCI6dHJ1ZSwic3VtbWFyeSI6InJ1ZmZfbGludCBwYXNzZWQiLCJkZXRhaWxzIjpudWxsfV0sImRpZ2VzdCI6IkNyZWF0ZWQgZ2MyLnB5LiIsImVycm9yIjpudWxsLCJmYWlsdXJlX2tpbmQiOm51bGwsImxsbV9zdGF0cyI6eyJtb2RlbF9uYW1lIjoibW9jay1tb2RlbCIsImlucHV0X3Rva2VucyI6MTAwLCJvdXRwdXRfdG9rZW5zIjo1MCwibGF0ZW5jeV9tcyI6MjAwLjAsImNhY2hlX2NyZWF0aW9uX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfcmVhZF9pbnB1dF90b2tlbnMiOjAsInN0b3BfcmVhc29uIjpudWxsfSwic3ViX3Rhc2tfcmVzdWx0cyI6W10sImNvbmZsaWN0X3Jlc29sdXRpb24iOm51bGx9XSwiY29uZmxpY3RfcmVzb2x1dGlvbiI6bnVsbH1dLCJ3b3JrdHJlZV9wYXRoIjoiL3RtcC9yZXBvLy5mb3JnZS13b3JrdHJlZXMvbmVzdGVkX2Zhbl9vdXRfc3luYyJ9"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "36",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "100s",
+          "maximumAttempts": 2
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "39",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "38",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "40",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJub25fY29uZmxpY3RpbmdfZmlsZXMiOnsiZ2MxLnB5IjoiIyBnYzFcbiIsImdjMi5weSI6IiMgZ2MyXG4ifSwiY29uZmxpY3RzIjpbXX0="
+            }
+          ]
+        },
+        "scheduledEventId": "38",
+        "startedEventId": "39",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "41",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "42",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "41",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "11038"
+      }
+    },
+    {
+      "eventId": "43",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "41",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "44",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "6",
+        "activityType": {
+          "name": "write_files"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsIndvcmt0cmVlX3BhdGgiOiIvdG1wL3JlcG8vLmZvcmdlLXdvcmt0cmVlcy9uZXN0ZWRfZmFuX291dF9zeW5jIiwiZmlsZXMiOnsiZ2MxLnB5IjoiIyBnYzFcbiIsImdjMi5weSI6IiMgZ2MyXG4ifX0="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "42",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "100s",
+          "maximumAttempts": 2,
+          "nonRetryableErrorTypes": [
+            "OutputWriteError",
+            "EditApplicationError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "45",
+      "eventTime": "2026-07-27T18:57:05.431Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "44",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "46",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsImZpbGVzX3dyaXR0ZW4iOlsiZ2MxLnB5IiwiZ2MyLnB5Il0sIm91dHB1dF9maWxlcyI6eyJnYzEucHkiOiIjIGdjMVxuIiwiZ2MyLnB5IjoiIyBnYzJcbiJ9fQ=="
+            }
+          ]
+        },
+        "scheduledEventId": "44",
+        "startedEventId": "45",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "47",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "48",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "47",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "11785"
+      }
+    },
+    {
+      "eventId": "49",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "47",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "50",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "7",
+        "activityType": {
+          "name": "validate_output"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsIndvcmt0cmVlX3BhdGgiOiIvdG1wL3JlcG8vLmZvcmdlLXdvcmt0cmVlcy9uZXN0ZWRfZmFuX291dF9zeW5jIiwiZmlsZXMiOlsiZ2MxLnB5IiwiZ2MyLnB5Il0sInZhbGlkYXRpb24iOnsiYXV0b19maXgiOnRydWUsInJ1bl9ydWZmX2xpbnQiOnRydWUsInJ1bl9ydWZmX2Zvcm1hdCI6dHJ1ZSwicnVuX3Rlc3RzIjpmYWxzZSwidGVzdF9jb21tYW5kIjpudWxsLCJ0ZXN0X3RpbWVvdXRfc2Vjb25kcyI6bnVsbH19"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "120s",
+        "heartbeatTimeout": "60s",
+        "workflowTaskCompletedEventId": "48",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "100s",
+          "maximumAttempts": 2
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "51",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "50",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "52",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "W3siY2hlY2tfbmFtZSI6InJ1ZmZfbGludCIsInBhc3NlZCI6dHJ1ZSwic3VtbWFyeSI6InJ1ZmZfbGludCBwYXNzZWQiLCJkZXRhaWxzIjpudWxsfV0="
+            }
+          ]
+        },
+        "scheduledEventId": "50",
+        "startedEventId": "51",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "53",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "54",
+      "eventTime": "2026-07-27T18:57:05.432Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "53",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "12579"
+      }
+    },
+    {
+      "eventId": "55",
+      "eventTime": "2026-07-27T18:57:05.433Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "53",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "56",
+      "eventTime": "2026-07-27T18:57:05.433Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "8",
+        "activityType": {
+          "name": "commit_changes_activity"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyZXBvX3Jvb3QiOiIvdG1wL3JlcG8iLCJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsInN0YXR1cyI6InN1Y2Nlc3MiLCJmaWxlX3BhdGhzIjpudWxsLCJtZXNzYWdlIjoiZm9yZ2UobmVzdGVkX2Zhbl9vdXRfc3luYyk6IHN0ZXAgZmFuLXN0ZXAgZmFuLW91dCBnYXRoZXIifQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "54",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "100s",
+          "maximumAttempts": 2,
+          "nonRetryableErrorTypes": [
+            "CommitError",
+            "RepoDiscoveryError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "57",
+      "eventTime": "2026-07-27T18:57:05.433Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "56",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "58",
+      "eventTime": "2026-07-27T18:57:05.433Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJjb21taXRfc2hhIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9"
+            }
+          ]
+        },
+        "scheduledEventId": "56",
+        "startedEventId": "57",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "59",
+      "eventTime": "2026-07-27T18:57:05.433Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "60",
+      "eventTime": "2026-07-27T18:57:05.433Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "59",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "13278"
+      }
+    },
+    {
+      "eventId": "61",
+      "eventTime": "2026-07-27T18:57:05.434Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "59",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "62",
+      "eventTime": "2026-07-27T18:57:05.434Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "9",
+        "activityType": {
+          "name": "persist_to_store"
+        },
+        "taskQueue": {
+          "name": "forge-task-queue",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJraW5kIjoicnVuIiwid29ya2Zsb3dfaWQiOiJuZXN0ZWRfZmFuX291dF9zeW5jIiwicnVuX2lkIjoiOWQ2MzYyNTQtMjY4Mi00NGRjLThjMGYtYWU0MGM1ZWE0ZGMzIiwidGFza19yZXN1bHQiOnsidGFza19pZCI6Im5lc3RlZF9mYW5fb3V0X3N5bmMiLCJzdGF0dXMiOiJzdWNjZXNzIiwib3V0cHV0X2ZpbGVzIjp7ImdjMS5weSI6IiMgZ2MxXG4iLCJnYzIucHkiOiIjIGdjMlxuIn0sInZhbGlkYXRpb25fcmVzdWx0cyI6W10sImVycm9yIjpudWxsLCJmYWlsdXJlX2tpbmQiOm51bGwsIndvcmt0cmVlX3BhdGgiOiIvdG1wL3JlcG8vLmZvcmdlLXdvcmt0cmVlcy9uZXN0ZWRfZmFuX291dF9zeW5jIiwid29ya3RyZWVfYnJhbmNoIjoiZm9yZ2UvbmVzdGVkX2Zhbl9vdXRfc3luYyIsInN0ZXBfcmVzdWx0cyI6W3sic3RlcF9pZCI6ImZhbi1zdGVwIiwic3RhdHVzIjoic3VjY2VzcyIsIm91dHB1dF9maWxlcyI6e30sIm91dHB1dF9kaWdlc3RzIjp7ImdjMS5weSI6IjNkNDBkNmFlNWRlNDk1YjgwNzY5ZTM5OGNmZTYxZmM0MDIyZjc3MzAzYWE1YzRhYTczNGM0NzM4MWIzNGMzMmEiLCJnYzIucHkiOiJhODdlMWRlMmE0MDVmN2UyOGY4Y2FmMDM0ZTgxNjdiNjRhMzJmOTA1MjI5NGQxMDUxNTI0OGJhN2UwMjY5NGExIn0sInZhbGlkYXRpb25fcmVzdWx0cyI6W3siY2hlY2tfbmFtZSI6InJ1ZmZfbGludCIsInBhc3NlZCI6dHJ1ZSwic3VtbWFyeSI6InJ1ZmZfbGludCBwYXNzZWQiLCJkZXRhaWxzIjpudWxsfV0sImNvbW1pdF9zaGEiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwiZXJyb3IiOm51bGwsImZhaWx1cmVfa2luZCI6bnVsbCwic3ViX3Rhc2tfcmVzdWx0cyI6W3sic3ViX3Rhc2tfaWQiOiJzdDEiLCJzdGF0dXMiOiJzdWNjZXNzIiwib3V0cHV0X2ZpbGVzIjp7fSwib3V0cHV0X2RpZ2VzdHMiOnsiZ2MxLnB5IjoiM2Q0MGQ2YWU1ZGU0OTViODA3NjllMzk4Y2ZlNjFmYzQwMjJmNzczMDNhYTVjNGFhNzM0YzQ3MzgxYjM0YzMyYSIsImdjMi5weSI6ImE4N2UxZGUyYTQwNWY3ZTI4ZjhjYWYwMzRlODE2N2I2NGEzMmY5MDUyMjk0ZDEwNTE1MjQ4YmE3ZTAyNjk0YTEifSwidmFsaWRhdGlvbl9yZXN1bHRzIjpbeyJjaGVja19uYW1lIjoicnVmZl9saW50IiwicGFzc2VkIjp0cnVlLCJzdW1tYXJ5IjoicnVmZl9saW50IHBhc3NlZCIsImRldGFpbHMiOm51bGx9XSwiZGlnZXN0IjoiIiwiZXJyb3IiOm51bGwsImZhaWx1cmVfa2luZCI6bnVsbCwibGxtX3N0YXRzIjpudWxsLCJzdWJfdGFza19yZXN1bHRzIjpbeyJzdWJfdGFza19pZCI6ImdjMSIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnt9LCJvdXRwdXRfZGlnZXN0cyI6eyJnYzEucHkiOiIzZDQwZDZhZTVkZTQ5NWI4MDc2OWUzOThjZmU2MWZjNDAyMmY3NzMwM2FhNWM0YWE3MzRjNDczODFiMzRjMzJhIn0sInZhbGlkYXRpb25fcmVzdWx0cyI6W3siY2hlY2tfbmFtZSI6InJ1ZmZfbGludCIsInBhc3NlZCI6dHJ1ZSwic3VtbWFyeSI6InJ1ZmZfbGludCBwYXNzZWQiLCJkZXRhaWxzIjpudWxsfV0sImRpZ2VzdCI6IkNyZWF0ZWQgZ2MxLnB5LiIsImVycm9yIjpudWxsLCJmYWlsdXJlX2tpbmQiOm51bGwsImxsbV9zdGF0cyI6eyJtb2RlbF9uYW1lIjoibW9jay1tb2RlbCIsImlucHV0X3Rva2VucyI6MTAwLCJvdXRwdXRfdG9rZW5zIjo1MCwibGF0ZW5jeV9tcyI6MjAwLjAsImNhY2hlX2NyZWF0aW9uX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfcmVhZF9pbnB1dF90b2tlbnMiOjAsInN0b3BfcmVhc29uIjpudWxsfSwic3ViX3Rhc2tfcmVzdWx0cyI6W10sImNvbmZsaWN0X3Jlc29sdXRpb24iOm51bGx9LHsic3ViX3Rhc2tfaWQiOiJnYzIiLCJzdGF0dXMiOiJzdWNjZXNzIiwib3V0cHV0X2ZpbGVzIjp7fSwib3V0cHV0X2RpZ2VzdHMiOnsiZ2MyLnB5IjoiYTg3ZTFkZTJhNDA1ZjdlMjhmOGNhZjAzNGU4MTY3YjY0YTMyZjkwNTIyOTRkMTA1MTUyNDhiYTdlMDI2OTRhMSJ9LCJ2YWxpZGF0aW9uX3Jlc3VsdHMiOlt7ImNoZWNrX25hbWUiOiJydWZmX2xpbnQiLCJwYXNzZWQiOnRydWUsInN1bW1hcnkiOiJydWZmX2xpbnQgcGFzc2VkIiwiZGV0YWlscyI6bnVsbH1dLCJkaWdlc3QiOiJDcmVhdGVkIGdjMi5weS4iLCJlcnJvciI6bnVsbCwiZmFpbHVyZV9raW5kIjpudWxsLCJsbG1fc3RhdHMiOnsibW9kZWxfbmFtZSI6Im1vY2stbW9kZWwiLCJpbnB1dF90b2tlbnMiOjEwMCwib3V0cHV0X3Rva2VucyI6NTAsImxhdGVuY3lfbXMiOjIwMC4wLCJjYWNoZV9jcmVhdGlvbl9pbnB1dF90b2tlbnMiOjAsImNhY2hlX3JlYWRfaW5wdXRfdG9rZW5zIjowLCJzdG9wX3JlYXNvbiI6bnVsbH0sInN1Yl90YXNrX3Jlc3VsdHMiOltdLCJjb25mbGljdF9yZXNvbHV0aW9uIjpudWxsfV0sImNvbmZsaWN0X3Jlc29sdXRpb24iOm51bGx9XSwibGxtX3N0YXRzIjpudWxsLCJkaWdlc3QiOiIiLCJjb25mbGljdF9yZXNvbHV0aW9uIjpudWxsfV0sInBsYW4iOnsidGFza19pZCI6Im5lc3RlZF9mYW5fb3V0X3N5bmMiLCJzdGVwcyI6W3sic3RlcF9pZCI6ImZhbi1zdGVwIiwiZGVzY3JpcHRpb24iOiJPbmUgbmVzdGluZyBzdWItdGFzay4iLCJ0YXJnZXRfZmlsZXMiOltdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpbeyJzdWJfdGFza19pZCI6InN0MSIsImRlc2NyaXB0aW9uIjoiTmVzdGVkIG5vZGUuIiwidGFyZ2V0X2ZpbGVzIjpbXSwiY29udGV4dF9maWxlcyI6W10sInN1Yl90YXNrcyI6W3sic3ViX3Rhc2tfaWQiOiJnYzEiLCJkZXNjcmlwdGlvbiI6IlByb2R1Y2UgZ2MxLnB5LiIsInRhcmdldF9maWxlcyI6WyJnYzEucHkiXSwiY29udGV4dF9maWxlcyI6W10sInN1Yl90YXNrcyI6bnVsbH0seyJzdWJfdGFza19pZCI6ImdjMiIsImRlc2NyaXB0aW9uIjoiUHJvZHVjZSBnYzIucHkuIiwidGFyZ2V0X2ZpbGVzIjpbImdjMi5weSJdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpudWxsfV19XSwiY2FwYWJpbGl0eV90aWVyIjpudWxsfV0sImV4cGxhbmF0aW9uIjoiT25lIGZhbi1vdXQgc3RlcCwgb25lIG5lc3Rpbmcgc3ViLXRhc2suIn0sImxsbV9zdGF0cyI6bnVsbCwicGxhbm5lcl9zdGF0cyI6eyJtb2RlbF9uYW1lIjoibW9jay1wbGFubmVyIiwiaW5wdXRfdG9rZW5zIjozMDAsIm91dHB1dF90b2tlbnMiOjE1MCwibGF0ZW5jeV9tcyI6NTAwLjAsImNhY2hlX2NyZWF0aW9uX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfcmVhZF9pbnB1dF90b2tlbnMiOjAsInN0b3BfcmVhc29uIjpudWxsfSwiY29udGV4dF9zdGF0cyI6bnVsbCwibGxtX3RvdGFscyI6eyJjYWxsX2NvdW50IjozLCJpbnB1dF90b2tlbnMiOjUwMCwib3V0cHV0X3Rva2VucyI6MjUwLCJjYWNoZV9jcmVhdGlvbl9pbnB1dF90b2tlbnMiOjAsImNhY2hlX3JlYWRfaW5wdXRfdG9rZW5zIjowLCJsbG1fdGltZV9tcyI6OTAwLjB9LCJzYW5pdHlfY2hlY2tfY291bnQiOjB9fQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "1200s",
+        "scheduleToStartTimeout": "1200s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "60",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "60s",
+          "maximumAttempts": 20,
+          "nonRetryableErrorTypes": [
+            "ValueError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "63",
+      "eventTime": "2026-07-27T18:57:05.434Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "62",
+        "identity": "95647@buchla.local",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "64",
+      "eventTime": "2026-07-27T18:57:05.434Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJraW5kIjoicnVuIiwiYXBwbGllZCI6dHJ1ZX0="
+            }
+          ]
+        },
+        "scheduledEventId": "62",
+        "startedEventId": "63",
+        "identity": "95647@buchla.local"
+      }
+    },
+    {
+      "eventId": "65",
+      "eventTime": "2026-07-27T18:57:05.434Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "forge-task-queue"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "66",
+      "eventTime": "2026-07-27T18:57:05.434Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "65",
+        "identity": "95647@buchla.local",
+        "historySizeBytes": "17173"
+      }
+    },
+    {
+      "eventId": "67",
+      "eventTime": "2026-07-27T18:57:05.435Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "65",
+        "identity": "95647@buchla.local",
+        "binaryChecksum": "85e0659a4d7bf8a9f08003e34c7f38a5",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "68",
+      "eventTime": "2026-07-27T18:57:05.435Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "workflowExecutionCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnsiZ2MxLnB5IjoiIyBnYzFcbiIsImdjMi5weSI6IiMgZ2MyXG4ifSwidmFsaWRhdGlvbl9yZXN1bHRzIjpbXSwiZXJyb3IiOm51bGwsImZhaWx1cmVfa2luZCI6bnVsbCwid29ya3RyZWVfcGF0aCI6Ii90bXAvcmVwby8uZm9yZ2Utd29ya3RyZWVzL25lc3RlZF9mYW5fb3V0X3N5bmMiLCJ3b3JrdHJlZV9icmFuY2giOiJmb3JnZS9uZXN0ZWRfZmFuX291dF9zeW5jIiwic3RlcF9yZXN1bHRzIjpbeyJzdGVwX2lkIjoiZmFuLXN0ZXAiLCJzdGF0dXMiOiJzdWNjZXNzIiwib3V0cHV0X2ZpbGVzIjp7fSwib3V0cHV0X2RpZ2VzdHMiOnsiZ2MxLnB5IjoiM2Q0MGQ2YWU1ZGU0OTViODA3NjllMzk4Y2ZlNjFmYzQwMjJmNzczMDNhYTVjNGFhNzM0YzQ3MzgxYjM0YzMyYSIsImdjMi5weSI6ImE4N2UxZGUyYTQwNWY3ZTI4ZjhjYWYwMzRlODE2N2I2NGEzMmY5MDUyMjk0ZDEwNTE1MjQ4YmE3ZTAyNjk0YTEifSwidmFsaWRhdGlvbl9yZXN1bHRzIjpbeyJjaGVja19uYW1lIjoicnVmZl9saW50IiwicGFzc2VkIjp0cnVlLCJzdW1tYXJ5IjoicnVmZl9saW50IHBhc3NlZCIsImRldGFpbHMiOm51bGx9XSwiY29tbWl0X3NoYSI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJlcnJvciI6bnVsbCwiZmFpbHVyZV9raW5kIjpudWxsLCJzdWJfdGFza19yZXN1bHRzIjpbeyJzdWJfdGFza19pZCI6InN0MSIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnt9LCJvdXRwdXRfZGlnZXN0cyI6eyJnYzEucHkiOiIzZDQwZDZhZTVkZTQ5NWI4MDc2OWUzOThjZmU2MWZjNDAyMmY3NzMwM2FhNWM0YWE3MzRjNDczODFiMzRjMzJhIiwiZ2MyLnB5IjoiYTg3ZTFkZTJhNDA1ZjdlMjhmOGNhZjAzNGU4MTY3YjY0YTMyZjkwNTIyOTRkMTA1MTUyNDhiYTdlMDI2OTRhMSJ9LCJ2YWxpZGF0aW9uX3Jlc3VsdHMiOlt7ImNoZWNrX25hbWUiOiJydWZmX2xpbnQiLCJwYXNzZWQiOnRydWUsInN1bW1hcnkiOiJydWZmX2xpbnQgcGFzc2VkIiwiZGV0YWlscyI6bnVsbH1dLCJkaWdlc3QiOiIiLCJlcnJvciI6bnVsbCwiZmFpbHVyZV9raW5kIjpudWxsLCJsbG1fc3RhdHMiOm51bGwsInN1Yl90YXNrX3Jlc3VsdHMiOlt7InN1Yl90YXNrX2lkIjoiZ2MxIiwic3RhdHVzIjoic3VjY2VzcyIsIm91dHB1dF9maWxlcyI6e30sIm91dHB1dF9kaWdlc3RzIjp7ImdjMS5weSI6IjNkNDBkNmFlNWRlNDk1YjgwNzY5ZTM5OGNmZTYxZmM0MDIyZjc3MzAzYWE1YzRhYTczNGM0NzM4MWIzNGMzMmEifSwidmFsaWRhdGlvbl9yZXN1bHRzIjpbeyJjaGVja19uYW1lIjoicnVmZl9saW50IiwicGFzc2VkIjp0cnVlLCJzdW1tYXJ5IjoicnVmZl9saW50IHBhc3NlZCIsImRldGFpbHMiOm51bGx9XSwiZGlnZXN0IjoiQ3JlYXRlZCBnYzEucHkuIiwiZXJyb3IiOm51bGwsImZhaWx1cmVfa2luZCI6bnVsbCwibGxtX3N0YXRzIjp7Im1vZGVsX25hbWUiOiJtb2NrLW1vZGVsIiwiaW5wdXRfdG9rZW5zIjoxMDAsIm91dHB1dF90b2tlbnMiOjUwLCJsYXRlbmN5X21zIjoyMDAuMCwiY2FjaGVfY3JlYXRpb25faW5wdXRfdG9rZW5zIjowLCJjYWNoZV9yZWFkX2lucHV0X3Rva2VucyI6MCwic3RvcF9yZWFzb24iOm51bGx9LCJzdWJfdGFza19yZXN1bHRzIjpbXSwiY29uZmxpY3RfcmVzb2x1dGlvbiI6bnVsbH0seyJzdWJfdGFza19pZCI6ImdjMiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJvdXRwdXRfZmlsZXMiOnt9LCJvdXRwdXRfZGlnZXN0cyI6eyJnYzIucHkiOiJhODdlMWRlMmE0MDVmN2UyOGY4Y2FmMDM0ZTgxNjdiNjRhMzJmOTA1MjI5NGQxMDUxNTI0OGJhN2UwMjY5NGExIn0sInZhbGlkYXRpb25fcmVzdWx0cyI6W3siY2hlY2tfbmFtZSI6InJ1ZmZfbGludCIsInBhc3NlZCI6dHJ1ZSwic3VtbWFyeSI6InJ1ZmZfbGludCBwYXNzZWQiLCJkZXRhaWxzIjpudWxsfV0sImRpZ2VzdCI6IkNyZWF0ZWQgZ2MyLnB5LiIsImVycm9yIjpudWxsLCJmYWlsdXJlX2tpbmQiOm51bGwsImxsbV9zdGF0cyI6eyJtb2RlbF9uYW1lIjoibW9jay1tb2RlbCIsImlucHV0X3Rva2VucyI6MTAwLCJvdXRwdXRfdG9rZW5zIjo1MCwibGF0ZW5jeV9tcyI6MjAwLjAsImNhY2hlX2NyZWF0aW9uX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfcmVhZF9pbnB1dF90b2tlbnMiOjAsInN0b3BfcmVhc29uIjpudWxsfSwic3ViX3Rhc2tfcmVzdWx0cyI6W10sImNvbmZsaWN0X3Jlc29sdXRpb24iOm51bGx9XSwiY29uZmxpY3RfcmVzb2x1dGlvbiI6bnVsbH1dLCJsbG1fc3RhdHMiOm51bGwsImRpZ2VzdCI6IiIsImNvbmZsaWN0X3Jlc29sdXRpb24iOm51bGx9XSwicGxhbiI6eyJ0YXNrX2lkIjoibmVzdGVkX2Zhbl9vdXRfc3luYyIsInN0ZXBzIjpbeyJzdGVwX2lkIjoiZmFuLXN0ZXAiLCJkZXNjcmlwdGlvbiI6Ik9uZSBuZXN0aW5nIHN1Yi10YXNrLiIsInRhcmdldF9maWxlcyI6W10sImNvbnRleHRfZmlsZXMiOltdLCJzdWJfdGFza3MiOlt7InN1Yl90YXNrX2lkIjoic3QxIiwiZGVzY3JpcHRpb24iOiJOZXN0ZWQgbm9kZS4iLCJ0YXJnZXRfZmlsZXMiOltdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpbeyJzdWJfdGFza19pZCI6ImdjMSIsImRlc2NyaXB0aW9uIjoiUHJvZHVjZSBnYzEucHkuIiwidGFyZ2V0X2ZpbGVzIjpbImdjMS5weSJdLCJjb250ZXh0X2ZpbGVzIjpbXSwic3ViX3Rhc2tzIjpudWxsfSx7InN1Yl90YXNrX2lkIjoiZ2MyIiwiZGVzY3JpcHRpb24iOiJQcm9kdWNlIGdjMi5weS4iLCJ0YXJnZXRfZmlsZXMiOlsiZ2MyLnB5Il0sImNvbnRleHRfZmlsZXMiOltdLCJzdWJfdGFza3MiOm51bGx9XX1dLCJjYXBhYmlsaXR5X3RpZXIiOm51bGx9XSwiZXhwbGFuYXRpb24iOiJPbmUgZmFuLW91dCBzdGVwLCBvbmUgbmVzdGluZyBzdWItdGFzay4ifSwibGxtX3N0YXRzIjpudWxsLCJwbGFubmVyX3N0YXRzIjp7Im1vZGVsX25hbWUiOiJtb2NrLXBsYW5uZXIiLCJpbnB1dF90b2tlbnMiOjMwMCwib3V0cHV0X3Rva2VucyI6MTUwLCJsYXRlbmN5X21zIjo1MDAuMCwiY2FjaGVfY3JlYXRpb25faW5wdXRfdG9rZW5zIjowLCJjYWNoZV9yZWFkX2lucHV0X3Rva2VucyI6MCwic3RvcF9yZWFzb24iOm51bGx9LCJjb250ZXh0X3N0YXRzIjpudWxsLCJsbG1fdG90YWxzIjp7ImNhbGxfY291bnQiOjMsImlucHV0X3Rva2VucyI6NTAwLCJvdXRwdXRfdG9rZW5zIjoyNTAsImNhY2hlX2NyZWF0aW9uX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfcmVhZF9pbnB1dF90b2tlbnMiOjAsImxsbV90aW1lX21zIjo5MDAuMH0sInNhbml0eV9jaGVja19jb3VudCI6MH0="
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": "66"
+      }
+    }
+  ]
+}

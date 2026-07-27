@@ -78,7 +78,7 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T5.2 — Single step block](tasks/T5.2-single-step-block.md) *(landed 2026-07-25)*
 - [x] [T5.3 — Single gather + dispatch](tasks/T5.3-single-gather-dispatch.md) *(landed 2026-07-26)*
 - [x] [T5.4 — Split the monolith](tasks/T5.4-split-the-monolith.md) *(landed 2026-07-27)*
-- [ ] [T5.5 — Harness rebuild + replay tests](tasks/T5.5-harness-rebuild-replay-tests.md)
+- [x] [T5.5 — Harness rebuild + replay tests](tasks/T5.5-harness-rebuild-replay-tests.md) *(landed 2026-07-27)*
 - [ ] [T5.6 — Plan preflight gate](tasks/T5.6-plan-preflight-gate.md) *(added 2026-07-08)*
 
 ### Phase 6 — Knowledge: pbook product + forge consumption (after Phase 5)
