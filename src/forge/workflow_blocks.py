@@ -18,7 +18,7 @@ five arms share one implementation (T5.3).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from temporalio import workflow
 from temporalio.exceptions import ActivityError, ApplicationError
@@ -29,11 +29,7 @@ with workflow.unsafe.imports_passed_through():
         PersistBatchSubmission,
         persist_block,
     )
-    from sax_platform.temporal.polling import (
-        BATCH_WAIT_CEILING,
-        FixedInterval,
-        wait_batch_ended,
-    )
+    from sax_platform.temporal.polling import FixedInterval, wait_batch_ended
     from sax_platform.temporal.retries import IO_RETRY, LLM_RETRY
 
     from forge.models import (
@@ -50,26 +46,29 @@ with workflow.unsafe.imports_passed_through():
         ThinkingPolicy,
     )
     from forge.persist_models import PersistBatchOutcome
+    from forge.presets import (
+        BATCH_FETCH_TIMEOUT,
+        BATCH_POLL_FLOOR,
+        BATCH_POLL_INTERVAL,
+        BATCH_STATUS_TIMEOUT,
+        BATCH_WAIT_TIMEOUT,
+        DEFAULT_MAX_TOKENS,
+        GIT_TIMEOUT,
+        PARSE_TIMEOUT,
+        SUBMIT_TIMEOUT,
+    )
 
+
+if TYPE_CHECKING:
+    from datetime import timedelta
 
 __all__ = [
     "BATCH_WAIT_FAILURES",
-    "THINKING_MAX_TOKENS",
     "batch_submit_and_wait",
-    "cleanup_worktree_after_failure",
+    "cleanup_worktree_after_exception",
     "persist_block",
     "remove_worktree",
 ]
-
-# Explicit cap for the three thinking-enabled batch call paths (planner,
-# sanity-check, conflict-resolution): adaptive thinking now competes for
-# tokens inside max_tokens instead of riding on top of it, so the old 4096
-# default batch-lane cap left too little room for both the thinking budget
-# and the structured output it must still emit. Sized for adaptive thinking +
-# structured output on the batch lane; tokens-vs-cap telemetry decides future
-# tuning (owner-adjudicated, 2026-07 Phase 3 code review). The generation
-# path stays thinking-disabled and keeps its own (lower) cap untouched.
-THINKING_MAX_TOKENS = 16384
 
 # A batch wait fails in exactly three shapes under the timer-loop transport
 # (T4.1, D88), and all must leave a terminal run row and no orphaned worktree
@@ -89,36 +88,6 @@ BATCH_WAIT_FAILURES: tuple[type[BaseException], ...] = (ApplicationError,)
 
 
 # ---------------------------------------------------------------------------
-# Timeout and retry presets (shared with workflows.py)
-# ---------------------------------------------------------------------------
-
-_GIT_TIMEOUT = timedelta(seconds=30)
-_LLM_TIMEOUT = timedelta(minutes=5)
-_SUBMIT_TIMEOUT = timedelta(seconds=60)
-_PARSE_TIMEOUT = timedelta(seconds=30)
-# One source of truth for the 25h ceiling: sax_platform.temporal.polling owns it
-# (T4.2 ST1); forge.models re-exports it for step_logic.child_timeout /
-# derive_execution_timeout.
-_BATCH_WAIT_TIMEOUT = BATCH_WAIT_CEILING
-_BATCH_STATUS_TIMEOUT = timedelta(seconds=60)
-_BATCH_FETCH_TIMEOUT = timedelta(minutes=5)
-_CONFLICT_RESOLUTION_TIMEOUT = timedelta(minutes=5)
-
-# Timer-loop poll cadence (T4.1, D88). Default 600s; floored at 300s in the loop
-# as defense in depth (the ``batch_poll_interval_seconds`` input fields also
-# validate ge=300). A batch is never done instantly, so the loop sleeps before
-# its first status poll.
-_BATCH_POLL_INTERVAL = timedelta(seconds=600)
-_BATCH_POLL_FLOOR = timedelta(seconds=300)
-
-_LLM_HEARTBEAT = timedelta(seconds=60)
-
-# LLM_RETRY and IO_RETRY are the shared presets from sax_platform.temporal.retries
-# (T3.4, ST7) — forge's former per-module _LLM_RETRY/_LOCAL_RETRY copies are
-# retired in favor of the single platform source.
-
-
-# ---------------------------------------------------------------------------
 # Batch dispatch
 # ---------------------------------------------------------------------------
 
@@ -128,11 +97,11 @@ async def batch_submit_and_wait(
     output_type_name: str | None,
     *,
     thinking: ThinkingPolicy | None = None,
-    max_tokens: int = 4096,
-    poll_interval: timedelta = _BATCH_POLL_INTERVAL,
-    submit_timeout: timedelta = _SUBMIT_TIMEOUT,
-    wait_timeout: timedelta = _BATCH_WAIT_TIMEOUT,
-    parse_timeout: timedelta = _PARSE_TIMEOUT,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    poll_interval: timedelta = BATCH_POLL_INTERVAL,
+    submit_timeout: timedelta = SUBMIT_TIMEOUT,
+    wait_timeout: timedelta = BATCH_WAIT_TIMEOUT,
+    parse_timeout: timedelta = PARSE_TIMEOUT,
 ) -> ParsedLLMResponse:
     """Submit a batch request, poll it to completion on a timer, fetch and parse.
 
@@ -146,7 +115,7 @@ async def batch_submit_and_wait(
     """
     # Defense in depth: floor the poll interval (the input models also validate
     # ge=300). Never poll a provider batch API faster than every five minutes.
-    poll_interval = max(poll_interval, _BATCH_POLL_FLOOR)
+    poll_interval = max(poll_interval, BATCH_POLL_FLOOR)
     request_id = str(workflow.uuid4())
     submit_result: BatchSubmitResult = await workflow.execute_activity(
         "submit_batch_request",
@@ -187,7 +156,7 @@ async def batch_submit_and_wait(
         status: BatchStatusResult = await workflow.execute_activity(
             "batch_status",
             BatchStatusInput(batch_id=submit_result.batch_id, provider=submit_result.provider),
-            start_to_close_timeout=_BATCH_STATUS_TIMEOUT,
+            start_to_close_timeout=BATCH_STATUS_TIMEOUT,
             retry_policy=IO_RETRY,
             result_type=BatchStatusResult,
         )
@@ -230,7 +199,7 @@ async def batch_submit_and_wait(
             request_id=request_id,
             provider=submit_result.provider,
         ),
-        start_to_close_timeout=_BATCH_FETCH_TIMEOUT,
+        start_to_close_timeout=BATCH_FETCH_TIMEOUT,
         retry_policy=IO_RETRY,
         result_type=BatchFetchResult,
     )
@@ -287,30 +256,40 @@ async def remove_worktree(repo_root: str, task_id: str) -> None:
             task_id=task_id,
             force=True,
         ),
-        start_to_close_timeout=_GIT_TIMEOUT,
+        start_to_close_timeout=GIT_TIMEOUT,
         retry_policy=IO_RETRY,
         result_type=type(None),
     )
 
 
-async def cleanup_worktree_after_failure(repo_root: str, task_id: str, exc: BaseException) -> None:
-    """Clean up a worktree after a batch wait fails; never raises.
+async def cleanup_worktree_after_exception(
+    repo_root: str, task_id: str, exc: BaseException
+) -> None:
+    """Remove a worktree and its branch after a failure; never masks *exc*.
 
-    The shared failure-symmetry handler for ``ForgeTaskWorkflow`` and
-    ``ForgeSubTaskWorkflow`` (T1.6b): a batch wait that gives up at the 25h ceiling
-    or hits a provider-terminal status / error-bearing fetch (T4.1) must leave no
-    orphaned worktree, yet it must not let a cleanup blip mask the terminal run
-    record the caller still has to write.
-    Worktree removal is therefore best-effort — only ``ActivityError`` is swallowed
-    (``CancelledError`` must still propagate), so the caller can persist its
-    FAILURE_TERMINAL row unconditionally.
+    The one cleanup helper for every owner of a worktree (T5.3 ST8 folded the
+    two same-bodied copies together). Two kinds of caller use it:
+
+    - the blocks that create a worktree (``blocks/step.py``'s fresh modes,
+      ``blocks/gather.py``'s owned mode) and ``_run_planned``, which own the
+      worktree an exception escaped from and re-raise afterwards;
+    - both workflow ``run()`` batch-wait handlers (T1.6b), where a wait that
+      gave up at the 25h ceiling or hit a provider-terminal status / error-bearing
+      fetch (T4.1) must leave no orphaned worktree, yet must still let the caller
+      record its terminal run row.
+
+    Removal is forced, so the activity deletes the ``forge/<task_id>`` branch too
+    — the leak that used to make the next run of the same task id fail on
+    ``worktree add``. It is also best-effort: only ``ActivityError`` is swallowed
+    (``CancelledError`` must still propagate), so a cleanup blip can neither
+    replace the real failure nor block the FAILURE_TERMINAL persist.
     """
-    workflow.logger.warning("Batch wait failed; cleaning worktree task_id=%s: %r", task_id, exc)
+    workflow.logger.warning("Cleaning worktree after failure: task_id=%s: %r", task_id, exc)
     try:
         await remove_worktree(repo_root, task_id)
     except ActivityError as cleanup_exc:
         workflow.logger.warning(
-            "Worktree cleanup after batch failure did not complete: task_id=%s: %r",
+            "Worktree cleanup did not complete: task_id=%s: %r",
             task_id,
             cleanup_exc,
         )

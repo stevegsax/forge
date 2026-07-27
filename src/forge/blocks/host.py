@@ -33,7 +33,8 @@ with workflow.unsafe.imports_passed_through():
         build_interaction_idempotency_key,
         build_persist_interaction,
     )
-    from forge.workflow_blocks import _BATCH_POLL_INTERVAL, persist_block
+    from forge.presets import BATCH_POLL_INTERVAL
+    from forge.workflow_blocks import persist_block
 
 if TYPE_CHECKING:
     from forge.models import AssembledContext, LLMCallResult
@@ -54,7 +55,7 @@ class DispatchHostBase:
         self._log_messages: bool = False
         # Timer-loop batch poll cadence (D88); overridden from the workflow input
         # in run(). Held in workflow state so it replays identically.
-        self._poll_interval: timedelta = _BATCH_POLL_INTERVAL
+        self._poll_interval: timedelta = BATCH_POLL_INTERVAL
         # Per-role occurrence counters for deterministic, replay-stable
         # interaction idempotency keys (Phase C survivable writes). Held in
         # workflow state so they replay identically; per-role so a repeated

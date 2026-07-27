@@ -71,7 +71,7 @@ from forge.models import (
     WriteResult,
 )
 from forge.persist_models import PersistInteraction, PersistRequest, PersistResult, PersistRun
-from forge.workflow_blocks import THINKING_MAX_TOKENS
+from forge.presets import THINKING_MAX_TOKENS
 from forge.workflows import (
     ForgeSubTaskWorkflow,
     ForgeTaskWorkflow,
@@ -114,7 +114,7 @@ _LLM_RESPONSE = LLMResponse(
 _parse_handler: Callable[[ParseResponseInput], ParsedLLMResponse] | None = None
 # Captured submit_batch_request inputs, keyed by output_type_name — opt-in
 # regression coverage for the shared thinking fallback and the
-# thinking-enabled max_tokens bump (workflow_blocks.THINKING_MAX_TOKENS).
+# thinking-enabled max_tokens bump (presets.THINKING_MAX_TOKENS).
 # Additive only: tests that don't read this incur no behavior change.
 _CAPTURED_SUBMIT_INPUTS: dict[str, BatchSubmitInput] = {}
 
@@ -5888,3 +5888,292 @@ class TestGatherDuplicateSubTaskIds:
         # No child ran: nothing was assembled, nothing was merged.
         assert not [c for c in calls if c.startswith("assemble_sub_task_context:")]
         assert "detect_file_conflicts" not in calls
+
+
+# ===========================================================================
+# T5.3 ST9: interaction-record uniformity across all five dispatch arms
+# ===========================================================================
+
+
+def _five_arm_activities(
+    calls: list[str],
+    persisted: list[PersistRequest],
+) -> list[Callable[..., object]]:
+    """Sync-lane mocks for a planned run that touches every dispatch arm.
+
+    The plan is a regular step followed by a fan-out step whose two children
+    write the *same* file: the regular step triggers the between-steps sanity
+    check (the driver skips it after a fan-out step and after the last one) and
+    the shared file forces conflict resolution. One exploration round runs
+    during planning.
+    """
+    plan = Plan(
+        task_id="five-arm-task",
+        steps=[
+            PlanStep(step_id="step-1", description="Warm up.", target_files=["first.py"]),
+            PlanStep(
+                step_id="fan-step",
+                description="Two children, one shared file.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(sub_task_id="st1", description="a", target_files=["shared.py"]),
+                    SubTask(sub_task_id="st2", description="b", target_files=["shared.py"]),
+                ],
+            ),
+        ],
+        explanation="A regular step (so the sanity check fires between steps), then a fan-out.",
+    )
+
+    @activity.defn(name="persist_to_store")
+    async def persist_to_store(req: PersistRequest) -> PersistResult:
+        persisted.append(req)
+        return PersistResult(kind=req.kind, applied=True)
+
+    @activity.defn(name="create_worktree_activity")
+    async def create_worktree(input: CreateWorktreeInput) -> CreateWorktreeOutput:
+        return CreateWorktreeOutput(
+            worktree_path=f"/tmp/repo/.forge-worktrees/{input.task_id}",
+            branch_name=f"forge/{input.task_id}",
+        )
+
+    @activity.defn(name="remove_worktree_activity")
+    async def remove_worktree(input: RemoveWorktreeInput) -> None:
+        return None
+
+    @activity.defn(name="reset_worktree_activity")
+    async def reset_worktree(input: ResetWorktreeInput) -> None:
+        return None
+
+    @activity.defn(name="commit_changes_activity")
+    async def commit_changes(input: CommitChangesInput) -> CommitChangesOutput:
+        return CommitChangesOutput(commit_sha="h" * 40)
+
+    @activity.defn(name="assemble_planner_context")
+    async def assemble_planner_context(input: AssembleContextInput) -> PlannerInput:
+        return PlannerInput(
+            task_id=input.task_id, system_prompt="planner system", user_prompt="planner user"
+        )
+
+    @activity.defn(name="call_planner")
+    async def call_planner(input: PlannerInput) -> PlanCallResult:
+        calls.append("call_planner")
+        return PlanCallResult(
+            task_id=input.task_id,
+            plan=plan,
+            model_name="mock-planner",
+            input_tokens=300,
+            output_tokens=150,
+            latency_ms=500.0,
+        )
+
+    @activity.defn(name="call_exploration_llm")
+    async def call_exploration_llm(input: ExplorationInput) -> ExplorationCallResult:
+        calls.append("call_exploration_llm")
+        # Empty requests end the loop after one round.
+        return ExplorationCallResult(
+            task_id=input.task_id,
+            response=ExplorationResponse(requests=[]),
+            system_prompt="exploration system",
+            user_prompt="exploration user",
+            model_name="mock-explorer",
+            input_tokens=41,
+            output_tokens=17,
+            latency_ms=90.0,
+        )
+
+    @activity.defn(name="assemble_sub_task_context")
+    async def assemble_sub_task_context(input: AssembleSubTaskContextInput) -> AssembledContext:
+        return AssembledContext(
+            task_id=input.parent_task_id,
+            system_prompt=f"sub system for {input.sub_task.sub_task_id}",
+            user_prompt=f"execute {input.sub_task.sub_task_id}",
+        )
+
+    @activity.defn(name="assemble_step_context")
+    async def assemble_step_context(input: AssembleStepContextInput) -> AssembledContext:
+        return AssembledContext(
+            task_id=input.task_id,
+            system_prompt=f"step system for {input.step.step_id}",
+            user_prompt=f"execute {input.step.step_id}",
+        )
+
+    @activity.defn(name="call_llm")
+    async def call_llm(context: AssembledContext) -> LLMCallResult:
+        who = context.system_prompt.rsplit(" ", 1)[-1]
+        calls.append(f"call_llm:{who}")
+        file_path = "shared.py" if who in ("st1", "st2") else f"{who}.py"
+        return LLMCallResult(
+            task_id=context.task_id,
+            response=LLMResponse(
+                files=[FileOutput(file_path=file_path, content=f"# from {who}\n")],
+                explanation=f"{who} output",
+            ),
+            model_name="mock-model",
+            input_tokens=50,
+            output_tokens=25,
+            latency_ms=100.0,
+        )
+
+    @activity.defn(name="write_output")
+    async def write_output(input: WriteOutputInput) -> WriteResult:
+        files = input.llm_result.response.files
+        return WriteResult(
+            task_id=input.llm_result.task_id,
+            files_written=[f.file_path for f in files],
+            output_files={f.file_path: f.content for f in files},
+        )
+
+    @activity.defn(name="write_files")
+    async def write_files(input: WriteFilesInput) -> WriteResult:
+        return WriteResult(task_id=input.task_id, files_written=sorted(input.files))
+
+    @activity.defn(name="validate_output")
+    async def validate_output(input: ValidateOutputInput) -> list[ValidationResult]:
+        return [_PASS_VALIDATION]
+
+    @activity.defn(name="detect_file_conflicts_activity")
+    async def detect_file_conflicts(
+        input: DetectFileConflictsInput,
+    ) -> DetectFileConflictsOutput:
+        non_conflicting, found = classify_file_conflicts(input.sub_task_results)
+        return DetectFileConflictsOutput(non_conflicting_files=non_conflicting, conflicts=found)
+
+    @activity.defn(name="assemble_conflict_resolution_context")
+    async def assemble_cr_context(
+        input: ConflictResolutionInput,
+    ) -> ConflictResolutionCallInput:
+        return ConflictResolutionCallInput(
+            task_id=input.task_id,
+            step_id=input.step_id,
+            system_prompt="conflict system",
+            user_prompt="conflict user",
+            model_name=input.model_name,
+            thinking=input.thinking,
+        )
+
+    @activity.defn(name="call_conflict_resolution")
+    async def call_conflict_resolution(
+        input: ConflictResolutionCallInput,
+    ) -> ConflictResolutionCallResult:
+        calls.append("call_conflict_resolution")
+        return ConflictResolutionCallResult(
+            task_id=input.task_id,
+            resolved_files={"shared.py": "# merged\n"},
+            explanation="Combined both.",
+            model_name="mock-reasoning",
+            input_tokens=200,
+            output_tokens=100,
+            latency_ms=300.0,
+        )
+
+    @activity.defn(name="assemble_sanity_check_context")
+    async def assemble_sanity_check_context(
+        input: AssembleSanityCheckContextInput,
+    ) -> SanityCheckInput:
+        return SanityCheckInput(
+            task_id=input.task_id, system_prompt="sanity system", user_prompt="sanity user"
+        )
+
+    @activity.defn(name="call_sanity_check")
+    async def call_sanity_check(input: SanityCheckInput) -> SanityCheckCallResult:
+        calls.append("call_sanity_check")
+        return SanityCheckCallResult(
+            task_id=input.task_id,
+            response=SanityCheckResponse(
+                verdict=SanityCheckVerdict.CONTINUE, explanation="On track."
+            ),
+            model_name="mock-reasoning",
+            input_tokens=180,
+            output_tokens=60,
+            latency_ms=250.0,
+        )
+
+    return [
+        persist_to_store,
+        create_worktree,
+        remove_worktree,
+        reset_worktree,
+        commit_changes,
+        assemble_planner_context,
+        call_planner,
+        call_exploration_llm,
+        assemble_sub_task_context,
+        assemble_step_context,
+        call_llm,
+        write_output,
+        write_files,
+        validate_output,
+        detect_file_conflicts,
+        assemble_cr_context,
+        call_conflict_resolution,
+        assemble_sanity_check_context,
+        call_sanity_check,
+    ]
+
+
+class TestInteractionRecordsForEveryArm:
+    """Every dispatch arm writes an interaction record with its token counts.
+
+    The T5.3 acceptance criterion. Exploration was the arm that historically
+    wrote nothing at all; the other four each had their own copy of the persist,
+    which is what made "all of them, uniformly" impossible to state until the
+    dispatch block owned the shape once.
+    """
+
+    @pytest.mark.asyncio
+    async def test_all_five_arms_persist_with_tokens(self, env: WorkflowEnvironment) -> None:
+        calls: list[str] = []
+        persisted: list[PersistRequest] = []
+        async with Worker(
+            env.client,
+            task_queue=FORGE_TASK_QUEUE,
+            workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
+            activities=_five_arm_activities(calls, persisted),
+        ):
+            result = await env.client.execute_workflow(
+                ForgeTaskWorkflow.run,
+                ForgeTaskInput(
+                    task=TaskDefinition(task_id="five-arm-task", description="d"),
+                    repo_root="/tmp/repo",
+                    plan=True,
+                    max_exploration_rounds=1,
+                    sanity_check_interval=1,
+                    max_sub_task_attempts=1,
+                    resolve_conflicts=True,
+                    sync_mode=True,
+                ),
+                id="test-five-arm-interactions",
+                task_queue=FORGE_TASK_QUEUE,
+            )
+
+        assert result.status == TransitionSignal.SUCCESS
+        # Every arm actually ran (a missing arm would make the role check vacuous).
+        assert "call_exploration_llm" in calls
+        assert "call_planner" in calls
+        assert "call_conflict_resolution" in calls
+        assert "call_sanity_check" in calls
+        assert [c for c in calls if c.startswith("call_llm:")]
+
+        rows = _interactions(persisted)
+        assert {row.role for row in rows} == {
+            "exploration",
+            "planner",
+            "llm",
+            "conflict_resolution",
+            "sanity_check",
+        }
+        for row in rows:
+            # Spend is what T7.4's budget enforcement will read; a row with zeroed
+            # tokens is indistinguishable from a call that never happened.
+            assert row.input_tokens > 0, row.role
+            assert row.output_tokens > 0, row.role
+            assert row.latency_ms > 0, row.role
+            assert row.model_name, row.role
+            # ...and the prompts that produced it, for every arm.
+            assert row.system_prompt, row.role
+            assert row.user_prompt, row.role
+        # Keys are unique per (role, occurrence) — three generation calls here
+        # (two children plus the second step) must not collide.
+        keys = [row.idempotency_key for row in rows]
+        assert len(set(keys)) == len(keys)
+        assert sum(1 for row in rows if row.role == "llm") == 3

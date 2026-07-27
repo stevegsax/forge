@@ -34,13 +34,10 @@ D95); the block only sequences activities around it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from sax_platform.temporal.retries import IO_RETRY
@@ -64,8 +61,17 @@ with workflow.unsafe.imports_passed_through():
         WriteOutputInput,
         WriteResult,
     )
+    from forge.presets import (
+        CONTEXT_TIMEOUT,
+        GIT_RETRY,
+        GIT_TIMEOUT,
+        VALIDATE_HEARTBEAT,
+        VALIDATE_TIMEOUT,
+        WRITE_RETRY,
+        WRITE_TIMEOUT,
+    )
     from forge.step_logic import determine_transition
-    from forge.workflow_blocks import BATCH_WAIT_FAILURES
+    from forge.workflow_blocks import BATCH_WAIT_FAILURES, cleanup_worktree_after_exception
     from forge.workflow_blocks import remove_worktree as _remove_worktree
 
 if TYPE_CHECKING:
@@ -79,34 +85,9 @@ __all__ = [
     "StepHost",
     "StepMode",
     "StepSpec",
-    "cleanup_worktree_after_exception",
     "run_step_attempts",
     "stamp_context",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Activity timeout and retry presets
-#
-# Duplicated from workflows.py on purpose while the gather paths still live
-# there (T5.3 moves them into blocks/gather.py; T5.4 splits the monolith).
-# Both copies must stay identical until one of those tasks retires the other.
-# ---------------------------------------------------------------------------
-
-_GIT_TIMEOUT = timedelta(seconds=30)
-_CONTEXT_TIMEOUT = timedelta(seconds=30)
-_WRITE_TIMEOUT = timedelta(seconds=30)
-_VALIDATE_TIMEOUT = timedelta(minutes=2)
-_VALIDATE_HEARTBEAT = timedelta(seconds=60)
-
-_GIT_RETRY = RetryPolicy(
-    maximum_attempts=2,
-    non_retryable_error_types=["CommitError", "RepoDiscoveryError"],
-)
-_WRITE_RETRY = RetryPolicy(
-    maximum_attempts=2,
-    non_retryable_error_types=["OutputWriteError", "EditApplicationError"],
-)
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +348,8 @@ async def _acquire_worktree(spec: StepSpec, policy: ModePolicy) -> CreateWorktre
             task_id=spec.task_id,
             base_branch=spec.base_branch,
         ),
-        start_to_close_timeout=_GIT_TIMEOUT,
-        retry_policy=_GIT_RETRY,
+        start_to_close_timeout=GIT_TIMEOUT,
+        retry_policy=GIT_RETRY,
         result_type=CreateWorktreeOutput,
     )
     return wt_output
@@ -393,7 +374,7 @@ async def _assemble(
     context: AssembledContext = await workflow.execute_activity(
         policy.assemble_activity,
         assemble_input,
-        start_to_close_timeout=_CONTEXT_TIMEOUT,
+        start_to_close_timeout=CONTEXT_TIMEOUT,
         retry_policy=IO_RETRY,
         result_type=AssembledContext,
     )
@@ -422,8 +403,8 @@ async def _write_output(llm_result: LLMCallResult, worktree_path: str) -> WriteR
     write_result: WriteResult = await workflow.execute_activity(
         "write_output",
         WriteOutputInput(llm_result=llm_result, worktree_path=worktree_path),
-        start_to_close_timeout=_WRITE_TIMEOUT,
-        retry_policy=_WRITE_RETRY,
+        start_to_close_timeout=WRITE_TIMEOUT,
+        retry_policy=WRITE_RETRY,
         result_type=WriteResult,
     )
     return write_result
@@ -441,8 +422,8 @@ async def _validate_output(
             files=write_result.files_written,
             validation=spec.validation,
         ),
-        start_to_close_timeout=_VALIDATE_TIMEOUT,
-        heartbeat_timeout=_VALIDATE_HEARTBEAT,
+        start_to_close_timeout=VALIDATE_TIMEOUT,
+        heartbeat_timeout=VALIDATE_HEARTBEAT,
         retry_policy=IO_RETRY,
         result_type=list[ValidationResult],
     )
@@ -488,8 +469,8 @@ async def _commit(spec: StepSpec, *, status: str) -> str:
             status=status,
             message=spec.commit_message,
         ),
-        start_to_close_timeout=_GIT_TIMEOUT,
-        retry_policy=_GIT_RETRY,
+        start_to_close_timeout=GIT_TIMEOUT,
+        retry_policy=GIT_RETRY,
         result_type=CommitChangesOutput,
     )
     return commit_output.commit_sha
@@ -500,33 +481,7 @@ async def _reset_worktree(spec: StepSpec) -> None:
     await workflow.execute_activity(
         "reset_worktree_activity",
         ResetWorktreeInput(repo_root=spec.repo_root, task_id=spec.task_id),
-        start_to_close_timeout=_GIT_TIMEOUT,
-        retry_policy=_GIT_RETRY,
+        start_to_close_timeout=GIT_TIMEOUT,
+        retry_policy=GIT_RETRY,
         result_type=type(None),
     )
-
-
-# ---------------------------------------------------------------------------
-# Ownership cleanup
-# ---------------------------------------------------------------------------
-
-
-async def cleanup_worktree_after_exception(
-    repo_root: str, task_id: str, exc: BaseException
-) -> None:
-    """Remove a worktree and its branch after an exception; never masks *exc*.
-
-    Removal is forced, so the activity deletes the ``forge/<task_id>`` branch
-    too — the leak that used to make the next run of the same task id fail on
-    ``worktree add``. Only ``ActivityError`` is swallowed (``CancelledError``
-    must still propagate), so a cleanup blip cannot replace the real failure.
-    """
-    workflow.logger.warning("Step failed; cleaning worktree task_id=%s: %r", task_id, exc)
-    try:
-        await _remove_worktree(repo_root, task_id)
-    except ActivityError as cleanup_exc:
-        workflow.logger.warning(
-            "Worktree cleanup after step failure did not complete: task_id=%s: %r",
-            task_id,
-            cleanup_exc,
-        )

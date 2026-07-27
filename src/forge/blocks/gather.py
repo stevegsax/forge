@@ -61,16 +61,6 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.workflow import ParentClosePolicy
 
     from forge.blocks.dispatch import dispatch_conflict_resolution
-    from forge.blocks.step import (
-        _CONTEXT_TIMEOUT,
-        _GIT_RETRY,
-        _GIT_TIMEOUT,
-        _VALIDATE_HEARTBEAT,
-        _VALIDATE_TIMEOUT,
-        _WRITE_RETRY,
-        _WRITE_TIMEOUT,
-        cleanup_worktree_after_exception,
-    )
     from forge.models import (
         CapabilityTier,
         CommitChangesInput,
@@ -97,6 +87,15 @@ with workflow.unsafe.imports_passed_through():
         WriteResult,
         resolve_model,
     )
+    from forge.presets import (
+        CONTEXT_TIMEOUT,
+        GIT_RETRY,
+        GIT_TIMEOUT,
+        VALIDATE_HEARTBEAT,
+        VALIDATE_TIMEOUT,
+        WRITE_RETRY,
+        WRITE_TIMEOUT,
+    )
     from forge.step_logic import (
         MissingResolutions,
         child_timeout,
@@ -108,7 +107,11 @@ with workflow.unsafe.imports_passed_through():
         sub_task_workflow_id,
         subtask_failure_summary,
     )
-    from forge.workflow_blocks import BATCH_WAIT_FAILURES, remove_worktree
+    from forge.workflow_blocks import (
+        BATCH_WAIT_FAILURES,
+        cleanup_worktree_after_exception,
+        remove_worktree,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -137,8 +140,7 @@ __all__ = [
 # tests/test_gather_block.py pins the name against the class.
 SUB_TASK_WORKFLOW = "ForgeSubTaskWorkflow"
 
-# Activity timeout/retry presets are imported from blocks/step.py rather than
-# copied a fourth time; ST8 gives them one home.
+# Activity timeout/retry presets come from the one home, forge.presets (ST8).
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +494,7 @@ async def _merge_children(
             sub_task_results=sub_task_results,
             worktree_path=wt_output.worktree_path,
         ),
-        start_to_close_timeout=_GIT_TIMEOUT,
+        start_to_close_timeout=GIT_TIMEOUT,
         retry_policy=IO_RETRY,
         result_type=DetectFileConflictsOutput,
     )
@@ -549,7 +551,7 @@ async def _assemble_conflict_resolution(
             model_name=resolve_model(CapabilityTier.REASONING, spec.model_routing),
             thinking=spec.thinking,
         ),
-        start_to_close_timeout=_CONTEXT_TIMEOUT,
+        start_to_close_timeout=CONTEXT_TIMEOUT,
         retry_policy=IO_RETRY,
         result_type=ConflictResolutionCallInput,
     )
@@ -576,8 +578,8 @@ async def _write_and_validate(
             worktree_path=wt_output.worktree_path,
             files=merged_files,
         ),
-        start_to_close_timeout=_WRITE_TIMEOUT,
-        retry_policy=_WRITE_RETRY,
+        start_to_close_timeout=WRITE_TIMEOUT,
+        retry_policy=WRITE_RETRY,
         result_type=WriteResult,
     )
     results: list[ValidationResult] = await workflow.execute_activity(
@@ -588,8 +590,8 @@ async def _write_and_validate(
             files=write_result.files_written,
             validation=spec.validation,
         ),
-        start_to_close_timeout=_VALIDATE_TIMEOUT,
-        heartbeat_timeout=_VALIDATE_HEARTBEAT,
+        start_to_close_timeout=VALIDATE_TIMEOUT,
+        heartbeat_timeout=VALIDATE_HEARTBEAT,
         retry_policy=IO_RETRY,
         result_type=list[ValidationResult],
     )
@@ -605,8 +607,8 @@ async def _create_worktree(spec: GatherSpec) -> CreateWorktreeOutput:
             task_id=spec.task_id,
             base_branch=spec.base_branch,
         ),
-        start_to_close_timeout=_GIT_TIMEOUT,
-        retry_policy=_GIT_RETRY,
+        start_to_close_timeout=GIT_TIMEOUT,
+        retry_policy=GIT_RETRY,
         result_type=CreateWorktreeOutput,
     )
     return wt_output
@@ -622,8 +624,8 @@ async def _commit(spec: GatherSpec) -> str:
             status="success",
             message=gather_commit_message(spec),
         ),
-        start_to_close_timeout=_GIT_TIMEOUT,
-        retry_policy=_GIT_RETRY,
+        start_to_close_timeout=GIT_TIMEOUT,
+        retry_policy=GIT_RETRY,
         result_type=CommitChangesOutput,
     )
     return commit_output.commit_sha

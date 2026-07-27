@@ -12,10 +12,7 @@ Temporal workflows must be deterministic — all I/O happens in activities.
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 from temporalio import workflow
-from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from sax_platform.temporal.retries import IO_RETRY
@@ -67,25 +64,6 @@ with workflow.unsafe.imports_passed_through():
     )
 
 # ---------------------------------------------------------------------------
-# Activity timeout and retry presets
-#
-# What is left here belongs to the plan driver: the LLM-call timeouts moved
-# into blocks/dispatch.py with their arms, and the write/validate ones into
-# blocks/gather.py with the gather (T5.3). IO_RETRY is the shared preset from
-# sax_platform.temporal.retries (T3.4). ST8 gives the remainder one home.
-# ---------------------------------------------------------------------------
-
-_GIT_TIMEOUT = timedelta(seconds=30)
-_CONTEXT_TIMEOUT = timedelta(seconds=30)
-_EXPLORATION_FULFILL_TIMEOUT = timedelta(minutes=2)
-
-_GIT_RETRY = RetryPolicy(
-    maximum_attempts=2,
-    non_retryable_error_types=["CommitError", "RepoDiscoveryError"],
-)
-
-
-# ---------------------------------------------------------------------------
 # Shared blocks — the step pipeline, the gather, the LLM dispatch arms
 # ---------------------------------------------------------------------------
 
@@ -97,16 +75,15 @@ with workflow.unsafe.imports_passed_through():
     )
     from forge.blocks.gather import GatherFailure, GatherSpec, run_fan_out_gather
     from forge.blocks.host import DispatchHostBase
-    from forge.blocks.step import (
-        StepSpec,
-        cleanup_worktree_after_exception,
-        run_step_attempts,
-    )
+    from forge.blocks.step import StepSpec, run_step_attempts
     from forge.persist_models import PersistRun
-    from forge.workflow_blocks import BATCH_WAIT_FAILURES
-    from forge.workflow_blocks import (
-        cleanup_worktree_after_failure as _cleanup_worktree_after_failure,
+    from forge.presets import (
+        CONTEXT_TIMEOUT,
+        EXPLORATION_FULFILL_TIMEOUT,
+        GIT_RETRY,
+        GIT_TIMEOUT,
     )
+    from forge.workflow_blocks import BATCH_WAIT_FAILURES, cleanup_worktree_after_exception
     from forge.workflow_blocks import (
         persist_block as _persist_block,
     )
@@ -168,7 +145,7 @@ class ForgeTaskWorkflow(DispatchHostBase):
             # terminal status, or the fetch carried an error (T4.1). Clean the
             # worktree and record a terminal failure so the run never crashes out
             # leaving no row and an orphaned worktree (T1.6b).
-            await _cleanup_worktree_after_failure(input.repo_root, input.task.task_id, exc)
+            await cleanup_worktree_after_exception(input.repo_root, input.task.task_id, exc)
             result = task_batch_wait_failure(task_id=input.task.task_id, exc=exc)
         # Aggregate run-level LLM spend across the finished result tree (D97) once,
         # covering success, terminal-failure, and batch-wait paths alike.
@@ -244,7 +221,7 @@ class ForgeTaskWorkflow(DispatchHostBase):
                     repo_root=repo_root,
                     worktree_path=worktree_path,
                 ),
-                start_to_close_timeout=_EXPLORATION_FULFILL_TIMEOUT,
+                start_to_close_timeout=EXPLORATION_FULFILL_TIMEOUT,
                 retry_policy=IO_RETRY,
                 result_type=list[ContextResult],
             )
@@ -376,7 +353,7 @@ class ForgeTaskWorkflow(DispatchHostBase):
                 repo_root=input.repo_root,
                 worktree_path=wt_output.worktree_path,
             ),
-            start_to_close_timeout=_CONTEXT_TIMEOUT,
+            start_to_close_timeout=CONTEXT_TIMEOUT,
             retry_policy=IO_RETRY,
             result_type=PlannerInput,
         )
@@ -432,8 +409,8 @@ class ForgeTaskWorkflow(DispatchHostBase):
                 task_id=task.task_id,
                 base_branch=task.base_branch,
             ),
-            start_to_close_timeout=_GIT_TIMEOUT,
-            retry_policy=_GIT_RETRY,
+            start_to_close_timeout=GIT_TIMEOUT,
+            retry_policy=GIT_RETRY,
             result_type=CreateWorktreeOutput,
         )
 
@@ -680,7 +657,7 @@ class ForgeTaskWorkflow(DispatchHostBase):
                 repo_root=input.repo_root,
                 worktree_path=wt_output.worktree_path,
             ),
-            start_to_close_timeout=_CONTEXT_TIMEOUT,
+            start_to_close_timeout=CONTEXT_TIMEOUT,
             retry_policy=IO_RETRY,
             result_type=SanityCheckInput,
         )
@@ -816,7 +793,7 @@ class ForgeSubTaskWorkflow(DispatchHostBase):
             # crashing out. Sub-tasks write no run row of their own — returning a
             # normal failure lets the parent's failure handling record the run row.
             compound_id = compound_sub_task_id(input.parent_task_id, input.sub_task.sub_task_id)
-            await _cleanup_worktree_after_failure(input.repo_root, compound_id, exc)
+            await cleanup_worktree_after_exception(input.repo_root, compound_id, exc)
             return sub_task_batch_wait_failure(sub_task_id=input.sub_task.sub_task_id, exc=exc)
 
     async def _run_single_step(self, input: SubTaskInput) -> SubTaskResult:

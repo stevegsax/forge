@@ -36,7 +36,7 @@ from forge.models import (
     build_llm_stats,
 )
 from forge.output_types import OUTPUT_TYPES
-from forge.workflow_blocks import THINKING_MAX_TOKENS
+from forge.presets import THINKING_MAX_TOKENS
 
 # One distinctive parsed response reused by every builder: every field is
 # non-default, so a builder that drops one is caught.

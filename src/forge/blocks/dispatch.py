@@ -29,7 +29,6 @@ persist, which appears in no committed history (every scenario runs
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
@@ -59,16 +58,21 @@ with workflow.unsafe.imports_passed_through():
         ThinkingPolicy,
     )
     from forge.persist_models import PersistableLLMResult
-    from forge.workflow_blocks import (
-        _CONFLICT_RESOLUTION_TIMEOUT,
-        _LLM_HEARTBEAT,
-        _LLM_TIMEOUT,
+    from forge.presets import (
+        CONFLICT_RESOLUTION_TIMEOUT,
+        CONTEXT_TIMEOUT,
+        DEFAULT_MAX_TOKENS,
+        EXPLORATION_LLM_TIMEOUT,
+        LLM_HEARTBEAT,
+        LLM_TIMEOUT,
+        SANITY_CHECK_TIMEOUT,
         THINKING_MAX_TOKENS,
-        batch_submit_and_wait,
     )
+    from forge.workflow_blocks import batch_submit_and_wait
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from datetime import timedelta
 
     from pydantic import BaseModel
 
@@ -90,26 +94,6 @@ __all__ = [
     "plan_result",
     "sanity_result",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Arm-specific activity timeouts
-#
-# The shared presets (_LLM_TIMEOUT, _LLM_HEARTBEAT, _CONFLICT_RESOLUTION_TIMEOUT)
-# are imported from workflow_blocks.py rather than copied; these two moved here
-# from workflows.py with the arms that use them. T5.3's ST8 unifies the remaining
-# preset copies into one home.
-# ---------------------------------------------------------------------------
-
-_SANITY_CHECK_TIMEOUT = timedelta(minutes=5)
-_EXPLORATION_LLM_TIMEOUT = timedelta(minutes=5)
-# The exploration batch lane's own assemble activity (same 30s as every other
-# context assemble).
-_CONTEXT_TIMEOUT = timedelta(seconds=30)
-
-# The batch cap for a thinking-disabled arm; matches batch_submit_and_wait's own
-# default, which the pre-T5.3 generation and exploration paths relied on.
-_DEFAULT_MAX_TOKENS = 4096
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +122,7 @@ class DispatchArm:
     sync_activity: str
     sync_timeout: timedelta
     output_type_name: str
-    max_tokens: int = _DEFAULT_MAX_TOKENS
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
 
 ARMS: Mapping[ArmName, DispatchArm] = MappingProxyType(
@@ -146,34 +130,34 @@ ARMS: Mapping[ArmName, DispatchArm] = MappingProxyType(
         "generation": DispatchArm(
             role="llm",
             sync_activity="call_llm",
-            sync_timeout=_LLM_TIMEOUT,
+            sync_timeout=LLM_TIMEOUT,
             output_type_name="LLMResponse",
         ),
         "planner": DispatchArm(
             role="planner",
             sync_activity="call_planner",
-            sync_timeout=_LLM_TIMEOUT,
+            sync_timeout=LLM_TIMEOUT,
             output_type_name="Plan",
             max_tokens=THINKING_MAX_TOKENS,
         ),
         "sanity_check": DispatchArm(
             role="sanity_check",
             sync_activity="call_sanity_check",
-            sync_timeout=_SANITY_CHECK_TIMEOUT,
+            sync_timeout=SANITY_CHECK_TIMEOUT,
             output_type_name="SanityCheckResponse",
             max_tokens=THINKING_MAX_TOKENS,
         ),
         "conflict_resolution": DispatchArm(
             role="conflict_resolution",
             sync_activity="call_conflict_resolution",
-            sync_timeout=_CONFLICT_RESOLUTION_TIMEOUT,
+            sync_timeout=CONFLICT_RESOLUTION_TIMEOUT,
             output_type_name="ConflictResolutionResponse",
             max_tokens=THINKING_MAX_TOKENS,
         ),
         "exploration": DispatchArm(
             role="exploration",
             sync_activity="call_exploration_llm",
-            sync_timeout=_EXPLORATION_LLM_TIMEOUT,
+            sync_timeout=EXPLORATION_LLM_TIMEOUT,
             output_type_name="ExplorationResponse",
         ),
     }
@@ -328,7 +312,7 @@ class AssembleVia:
 
     activity: str
     input: BaseModel
-    timeout: timedelta = _CONTEXT_TIMEOUT
+    timeout: timedelta = CONTEXT_TIMEOUT
 
 
 type BatchContext = AssembledContext | AssembleVia
@@ -383,7 +367,7 @@ async def typed_dispatch[R: PersistableLLMResult](
             arm.sync_activity,
             sync_input,
             start_to_close_timeout=arm.sync_timeout,
-            heartbeat_timeout=_LLM_HEARTBEAT,
+            heartbeat_timeout=LLM_HEARTBEAT,
             retry_policy=LLM_RETRY,
             result_type=result_type,
         )
