@@ -167,11 +167,13 @@ here so they outlive the session. None are scheduled; pick up at grooming.
   instead of hanging (observed: `ocr list` hung 20+ minutes with no dev
   worker). Applies to all three CLIs — forge, ocr, **and pbook**. Direct-DB
   bypasses are rejected (Architecture Principle 8).
-- [ ] **Deploy workers from a committed ref** — launchd workers exec `uv run`
-  from the live working tree; mid-build KeepAlive relaunches crash-loop on
-  mixed edits (observed 2026-07-22) and any restart deploys uncommitted
-  code. The staging lane mitigates procedurally; a release-ref deployment
-  removes the hazard.
+- [x] **Deploy workers from a committed ref** — *resolved for production by
+  D103 (2026-07-25): prod runs the pinned `~/repos-sax/forge-prod` worktree,
+  deployed only via `make prod-deploy REF=<ref>`, with a dirty/unverifiable
+  checkout refused at worker start (exit 78). The dev tmux lane remains
+  live-tree **by design** and keeps its mid-edit relaunch hazards
+  (documented in DEPLOYMENT.md / launchd README). Closed 2026-07-27 by the
+  plan-review sweep.*
 - [ ] **Consolidate the triplicated CLI env glue** — `_require_forge_env`,
   `_apply_env_profile`, `_EnvCommand`/`_EnvGroup` are near-identical across
   the three CLIs (sax_platform is deliberately click-free; a shared home
@@ -180,10 +182,16 @@ here so they outlive the session. None are scheduled; pick up at grooming.
   documents itself as expecting "a running platform worker", which in
   practice meant production; it should target `forge-dev` workers now that
   the staging lane exists.
-- [ ] **pbook direct-DB CLI commands review** — pre-existing direct-DB paths
-  in pbook's CLI are in tension with Architecture Principle 8; migrate them
-  behind workflows or bless them as recorded exceptions (owner disposition
-  pending).
+- [ ] **Direct-DB access review (repointed 2026-07-27 by the plan review)** —
+  the original premise is nearly vacuous: pbook's CLI has no direct-DB paths
+  left except the sanctioned `pbook migrate` (T3.6 removed the rest). The
+  live Principle 8 tensions are elsewhere: (a) forge's CLI opens pbook's
+  database directly (`src/forge/cli.py:1334-1346`, the ingested-session
+  read — deleted by T6.4); (b) the reworked `.claude/skills/batch-status`
+  reads `FORGE_DB_URL` with no `FORGE_ENV` guard and its SKILL.md still
+  describes the retired Supabase topology — migrate it behind a workflow,
+  bless it as a recorded read-only exception, or retire it (owner
+  disposition pending).
 - [ ] **Large-result claim-check for workflow-routed reads** (owner-parked:
   hold off until necessary): if an operation's result ever approaches
   Temporal's payload limits, return an S3 link instead — the batch

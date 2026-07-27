@@ -104,7 +104,7 @@ The simplest mode. One worktree is created per attempt. The universal workflow s
 
 A planning LLM (using a higher-capability model) decomposes the task into an ordered list of steps. One shared worktree is created at the start. Each step executes the universal workflow step and commits on success. On retryable failure, uncommitted changes are reset (prior committed steps are preserved) and the step is retried with error context.
 
-A **sanity check** can run periodically between steps: a reasoning-tier LLM reviews progress and remaining steps, and can issue `CONTINUE`, `REVISE` (rewrite remaining steps), or `ABORT`.
+A **sanity check** can run periodically between steps: a reasoning-tier LLM reviews progress and remaining steps, and can issue `CONTINUE`, `REVISE` (rewrite remaining steps), or `ABORT`. By design the driver skips the check after a fan-out step and after the final step (verified T5.3, `_drive_plan`).
 
 ### Fan-out / gather (`plan=True`, steps with `sub_tasks`)
 
@@ -328,7 +328,7 @@ Forge routes different LLM calls to different model tiers based on the capabilit
 | **Summarization** | `anthropic:claude-sonnet-5` | Knowledge extraction |
 | **Classification** | `anthropic:claude-haiku-4-5` | Exploration |
 
-The tier registry (`CapabilityTier`, `ModelConfig`, `resolve_model`) and the `ThinkingPolicy` are single-sourced in `sax_platform.llm.tiers` and re-exported by `forge.models` (D94, T3.2). Transition evaluation is **not** in this table: it is a deterministic function (`activities/transition.py`) that makes no LLM call.
+The tier registry (`CapabilityTier`, `ModelConfig`, `resolve_model`) and the `ThinkingPolicy` are single-sourced in `sax_platform.llm.tiers` and re-exported by `forge.models` (D94, T3.2). Transition evaluation is **not** in this table: it is a deterministic pure function (`step_logic.determine_transition`, inlined into the workflows since T5.1/D95 — there is no transition activity) that makes no LLM call.
 
 The plan can override the tier for individual steps via `capability_tier`, so a particularly complex step can use the reasoning tier while simpler steps use the generation tier.
 
@@ -417,12 +417,10 @@ src/forge/
 ├── message_log.py             # API message logging utilities
 │
 ├── activities/
-│   ├── _heartbeat.py          # Heartbeat management for long-running activities
 │   ├── context.py             # Prompt assembly (system + user prompts)
 │   ├── llm.py                 # LLM call execution (structured outputs via sax_platform.llm)
 │   ├── output.py              # File writing + edit application
 │   ├── validate.py            # Deterministic validation (ruff, tests)
-│   ├── transition.py          # Outcome signal evaluation (deterministic; no LLM)
 │   ├── planner.py             # Planning LLM call
 │   ├── exploration.py         # Exploration loop LLM calls
 │   ├── extraction.py          # Knowledge extraction + playbook generation

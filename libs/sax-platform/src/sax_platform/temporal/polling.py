@@ -3,8 +3,10 @@
 The waiting workflow is the recipient of its own batch result: it submits, then
 polls the provider's normalized status on a timer until the batch ends or a 25h
 ceiling passes. That loop skeleton — deadline, sleep, status-dispatch — is
-identical for every consumer (forge's Anthropic waiters, ocr's Mistral waiters),
-so it lives here once. What differs per consumer is (a) *how* the status is
+consumer-agnostic, so it lives here once. Since T4.4 retired ocr's poll loop in
+favor of the status-hint tracker (D101), forge's Anthropic waiters
+(``forge.blocks.transport``) are the sole consumer; ocr imports only
+``BATCH_WAIT_CEILING``. What differs per consumer is (a) *how* the status is
 fetched (an injected ``status_fn`` that wraps the consumer's own status
 activity) and (b) *how long* to wait between polls (an injected :class:`PollSchedule`).
 
