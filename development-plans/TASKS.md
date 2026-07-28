@@ -108,6 +108,17 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [ ] [T8.3 — pbook design-docs truth pass](tasks/T8.3-pbook-design-docs-truth-pass.md)
 - [ ] [T8.4 — Final sweep](tasks/T8.4-final-sweep.md)
 
+## Datastore consolidation (approved 2026-07-28)
+
+The fleet datastore consolidation — environment = instance, project =
+role + database — is designed in the external `~/repos-sax/sax-datastores`
+repo (its `docs/rationale.md` is the decision record). Forge's own
+cut-over is the only forge-repo task; the other products migrate from
+their own repos. **Owner-sequenced 2026-07-28 to run immediately**,
+ahead of T5.7 and of the guide's recommended product order.
+
+- [ ] [T10.1 — Migrate forge onto sax-datastores](tasks/T10.1-forge-sax-datastores-migration.md) *(added 2026-07-28 by owner decision after the sax-datastores review; supersedes forge's own backup leg per the Specification Changes policy when it lands; closes plan-review finding A7)*
+
 ## Completed
 
 ### Phase roadmap (Release 1)
