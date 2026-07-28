@@ -212,50 +212,54 @@ class TestGatherDuplicateSubTaskIds:
 
     Two children with the same id would share a compound id — one worktree, one
     child-workflow id — so the second would silently reset the first's work.
+
+    Driven through ``ForgeSubTaskWorkflow`` since T5.6: a *planner-produced*
+    duplicate no longer reaches the gather at all, because the preflight gate
+    rejects the plan and halts the run (see ``test_preflight.py``). This gather
+    guard is still the backstop for the sub-task input path, which no planner
+    output passes through — and it is the reason a duplicate can never cost a
+    silently overwritten worktree.
     """
 
     @pytest.mark.asyncio
     async def test_duplicate_ids_fail_the_step(self, env: WorkflowEnvironment) -> None:
         calls: list[str] = []
         persisted: list[PersistRequest] = []
-        dup_plan = Plan(
-            task_id="dup-task",
-            steps=[
-                PlanStep(
-                    step_id="fan-step",
-                    description="Two sub-tasks with the same id.",
-                    target_files=[],
-                    sub_tasks=[
-                        SubTask(sub_task_id="st1", description="a", target_files=["a.py"]),
-                        SubTask(sub_task_id="st1", description="b", target_files=["b.py"]),
-                    ],
-                )
-            ],
-            explanation="Duplicate ids.",
+        dup_input = SubTaskInput(
+            parent_task_id="dup-task",
+            parent_description="Build an API.",
+            sub_task=SubTask(
+                sub_task_id="st1",
+                description="Nested node with colliding children.",
+                target_files=[],
+                sub_tasks=[
+                    SubTask(sub_task_id="gc1", description="a", target_files=["a.py"]),
+                    SubTask(sub_task_id="gc1", description="b", target_files=["b.py"]),
+                ],
+            ),
+            repo_root="/tmp/repo",
+            parent_branch="forge/dup-task",
+            max_attempts=1,
+            depth=0,
+            max_depth=2,
+            sync_mode=True,
         )
         async with Worker(
             env.client,
             task_queue=FORGE_TASK_QUEUE,
             workflows=[ForgeTaskWorkflow, ForgeSubTaskWorkflow],
-            activities=gather_activities(calls, persisted, plan=dup_plan),
+            activities=gather_activities(calls, persisted),
         ):
             result = await env.client.execute_workflow(
-                ForgeTaskWorkflow.run,
-                ForgeTaskInput(
-                    task=TaskDefinition(task_id="dup-task", description="d"),
-                    repo_root="/tmp/repo",
-                    plan=True,
-                    max_exploration_rounds=0,
-                    sync_mode=True,
-                ),
+                ForgeSubTaskWorkflow.run,
+                dup_input,
                 id="test-gather-duplicate-ids",
                 task_queue=FORGE_TASK_QUEUE,
             )
 
         assert result.status == TransitionSignal.FAILURE_TERMINAL
-        step_result = result.step_results[0]
-        assert step_result.failure_kind == "duplicate_sub_task_ids"
-        assert step_result.error == "Duplicate sub-task IDs detected"
+        assert result.failure_kind == "duplicate_sub_task_ids"
+        assert result.error == "Duplicate nested sub-task IDs detected"
         # No child ran: nothing was assembled, nothing was merged.
         assert not [c for c in calls if c.startswith("assemble_sub_task_context:")]
         assert "detect_file_conflicts" not in calls

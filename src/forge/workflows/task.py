@@ -24,7 +24,7 @@ with workflow.unsafe.imports_passed_through():
     from sax_platform.contracts.persist import persist_block
     from sax_platform.temporal.retries import IO_RETRY
 
-    from forge.blocks.dispatch import dispatch_planner, dispatch_sanity_check
+    from forge.blocks.dispatch import PlanPreflightHalt, dispatch_planner, dispatch_sanity_check
     from forge.blocks.exploration import format_exploration_context, run_exploration_loop
     from forge.blocks.gather import GatherFailure, GatherSpec, run_fan_out_gather
     from forge.blocks.host import DispatchHostBase, RunSettings
@@ -40,8 +40,8 @@ with workflow.unsafe.imports_passed_through():
         CreateWorktreeInput,
         CreateWorktreeOutput,
         ForgeTaskInput,
-        LLMStats,
         Plan,
+        PlanCallResult,
         PlannerInput,
         PlanStep,
         SanityCheckCallResult,
@@ -54,6 +54,7 @@ with workflow.unsafe.imports_passed_through():
         resolve_model,
     )
     from forge.persist_models import PersistRun
+    from forge.plan_checks import RevisionRejected, splice_revision
     from forge.presets import (
         CONTEXT_TIMEOUT,
         GIT_RETRY,
@@ -63,6 +64,7 @@ with workflow.unsafe.imports_passed_through():
         fan_out_step_failure,
         fan_out_success,
         llm_totals,
+        plan_preflight_failure,
         planned_failure,
         single_step_terminal,
         slim_result,
@@ -228,8 +230,13 @@ class ForgeTaskWorkflow(DispatchHostBase):
         self,
         input: ForgeTaskInput,
         wt_output: CreateWorktreeOutput,
-    ) -> tuple[Plan, LLMStats]:
-        """Assemble planner context, run exploration, and call planner LLM."""
+    ) -> PlanCallResult | PlanPreflightHalt:
+        """Assemble planner context, run exploration, and call the planner LLM.
+
+        The planner call goes through the preflight gate (T5.6), so this returns
+        either an accepted plan or the halt the gate reached after
+        ``MAX_PLANNER_ATTEMPTS`` structurally invalid ones.
+        """
         task = input.task
         planner_model = resolve_model(CapabilityTier.REASONING, input.model_routing)
         exploration_model = resolve_model(CapabilityTier.CLASSIFICATION, input.model_routing)
@@ -279,11 +286,17 @@ class ForgeTaskWorkflow(DispatchHostBase):
         }
         planner_input = planner_input.model_copy(update=planner_update)
 
-        # --- Call planner ---
+        # --- Call planner (through the preflight gate) ---
         planner_result = await dispatch_planner(self, planner_input)
-        plan: Plan = planner_result.plan
-        workflow.logger.info("Plan created: task_id=%s steps=%d", task.task_id, len(plan.steps))
-        return plan, build_llm_stats(planner_result)
+        if isinstance(planner_result, PlanPreflightHalt):
+            workflow.logger.error(
+                "Plan preflight halted: task_id=%s %s", task.task_id, planner_result.error
+            )
+            return planner_result
+        workflow.logger.info(
+            "Plan created: task_id=%s steps=%d", task.task_id, len(planner_result.plan.steps)
+        )
+        return planner_result
 
     async def _run_planned(self, input: ForgeTaskInput) -> TaskResult:
         """Create the plan's worktree, drive the plan in it, and own its cleanup.
@@ -325,10 +338,21 @@ class ForgeTaskWorkflow(DispatchHostBase):
         """Plan the task, then run every step in the borrowed worktree."""
         task = input.task
 
-        plan, p_stats = await self._plan_task(input, wt_output)
+        planned = await self._plan_task(input, wt_output)
+        if isinstance(planned, PlanPreflightHalt):
+            return plan_preflight_failure(
+                task_id=task.task_id,
+                error=planned.error,
+                worktree_path=wt_output.worktree_path,
+                worktree_branch=wt_output.branch_name,
+                planner_stats=build_llm_stats(planned.last_result),
+            )
+        plan: Plan = planned.plan
+        p_stats = build_llm_stats(planned)
         step_results: list[StepResult] = []
         all_output_files: dict[str, str] = {}
         sanity_check_count = 0
+        revision_count = 0
 
         # --- Execute steps sequentially (while loop enables plan mutation on revise) ---
         step_index = 0
@@ -435,15 +459,38 @@ class ForgeTaskWorkflow(DispatchHostBase):
                 if sanity_result.response.verdict == SanityCheckVerdict.REVISE:
                     revised = sanity_result.response.revised_steps or []
                     old_remaining = len(plan.steps) - step_index - 1
-                    plan = Plan(
-                        task_id=plan.task_id,
-                        steps=plan.steps[: step_index + 1] + revised,
-                        explanation=plan.explanation,
+                    # The splice is checked, not attempted (T5.6): building
+                    # Plan(steps=...) over the cap raises a pydantic
+                    # ValidationError *inside workflow code*, which Temporal
+                    # retries as a workflow task forever — a hung workflow, not a
+                    # failed one. splice_revision catches that case, the
+                    # revision-count cap, and a structurally invalid revision.
+                    spliced = splice_revision(
+                        plan,
+                        completed_through=step_index,
+                        revised_steps=revised,
+                        revision_count=revision_count,
                     )
+                    if isinstance(spliced, RevisionRejected):
+                        return planned_failure(
+                            task_id=task.task_id,
+                            failure_kind="plan_revision",
+                            error=spliced.reason,
+                            output_files=all_output_files,
+                            worktree_path=wt_output.worktree_path,
+                            worktree_branch=wt_output.branch_name,
+                            step_results=step_results,
+                            plan=plan,
+                            planner_stats=p_stats,
+                            sanity_check_count=sanity_check_count,
+                        )
+                    plan = spliced.plan
+                    revision_count += 1
                     workflow.logger.info(
-                        "Plan revised: remaining steps %d → %d",
+                        "Plan revised: remaining steps %d → %d (revision %d)",
                         old_remaining,
                         len(revised),
+                        revision_count,
                     )
 
             step_index += 1

@@ -18,6 +18,11 @@ The transport itself is *not* duplicated: ``blocks.transport.batch_submit_and_wa
 imports it, the same import direction ``blocks/step.py`` chose. Splitting the
 monolith is T5.4's business.
 
+One arm carries a gate as well as a call: :func:`dispatch_planner` is where the
+deterministic plan preflight runs (T5.6). Because every planner dispatch — sync
+and batch — passes through it, the checks and their retry arm exist in exactly
+one place.
+
 Command identity is load-bearing. Each lane emits exactly the activity sequence
 it emitted before the consolidation, in the same order with the same timeouts
 and retry policies, so the committed replay histories under ``tests/replay/``
@@ -39,6 +44,7 @@ with workflow.unsafe.imports_passed_through():
 
     from forge.blocks.transport import batch_submit_and_wait
     from forge.models import (
+        MAX_PLANNER_ATTEMPTS,
         AssembledContext,
         ConflictResolutionCallInput,
         ConflictResolutionCallResult,
@@ -59,6 +65,13 @@ with workflow.unsafe.imports_passed_through():
         ThinkingPolicy,
     )
     from forge.persist_models import PersistableLLMResult
+    from forge.plan_checks import (
+        PlanViolation,
+        escalate_thinking,
+        preflight_plan,
+        retry_prompt_section,
+        violation_summary,
+    )
     from forge.presets import (
         CONFLICT_RESOLUTION_TIMEOUT,
         CONTEXT_TIMEOUT,
@@ -71,7 +84,7 @@ with workflow.unsafe.imports_passed_through():
     )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from datetime import timedelta
 
     from pydantic import BaseModel
@@ -82,6 +95,7 @@ __all__ = [
     "DispatchArm",
     "DispatchHost",
     "PersistFields",
+    "PlanPreflightHalt",
     "call_stats",
     "conflict_result",
     "dispatch_conflict_resolution",
@@ -416,8 +430,33 @@ async def dispatch_generation(host: DispatchHost, context: AssembledContext) -> 
     )
 
 
-async def dispatch_planner(host: DispatchHost, planner_input: PlannerInput) -> PlanCallResult:
-    """Planning — the most expensive arm; thinks with the caller's policy."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PlanPreflightHalt:
+    """No structurally valid plan after :data:`MAX_PLANNER_ATTEMPTS` attempts (T5.6).
+
+    Returned rather than raised: ``ForgeTaskWorkflow.run`` treats a bare
+    ``ApplicationError`` as a batch-wait failure (T1.6b), so raising would record
+    this halt under the wrong ``failure_kind``. The caller turns it into a clean
+    terminal result (Principle 5 — halt when confused).
+    """
+
+    attempts: int
+    violations: tuple[PlanViolation, ...]
+    last_result: PlanCallResult
+    """The final rejected attempt — kept for its LLM stats, so a halted run still
+    reports what the planner cost."""
+
+    @property
+    def error(self) -> str:
+        """The terminal-result wording."""
+        return (
+            f"Plan rejected by preflight after {self.attempts} planner attempts: "
+            f"{violation_summary(self.violations)}"
+        )
+
+
+async def _plan_attempt(host: DispatchHost, planner_input: PlannerInput) -> PlanCallResult:
+    """One planner call on the host's lane, with its interaction record."""
     return await typed_dispatch(
         host,
         "planner",
@@ -428,6 +467,62 @@ async def dispatch_planner(host: DispatchHost, planner_input: PlannerInput) -> P
         build=lambda _ctx, parsed: plan_result(planner_input.task_id, parsed),
         persist=lambda _result: _prompt_fields(planner_input),
     )
+
+
+def _retry_input(
+    planner_input: PlannerInput, violations: Sequence[PlanViolation], *, attempt: int
+) -> PlannerInput:
+    """The next attempt's input: the violations appended, thinking escalated last.
+
+    Pure — the escalating context is a longer prompt, not another activity, so a
+    preflight retry costs exactly one more planner call.
+    """
+    update: dict[str, object] = {
+        "user_prompt": planner_input.user_prompt
+        + retry_prompt_section(violations, attempt=attempt, max_attempts=MAX_PLANNER_ATTEMPTS)
+    }
+    if attempt == MAX_PLANNER_ATTEMPTS:
+        update["thinking"] = escalate_thinking(planner_input.thinking)
+    return planner_input.model_copy(update=update)
+
+
+async def dispatch_planner(
+    host: DispatchHost, planner_input: PlannerInput
+) -> PlanCallResult | PlanPreflightHalt:
+    """Planning — the most expensive arm; thinks with the caller's policy.
+
+    This is also the plan **preflight gate** (T5.6). Both lanes dispatch through
+    here, so the deterministic structural checks
+    (:func:`forge.plan_checks.preflight_plan`) run exactly once, in one place, on
+    whatever the planner produced. A plan carrying duplicate ids, overlapping
+    fan-out targets, unsafe paths, or an output-less leaf is rejected *before*
+    any step runs, and the planner is asked again with the specific violations
+    appended to its context — up to :data:`MAX_PLANNER_ATTEMPTS` attempts total.
+
+    There is deliberately no backoff between attempts: a preflight failure is
+    semantic, not transient (the transport already owns transient retry), so a
+    timer would add nothing on the sync lane and hours on the batch lane.
+    """
+    attempt_input = planner_input
+    for attempt in range(1, MAX_PLANNER_ATTEMPTS + 1):
+        result = await _plan_attempt(host, attempt_input)
+        violations = preflight_plan(result.plan)
+        if not violations:
+            return result
+        workflow.logger.warning(
+            "Plan preflight rejected the plan: task_id=%s attempt=%d/%d violations=%s",
+            planner_input.task_id,
+            attempt,
+            MAX_PLANNER_ATTEMPTS,
+            violation_summary(violations),
+        )
+        if attempt == MAX_PLANNER_ATTEMPTS:
+            return PlanPreflightHalt(attempts=attempt, violations=violations, last_result=result)
+        attempt_input = _retry_input(attempt_input, violations, attempt=attempt + 1)
+
+    # Unreachable: MAX_PLANNER_ATTEMPTS >= 1, so the loop always returns.
+    msg = f"Planner loop for {planner_input.task_id} ended without a verdict"
+    raise RuntimeError(msg)
 
 
 async def dispatch_sanity_check(

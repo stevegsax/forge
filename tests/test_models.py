@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+from pydantic import ValidationError
 
 from forge.models import (
     _EXECUTION_TIMEOUT_BASE,
@@ -12,6 +13,7 @@ from forge.models import (
     _SYNC_EXECUTION_TIMEOUT,
     BATCH_WAIT_CEILING,
     MAX_PLAN_STEPS,
+    MAX_PLANNER_ATTEMPTS,
     AssembledContext,
     AssembleStepContextInput,
     AssembleSubTaskContextInput,
@@ -44,6 +46,14 @@ from forge.models import (
     build_llm_stats,
     derive_execution_timeout,
 )
+
+# A minimal valid generation response: since T5.6 an LLMResponse must carry at
+# least one file or edit, so tests that only care about the surrounding result
+# fields share this one.
+_DONE_RESPONSE = LLMResponse(
+    files=[FileOutput(file_path="a.py", content="pass\n")], explanation="Done."
+)
+
 
 # ---------------------------------------------------------------------------
 # Planning models
@@ -144,7 +154,7 @@ class TestDeriveExecutionTimeout:
             )
         )
         per_step = max(2, (2 + 1) + 1)  # max(max_step_attempts, child_budget + 1)
-        expected_waits = (0 + 1) + MAX_PLAN_STEPS * per_step + 0
+        expected_waits = (0 + MAX_PLANNER_ATTEMPTS) + MAX_PLAN_STEPS * per_step + 0
         assert out == _expected_batch(expected_waits)
 
     def test_batch_planned_counts_sanity_checks(self) -> None:
@@ -160,7 +170,9 @@ class TestDeriveExecutionTimeout:
             )
         )
         per_step = max(2, (2 + 1) + 1)
-        expected_waits = (0 + 1) + MAX_PLAN_STEPS * per_step + (MAX_PLAN_STEPS // 5)
+        expected_waits = (
+            (0 + MAX_PLANNER_ATTEMPTS) + MAX_PLAN_STEPS * per_step + (MAX_PLAN_STEPS // 5)
+        )
         assert out == _expected_batch(expected_waits)
 
     def test_monotone_in_single_step_attempts(self) -> None:
@@ -855,9 +867,13 @@ class TestFileEdit:
 
 class TestLLMResponseEdits:
     def test_edits_defaults_to_empty(self) -> None:
-        resp = LLMResponse(explanation="test")
+        resp = LLMResponse(files=[FileOutput(file_path="a.py", content="x")], explanation="test")
         assert resp.edits == []
-        assert resp.files == []
+
+    def test_rejects_response_with_no_files_and_no_edits(self) -> None:
+        """T5.6: a do-nothing response is a contract violation, not a valid result."""
+        with pytest.raises(ValidationError, match="produced no output"):
+            LLMResponse(explanation="I had nothing to do.")
 
     def test_files_defaults_to_empty(self) -> None:
         resp = LLMResponse(
@@ -938,7 +954,7 @@ class TestCacheTokenFields:
     def test_llm_call_result_with_cache(self) -> None:
         result = LLMCallResult(
             task_id="t",
-            response=LLMResponse(explanation="Done."),
+            response=_DONE_RESPONSE,
             model_name="test",
             input_tokens=100,
             output_tokens=50,
@@ -1005,9 +1021,10 @@ class TestCacheTokenFields:
     def test_backward_compat_without_cache_fields(self) -> None:
         """Old JSON without cache fields still deserializes."""
         data = (
-            '{"task_id": "t", "response": {"files": [], "edits": [], '
-            '"explanation": "test"}, "model_name": "m", "input_tokens": 1, '
-            '"output_tokens": 2, "latency_ms": 3.0}'
+            '{"task_id": "t", "response": {"files": [{"file_path": "a.py", '
+            '"content": "pass"}], "edits": [], "explanation": "test"}, '
+            '"model_name": "m", "input_tokens": 1, "output_tokens": 2, '
+            '"latency_ms": 3.0}'
         )
         result = LLMCallResult.model_validate_json(data)
         assert result.cache_creation_input_tokens == 0
@@ -1018,7 +1035,7 @@ class TestBuildLlmStatsCache:
     def test_propagates_cache_fields(self) -> None:
         result = LLMCallResult(
             task_id="t",
-            response=LLMResponse(explanation="Done."),
+            response=_DONE_RESPONSE,
             model_name="test",
             input_tokens=100,
             output_tokens=50,
@@ -1033,7 +1050,7 @@ class TestBuildLlmStatsCache:
     def test_zero_cache_by_default(self) -> None:
         result = LLMCallResult(
             task_id="t",
-            response=LLMResponse(explanation="Done."),
+            response=_DONE_RESPONSE,
             model_name="test",
             input_tokens=100,
             output_tokens=50,

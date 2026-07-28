@@ -42,6 +42,7 @@ from forge.step_logic import (
     llm_totals,
     merge_resolution,
     nested_fan_out_failure,
+    plan_preflight_failure,
     planned_failure,
     single_step_terminal,
     slim_result,
@@ -438,6 +439,20 @@ class TestBuilderFailureKinds:
             sanity_check_count=0,
         )
         assert result.failure_kind == "step_failed"
+
+    def test_plan_preflight_failure_kind(self) -> None:
+        """T5.6: the halt carries the planner's spend and no plan (there is none)."""
+        result = plan_preflight_failure(
+            task_id="t",
+            error="Plan rejected by preflight after 3 planner attempts: duplicate_step_ids: s1",
+            worktree_path="/wt",
+            worktree_branch="forge/t",
+            planner_stats=_stats(),
+        )
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.failure_kind == "plan_preflight"
+        assert result.plan is None
+        assert result.planner_stats == _stats()
 
     def test_missing_resolutions_owns_wording(self) -> None:
         missing = MissingResolutions(missing=("a.py", "b.py"))

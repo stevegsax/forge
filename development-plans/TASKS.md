@@ -79,7 +79,8 @@ Phase ordering is load-bearing: 1 → 2 → 3 → 4 → 5; Phase 6 is serialized
 - [x] [T5.3 — Single gather + dispatch](tasks/T5.3-single-gather-dispatch.md) *(landed 2026-07-26)*
 - [x] [T5.4 — Split the monolith](tasks/T5.4-split-the-monolith.md) *(landed 2026-07-27)*
 - [x] [T5.5 — Harness rebuild + replay tests](tasks/T5.5-harness-rebuild-replay-tests.md) *(landed 2026-07-27)*
-- [ ] [T5.6 — Plan preflight gate](tasks/T5.6-plan-preflight-gate.md) *(added 2026-07-08)*
+- [x] [T5.6 — Plan preflight gate](tasks/T5.6-plan-preflight-gate.md) *(added 2026-07-08; landed 2026-07-27)*
+- [ ] [T5.7 — Execution-time reference repair](tasks/T5.7-execution-time-reference-repair.md) *(added 2026-07-27 by owner decision — adopts T5.6's eval-only residue: the forward/cyclic-reference defect class, undetectable at preflight without the repo file set, is detected at step context assembly where repo state resolves the ambiguity, and repaired autonomously through the T5.6-capped REVISE arm; 59 tasks total)*
 
 ### Phase 6 — Knowledge: pbook product + forge consumption (after Phase 5)
 

@@ -33,6 +33,7 @@ Field                 Key
                       the task id.
 ``conflict_responses`` the resolving node's ``task_id``.
 ``sanity_responses``  the task's ``task_id``.
+``plan_sequence``     the planner's ``task_id`` (successive planner attempts).
 ``parsed_responses``  the batch ``output_type_name``.
 ===================== ========================================================
 
@@ -249,6 +250,12 @@ class ScenarioState:
     plan: Plan | None = None
     """The plan every planner call returns (sync activity and batch parse)."""
 
+    plan_sequence: "Mapping[str, Sequence[Plan]]" = field(default_factory=dict)
+    """Task id -> successive planner results, for the T5.6 preflight retry arm.
+    Consumed by a per-key cursor and sticky on the last entry; the planner runs
+    only in the root workflow, so the key space is one id per run and the calls
+    are that workflow's own sequential stream. Overrides ``plan`` when set."""
+
     transitions: "Mapping[str, Sequence[str]]" = field(default_factory=dict)
     """Validate identity -> transition tokens. A ``failure_terminal`` token is
     sticky: it stays current so every remaining attempt for that key fails."""
@@ -376,8 +383,17 @@ class ScenarioState:
             return scripted[index]
         return DEFAULT_SANITY_CHECK.model_copy(update={"task_id": task_id})
 
-    def the_plan(self) -> Plan:
-        """The scripted plan, or a loud failure — a planner call needs one."""
+    def the_plan(self, task_id: str = "") -> Plan:
+        """The plan this planner call returns, or a loud failure if none is scripted.
+
+        With ``plan_sequence`` scripted for the id, successive calls walk it and
+        then stick on its last entry — the shape a preflight retry needs (a
+        rejected plan, then an acceptable one).
+        """
+        scripted = self.plan_sequence.get(task_id, ())
+        if scripted:
+            index = self._next("plans", task_id, len(scripted))
+            return scripted[min(index, len(scripted) - 1)]
         if self.plan is None:
             msg = "ScenarioState.plan is not set, but the workflow called the planner"
             raise RuntimeError(msg)
@@ -421,7 +437,10 @@ class ScenarioState:
         task_id = context.task_id if context is not None else ""
         if output_type == "Plan":
             return make_parsed(
-                self.the_plan(), model_name="mock-planner", input_tokens=300, output_tokens=150
+                self.the_plan(task_id),
+                model_name="mock-planner",
+                input_tokens=300,
+                output_tokens=150,
             )
         if output_type == "SanityCheckResponse":
             sanity = self.sanity_response_for(task_id)
@@ -598,7 +617,7 @@ def build_activities(
         state.call_log.append("call_planner")
         return PlanCallResult(
             task_id=input.task_id,
-            plan=state.the_plan(),
+            plan=state.the_plan(input.task_id),
             model_name="mock-planner",
             input_tokens=300,
             output_tokens=150,

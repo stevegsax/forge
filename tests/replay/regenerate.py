@@ -669,7 +669,14 @@ async def _scenario_sanity_check_sync(env: WorkflowEnvironment) -> list[tuple[st
 
 
 async def _scenario_conflict_resolution_sync(env: WorkflowEnvironment) -> list[tuple[str, int]]:
-    """Two fan-out children write the same file; the resolution arm merges it."""
+    """Two fan-out children write the same file; the resolution arm merges it.
+
+    The children *declare* distinct targets and both *write* ``shared.py``: since
+    T5.6 the plan preflight gate rejects a plan whose sub-tasks declare
+    overlapping targets, so an undeclared write is the only shape a conflict can
+    still take — and conflict detection has always read what the children
+    produced rather than what they promised.
+    """
     workflow_id = "conflict_resolution_sync"
     shared = LLMResponse(
         files=[FileOutput(file_path="shared.py", content="# from a child\n")],
@@ -684,8 +691,8 @@ async def _scenario_conflict_resolution_sync(env: WorkflowEnvironment) -> list[t
                     description="Two children, one shared file.",
                     target_files=[],
                     sub_tasks=[
-                        SubTask(sub_task_id="st1", description="a", target_files=["shared.py"]),
-                        SubTask(sub_task_id="st2", description="b", target_files=["shared.py"]),
+                        SubTask(sub_task_id="st1", description="a", target_files=["st1.py"]),
+                        SubTask(sub_task_id="st2", description="b", target_files=["st2.py"]),
                     ],
                 ),
             ],

@@ -2,6 +2,16 @@
 
 All functions are pure — they take a Plan + TaskDefinition (+ optional repo
 file set) and return a DeterministicCheckResult. No I/O.
+
+Since T5.6 the *logic* of every check lives in :mod:`forge.plan_checks`, which
+the live preflight gate (``blocks.dispatch.dispatch_planner``) runs at plan
+acceptance. This module is the eval harness's presentation of the same finders:
+one algorithm, two consumers, cross-referenced rather than copied. That is also
+where the checks became recursive — a violation nested inside a sub-task's own
+``sub_tasks`` used to be invisible to this harness.
+
+Four checks here are eval-only, in the sense that the live gate does not veto on
+them; :data:`forge.plan_checks.PREFLIGHT_CHECKS` documents why for each.
 """
 
 from __future__ import annotations
@@ -9,9 +19,52 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from forge.eval.models import CheckStatus, DeterministicCheckResult, DeterministicResult
+from forge.plan_checks import (
+    duplicate_step_ids,
+    duplicate_sub_task_ids,
+    forward_references,
+    implausible_context_files,
+    nodes_without_targets,
+    overlapping_sub_task_targets,
+    uncovered_task_targets,
+    undersized_fan_outs,
+    unsafe_target_paths,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from forge.models import Plan, TaskDefinition
+
+
+def _result(
+    check_name: str,
+    findings: Sequence[str],
+    *,
+    fail_message: str,
+    pass_message: str,
+) -> DeterministicCheckResult:
+    """Wrap a finder's output in the harness's result model."""
+    if findings:
+        return DeterministicCheckResult(
+            check_name=check_name,
+            status=CheckStatus.FAIL,
+            message=fail_message,
+            details=list(findings),
+        )
+    return DeterministicCheckResult(
+        check_name=check_name,
+        status=CheckStatus.PASS,
+        message=pass_message,
+    )
+
+
+def _skipped(check_name: str, message: str) -> DeterministicCheckResult:
+    return DeterministicCheckResult(
+        check_name=check_name,
+        status=CheckStatus.SKIP,
+        message=message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -25,27 +78,12 @@ def check_target_files_are_relative_paths(
     known_repo_files: set[str] | None = None,
 ) -> DeterministicCheckResult:
     """Verify no step/sub-task target files use absolute paths or '..' traversal."""
-    bad: list[str] = []
-    for step in plan.steps:
-        for f in step.target_files:
-            if f.startswith("/") or ".." in f.split("/"):
-                bad.append(f"{step.step_id}: {f}")
-        if step.sub_tasks:
-            for st in step.sub_tasks:
-                for f in st.target_files:
-                    if f.startswith("/") or ".." in f.split("/"):
-                        bad.append(f"{step.step_id}/{st.sub_task_id}: {f}")
-    if bad:
-        return DeterministicCheckResult(
-            check_name="check_target_files_are_relative_paths",
-            status=CheckStatus.FAIL,
-            message=f"Found {len(bad)} absolute or traversal path(s).",
-            details=bad,
-        )
-    return DeterministicCheckResult(
-        check_name="check_target_files_are_relative_paths",
-        status=CheckStatus.PASS,
-        message="All target files are relative paths.",
+    bad = unsafe_target_paths(plan)
+    return _result(
+        "check_target_files_are_relative_paths",
+        bad,
+        fail_message=f"Found {len(bad)} absolute or traversal path(s).",
+        pass_message="All target files are relative paths.",
     )
 
 
@@ -55,21 +93,12 @@ def check_step_ids_unique(
     known_repo_files: set[str] | None = None,
 ) -> DeterministicCheckResult:
     """Verify all step IDs in the plan are unique."""
-    seen: dict[str, int] = {}
-    for step in plan.steps:
-        seen[step.step_id] = seen.get(step.step_id, 0) + 1
-    dupes = [sid for sid, count in seen.items() if count > 1]
-    if dupes:
-        return DeterministicCheckResult(
-            check_name="check_step_ids_unique",
-            status=CheckStatus.FAIL,
-            message=f"Duplicate step IDs: {', '.join(dupes)}.",
-            details=dupes,
-        )
-    return DeterministicCheckResult(
-        check_name="check_step_ids_unique",
-        status=CheckStatus.PASS,
-        message="All step IDs are unique.",
+    dupes = duplicate_step_ids(plan)
+    return _result(
+        "check_step_ids_unique",
+        dupes,
+        fail_message=f"Duplicate step IDs: {', '.join(dupes)}.",
+        pass_message="All step IDs are unique.",
     )
 
 
@@ -78,28 +107,13 @@ def check_sub_task_ids_unique(
     task: TaskDefinition,
     known_repo_files: set[str] | None = None,
 ) -> DeterministicCheckResult:
-    """Verify sub-task IDs are unique within each step."""
-    dupes: list[str] = []
-    for step in plan.steps:
-        if not step.sub_tasks:
-            continue
-        seen: dict[str, int] = {}
-        for st in step.sub_tasks:
-            seen[st.sub_task_id] = seen.get(st.sub_task_id, 0) + 1
-        for stid, count in seen.items():
-            if count > 1:
-                dupes.append(f"{step.step_id}/{stid}")
-    if dupes:
-        return DeterministicCheckResult(
-            check_name="check_sub_task_ids_unique",
-            status=CheckStatus.FAIL,
-            message=f"Duplicate sub-task IDs: {', '.join(dupes)}.",
-            details=dupes,
-        )
-    return DeterministicCheckResult(
-        check_name="check_sub_task_ids_unique",
-        status=CheckStatus.PASS,
-        message="All sub-task IDs are unique within their steps.",
+    """Verify sub-task IDs are unique among the children of each parent."""
+    dupes = duplicate_sub_task_ids(plan)
+    return _result(
+        "check_sub_task_ids_unique",
+        dupes,
+        fail_message=f"Duplicate sub-task IDs: {', '.join(dupes)}.",
+        pass_message="All sub-task IDs are unique within their steps.",
     )
 
 
@@ -108,31 +122,13 @@ def check_sub_task_targets_non_overlapping(
     task: TaskDefinition,
     known_repo_files: set[str] | None = None,
 ) -> DeterministicCheckResult:
-    """Verify sub-tasks within a step don't share target files (D27)."""
-    overlaps: list[str] = []
-    for step in plan.steps:
-        if not step.sub_tasks:
-            continue
-        seen_files: dict[str, str] = {}
-        for st in step.sub_tasks:
-            for f in st.target_files:
-                if f in seen_files:
-                    overlaps.append(
-                        f"{step.step_id}: {f} claimed by {seen_files[f]} and {st.sub_task_id}"
-                    )
-                else:
-                    seen_files[f] = st.sub_task_id
-    if overlaps:
-        return DeterministicCheckResult(
-            check_name="check_sub_task_targets_non_overlapping",
-            status=CheckStatus.FAIL,
-            message=f"Found {len(overlaps)} overlapping target(s) in fan-out steps.",
-            details=overlaps,
-        )
-    return DeterministicCheckResult(
-        check_name="check_sub_task_targets_non_overlapping",
-        status=CheckStatus.PASS,
-        message="No overlapping sub-task targets.",
+    """Verify sibling sub-tasks don't share target files (D27)."""
+    overlaps = overlapping_sub_task_targets(plan)
+    return _result(
+        "check_sub_task_targets_non_overlapping",
+        overlaps,
+        fail_message=f"Found {len(overlaps)} overlapping target(s) in fan-out steps.",
+        pass_message="No overlapping sub-task targets.",
     )
 
 
@@ -143,48 +139,13 @@ def check_context_files_plausible(
 ) -> DeterministicCheckResult:
     """Verify context files either exist in repo or are produced by earlier steps."""
     if known_repo_files is None:
-        return DeterministicCheckResult(
-            check_name="check_context_files_plausible",
-            status=CheckStatus.SKIP,
-            message="No known_repo_files provided; skipping.",
-        )
-
-    # Build cumulative set of files produced by steps so far
-    produced: set[str] = set()
-    implausible: list[str] = []
-
-    for step in plan.steps:
-        # Check step-level context files
-        for f in step.context_files:
-            if f not in known_repo_files and f not in produced:
-                implausible.append(f"{step.step_id}: {f}")
-
-        # Check sub-task context files
-        if step.sub_tasks:
-            for st in step.sub_tasks:
-                for f in st.context_files:
-                    if f not in known_repo_files and f not in produced:
-                        implausible.append(f"{step.step_id}/{st.sub_task_id}: {f}")
-
-        # Add files this step produces
-        for f in step.target_files:
-            produced.add(f)
-        if step.sub_tasks:
-            for st in step.sub_tasks:
-                for f in st.target_files:
-                    produced.add(f)
-
-    if implausible:
-        return DeterministicCheckResult(
-            check_name="check_context_files_plausible",
-            status=CheckStatus.FAIL,
-            message=f"Found {len(implausible)} implausible context file(s).",
-            details=implausible,
-        )
-    return DeterministicCheckResult(
-        check_name="check_context_files_plausible",
-        status=CheckStatus.PASS,
-        message="All context files are plausible.",
+        return _skipped("check_context_files_plausible", "No known_repo_files provided; skipping.")
+    implausible = implausible_context_files(plan, known_repo_files)
+    return _result(
+        "check_context_files_plausible",
+        implausible,
+        fail_message=f"Found {len(implausible)} implausible context file(s).",
+        pass_message="All context files are plausible.",
     )
 
 
@@ -195,58 +156,13 @@ def check_no_forward_references(
 ) -> DeterministicCheckResult:
     """Verify no step references files produced only by a later step."""
     if known_repo_files is None:
-        return DeterministicCheckResult(
-            check_name="check_no_forward_references",
-            status=CheckStatus.SKIP,
-            message="No known_repo_files provided; skipping.",
-        )
-
-    # Collect all files produced by each step index
-    step_outputs: list[set[str]] = []
-    for step in plan.steps:
-        outputs: set[str] = set(step.target_files)
-        if step.sub_tasks:
-            for st in step.sub_tasks:
-                outputs.update(st.target_files)
-        step_outputs.append(outputs)
-
-    forward_refs: list[str] = []
-
-    for i, step in enumerate(plan.steps):
-        # Files available before this step: repo files + outputs of steps 0..i-1
-        available = set(known_repo_files)
-        for j in range(i):
-            available.update(step_outputs[j])
-
-        # Check context files
-        for f in step.context_files:
-            if f not in available:
-                # It could be produced by this step or a later step
-                for j in range(i, len(plan.steps)):
-                    if f in step_outputs[j]:
-                        forward_refs.append(f"{step.step_id}: {f}")
-                        break
-
-        if step.sub_tasks:
-            for st in step.sub_tasks:
-                for f in st.context_files:
-                    if f not in available:
-                        for j in range(i, len(plan.steps)):
-                            if f in step_outputs[j]:
-                                forward_refs.append(f"{step.step_id}/{st.sub_task_id}: {f}")
-                                break
-
-    if forward_refs:
-        return DeterministicCheckResult(
-            check_name="check_no_forward_references",
-            status=CheckStatus.FAIL,
-            message=f"Found {len(forward_refs)} forward reference(s).",
-            details=forward_refs,
-        )
-    return DeterministicCheckResult(
-        check_name="check_no_forward_references",
-        status=CheckStatus.PASS,
-        message="No forward references found.",
+        return _skipped("check_no_forward_references", "No known_repo_files provided; skipping.")
+    refs = forward_references(plan, known_repo_files)
+    return _result(
+        "check_no_forward_references",
+        refs,
+        fail_message=f"Found {len(refs)} forward reference(s).",
+        pass_message="No forward references found.",
     )
 
 
@@ -257,31 +173,13 @@ def check_all_task_targets_covered(
 ) -> DeterministicCheckResult:
     """Verify every task target_file appears in at least one step."""
     if not task.target_files:
-        return DeterministicCheckResult(
-            check_name="check_all_task_targets_covered",
-            status=CheckStatus.SKIP,
-            message="Task has no target files to check.",
-        )
-
-    plan_targets: set[str] = set()
-    for step in plan.steps:
-        plan_targets.update(step.target_files)
-        if step.sub_tasks:
-            for st in step.sub_tasks:
-                plan_targets.update(st.target_files)
-
-    missing = [f for f in task.target_files if f not in plan_targets]
-    if missing:
-        return DeterministicCheckResult(
-            check_name="check_all_task_targets_covered",
-            status=CheckStatus.FAIL,
-            message=f"{len(missing)} task target(s) not covered by plan.",
-            details=missing,
-        )
-    return DeterministicCheckResult(
-        check_name="check_all_task_targets_covered",
-        status=CheckStatus.PASS,
-        message="All task targets are covered by the plan.",
+        return _skipped("check_all_task_targets_covered", "Task has no target files to check.")
+    missing = uncovered_task_targets(plan, task.target_files)
+    return _result(
+        "check_all_task_targets_covered",
+        missing,
+        fail_message=f"{len(missing)} task target(s) not covered by plan.",
+        pass_message="All task targets are covered by the plan.",
     )
 
 
@@ -290,22 +188,13 @@ def check_non_fanout_steps_have_targets(
     task: TaskDefinition,
     known_repo_files: set[str] | None = None,
 ) -> DeterministicCheckResult:
-    """Verify non-fan-out steps have non-empty target_files."""
-    empty: list[str] = []
-    for step in plan.steps:
-        if not step.sub_tasks and not step.target_files:
-            empty.append(step.step_id)
-    if empty:
-        return DeterministicCheckResult(
-            check_name="check_non_fanout_steps_have_targets",
-            status=CheckStatus.FAIL,
-            message=f"{len(empty)} non-fan-out step(s) have no target files.",
-            details=empty,
-        )
-    return DeterministicCheckResult(
-        check_name="check_non_fanout_steps_have_targets",
-        status=CheckStatus.PASS,
-        message="All non-fan-out steps have target files.",
+    """Verify leaf steps and sub-tasks have non-empty target_files."""
+    empty = nodes_without_targets(plan)
+    return _result(
+        "check_non_fanout_steps_have_targets",
+        empty,
+        fail_message=f"{len(empty)} non-fan-out step(s) have no target files.",
+        pass_message="All non-fan-out steps have target files.",
     )
 
 
@@ -315,21 +204,12 @@ def check_fanout_steps_have_min_subtasks(
     known_repo_files: set[str] | None = None,
 ) -> DeterministicCheckResult:
     """Verify fan-out steps have >= 2 sub-tasks."""
-    bad: list[str] = []
-    for step in plan.steps:
-        if step.sub_tasks is not None and len(step.sub_tasks) < 2:
-            bad.append(f"{step.step_id}: {len(step.sub_tasks)} sub-task(s)")
-    if bad:
-        return DeterministicCheckResult(
-            check_name="check_fanout_steps_have_min_subtasks",
-            status=CheckStatus.FAIL,
-            message=f"{len(bad)} fan-out step(s) have fewer than 2 sub-tasks.",
-            details=bad,
-        )
-    return DeterministicCheckResult(
-        check_name="check_fanout_steps_have_min_subtasks",
-        status=CheckStatus.PASS,
-        message="All fan-out steps have >= 2 sub-tasks.",
+    bad = undersized_fan_outs(plan)
+    return _result(
+        "check_fanout_steps_have_min_subtasks",
+        bad,
+        fail_message=f"{len(bad)} fan-out step(s) have fewer than 2 sub-tasks.",
+        pass_message="All fan-out steps have >= 2 sub-tasks.",
     )
 
 

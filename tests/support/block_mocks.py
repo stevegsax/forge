@@ -523,6 +523,13 @@ def five_arm_activities(
     check (the driver skips it after a fan-out step and after the last one) and
     the shared file forces conflict resolution. One exploration round runs
     during planning.
+
+    The children *declare* distinct targets and both *write* ``shared.py``. That
+    is deliberate since T5.6: the preflight gate rejects a plan whose sub-tasks
+    declare overlapping targets, so a declared overlap can no longer reach
+    execution — an undeclared write is the shape a real conflict now takes, and
+    conflict detection has always read what the children produced rather than
+    what they promised.
     """
     plan = Plan(
         task_id="five-arm-task",
@@ -533,8 +540,8 @@ def five_arm_activities(
                 description="Two children, one shared file.",
                 target_files=[],
                 sub_tasks=[
-                    SubTask(sub_task_id="st1", description="a", target_files=["shared.py"]),
-                    SubTask(sub_task_id="st2", description="b", target_files=["shared.py"]),
+                    SubTask(sub_task_id="st1", description="a", target_files=["st1.py"]),
+                    SubTask(sub_task_id="st2", description="b", target_files=["st2.py"]),
                 ],
             ),
         ],

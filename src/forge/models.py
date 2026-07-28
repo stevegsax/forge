@@ -60,6 +60,21 @@ from sax_platform.temporal.polling import (
 # planned mode. Enforced as ``max_length`` on ``Plan.steps``.
 MAX_PLAN_STEPS: int = 25
 
+# Total planner calls one run may make, including the first (T5.6). A plan that
+# fails the deterministic preflight gate is re-planned with the specific
+# violations appended to the planner's context; after this many attempts the run
+# halts cleanly rather than executing a plan known to be malformed (Principle 5).
+# Preflight failures are semantic, not transient — the transport owns transient
+# retry — so the attempts carry escalating context and no backoff.
+MAX_PLANNER_ATTEMPTS: int = 3
+
+# How many times a sanity check may replace the plan's remaining steps (T5.6).
+# The REVISE splice is the one path that rewrites a running plan; execution is
+# already bounded by MAX_PLAN_STEPS (the step index only advances), so this cap
+# is about thrash rather than termination: more than a handful of re-plans means
+# the sanity checker and the planner disagree persistently, which is a halt.
+MAX_PLAN_REVISIONS: int = 5
+
 # Flat 48h execution timeout for sync mode (no batch waits) — the pre-T4.1 default.
 _SYNC_EXECUTION_TIMEOUT: timedelta = timedelta(hours=48)
 
@@ -216,6 +231,8 @@ FailureKind = Literal[
     "sub_task_failed",  # fan-out gather saw failed children
     "child_crashed",  # a child workflow raised instead of returning a result (T5.3)
     "sanity_abort",  # sanity check returned ABORT
+    "plan_preflight",  # T5.6: no structurally valid plan in MAX_PLANNER_ATTEMPTS tries
+    "plan_revision",  # T5.6: a REVISE splice is over a cap or structurally invalid
     "duplicate_sub_task_ids",  # fan-out sub-task ids not unique
     "conflict_unresolved",  # D27: conflicts with resolve_conflicts=False
     "conflict_incomplete",  # conflict resolution left paths unresolved
@@ -479,7 +496,18 @@ class FileEdit(BaseModel):
 
 
 class LLMResponse(BaseModel):
-    """Structured output from the LLM call."""
+    """Structured output from the LLM call.
+
+    Invariant (T5.6): a response must carry at least one file or one edit. A
+    do-nothing response used to parse cleanly and then sail through the pipeline
+    — nothing written, validation run over zero files, the step reported SUCCESS
+    having produced nothing. Rejecting it here turns that silent no-op into a
+    schema mismatch at the parse seam, where ``LLMSchemaMismatch`` is
+    deliberately *retryable* (a differently-sampled call can produce real
+    output). This is a contract violation, distinct from T3.5's refusal and
+    truncation outcomes: there the model declined or was cut off, here it
+    answered with nothing.
+    """
 
     files: list[FileOutput] = Field(
         default_factory=list,
@@ -490,6 +518,14 @@ class LLMResponse(BaseModel):
         description="Search/replace edits for existing files.",
     )
     explanation: str = Field(description="Brief explanation of what was produced.")
+
+    @model_validator(mode="after")
+    def _require_output(self) -> LLMResponse:
+        """Reject a response that produces neither a file nor an edit."""
+        if not self.files and not self.edits:
+            msg = "LLMResponse produced no output: both 'files' and 'edits' are empty"
+            raise ValueError(msg)
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -950,8 +986,11 @@ def derive_execution_timeout(task_input: ForgeTaskInput) -> timedelta:
     - **batch single-step** → ``max_attempts * (max_exploration_rounds + 1)`` waits:
       each attempt runs the exploration loop (≤ ``max_exploration_rounds`` waits) then
       one generation wait.
-    - **batch planned** → one planner phase (``max_exploration_rounds + 1`` waits),
-      then ≤ :data:`MAX_PLAN_STEPS` steps. A step is either a regular step
+    - **batch planned** → one planner phase
+      (``max_exploration_rounds + MAX_PLANNER_ATTEMPTS`` waits: exploration runs
+      once, then up to :data:`MAX_PLANNER_ATTEMPTS` planner calls, since a plan
+      rejected by the T5.6 preflight gate is re-planned), then
+      ≤ :data:`MAX_PLAN_STEPS` steps. A step is either a regular step
       (≤ ``max_step_attempts`` generation waits) or a fan-out step whose parent-side
       budget is the depth-0 child budget (``max_sub_task_attempts + max_fan_out_depth``
       waits, which the parent blocks on inside its own execution timeout) plus one
@@ -962,7 +1001,7 @@ def derive_execution_timeout(task_input: ForgeTaskInput) -> timedelta:
     if not task_input.plan:
         waits = task_input.max_attempts * (task_input.max_exploration_rounds + 1)
         return _batch_execution_timeout(waits)
-    planner_waits = task_input.max_exploration_rounds + 1
+    planner_waits = task_input.max_exploration_rounds + MAX_PLANNER_ATTEMPTS
     # Depth-0 child budget: max_sub_task_attempts leaf waits + one wait per nesting
     # level (remaining = max_fan_out_depth - 0). The parent adds one conflict-resolution
     # wait after the child gathers.

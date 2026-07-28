@@ -66,7 +66,13 @@ def _typed_message(payload: dict[str, Any], **kwargs: Any) -> str:
 
 class TestExecuteParseLLMResponse:
     def test_parses_llm_response(self) -> None:
-        raw = _typed_message({"files": [], "edits": [], "explanation": "Done."})
+        raw = _typed_message(
+            {
+                "files": [{"file_path": "a.py", "content": "pass"}],
+                "edits": [],
+                "explanation": "Done.",
+            }
+        )
 
         result = execute_parse_llm_response(raw, "LLMResponse")
 
@@ -102,7 +108,7 @@ class TestExecuteParseLLMResponse:
 
     def test_returns_correct_usage_stats(self) -> None:
         raw = _typed_message(
-            {"files": [], "edits": [], "explanation": "x"},
+            {"files": [{"file_path": "a.py", "content": "pass"}], "edits": [], "explanation": "x"},
             input_tokens=500,
             output_tokens=300,
             cache_creation_input_tokens=50,
@@ -126,7 +132,9 @@ class TestExecuteParseLLMResponse:
         assert result.model_name == "claude-sonnet-5"
 
     def test_latency_defaults_to_zero(self) -> None:
-        raw = _typed_message({"files": [], "edits": [], "explanation": "x"})
+        raw = _typed_message(
+            {"files": [{"file_path": "a.py", "content": "pass"}], "edits": [], "explanation": "x"}
+        )
 
         result = execute_parse_llm_response(raw, "LLMResponse")
 
@@ -134,7 +142,8 @@ class TestExecuteParseLLMResponse:
 
     def test_records_stop_reason(self) -> None:
         raw = _typed_message(
-            {"files": [], "edits": [], "explanation": "x"}, stop_reason="stop_sequence"
+            {"files": [{"file_path": "a.py", "content": "pass"}], "edits": [], "explanation": "x"},
+            stop_reason="stop_sequence",
         )
 
         result = execute_parse_llm_response(raw, "LLMResponse")
@@ -142,7 +151,9 @@ class TestExecuteParseLLMResponse:
         assert result.stop_reason == "stop_sequence"
 
     def test_raises_key_error_for_unknown_type(self) -> None:
-        raw = _typed_message({"files": [], "edits": [], "explanation": "x"})
+        raw = _typed_message(
+            {"files": [{"file_path": "a.py", "content": "pass"}], "edits": [], "explanation": "x"}
+        )
 
         with pytest.raises(KeyError, match="Unknown output type"):
             execute_parse_llm_response(raw, "NonExistentType")
@@ -197,6 +208,31 @@ class TestParseFailureOutcomes:
         assert err.type == "LLMSchemaMismatch"
         assert err.non_retryable is True
 
+    def test_do_nothing_response_is_a_schema_mismatch(self) -> None:
+        """T5.6: an LLMResponse with no files and no edits fails at the parse seam.
+
+        Before the model validator this parsed cleanly and the pipeline wrote
+        nothing, validated zero files, and reported SUCCESS. Now it is a
+        classification failure like any other off-schema completion.
+        """
+        raw = _typed_message({"files": [], "edits": [], "explanation": "Nothing to do."})
+
+        with pytest.raises(ApplicationError) as exc_info:
+            execute_parse_llm_response(raw, "LLMResponse")
+
+        assert exc_info.value.type == "LLMSchemaMismatch"
+        assert "produced no output" in str(exc_info.value)
+
+    def test_schema_mismatch_stays_retryable_in_the_llm_preset(self) -> None:
+        """The error-aware path: a mismatch is a sampling accident, so the
+        activity retry gets a differently-sampled call. (The batch lane's own
+        raise is non-retryable because re-parsing the same stored bytes cannot
+        change the outcome — this pins the *policy*, not the raise.)"""
+        from sax_platform.temporal.retries import LLM_RETRY
+
+        assert LLM_RETRY.non_retryable_error_types is not None
+        assert "LLMSchemaMismatch" not in LLM_RETRY.non_retryable_error_types
+
 
 # ---------------------------------------------------------------------------
 # parse_llm_response activity wrapper
@@ -231,7 +267,13 @@ class TestParseLlmResponseActivity:
         from forge.models import ParseResponseInput
         from forge.output_types import OUTPUT_TYPES
 
-        raw = _typed_message({"files": [], "edits": [], "explanation": "done"})
+        raw = _typed_message(
+            {
+                "files": [{"file_path": "a.py", "content": "pass"}],
+                "edits": [],
+                "explanation": "done",
+            }
+        )
 
         batch = BatchActivities(
             client=MagicMock(),
@@ -265,7 +307,13 @@ class TestParseLlmResponseActivity:
         from forge.models import ParseResponseInput
         from forge.output_types import OUTPUT_TYPES
 
-        raw = _typed_message({"files": [], "edits": [], "explanation": "from s3"})
+        raw = _typed_message(
+            {
+                "files": [{"file_path": "a.py", "content": "pass"}],
+                "edits": [],
+                "explanation": "from s3",
+            }
+        )
         envelope = dump_batch_result_payload(raw, []).encode("utf-8")
         blobs = _StubBlobs(envelope)
 

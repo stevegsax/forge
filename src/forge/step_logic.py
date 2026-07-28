@@ -310,6 +310,32 @@ def task_batch_wait_failure(*, task_id: str, exc: BaseException) -> TaskResult:
     )
 
 
+def plan_preflight_failure(
+    *,
+    task_id: str,
+    error: str,
+    worktree_path: str,
+    worktree_branch: str,
+    planner_stats: LLMStats,
+) -> TaskResult:
+    """Terminal TaskResult when no acceptable plan was produced (T5.6).
+
+    Distinct from :func:`planned_failure`: there is no plan to report and no step
+    ran, so the result carries only the planner's own spend and the worktree the
+    run created — which is deliberately left in place, like every other terminal
+    planned failure, for inspection.
+    """
+    return TaskResult(
+        task_id=task_id,
+        status=TransitionSignal.FAILURE_TERMINAL,
+        error=error,
+        failure_kind="plan_preflight",
+        worktree_path=worktree_path,
+        worktree_branch=worktree_branch,
+        planner_stats=planner_stats,
+    )
+
+
 def planned_failure(
     *,
     task_id: str,

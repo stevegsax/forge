@@ -11,6 +11,12 @@ from forge.activities.llm import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, execute_llm_
 from forge.models import AssembledContext, FileOutput, LLMResponse
 from tests.conftest import build_mock_llm
 
+# Since T5.6 an LLMResponse must carry at least one file or edit; tests that
+# only assert on the surrounding stats share this minimal valid response.
+_DONE_RESPONSE = LLMResponse(
+    files=[FileOutput(file_path="a.py", content="pass\n")], explanation="Done."
+)
+
 
 def _telemetry(stop_reason: str = "end_turn") -> Telemetry:
     return Telemetry(
@@ -203,7 +209,7 @@ class TestCacheStatsExtraction:
     async def test_zero_cache_tokens(self) -> None:
         context = self._make_context()
         llm = build_mock_llm(
-            output=LLMResponse(explanation="Done."),
+            output=_DONE_RESPONSE,
             cache_creation_input_tokens=0,
             cache_read_input_tokens=0,
         )
@@ -232,7 +238,7 @@ class TestCallLlmModelNameThreading:
         from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
-            output=LLMResponse(explanation="done"),
+            output=_DONE_RESPONSE,
             model="custom-model",
             input_tokens=10,
             output_tokens=20,
@@ -255,7 +261,7 @@ class TestCallLlmModelNameThreading:
         from forge.activities.roots import LlmActivities
 
         llm = build_mock_llm(
-            output=LLMResponse(explanation="done"),
+            output=_DONE_RESPONSE,
             model="whatever-the-server-returns",
             input_tokens=10,
             output_tokens=20,

@@ -67,7 +67,7 @@ Mined from the four code reviews in `archive/merged/code-review/` (≈2026-02-16
 | Theme | Residual gap | Pointer |
 | --- | --- | --- |
 | Transition vocabulary | Policy-violation / budget-exhausted / partial-success / blocked-on-human collapse into retryable or terminal | `models.py::TransitionSignal` (3 members) |
-| Plan contract | File-level targets only — no symbol-level write-sets, budgets, or confidence; overlap/cycle checks run in eval, not as a preflight gate | `models.py::PlanStep`, `eval/deterministic.py` |
+| Plan contract | File-level targets only — no symbol-level write-sets, budgets, or confidence. Structural checks (duplicate ids, overlapping fan-out targets, unsafe paths, output-less leaves) gate at plan acceptance since T5.6; cycle/forward-reference and context-file plausibility remain eval-only because they need the repo file set, which the workflow cannot read without adding an activity | `models.py::PlanStep`, `plan_checks.py::PREFLIGHT_CHECKS`, `eval/deterministic.py` |
 | Conflict resolution | File-granularity merge accepted on path-completeness alone; no intent/regression verification | `activities/conflict_resolution.py` |
 | Retry strategy | Errors are fed back, but one undifferentiated reset+retry; no failure-class classifier | `activities/context.py::build_error_feedback` |
 | Exploration cost | Bounded only by round count + char truncation; no quota/ROI/dedup | `blocks/exploration.py::run_exploration_loop` |

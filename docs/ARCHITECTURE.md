@@ -485,6 +485,8 @@ sequenceDiagram
     end
     W->>LLM: Call planner (reasoning tier)
     LLM->>W: Plan with ordered steps
+    W->>W: Plan preflight (deterministic structural checks)
+    Note over W: Rejected -> re-plan with the violations<br/>(3 attempts total, then halt)
 
     Note over W: Execution phase (per step)
     loop For each step in plan
@@ -531,7 +533,33 @@ Playbook entries are injected into future contexts (priority 5, D47). The schedu
 
 ### Planner evaluation
 
-`eval/` scores planner output with deterministic plan-structure checks (`eval/deterministic.py`) and LLM-as-judge (`eval/judge.py`), with baseline/candidate comparison (`eval/runner.py`). CLI: `forge eval-planner`. Not yet wired as a release gate — see OVERVIEW tech debt.
+`eval/` scores planner output with deterministic plan-structure checks (`eval/deterministic.py`) and LLM-as-judge (`eval/judge.py`), with baseline/candidate comparison (`eval/runner.py`). CLI: `forge eval-planner`. Not yet wired as a release gate — see OVERVIEW tech debt. Since T5.6 the check *logic* lives in `forge/plan_checks.py` and is shared with the live plan preflight gate (below); `eval/deterministic.py` is its result-model presentation.
+
+### Plan preflight gate (T5.6)
+
+Planner output is checked for structural defects before any step runs. The
+checks are pure and live once in `forge/plan_checks.py`; the gate runs the
+`PREFLIGHT_CHECKS` subset — duplicate step ids, duplicate sub-task ids among
+siblings, overlapping sub-task target files, absolute/`..` target paths, and
+leaf nodes with no declared output — from `blocks/dispatch.py::dispatch_planner`,
+the single seam every planner call on both lanes passes through. All checks
+recurse into nested `sub_tasks`.
+
+A rejected plan is re-planned with the specific violations appended to the
+planner's context, up to `MAX_PLANNER_ATTEMPTS` (3) attempts total, no backoff
+(a preflight failure is semantic, not transient) and thinking escalated on the
+last one. After the third the run halts cleanly with
+`failure_kind="plan_preflight"` (Principle 5). The same checks run on a sanity
+check's REVISE splice (`plan_checks.splice_revision`), together with a step cap
+and a revision cap; a rejected splice is `failure_kind="plan_revision"`. The
+cap *catches* rather than counts: reconstructing an over-cap `Plan` inside
+workflow code raises a pydantic `ValidationError`, which Temporal retries as a
+workflow task indefinitely — a hung run rather than a failed one.
+
+The four remaining eval checks are deliberately not gates: two need the repo
+file set (I/O the workflow cannot do without adding an activity), and two are
+quality judgments whose false positives would kill a run. See
+`PREFLIGHT_CHECKS`'s docstring.
 
 ### Store externalization & survivable writes
 
