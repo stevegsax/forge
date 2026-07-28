@@ -10,7 +10,11 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 - [PHASES.md](docs/PHASES.md) — the 14-phase roadmap (1–12 + 14 done with module map; 13 deferred).
 - [development-plans/TASKS.md](development-plans/TASKS.md) — live task list (completed vs uncompleted).
 - [development-plans/PROCESS.md](development-plans/PROCESS.md) — how to pick up and work a task.
-- [development-plans/HANDOFF-2026-07-25-t5.3-start.md](development-plans/HANDOFF-2026-07-25-t5.3-start.md) — **current state**: T5.2 (single step block) complete + versioned worker identities + the D103 pinned-prod deploy model (adopted live); operating notes (prod deploys via `make prod-deploy`, step-block conventions, replay status); next task is T5.3.
+- [development-plans/SDLC.md](development-plans/SDLC.md) — the end-to-end development lifecycle: roles (the agent model split), the task flow from queue to production, the records-ownership map, and the standing directives.
+- [development-plans/HANDOFF-2026-07-27-t5.6-start.md](development-plans/HANDOFF-2026-07-27-t5.6-start.md) — **current state**: T5.5 (harness rebuild + replay tests — `ScenarioState` harness, identity-keyed scripting, histories 6 → 13, the ~1/8 flake fixed at its mechanism) complete as `66b5ec2`; next task is T5.6 (plan preflight gate, owner-ruled retry policy).
+- [development-plans/HANDOFF-2026-07-27-t5.5-start.md](development-plans/HANDOFF-2026-07-27-t5.5-start.md) — T5.4 (split the monolith, `7dd43f7`) complete + the premise-level plan review of the remaining queue and the first owner rulings; next task is T5.5.
+- [development-plans/HANDOFF-2026-07-26-t5.4-start.md](development-plans/HANDOFF-2026-07-26-t5.4-start.md) — T5.3 (single gather + dispatch; `83a2e07` + `006e599`) complete, replay 7/7 with zero regenerations; next task is T5.4.
+- [development-plans/HANDOFF-2026-07-25-t5.3-start.md](development-plans/HANDOFF-2026-07-25-t5.3-start.md) — T5.2 (single step block) complete + versioned worker identities + the D103 pinned-prod deploy model (adopted live); operating notes (prod deploys via `make prod-deploy`, step-block conventions, replay status); next task is T5.3.
 - [development-plans/HANDOFF-2026-07-24-t5.2-start.md](development-plans/HANDOFF-2026-07-24-t5.2-start.md) — T5.1 (pure step logic) complete + lane-scoped worker restarts + pbook in prod; operating notes (which lane restarts how, step_logic conventions).
 - [development-plans/HANDOFF-2026-07-23-phase5-start.md](development-plans/HANDOFF-2026-07-23-phase5-start.md) — Phases 0–4 + T4.4 + T0.9 + staging lane complete; operating notes (env guard, dev namespace, worker pair).
 - [development-plans/HANDOFF-2026-07-21-phase5-start.md](development-plans/HANDOFF-2026-07-21-phase5-start.md) — the Phase 4 close record (T4.1–T4.3 detail; T4.4 spec adoption).
@@ -22,7 +26,7 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 ## Architecture & Decisions
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — how Forge works: universal workflow step, execution modes, context assembly, batch-vs-sync, key data models, module map, and subsystems beyond the core loop.
-- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D102, with supersession/stale markers.
+- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D103, with supersession/stale markers.
 
 ## Requirements
 

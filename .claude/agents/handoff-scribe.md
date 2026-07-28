@@ -1,6 +1,6 @@
 ---
 name: handoff-scribe
-description: Performs the forge handoff sweep (Opus) — writes the next HANDOFF-*-start.md and truth-passes CLAUDE.md + docs/OVERVIEW.md, re-deriving every factual claim from commands and files. Dispatch it at task/session close with a summary of what landed and the next task. It never commits.
+description: Performs the forge handoff sweep (Opus) — writes the next HANDOFF-*-start.md and truth-passes the status-of-record (CLAUDE.md, docs/OVERVIEW.md, TOC.md), re-deriving every factual claim from commands and files. Dispatch it at task/session close with a summary of what landed and the next task. It never commits.
 model: opus
 ---
 

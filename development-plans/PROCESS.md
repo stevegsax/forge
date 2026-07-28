@@ -1,6 +1,15 @@
 # Development Process
 
-This document describes the workflow for working on tasks in `development-plans/`.
+This document describes the workflow for working on tasks in
+`development-plans/`. It is the task-lifecycle detail; the end-to-end
+map — roles, the dispatch model, records ownership, and the standing
+directives — is [SDLC.md](SDLC.md).
+
+Actors (defined in [SDLC.md](SDLC.md)): the planning session works the
+task file end to end — Plan, Sub-tasks, Development Notes, close-out
+records; implementation is dispatched to the `implementation-driver`
+agent with hard-bounded scopes, and its reports feed Development Notes;
+the owner gates every commit.
 
 ## Creating a Task File
 
@@ -36,6 +45,15 @@ matches weight (substantial tasks 3–6 paragraphs, small mechanical ones
 1. Open [TASKS.md](TASKS.md) and find the next unchecked task
 2. Check the Dependencies section -- skip tasks whose dependencies are incomplete
 3. Open the task file for full context
+4. Reconcile the task file against the current tree before planning
+   (**pickup reconciliation**): re-derive its premises — do the named
+   files, symbols, line references, and counts still hold; does the
+   stated problem still exist; has a landed task, a recorded amendment
+   (TASKS.md preamble, plan reviews), or a decision changed the scope?
+   Record drift as a dated amendment section (spec-level) or a
+   Development Note (detail-level) before writing the Plan. Task specs
+   age while queued: T5.4's premise was largely consumed by T5.1–T5.3
+   and was re-baselined by owner adjudication at exactly this step
 
 ## Before Coding
 
@@ -59,13 +77,31 @@ matches weight (substantial tasks 3–6 paragraphs, small mechanical ones
 
 ## After Coding
 
-1. Run the verification steps listed in the task file
-2. Revisit the **Background and Detailed Explanation**: flip it to past
+1. Run the verification steps listed in the task file, then the
+   workspace gates (`make gates`) for any change-set touching code;
+   markdown-only change-sets run `markdownlint-cli2` on the touched
+   files instead
+2. Record the gate results in Development Notes — suite counts,
+   coverage, mypy/lint outcomes. The handoff sweep cites these recorded
+   numbers and never re-runs gates, so an unrecorded result is lost to
+   the record
+3. Record the replay outcome in Development Notes: committed histories
+   passing unregenerated are the behavior-preservation proof;
+   regeneration (of a named subset) is justified only by a deliberate
+   workflow-logic change, and the note names it
+4. Revisit the **Background and Detailed Explanation**: flip it to past
    tense and fold in what actually shipped (Development-Note surprises,
    superseded pieces) so the explanation stays true of the as-built work
-3. Update the task file's **Status** to `DONE`
-4. Check off the task in [TASKS.md](TASKS.md) immediately
-5. Append a row to [CHANGELOG.md](CHANGELOG.md)
+5. Update the task file's **Status** to `DONE`
+6. Check off the task in [TASKS.md](TASKS.md) immediately
+7. Append a row to [CHANGELOG.md](CHANGELOG.md)
+8. Close the unit of work with the handoff sweep
+   ([.claude/skills/handoff-sweep/SKILL.md](../.claude/skills/handoff-sweep/SKILL.md),
+   run inline or dispatched to `handoff-scribe`); it ends with a
+   suggested commit message
+9. Nothing in this list commits, and deploying is a separate owner
+   decision — the owner commits on explicit word only
+   ([SDLC.md](SDLC.md#task-flow))
 
 ## Specification Changes
 

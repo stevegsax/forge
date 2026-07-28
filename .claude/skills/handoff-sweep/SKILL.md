@@ -1,6 +1,6 @@
 ---
 name: handoff-sweep
-description: Perform the forge handoff sweep — write the next HANDOFF-*-start.md and truth-pass the status-of-record (CLAUDE.md, docs/OVERVIEW.md) so every factual claim is re-derived, never copied forward. Use when the user says "update the handoff", "handoff sweep", "write the handoff", or is closing a task/session. Runs inline or dispatched to the handoff-scribe agent. Never commits.
+description: Perform the forge handoff sweep — write the next HANDOFF-*-start.md and truth-pass the status-of-record (CLAUDE.md, docs/OVERVIEW.md, TOC.md) so every factual claim is re-derived, never copied forward. Use when the user says "update the handoff", "handoff sweep", "write the handoff", or is closing a task/session. Runs inline or dispatched to the handoff-scribe agent. Never commits.
 ---
 
 # Handoff sweep
@@ -68,15 +68,14 @@ previous handoff's skeleton, replace every fact:
    owner's rationale in one sentence each.
 6. **"What to know before touching anything"** — numbered; each item is
    a hazard, constraint, or open question with its mechanism, not a bare
-   caveat. Always include: the standing constraints paragraph (presets
-   from `forge/presets.py` only — values are ScheduleActivityTask
-   command attributes; no inline block copies in the `forge/workflows/`
-   drivers; no compat shims; `sync_mode=True` default in workflow tests;
-   commits only on the owner's word; implementation via
-   `implementation-driver` with hard-bounded scopes; mechanism-level
-   explanations; challenge weak arguments, don't praise; `rg -n` never
-   `rg -rn`; never start a wrapped `.md` prose line with `+`). List any
-   open owner adjudications explicitly with a do-not-act instruction.
+   caveat. Always include: the standing-directives paragraph,
+   reproduced from `development-plans/SDLC.md` § Standing directives
+   **as it reads during this run** — every item, compact prose form is
+   fine. That section is the list's canonical home; never source the
+   list from the previous handoff (an item added or retired in SDLC.md
+   must reach the next session even when the previous handoff predates
+   the change). List any open owner adjudications explicitly with a
+   do-not-act instruction.
 7. **"Where to start"** — the next task's read order and first moves;
    note that pickup reconciliation still applies.
 
@@ -95,8 +94,15 @@ Edit only statements the landed work falsified; do not restyle.
   any sentence the landed work made false — fix it in place.
 - **docs/OVERVIEW.md**: the migration-status bullet gains the landed
   sentence and its `**Next: …**` pointer moves.
-- **Consistency check** (all three must agree): CLAUDE.md "Next up",
-  OVERVIEW "Next", and the first unchecked task in TASKS.md.
+- **TOC.md**: point the "current state" handoff line at the handoff
+  this sweep wrote (the superseded entry stays in the history list,
+  keeping its one-line summary without the marker), and fix any other
+  line the landed work falsified — the DECISIONS.md range is the
+  recurring one. Added 2026-07-27 after TOC.md drifted three handoffs
+  stale as the one standing record no procedure owned.
+- **Consistency check** (all must agree): CLAUDE.md "Next up",
+  OVERVIEW "Next", the first unchecked task in TASKS.md, and TOC.md's
+  current-state pointer naming the handoff written in Step 2.
 - **Prod claims**: anywhere the records state what production runs, the
   value must equal Step 1's prod SHA.
 
