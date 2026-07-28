@@ -138,6 +138,36 @@ local checkout with no network and no clone, and it can only ever land a
 commit that already exists. Detached HEAD keeps the pin a fixed commit
 rather than a name that can move under the running system.
 
+**Before deploying, check for in-flight workflows** (added 2026-07-28,
+after T5.6 made the hazard concrete):
+
+```bash
+temporal workflow list --query 'ExecutionStatus="Running"'   # prod = default namespace
+```
+
+Why. A worker restart makes every running workflow **replay its recorded
+history on the new code**, so a deploy is safe for in-flight runs only
+when the new code accepts everything those histories already recorded.
+T5.6 supplies both live examples: a running planned workflow whose
+recorded plan the preflight gate now rejects replays into a different
+command sequence (a second planner call where the history holds the next
+step) and fails with `NondeterminismError`; a history holding an
+empty-`LLMResponse` payload (`files=[]` and `edits=[]`) no longer
+deserializes at all. In either case Temporal retries the failed workflow
+task forever — the run hangs until a human terminates or resets it;
+nothing else is affected. The same reasoning applies to any future
+deploy that changes workflow code, tightens a model validator, or
+touches an activity preset (`forge/presets.py` values are
+ScheduleActivityTask command attributes).
+
+An empty list makes the deploy a non-event — deploy freely. If runs are
+in flight, either wait for them to drain (a batch-lane wait can hold a
+run open for hours; the poll loop surfaces in the list as a running
+workflow), or proceed knowing that any run whose history the new code
+rejects will need `temporal workflow terminate` (or a reset) after the
+restart. The check is deliberately manual: whether an in-flight run may
+be sacrificed is a judgment call, not a script's.
+
 Deploy:
 
 ```bash
