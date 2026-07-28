@@ -208,6 +208,26 @@ def _iter_task_stats(task_result: TaskResult) -> Iterator[LLMStats]:
         yield from _iter_node_stats(step)
 
 
+def sum_llm_stats(stats: Sequence[LLMStats]) -> LLMStats | None:
+    """Fold several calls into one stats row; ``None`` when there were none.
+
+    Token counts and latency add. ``model_name`` and ``stop_reason`` come from
+    the last call, because a sum has no single one of either — in practice every
+    call folded here (the preflight halt's planner attempts) ran on one model.
+    """
+    if not stats:
+        return None
+    return LLMStats(
+        model_name=stats[-1].model_name,
+        input_tokens=sum(s.input_tokens for s in stats),
+        output_tokens=sum(s.output_tokens for s in stats),
+        latency_ms=sum(s.latency_ms for s in stats),
+        cache_creation_input_tokens=sum(s.cache_creation_input_tokens for s in stats),
+        cache_read_input_tokens=sum(s.cache_read_input_tokens for s in stats),
+        stop_reason=stats[-1].stop_reason,
+    )
+
+
 def llm_totals(task_result: TaskResult) -> LLMRunTotals:
     """Aggregate every surviving LLM call in the finished result tree (D97).
 
@@ -215,7 +235,18 @@ def llm_totals(task_result: TaskResult) -> LLMRunTotals:
     stats. Slimming keeps every node's stats, so this is stable whether computed
     before or after slimming. See :class:`LLMRunTotals` for the known limitation
     (retried attempts are not in the tree).
+
+    **Already-computed totals win.** A builder that knows about calls the result
+    tree cannot hold computes its own and this returns it untouched, rather than
+    re-deriving a smaller number from the tree. Exactly one builder does that:
+    :func:`plan_preflight_failure`, where *no* attempt survived — its three
+    rejected planner calls exist only as the halt's own record, and reporting
+    ``call_count=1`` for a run that paid three times would be a lie. Every other
+    path leaves ``llm_totals`` unset, so ``run()`` can call this once and cover
+    them all.
     """
+    if task_result.llm_totals is not None:
+        return task_result.llm_totals
     return LLMRunTotals.from_stats(_iter_task_stats(task_result))
 
 
@@ -316,7 +347,7 @@ def plan_preflight_failure(
     error: str,
     worktree_path: str,
     worktree_branch: str,
-    planner_stats: LLMStats,
+    planner_attempts: Sequence[LLMStats],
 ) -> TaskResult:
     """Terminal TaskResult when no acceptable plan was produced (T5.6).
 
@@ -324,6 +355,13 @@ def plan_preflight_failure(
     ran, so the result carries only the planner's own spend and the worktree the
     run created — which is deliberately left in place, like every other terminal
     planned failure, for inspection.
+
+    ``planner_attempts`` is *every* rejected attempt, so the spend the run
+    actually incurred is what the result reports: ``planner_stats`` is their sum
+    and ``llm_totals`` counts them individually (the one place a result's totals
+    cover non-surviving calls — see :func:`llm_totals`). A run that *recovers*
+    on a retry keeps ordinary D97 semantics and reports only the accepted call;
+    the interactions table is the authoritative record of both.
     """
     return TaskResult(
         task_id=task_id,
@@ -332,7 +370,8 @@ def plan_preflight_failure(
         failure_kind="plan_preflight",
         worktree_path=worktree_path,
         worktree_branch=worktree_branch,
-        planner_stats=planner_stats,
+        planner_stats=sum_llm_stats(planner_attempts),
+        llm_totals=LLMRunTotals.from_stats(planner_attempts),
     )
 
 

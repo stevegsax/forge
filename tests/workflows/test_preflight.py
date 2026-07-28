@@ -8,8 +8,12 @@ splice. The pure decision surface — which findings each check produces, and wh
 ``tests/test_plan_checks.py``; these tests prove the workflow acts on it.
 
 Written in the T5.5 harness: one ``ScenarioState`` per test, scripting keyed by
-identity, ``sync_mode=True`` (no scenario here exercises the batch transport —
-the gate is lane-independent by construction, since it sits above the lane fork).
+identity. Most scenarios run ``sync_mode=True``, where a planner attempt is one
+activity; :class:`TestPreflightOnTheBatchLane` runs the same two verdicts with
+``sync_mode=False``, where each attempt is a whole submit → poll → fetch → parse
+cycle. The gate sits above the lane fork, so lane-independence is a claim about
+the code's shape — those tests are what make it an observed fact, including that
+a retry mints a *fresh* batch request rather than re-reading the rejected one.
 """
 
 from typing import TYPE_CHECKING
@@ -43,6 +47,10 @@ PLANNED_INPUT = ForgeTaskInput(
     sync_mode=True,
 )
 
+# The same planned run on the batch transport: every planner attempt becomes a
+# submit -> poll -> fetch -> parse cycle instead of one activity call.
+BATCH_PLANNED_INPUT = PLANNED_INPUT.model_copy(update={"sync_mode": False})
+
 GOOD_PLAN = Plan(
     task_id="preflight-task",
     steps=[
@@ -50,6 +58,14 @@ GOOD_PLAN = Plan(
         PlanStep(step_id="s2", description="Create API.", target_files=["api.py"]),
     ],
     explanation="Two clean steps.",
+)
+
+# The cheapest acceptable plan: one step, whose target is what the harness's
+# default generation response writes.
+ONE_STEP_PLAN = Plan(
+    task_id="preflight-task",
+    steps=[PlanStep(step_id="s1", description="Create hello.", target_files=["hello.py"])],
+    explanation="One clean step.",
 )
 
 # Two steps sharing an id: the second would re-run the first's identity.
@@ -159,13 +175,33 @@ class TestPreflightHalt:
         assert [type(req).__name__ for req in state.persisted].count("PersistRun") == 1
 
     async def test_halt_reports_the_planner_spend(self, env: "WorkflowEnvironment") -> None:
+        """All three attempts, not just the last: the run paid for all three."""
         state = ScenarioState(plan=DUPLICATE_ID_PLAN)
         result = await run_task(env, PLANNED_INPUT, state, workflow_id="test-preflight-halt-spend")
 
+        assert state.count("call_planner") == 3
         assert result.planner_stats is not None
-        assert result.planner_stats.input_tokens == 300
+        # Each mocked planner call is 300 input / 150 output tokens.
+        assert result.planner_stats.input_tokens == 900
+        assert result.planner_stats.output_tokens == 450
         assert result.llm_totals is not None
-        assert result.llm_totals.call_count == 1
+        assert result.llm_totals.call_count == 3
+        assert result.llm_totals.input_tokens == 900
+
+    async def test_halt_error_names_every_attempt(self, env: "WorkflowEnvironment") -> None:
+        """The wording is the whole halt, not a snapshot of its last attempt."""
+        state = ScenarioState(
+            plan_sequence={
+                "preflight-task": [DUPLICATE_ID_PLAN, OVERLAPPING_PLAN, DUPLICATE_ID_PLAN]
+            }
+        )
+        result = await run_task(env, PLANNED_INPUT, state, workflow_id="test-preflight-halt-error")
+
+        error = result.error or ""
+        assert "after 3 planner attempts" in error
+        assert "attempt 1: duplicate_step_ids: s1" in error
+        assert "attempt 2: overlapping_sub_task_targets: fan-step: shared.py" in error
+        assert "attempt 3: duplicate_step_ids: s1" in error
 
     async def test_nested_violation_is_caught(self, env: "WorkflowEnvironment") -> None:
         """Two grandchildren sharing an id — three levels of plan, one gate."""
@@ -177,6 +213,73 @@ class TestPreflightHalt:
         assert "duplicate_sub_task_ids: fan-step/st1/gc1" in (result.error or "")
         # The fan-out never started: no child was ever assembled.
         assert not state.called("assemble_sub_task_context")
+
+
+class TestPreflightOnTheBatchLane:
+    """The same two verdicts with ``sync_mode=False`` — one batch cycle per attempt.
+
+    On this lane a rejected plan is expensive in a way the sync lane hides: each
+    attempt is its own provider round trip, and the retry must mint a *new*
+    request rather than re-reading the rejected one's stored bytes. Batch-lane
+    identity is recovered from the ``request_id`` the way the real transport
+    does, so the parse mock hands each attempt its own scripted plan.
+    """
+
+    @staticmethod
+    def _plan_submits(state: ScenarioState) -> list[str]:
+        """The request_id of every planner submit, in order."""
+        return [s.request_id for s in state.submits if s.output_type_name == "Plan"]
+
+    async def test_rejected_then_accepted(self, env: "WorkflowEnvironment") -> None:
+        state = ScenarioState(plan_sequence={"preflight-task": [DUPLICATE_ID_PLAN, ONE_STEP_PLAN]})
+        result = await run_task(
+            env, BATCH_PLANNED_INPUT, state, workflow_id="test-preflight-batch-retry"
+        )
+
+        assert result.status == TransitionSignal.SUCCESS
+        assert result.plan is not None
+        assert [s.step_id for s in result.plan.steps] == ["s1"]
+        # Two full planner cycles, each with its own request — a retry is a new
+        # submission, not a re-read of the rejected one.
+        request_ids = self._plan_submits(state)
+        assert len(request_ids) == 2
+        assert len(set(request_ids)) == 2
+        assert state.call_log.count("parse_llm_response:Plan") == 2
+        # ...then the step's own batch cycle. The sync lane was never touched.
+        assert state.call_log.count("submit_batch_request:LLMResponse") == 1
+        assert not state.called("call_planner")
+        assert not state.called("call_llm")
+        # D97 boundary: the run recovered, so it reports its *surviving* calls —
+        # the accepted planner call (300) and the generation call — exactly as a
+        # step that succeeds on its second attempt reports one generation.
+        assert result.planner_stats is not None
+        assert result.planner_stats.input_tokens == 300
+        assert result.llm_totals is not None
+        assert result.llm_totals.call_count == 2
+
+    async def test_three_strikes_halts(self, env: "WorkflowEnvironment") -> None:
+        state = ScenarioState(plan=DUPLICATE_ID_PLAN)
+        result = await run_task(
+            env, BATCH_PLANNED_INPUT, state, workflow_id="test-preflight-batch-halt"
+        )
+
+        assert result.status == TransitionSignal.FAILURE_TERMINAL
+        assert result.failure_kind == "plan_preflight"
+        assert "after 3 planner attempts" in (result.error or "")
+        # Three distinct planner batch cycles and no step at all.
+        assert len(set(self._plan_submits(state))) == 3
+        assert state.call_log.count("parse_llm_response:Plan") == 3
+        assert not state.called("assemble_step_context")
+        assert "submit_batch_request:LLMResponse" not in state.call_log
+        # All three attempts are the reported spend (300 input tokens each).
+        assert result.planner_stats is not None
+        assert result.planner_stats.input_tokens == 900
+        assert result.llm_totals is not None
+        assert result.llm_totals.call_count == 3
+        # The halt is a returned result, so the run is on the ledger like any other.
+        runs = [req for req in state.persisted if req.kind == "run"]
+        assert len(runs) == 1
+        assert runs[0].task_result.failure_kind == "plan_preflight"
 
 
 class TestReviseCap:

@@ -54,6 +54,21 @@ plus two of its stretch set:
 - ``worktree_reset_retry_sync`` — a planned step that fails validation once,
   so ``reset_worktree_activity`` appears before the retry.
 
+T5.6's follow-up added three more, also on the sync lane, covering the plan
+*failure* paths no committed history exercised — before them, every history
+recorded a plan the gate accepted first time:
+
+- ``preflight_retry_sync`` — the planner returns a plan with duplicate step ids,
+  the gate rejects it, and the second attempt's clean plan runs to SUCCESS. Pins
+  the reject → second-planner-call sequence inside a surviving run.
+- ``preflight_halt_sync`` — three rejected plans in a row: three planner calls,
+  no step, ``failure_kind="plan_preflight"``.
+- ``plan_revision_halt_sync`` — a planned run whose first step succeeds and whose
+  sanity check returns a REVISE carrying structurally invalid steps (an id the
+  completed step already used), so the splice is refused:
+  ``failure_kind="plan_revision"``. (An over-cap splice would prove the same
+  branch, but a 25-step plan bloats the committed history.)
+
 **Selecting scenarios:** with no arguments every scenario is regenerated (what
 ``make replay-histories`` does). Pass names to regenerate only those::
 
@@ -109,6 +124,9 @@ from forge.models import (
     PlanStep,
     RemoveWorktreeInput,
     ResetWorktreeInput,
+    SanityCheckCallResult,
+    SanityCheckResponse,
+    SanityCheckVerdict,
     SubTask,
     TaskDefinition,
     TransitionSignal,
@@ -745,6 +763,96 @@ async def _scenario_worktree_reset_retry_sync(env: WorkflowEnvironment) -> list[
     return [(workflow_id, _write_history(workflow_id, await _fetch_history(env, workflow_id)))]
 
 
+# ---------------------------------------------------------------------------
+# T5.6 follow-up scenarios — the plan failure paths (sync lane)
+# ---------------------------------------------------------------------------
+
+
+def _duplicate_id_plan(task_id: str) -> Plan:
+    """A plan the preflight gate rejects: two steps sharing one id."""
+    return Plan(
+        task_id=task_id,
+        steps=[
+            PlanStep(step_id="s1", description="Create a.py.", target_files=["a.py"]),
+            PlanStep(step_id="s1", description="Create b.py.", target_files=["b.py"]),
+        ],
+        explanation="Duplicate step ids.",
+    )
+
+
+def _one_step_plan(task_id: str) -> Plan:
+    """The clean plan a retry returns: one step, one target."""
+    return Plan(
+        task_id=task_id,
+        steps=[PlanStep(step_id="s1", description="Create hello.py.", target_files=["hello.py"])],
+        explanation="One clean step.",
+    )
+
+
+async def _scenario_preflight_retry_sync(env: WorkflowEnvironment) -> list[tuple[str, int]]:
+    """Rejected plan → second planner call → the accepted plan runs to SUCCESS."""
+    workflow_id = "preflight_retry_sync"
+    state = ScenarioState(
+        plan_sequence={workflow_id: [_duplicate_id_plan(workflow_id), _one_step_plan(workflow_id)]}
+    )
+    await _run_harness_scenario(
+        env, workflow_id=workflow_id, task_input=_sync_task(workflow_id, plan=True), state=state
+    )
+    return [(workflow_id, _write_history(workflow_id, await _fetch_history(env, workflow_id)))]
+
+
+async def _scenario_preflight_halt_sync(env: WorkflowEnvironment) -> list[tuple[str, int]]:
+    """Three rejected plans → three planner calls, no step, a terminal halt."""
+    workflow_id = "preflight_halt_sync"
+    # ``plan`` (rather than ``plan_sequence``) is returned by every planner call,
+    # so all three attempts are rejected.
+    state = ScenarioState(plan=_duplicate_id_plan(workflow_id))
+    await _run_harness_scenario(
+        env, workflow_id=workflow_id, task_input=_sync_task(workflow_id, plan=True), state=state
+    )
+    return [(workflow_id, _write_history(workflow_id, await _fetch_history(env, workflow_id)))]
+
+
+async def _scenario_plan_revision_halt_sync(env: WorkflowEnvironment) -> list[tuple[str, int]]:
+    """A REVISE the splice refuses: the revised step reuses a completed step's id."""
+    workflow_id = "plan_revision_halt_sync"
+    state = ScenarioState(
+        plan=Plan(
+            task_id=workflow_id,
+            steps=[
+                PlanStep(step_id="s1", description="Step 1.", target_files=["a.py"]),
+                PlanStep(step_id="s2", description="Step 2.", target_files=["b.py"]),
+            ],
+            explanation="Two steps; the first triggers a sanity check.",
+        ),
+        sanity_responses={
+            workflow_id: [
+                SanityCheckCallResult(
+                    task_id=workflow_id,
+                    response=SanityCheckResponse(
+                        verdict=SanityCheckVerdict.REVISE,
+                        explanation="Rework the rest.",
+                        revised_steps=[
+                            PlanStep(step_id="s1", description="Again.", target_files=["c.py"])
+                        ],
+                    ),
+                    model_name="mock-reasoning",
+                    input_tokens=200,
+                    output_tokens=100,
+                    latency_ms=300.0,
+                )
+            ]
+        },
+    )
+    await _run_harness_scenario(
+        env,
+        workflow_id=workflow_id,
+        task_input=_sync_task(workflow_id, plan=True, sanity_check_interval=1),
+        state=state,
+    )
+    return [(workflow_id, _write_history(workflow_id, await _fetch_history(env, workflow_id)))]
+
+
 def _sandbox_env() -> None:
     """Point every keyed reader at throwaway resources before anything imports.
 
@@ -773,6 +881,9 @@ SCENARIOS = {
     "sanity_check_sync": _scenario_sanity_check_sync,
     "conflict_resolution_sync": _scenario_conflict_resolution_sync,
     "worktree_reset_retry_sync": _scenario_worktree_reset_retry_sync,
+    "preflight_retry_sync": _scenario_preflight_retry_sync,
+    "preflight_halt_sync": _scenario_preflight_halt_sync,
+    "plan_revision_halt_sync": _scenario_plan_revision_halt_sync,
 }
 
 

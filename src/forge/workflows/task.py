@@ -345,7 +345,9 @@ class ForgeTaskWorkflow(DispatchHostBase):
                 error=planned.error,
                 worktree_path=wt_output.worktree_path,
                 worktree_branch=wt_output.branch_name,
-                planner_stats=build_llm_stats(planned.last_result),
+                # Every rejected attempt, not just the last: the run paid for all
+                # of them, so the terminal result reports all of them.
+                planner_attempts=[build_llm_stats(a.result) for a in planned.attempts],
             )
         plan: Plan = planned.plan
         p_stats = build_llm_stats(planned)

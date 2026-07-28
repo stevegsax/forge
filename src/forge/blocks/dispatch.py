@@ -95,6 +95,7 @@ __all__ = [
     "DispatchArm",
     "DispatchHost",
     "PersistFields",
+    "PlanAttempt",
     "PlanPreflightHalt",
     "call_stats",
     "conflict_result",
@@ -431,6 +432,18 @@ async def dispatch_generation(host: DispatchHost, context: AssembledContext) -> 
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PlanAttempt:
+    """One planner attempt the gate rejected: what it returned, and why.
+
+    Pairing the two means a halt cannot carry stats and violations that have
+    drifted out of alignment — there is no index invariant to get wrong.
+    """
+
+    result: PlanCallResult
+    violations: tuple[PlanViolation, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PlanPreflightHalt:
     """No structurally valid plan after :data:`MAX_PLANNER_ATTEMPTS` attempts (T5.6).
 
@@ -438,21 +451,29 @@ class PlanPreflightHalt:
     ``ApplicationError`` as a batch-wait failure (T1.6b), so raising would record
     this halt under the wrong ``failure_kind``. The caller turns it into a clean
     terminal result (Principle 5 — halt when confused).
+
+    **Every** rejected attempt is carried, not just the last. A halt that paid
+    for three planner calls must report three planner calls: the caller sums
+    :attr:`attempts` into the terminal result's ``planner_stats`` and its
+    ``llm_totals``, and the wording below names each attempt's own violations, so
+    "why did this halt cost that much?" is answerable from the result alone.
     """
 
-    attempts: int
-    violations: tuple[PlanViolation, ...]
-    last_result: PlanCallResult
-    """The final rejected attempt — kept for its LLM stats, so a halted run still
-    reports what the planner cost."""
+    attempts: tuple[PlanAttempt, ...]
+
+    @property
+    def attempt_count(self) -> int:
+        """How many planner calls the halt paid for."""
+        return len(self.attempts)
 
     @property
     def error(self) -> str:
-        """The terminal-result wording."""
-        return (
-            f"Plan rejected by preflight after {self.attempts} planner attempts: "
-            f"{violation_summary(self.violations)}"
+        """The terminal-result wording: every attempt, in order, with its violations."""
+        detail = "; ".join(
+            f"attempt {number}: {violation_summary(attempt.violations)}"
+            for number, attempt in enumerate(self.attempts, start=1)
         )
+        return f"Plan rejected by preflight after {self.attempt_count} planner attempts: {detail}"
 
 
 async def _plan_attempt(host: DispatchHost, planner_input: PlannerInput) -> PlanCallResult:
@@ -504,11 +525,13 @@ async def dispatch_planner(
     timer would add nothing on the sync lane and hours on the batch lane.
     """
     attempt_input = planner_input
+    rejected: list[PlanAttempt] = []
     for attempt in range(1, MAX_PLANNER_ATTEMPTS + 1):
         result = await _plan_attempt(host, attempt_input)
         violations = preflight_plan(result.plan)
         if not violations:
             return result
+        rejected.append(PlanAttempt(result=result, violations=violations))
         workflow.logger.warning(
             "Plan preflight rejected the plan: task_id=%s attempt=%d/%d violations=%s",
             planner_input.task_id,
@@ -517,7 +540,7 @@ async def dispatch_planner(
             violation_summary(violations),
         )
         if attempt == MAX_PLANNER_ATTEMPTS:
-            return PlanPreflightHalt(attempts=attempt, violations=violations, last_result=result)
+            return PlanPreflightHalt(attempts=tuple(rejected))
         attempt_input = _retry_input(attempt_input, violations, attempt=attempt + 1)
 
     # Unreachable: MAX_PLANNER_ATTEMPTS >= 1, so the loop always returns.

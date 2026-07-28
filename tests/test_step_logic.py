@@ -50,6 +50,7 @@ from forge.step_logic import (
     sub_task_terminal,
     sub_task_workflow_id,
     subtask_failure_summary,
+    sum_llm_stats,
 )
 
 
@@ -367,6 +368,43 @@ class TestLLMTotals:
         assert totals.llm_time_ms == 0.0
 
 
+class TestSumLLMStats:
+    """Several calls folded into one row (the preflight halt's planner attempts)."""
+
+    def test_none_when_there_were_no_calls(self) -> None:
+        assert sum_llm_stats([]) is None
+
+    def test_counts_add_and_identity_comes_from_the_last_call(self) -> None:
+        first = LLMStats(
+            model_name="opus-a",
+            input_tokens=300,
+            output_tokens=150,
+            latency_ms=500.0,
+            cache_creation_input_tokens=1,
+            cache_read_input_tokens=2,
+            stop_reason="end_turn",
+        )
+        last = LLMStats(
+            model_name="opus-b",
+            input_tokens=400,
+            output_tokens=200,
+            latency_ms=700.0,
+            cache_creation_input_tokens=3,
+            cache_read_input_tokens=4,
+            stop_reason="max_tokens",
+        )
+        folded = sum_llm_stats([first, last])
+        assert folded == LLMStats(
+            model_name="opus-b",
+            input_tokens=700,
+            output_tokens=350,
+            latency_ms=1200.0,
+            cache_creation_input_tokens=4,
+            cache_read_input_tokens=6,
+            stop_reason="max_tokens",
+        )
+
+
 # ---------------------------------------------------------------------------
 # id / timeout helpers
 # ---------------------------------------------------------------------------
@@ -441,18 +479,27 @@ class TestBuilderFailureKinds:
         assert result.failure_kind == "step_failed"
 
     def test_plan_preflight_failure_kind(self) -> None:
-        """T5.6: the halt carries the planner's spend and no plan (there is none)."""
+        """T5.6: the halt carries every attempt's spend and no plan (there is none)."""
         result = plan_preflight_failure(
             task_id="t",
             error="Plan rejected by preflight after 3 planner attempts: duplicate_step_ids: s1",
             worktree_path="/wt",
             worktree_branch="forge/t",
-            planner_stats=_stats(),
+            planner_attempts=[_stats(), _stats(), _stats()],
         )
         assert result.status == TransitionSignal.FAILURE_TERMINAL
         assert result.failure_kind == "plan_preflight"
         assert result.plan is None
-        assert result.planner_stats == _stats()
+        # The whole halt, not just the last attempt: three calls at 100/50 each.
+        assert result.planner_stats is not None
+        assert result.planner_stats.input_tokens == 300
+        assert result.planner_stats.output_tokens == 150
+        assert result.planner_stats.latency_ms == 600.0
+        assert result.llm_totals is not None
+        assert result.llm_totals.call_count == 3
+        # ...and run()'s one aggregation respects what this builder computed
+        # rather than re-deriving call_count=1 from the single summed row.
+        assert llm_totals(result) == result.llm_totals
 
     def test_missing_resolutions_owns_wording(self) -> None:
         missing = MissingResolutions(missing=("a.py", "b.py"))
