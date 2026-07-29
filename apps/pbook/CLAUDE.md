@@ -18,7 +18,7 @@ apply and the podman-backed conftest would run under the wrong config.
 All Python invocations go through `uv` — never call `python` or `pytest` directly.
 
 ```bash
-uv run pytest                         # full suite (coverage gate: 84%)
+uv run pytest                         # full suite (coverage gate: 85%)
 uv run pytest tests/test_store.py     # one file
 uv run pytest tests/test_store.py::test_save_entries_persists  # one test
 uv run pytest -k "duplicate"          # match by substring
@@ -30,7 +30,7 @@ uv run pbook migrate                  # apply Alembic migrations to the Postgres
 uv run pbook worker                   # start the Temporal worker on pbook-task-queue
 ```
 
-The store is PostgreSQL only (Supabase-hosted). Set `PBOOK_DATABASE_URL` to a `postgresql://` (or `postgresql+psycopg://`) connection string before running `migrate`, the worker, or the CLI; bare `postgresql://` URLs are normalized to the psycopg v3 driver. The worker runs migrations once at startup.
+The store is PostgreSQL only — since T0.9/D102 (2026-07-22) it is the `pbook` database in the local `forge-postgres` instance (Supabase retired; the `FORGE_ENV` guard and env profiles in the root CLAUDE.md's "Running the System" govern which instance a process reaches). Set `PBOOK_DATABASE_URL` to a `postgresql://` (or `postgresql+psycopg://`) connection string before running `migrate`, the worker, or the CLI; bare `postgresql://` URLs are normalized to the psycopg v3 driver. The worker runs migrations once at startup.
 
 The worker requires **both** LLM API keys in its environment: `ANTHROPIC_API_KEY` (the `sax_platform.llm` client used for extraction, review, and consolidation) and `OPENAI_API_KEY` (embeddings via `text-embedding-3-small`). A missing key no longer hangs — the LLM activities fail fast and non-retryably (see `src/pbook/workflow_steps/retry.py` and `_errors.py`), so an unset key surfaces as a failed workflow / `error` ingestion session rather than one stuck at `running`.
 

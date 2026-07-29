@@ -79,8 +79,11 @@ matches weight (substantial tasks 3–6 paragraphs, small mechanical ones
 
 1. Run the verification steps listed in the task file, then the
    workspace gates (`make gates`) for any change-set touching code;
-   markdown-only change-sets run `markdownlint-cli2` on the touched
-   files instead
+   markdown-only change-sets run `markdownlint-cli2 --config
+   <repo-root>/.markdownlint-cli2.jsonc` on the touched files instead
+   (the explicit `--config` matters: config discovery stops at the
+   invoking directory, so a bare run from a member directory silently
+   lints against tool defaults)
 2. Record the gate results in Development Notes — suite counts,
    coverage, mypy/lint outcomes. The handoff sweep cites these recorded
    numbers and never re-runs gates, so an unrecorded result is lost to

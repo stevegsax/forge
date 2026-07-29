@@ -83,10 +83,14 @@ previous handoff's skeleton, replace every fact:
 
 Edit only statements the landed work falsified; do not restyle.
 
-- **CLAUDE.md**: (a) the Landed paragraph's `(as of …)` date; (b) append
-  the landed-task sentence in house style — bold headline with date and
-  SHAs, what shipped, the proof (gates/replay as recorded), deviations
-  that matter forward; (c) the closing `**Phases … Next up: …**`
+- **CLAUDE.md**: (a) the Landed ledger's `(as of …)` date; (b) append
+  the landed unit's **one-liner** to the ledger's open-phase entry —
+  task id, date, SHA, what shipped in one sentence, the proof clause
+  (gates/replay as recorded), and any deviation that matters forward.
+  Per-task depth belongs to the CHANGELOG row, the task file, and the
+  handoff — never here. When a phase closes, collapse its one-liners
+  into a single phase sentence with pointers (the ledger form, adopted
+  2026-07-29); (c) the closing `**Phases … Next up: …**`
   sentence; (d) the Context bullet's current-handoff pointer (rotate the
   old one into the history list); (e) the Release Roadmap "Current"
   line; (f) scan the convention sections (Running the System, The
@@ -118,7 +122,9 @@ are run.
 ## Step 4 — verify
 
 ```bash
-markdownlint-cli2 <every file touched>        # zero errors
+# --config pins the repo config regardless of cwd: discovery stops at the
+# invoking directory, so a bare run from a member dir uses tool defaults.
+markdownlint-cli2 --config "$(git rev-parse --show-toplevel)/.markdownlint-cli2.jsonc" <every file touched>   # zero errors
 uv run pytest tests/test_replay.py --no-cov -q  # only if anything outside docs/ was touched
 ```
 
