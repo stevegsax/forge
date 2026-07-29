@@ -1,6 +1,0 @@
-# Match the repo's ruff line-length convention (100); prose tables and code
-# blocks are exempt from line-length checks.
-MD013:
-  line_length: 100
-  tables: false
-  code_blocks: false
