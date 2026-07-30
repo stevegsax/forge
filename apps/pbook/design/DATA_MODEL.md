@@ -5,7 +5,8 @@ see [REVIEW-2026-06.md](REVIEW-2026-06.md).*
 
 ## Database schema
 
-PostgreSQL (Supabase-hosted), all objects in the `pbook` schema and prefixed `pbk_`. Managed by
+PostgreSQL — since T0.9/D102 (2026-07-22) the `pbook` database in the local `forge-postgres`
+instance (Supabase retired) — all objects in the `pbook` schema and prefixed `pbk_`. Managed by
 Alembic with version table `pbook.pbk_alembic_version`, so pbook's migration chain never
 collides with another tenant of the same database.
 
