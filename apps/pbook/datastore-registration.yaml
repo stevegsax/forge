@@ -1,0 +1,21 @@
+# pbook's datastore registration — first-class product per the owner
+# ruling of 2026-07-30, superseding the earlier sketch of pbook as
+# extra databases under forge's role. Monorepo placement: pbook lives
+# at apps/pbook inside the forge repo, so this file sits here rather
+# than the repo root the template assumes — the approval record's
+# `file:` field carries the path. Flow:
+# sax-datastores/docs/registration.md
+slug: pbook
+stacks: [dev, prod]
+buckets: []
+extra_databases: {}
+extensions: []
+notes: >-
+  Cross-project knowledge store (playbooks/pitfalls) — a forge-monorepo
+  workspace member with its own Temporal worker (pbook-task-queue) and
+  its own Alembic chain (pbk_alembic_version). First-class so it gets
+  its own credential and blast radius, matching the temporal
+  registration's rationale. Uses pgvector (already in the canonical
+  image). Replaces pbook's tenancy in forge's databases; the dev lane
+  previously shared forge_dev, so pbook_dev gives dev prod-parity
+  topology for the first time.

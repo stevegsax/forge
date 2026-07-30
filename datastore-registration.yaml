@@ -1,0 +1,19 @@
+# forge's datastore registration — updates the grandfathered 2026-07-28
+# record (bare slug) by declaring the dev blob bucket. Flow:
+# sax-datastores/docs/registration.md. pbook, a workspace member of this
+# monorepo, registers separately as its own product per the owner ruling
+# of 2026-07-30 (apps/pbook/datastore-registration.yaml). Temporal is
+# org infrastructure (sax-temporal) — nothing temporal belongs here.
+slug: forge
+stacks: [dev, prod]
+buckets: [saxcapital-forge-blobs-dev]
+extra_databases: {}
+extensions: []
+notes: >-
+  General-purpose LLM task orchestrator (the forge monorepo). The forge
+  role's database also hosts the ocr app's tables under ocr's own
+  Alembic chain (alembic_version_ocr) by design — D102 in forge's
+  docs/DECISIONS.md; do not split ocr into its own slug.
+  saxcapital-forge-blobs-dev is the dev-lane blob bucket forge's legacy
+  minio-init creates today; prod blobs are AWS S3, outside this flow.
+  Needs pgvector, already in the canonical image.
