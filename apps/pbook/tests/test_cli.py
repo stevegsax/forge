@@ -69,7 +69,10 @@ class TestWorkerCommand:
         result = CliRunner().invoke(main, ["worker"])
 
         assert result.exit_code == 0
-        assert captured == {"address": "localhost:7233", "identity": None}
+        # No address default any more. The flag is an override and was not
+        # passed, so run_worker receives None and derives its target from
+        # FORGE_ENV (falling back to FORGE_TEMPORAL_ADDRESS via TemporalSettings).
+        assert captured == {"address": None, "identity": None}
 
     def test_identity_env_var_reaches_run_worker(self, monkeypatch) -> None:
         monkeypatch.setenv("FORGE_WORKER_IDENTITY", "prod-pbook-worker")
@@ -1168,15 +1171,18 @@ class TestEnvProfileFlag:
 
 
 class TestNamespaceCoherence:
-    """A ``--env dev`` profile carries its Temporal namespace into every connect."""
+    """The namespace is derived from the environment, never carried in config."""
 
-    def test_dev_profile_namespace_reaches_connect(self, tmp_path, restore_environ):
+    def test_dev_profile_derives_the_dev_namespace(self, tmp_path, monkeypatch, restore_environ):
         from unittest.mock import AsyncMock, patch
 
         from pbook.models import RetrievalResult
 
+        # The profile declares only the environment — no namespace, and no
+        # address: both are derived from FORGE_ENV_TAG=dev.
+        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
         profile = tmp_path / "dev.env"
-        profile.write_text("FORGE_ENV_TAG=dev\nFORGE_TEMPORAL_NAMESPACE=forge-dev\n")
+        profile.write_text("FORGE_ENV_TAG=dev\n")
 
         mock_client = AsyncMock()
         mock_client.execute_workflow.return_value = RetrievalResult()
@@ -1190,22 +1196,22 @@ class TestNamespaceCoherence:
         assert result.exit_code == 0, result.output
         mock_connect.assert_awaited_once()
         assert mock_connect.await_args.kwargs["namespace"] == "forge-dev"
+        assert mock_connect.await_args.args[0] == "127.0.0.1:7236"
 
-    def test_dev_env_without_namespace_refuses_to_connect(self, monkeypatch, restore_environ):
+    def test_dev_pointed_at_the_prod_server_refuses_to_connect(self, monkeypatch, restore_environ):
         from unittest.mock import AsyncMock, patch
 
-        # Dev without a declared namespace defaults to "default" — production's —
-        # so a Temporal-touching command exits 78 with the coherence message and
-        # never opens a connection.
+        # The failure the old namespace-name check could not catch: the
+        # environment is coherent, the *server* is production's.
         monkeypatch.setenv("FORGE_ENV", "dev")
-        monkeypatch.delenv("FORGE_TEMPORAL_NAMESPACE", raising=False)
+        monkeypatch.setenv("FORGE_TEMPORAL_ADDRESS", "127.0.0.1:7243")
 
         runner = CliRunner()
         with patch("pbook.cli.connect_temporal", new=AsyncMock()) as mock_connect:
             result = runner.invoke(main, ["search", "foo"])
 
         assert result.exit_code == EXIT_CONFIG_ERROR
-        assert "must not use the 'default'" in result.stderr
+        assert "FORGE_TEMPORAL_ADDRESS" in result.stderr
         mock_connect.assert_not_awaited()
 
     def test_pure_command_unaffected_by_namespace(self, monkeypatch, restore_environ):

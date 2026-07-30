@@ -11,7 +11,7 @@ import os
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from sax_platform.config import require_namespace_coherence, resolve_forge_env
+from sax_platform.config import resolve_forge_env, resolve_temporal_target
 from sax_platform.contracts.constants import FORGE_TASK_QUEUE
 from sax_platform.temporal.identity import require_clean_prod_code, stamped_worker_identity
 from sax_platform.temporal.worker import run_worker as _run_platform_worker
@@ -114,17 +114,16 @@ async def run_worker(
 
     settings = ForgeSettings()
 
-    # Enforce env/namespace coherence BEFORE any store or client setup: a dev/test
-    # worker must never poll production's namespace (or vice versa). An incoherent
-    # pairing raises ForgeEnvError here (message names the fix) so the worker fails
-    # fast, before it touches a database.
-    require_namespace_coherence(env, settings.temporal.namespace)
+    # Derive the Temporal target BEFORE any store or client setup: address and
+    # namespace both come from the declared environment, so a dev/test worker
+    # cannot be assembled to poll production's namespace (or vice versa). A bad
+    # address override raises ForgeEnvError here (message names the fix) so the
+    # worker fails fast, before it touches a database.
+    target = resolve_temporal_target(env, address_override=address or settings.temporal.address)
 
     _init_store(settings.db.url)
     init_tracing(settings.tracing.exporter)
     silence_noisy_loggers()
-
-    resolved_address = settings.temporal.address if address is None else address
 
     # Stamp the launch-time git version onto the identity, here rather than in the
     # CLI, so every entry point (CLI, launchd, tmux) reports it. The process binds
@@ -135,9 +134,9 @@ async def run_worker(
     identity = stamped_worker_identity(identity)
 
     client = await connect_temporal(
-        resolved_address,
+        target.address,
         identity=identity,
-        namespace=settings.temporal.namespace,
+        namespace=target.namespace,
         settings=settings.temporal,
     )
 

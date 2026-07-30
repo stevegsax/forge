@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from sax_platform.contracts.constants import (
     FORGE_TASK_QUEUE,
     OCR_TASK_QUEUE,
-    TEMPORAL_NAMESPACE,
+    PRODUCT_SLUG,
 )
 from sax_platform.contracts.models import (
     BatchJobStatus,
@@ -63,7 +63,7 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "FORGE_TASK_QUEUE",
     "OCR_TASK_QUEUE",
-    "TEMPORAL_NAMESPACE",
+    "PRODUCT_SLUG",
     "BatchJobStatus",
     "PersistBatchFailure",
     "PersistBatchOutcome",

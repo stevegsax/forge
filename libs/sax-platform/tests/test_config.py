@@ -18,12 +18,14 @@ from sax_platform.config import (
     LlmSettings,
     LogSettings,
     TemporalSettings,
+    TemporalTarget,
     parse_env_profile,
-    require_namespace_coherence,
     resolve_env_profile_path,
     resolve_forge_env,
+    resolve_temporal_target,
+    temporal_namespace_for,
 )
-from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
+from sax_platform.contracts.constants import PRODUCT_SLUG
 
 _ALL_ENV_VARS = (
     "FORGE_TEMPORAL_ADDRESS",
@@ -91,21 +93,29 @@ class TestTemporalSettings:
     def test_defaults_apply_when_unset(self) -> None:
         settings = TemporalSettings()
 
-        assert settings.address == "localhost:7233"
+        # No address default: unset means "no override", and the environment's
+        # canonical endpoint comes from resolve_temporal_target instead. A
+        # default here would silently point an unconfigured process somewhere.
+        assert settings.address is None
         assert settings.tls is False
         assert settings.tls_server_ca is None
         assert settings.tls_client_cert is None
         assert settings.tls_client_key is None
         assert settings.tls_server_name is None
 
-    def test_namespace_defaults_to_shared_namespace_when_unset(self) -> None:
-        # Prod sets nothing here, so the default must equal the shared namespace —
-        # production's behavior stays identical with zero config.
-        assert TemporalSettings().namespace == TEMPORAL_NAMESPACE == "default"
+    def test_address_is_none_when_unset(self) -> None:
+        # None means "no override" — resolve_temporal_target then supplies the
+        # environment's canonical endpoint.
+        assert TemporalSettings().address is None
 
-    def test_namespace_read_from_env_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FORGE_TEMPORAL_NAMESPACE", "forge-dev")
-        assert TemporalSettings().namespace == "forge-dev"
+    def test_no_namespace_field(self) -> None:
+        # The namespace is derived, never configured: there must be no field for
+        # an operator to set, and FORGE_TEMPORAL_NAMESPACE must be inert.
+        assert "namespace" not in TemporalSettings.model_fields
+
+    def test_namespace_env_var_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORGE_TEMPORAL_NAMESPACE", "default")
+        assert not hasattr(TemporalSettings(), "namespace")
 
     def test_frozen_instance_rejects_mutation(self) -> None:
         settings = TemporalSettings()
@@ -114,47 +124,95 @@ class TestTemporalSettings:
             settings.address = "mutated:7233"  # type: ignore[misc]
 
 
-class TestRequireNamespaceCoherence:
-    """The env/namespace coherence check is pure over its two inputs.
-
-    Prod must run in the shared ``default`` namespace; dev/test must run in any
-    other. This keeps a dev/test process off production's queues and schedules in
-    the shared Temporal server (and vice versa) — enforced at every connect.
-    """
+class TestTemporalNamespaceFor:
+    """The namespace is `<slug>-<env>` — sax-temporal/docs/namespaces.md."""
 
     @pytest.mark.parametrize(
-        ("env", "namespace"),
+        ("env", "expected"),
         [
-            # Prod IS the default namespace.
-            (ForgeEnv.PROD, "default"),
-            (ForgeEnv.PROD, TEMPORAL_NAMESPACE),
-            # Dev/test in any non-default namespace are coherent.
+            (ForgeEnv.PROD, "forge-prod"),
             (ForgeEnv.DEV, "forge-dev"),
             (ForgeEnv.TEST, "forge-test"),
-            (ForgeEnv.TEST, "anything-but-default"),
         ],
     )
-    def test_coherent_pairings_pass(self, env: ForgeEnv, namespace: str) -> None:
-        # A coherent pairing returns None and raises nothing.
-        assert require_namespace_coherence(env, namespace) is None
+    def test_namespace_is_slug_plus_env(self, env: ForgeEnv, expected: str) -> None:
+        assert temporal_namespace_for(env) == expected
+
+    def test_default_slug_is_the_product_slug(self) -> None:
+        assert temporal_namespace_for(ForgeEnv.DEV, slug=PRODUCT_SLUG) == "forge-dev"
+
+    def test_slug_is_overridable_for_a_second_product(self) -> None:
+        # pbook passes its own slug once T6.4 removes forge's cross-queue dispatch.
+        assert temporal_namespace_for(ForgeEnv.PROD, slug="pbook") == "pbook-prod"
+
+    @pytest.mark.parametrize("env", list(ForgeEnv))
+    def test_never_yields_a_bare_slug_or_default(self, env: ForgeEnv) -> None:
+        # The two names that must exist on no server. A suffix-less name would
+        # let a dropped suffix reach production instead of failing.
+        assert temporal_namespace_for(env) not in {PRODUCT_SLUG, "default"}
+
+
+class TestResolveTemporalTarget:
+    """Address and namespace are derived together, so they cannot disagree."""
 
     @pytest.mark.parametrize(
-        ("env", "namespace", "match"),
+        ("env", "expected"),
         [
-            # Prod in any non-default namespace is a mis-assembled prod env.
-            (ForgeEnv.PROD, "forge-dev", "requires the 'default'"),
-            (ForgeEnv.PROD, "forge-prod", "requires the 'default'"),
-            # Dev/test in the default namespace would poll production's work.
-            (ForgeEnv.DEV, "default", "must not use the 'default'"),
-            (ForgeEnv.TEST, "default", "must not use the 'default'"),
-            (ForgeEnv.DEV, TEMPORAL_NAMESPACE, "forge-dev"),
+            (ForgeEnv.PROD, TemporalTarget(address="127.0.0.1:7243", namespace="forge-prod")),
+            (ForgeEnv.DEV, TemporalTarget(address="127.0.0.1:7236", namespace="forge-dev")),
         ],
     )
-    def test_incoherent_pairings_raise_with_actionable_message(
-        self, env: ForgeEnv, namespace: str, match: str
+    def test_dev_and_prod_derive_the_whole_target(
+        self, env: ForgeEnv, expected: TemporalTarget
     ) -> None:
-        with pytest.raises(ForgeEnvError, match=match):
-            require_namespace_coherence(env, namespace)
+        assert resolve_temporal_target(env) == expected
+
+    @pytest.mark.parametrize("env", [ForgeEnv.PROD, ForgeEnv.DEV])
+    def test_override_restating_the_canonical_address_is_accepted(self, env: ForgeEnv) -> None:
+        canonical = resolve_temporal_target(env).address
+        assert resolve_temporal_target(env, address_override=canonical).address == canonical
+
+    @pytest.mark.parametrize(
+        ("env", "override"),
+        [
+            # The dev server, handed to a prod process: the mistake the old
+            # namespace-name check could not see, because it never read the address.
+            (ForgeEnv.PROD, "127.0.0.1:7236"),
+            (ForgeEnv.DEV, "127.0.0.1:7243"),
+            (ForgeEnv.PROD, "127.0.0.1:7233"),  # the retired legacy server
+            (ForgeEnv.DEV, "127.0.0.1:7233"),
+        ],
+    )
+    def test_wrong_server_for_the_environment_is_refused(
+        self, env: ForgeEnv, override: str
+    ) -> None:
+        with pytest.raises(ForgeEnvError, match="FORGE_TEMPORAL_ADDRESS"):
+            resolve_temporal_target(env, address_override=override)
+
+    def test_test_env_requires_an_explicit_address(self) -> None:
+        # The test server is an ephemeral per-job container on an arbitrary port,
+        # so there is nothing to fall back to.
+        with pytest.raises(ForgeEnvError, match="requires FORGE_TEMPORAL_ADDRESS"):
+            resolve_temporal_target(ForgeEnv.TEST)
+
+    def test_test_env_accepts_any_address_with_its_own_namespace(self) -> None:
+        target = resolve_temporal_target(ForgeEnv.TEST, address_override="127.0.0.1:54321")
+
+        assert target == TemporalTarget(address="127.0.0.1:54321", namespace="forge-test")
+
+    @pytest.mark.parametrize("env", [ForgeEnv.PROD, ForgeEnv.DEV])
+    def test_environments_never_share_an_address_or_a_namespace(self, env: ForgeEnv) -> None:
+        other = ForgeEnv.DEV if env is ForgeEnv.PROD else ForgeEnv.PROD
+        this, that = resolve_temporal_target(env), resolve_temporal_target(other)
+
+        assert this.address != that.address
+        assert this.namespace != that.namespace
+
+    def test_target_is_frozen(self) -> None:
+        target = resolve_temporal_target(ForgeEnv.DEV)
+
+        with pytest.raises(AttributeError):
+            target.namespace = "forge-prod"  # type: ignore[misc]
 
 
 class TestDbSettings:

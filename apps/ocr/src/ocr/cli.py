@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
     from temporalio.client import Client
 
-DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 EXIT_INFRASTRUCTURE_ERROR = 2
 #: ``tracker-status`` exit code reserved for "the probe could not answer" (config
 #: unset/invalid or the store unreachable). Kept distinct from the 0/1/2 liveness
@@ -113,7 +112,7 @@ def _apply_env_profile(env_value: str) -> None:
         os.environ["FORGE_ENV"] = env_value
 
 
-async def _connect_checked(address: str) -> Client:
+async def _connect_checked(address: str | None) -> Client:
     """Connect to Temporal after enforcing env/namespace coherence.
 
     The group callback already ran ``_require_forge_env`` (so FORGE_ENV is valid);
@@ -129,21 +128,24 @@ async def _connect_checked(address: str) -> Client:
     from sax_platform.config import (
         ForgeEnvError,
         TemporalSettings,
-        require_namespace_coherence,
         resolve_forge_env,
+        resolve_temporal_target,
     )
 
     settings = TemporalSettings()
     try:
-        require_namespace_coherence(resolve_forge_env(os.environ), settings.namespace)
+        target = resolve_temporal_target(
+            resolve_forge_env(os.environ),
+            address_override=address or settings.address,
+        )
     except ForgeEnvError as exc:
         click.echo(str(exc), err=True)
         sys.exit(EXIT_CONFIG_ERROR)
-    return await connect_temporal(address, namespace=settings.namespace, settings=settings)
+    return await connect_temporal(target.address, namespace=target.namespace, settings=settings)
 
 
 async def _start_and_wait(
-    workflow_name: str, arg: object, *, workflow_id: str, address: str, timeout_hours: float
+    workflow_name: str, arg: object, *, workflow_id: str, address: str | None, timeout_hours: float
 ) -> object:
     from datetime import timedelta
 
@@ -157,7 +159,7 @@ async def _start_and_wait(
     return await handle.result(rpc_timeout=timedelta(hours=timeout_hours))
 
 
-async def _start_submit(arg: object, *, workflow_id: str, address: str) -> str:
+async def _start_submit(arg: object, *, workflow_id: str, address: str | None) -> str:
     """Start OcrSubmitWorkflow and return its id WITHOUT awaiting its full run.
 
     The submit workflow now awaits its self-polling store children (up to the 25h
@@ -400,8 +402,9 @@ def main(env_profile: str | None) -> None:
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 @click.option(
     "--worker-identity",
@@ -412,7 +415,7 @@ def main(env_profile: str | None) -> None:
         "the launch-time git version is appended when known."
     ),
 )
-def worker_cmd(temporal_address: str, worker_identity: str | None) -> None:
+def worker_cmd(temporal_address: str | None, worker_identity: str | None) -> None:
     """Run the OCR Temporal worker (ocr-task-queue)."""
     from ocr.worker import run_worker
 
@@ -462,11 +465,12 @@ def migrate_cmd() -> None:
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 def submit_cmd(
-    file_path: str, model: str, skip_duplicate_detection: bool, temporal_address: str
+    file_path: str, model: str, skip_duplicate_detection: bool, temporal_address: str | None
 ) -> None:
     """Submit a document for OCR (starts the workflow; does not wait for it)."""
     from ocr.models import OcrSubmitInput
@@ -498,10 +502,11 @@ def submit_cmd(
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
-def list_cmd(limit: int, status_filter: str, temporal_address: str) -> None:
+def list_cmd(limit: int, status_filter: str, temporal_address: str | None) -> None:
     """List OCR submissions with status (ocr_job_status ⋈ batch_jobs)."""
     from ocr.models import OcrListJobsInput
 
@@ -528,10 +533,11 @@ def list_cmd(limit: int, status_filter: str, temporal_address: str) -> None:
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
-def export_cmd(document_id: str, output_dir: str, temporal_address: str) -> None:
+def export_cmd(document_id: str, output_dir: str, temporal_address: str | None) -> None:
     """Export OCR text + images for a document to the filesystem."""
     from ocr.models import OcrExportInput
 
@@ -557,10 +563,11 @@ def export_cmd(document_id: str, output_dir: str, temporal_address: str) -> None
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
-def mark_cmd(document_id: str, temporal_address: str) -> None:
+def mark_cmd(document_id: str, temporal_address: str | None) -> None:
     """Mark a document for removal (soft-delete; a periodic workflow deletes it)."""
     from ocr.models import OcrMarkInput
 
@@ -586,10 +593,11 @@ def mark_cmd(document_id: str, temporal_address: str) -> None:
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
-def unmark_cmd(document_id: str, temporal_address: str) -> None:
+def unmark_cmd(document_id: str, temporal_address: str | None) -> None:
     """Clear the removal mark on a document."""
     from ocr.models import OcrMarkInput
 

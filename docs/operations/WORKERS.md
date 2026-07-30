@@ -46,24 +46,33 @@ Every worker and CLI is fronted by an explicit-environment guard (D102): it read
 
 ### Staging lane (dev namespace)
 
-Production and dev share one local Temporal server, so isolation between them is by **namespace**: a Temporal namespace scopes task queues, schedules, and workflow ids, so a worker or CLI that connects to a different namespace cannot see — or poll — another namespace's work. Production runs in the `default` namespace (unchanged); dev runs in `forge-dev`.
+Environments are separated by **server**: dev is `127.0.0.1:7236`, production is `127.0.0.1:7243` (org servers owned by sax-temporal). Inside each, a namespace scopes task queues, schedules, and workflow ids, so a worker or CLI in one cannot see — or poll — another's work. Dev runs in `forge-dev`, production in `forge-prod`.
 
-The pairing is enforced, not just conventional. `FORGE_TEMPORAL_NAMESPACE` (read by `TemporalSettings`, defaulting to `default`) is checked against `FORGE_ENV` by `require_namespace_coherence` immediately before every connect: `FORGE_ENV=prod` **must** use `default`, and `FORGE_ENV=dev`/`test` **must not** — an incoherent pairing fails fast with an actionable message (workers crash at startup before touching a database; CLIs exit 78). So a dev process can never silently poll production's queues, and prod stays zero-config (it sets nothing and gets `default`). Commands that never connect to Temporal (`tracker-status`, `ocr migrate`, pbook's direct-DB commands) are unaffected by the namespace entirely.
+Neither value is configured. `resolve_temporal_target` derives both from `FORGE_ENV` immediately before every connect and returns them as one frozen `TemporalTarget`, so the address and the namespace cannot disagree. `FORGE_TEMPORAL_NAMESPACE` no longer exists. `FORGE_TEMPORAL_ADDRESS` survives only as an override, and dev/prod refuse any value that is not their own server — pointing a dev process at `:7243` exits 78 with a message naming the fix, rather than connecting. (`FORGE_ENV=test` is the exception: its server is an ephemeral per-job container on an arbitrary port, so it *must* supply an address, and any address is accepted.)
 
-The `forge-dev` namespace is created once per server, out of band (already done on this machine, with 72h retention):
+The namespace name is the backstop for everything the code cannot reach — the `temporal` CLI, one-off scripts, an operator in a shell. Names are `<slug>-<env>`, and the bare slug and `default` exist on no server, so a hand-typed `-n forge` fails with "namespace not found" everywhere instead of landing in production. Convention: `sax-temporal/docs/namespaces.md`.
+
+Commands that never connect to Temporal (`tracker-status`, `ocr migrate`, pbook's direct-DB commands) are unaffected by any of this.
+
+> **Deployed state lags the code.** Production and the dev lane still run a pre-cutover commit against the legacy `:7233` server in the `default` / `forge-dev` namespaces. The cutover is operational work — create `forge-dev` on `:7236` and `forge-prod` on `:7243`, update the deployed profiles under `~/.config/forge/envs/`, drain `:7233`, deploy. Deploying the new code before those namespaces exist fails every worker closed at startup. Ledger: `sax-temporal/docs/namespaces.md`, "Migration status".
+
+Each namespace is created once per server, out of band:
 
 ```bash
-temporal operator namespace create --retention 72h -n forge-dev
+temporal operator namespace create --retention 168h -n forge-dev  --address 127.0.0.1:7236
+temporal operator namespace create --retention 720h -n forge-prod --address 127.0.0.1:7243
 ```
 
-The dev profile (`~/.config/forge/envs/dev.env`, from `deploy/launchd/envs/dev.env.example`) sets `FORGE_TEMPORAL_NAMESPACE=forge-dev` alongside `FORGE_ENV_TAG=dev`. Start a dev worker the same way as any other — `--env dev` or a sourced profile — and it connects into `forge-dev`:
+(sax-temporal's `make namespace ENV=<env> NS=<slug>-<env>` does this with the right retention per environment.)
+
+The dev profile (`~/.config/forge/envs/dev.env`, from `deploy/launchd/envs/dev.env.example`) declares `FORGE_ENV_TAG=dev` and nothing Temporal-related — the target follows from it. Start a dev worker the same way as any other — `--env dev` or a sourced profile — and it connects to `:7236` in `forge-dev`:
 
 ```bash
 uv run forge worker --env dev            # forge worker in forge-dev
 uv run --package ocr ocr worker --env dev  # ocr worker in forge-dev
 ```
 
-The dev ocr worker installs its own `ocr-batch-tracker` Schedule inside `forge-dev`, separate from production's in `default`. A dev CLI submits into `forge-dev` too, so it only ever reaches the dev workers.
+The dev ocr worker installs its own `ocr-batch-tracker` Schedule inside `forge-dev`, separate from production's in `forge-prod`. A dev CLI submits into `forge-dev` too, so it only ever reaches the dev workers.
 
 **A functional lane needs the forge worker even for pure-OCR flows.** ocr's ledger writes (`persist_block` → `forge-task-queue`) are cross-queue activity calls, so with only a dev ocr worker running, an OCR submission blocks at its first ledger persist and the tracker cannot route hints (the live job has no routable `batch_jobs` row — the tracker logs a warning and skips it). Start the pair: `make dev-worker` and `make dev-worker WORKER=forge` (add `WORKER=pbook` if exercising ingestion). Restart one with `make dev-worker-restart WORKER=<name>` — the dev lane restarts independently of production, and `make workers-restart` is production-only by construction (it signals launchd-resolved pids, never command-line patterns, so it cannot touch the tmux workers).
 
@@ -101,7 +110,7 @@ Each worker reports an identity string to the Temporal server. By default, the P
 
 | Lane | Started by | Base identity | `FORGE_ENV` | Namespace |
 | --- | --- | --- | --- | --- |
-| production | launchd (`install.sh`) | `prod-forge-worker-1`, `prod-forge-worker-2`, `prod-ocr-worker`, `prod-pbook-worker` | `prod` | `default` |
+| production | launchd (`install.sh`) | `prod-forge-worker-1`, `prod-forge-worker-2`, `prod-ocr-worker`, `prod-pbook-worker` | `prod` | `default` (→ `forge-prod` at cutover) |
 | staging | tmux (`make dev-worker`) | `dev-forge-worker`, `dev-ocr-worker`, `dev-pbook-worker` | `dev` | `forge-dev` |
 
 The dev base is also the tmux session name and the row `make workers-status` prints, so one string identifies a dev worker everywhere you might meet it. (These bases replaced a `desktop-` prefix that dated from the D99 EC2 retirement: once the desktop became the only host, "desktop" distinguished nothing, while the lane distinguishes the thing an operator actually needs to know before acting.)

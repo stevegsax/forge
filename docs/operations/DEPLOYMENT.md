@@ -129,6 +129,13 @@ commit:
 ~/repos-sax/forge-prod   # detached at <commit> — what the launchd agents exec
 ```
 
+**`forge-prod` names two different things.** This checkout directory, and —
+after the sax-temporal cutover — the production Temporal namespace
+(`sax-temporal/docs/namespaces.md`). They are unrelated: the directory is
+always written as a path (`~/repos-sax/forge-prod`), the namespace always
+follows `namespace` or `-n`. A `cd` into one will not put you in the other,
+and draining the namespace has nothing to do with redeploying the checkout.
+
 Why this shape. A worker execs `uv run` inside its checkout, so that
 tree's contents at launch *are* the running code; while production ran
 the live tree, an ordinary edit — or an installer run mid-edit, which is
@@ -142,7 +149,8 @@ rather than a name that can move under the running system.
 after T5.6 made the hazard concrete):
 
 ```bash
-temporal workflow list --query 'ExecutionStatus="Running"'   # prod = default namespace
+temporal workflow list --query 'ExecutionStatus="Running"' \
+  --address 127.0.0.1:7243 --namespace forge-prod   # deployed pre-cutover: --address 127.0.0.1:7233 --namespace default
 ```
 
 Why. A worker restart makes every running workflow **replay its recorded
@@ -299,8 +307,7 @@ Worker/CLI environment (the launchd agents read these from
 | `FORGE_ENV` | **Required, no default.** Selects the profile and gates every command and worker; unset → exit 78 (D102) | `prod` |
 | `FORGE_PROD_ACK` | **Required for `prod`.** The explicit production acknowledgement; set by the plist (or interactive shell), never by a profile | `yes` |
 | `FORGE_ENV_TAG` | Declared **inside** each profile; the loader aborts if it disagrees with `FORGE_ENV` | `prod` |
-| `FORGE_TEMPORAL_ADDRESS` | Temporal frontend | `127.0.0.1:7233` |
-| `FORGE_TEMPORAL_NAMESPACE` | Temporal namespace; coherence-checked against `FORGE_ENV` before every connect (prod must use `default`, dev/test must not — the staging lane's isolation; see [WORKERS.md](WORKERS.md#staging-lane-dev-namespace)) | `default` (prod, by omission) / `forge-dev` (dev profile) |
+| `FORGE_TEMPORAL_ADDRESS` | **Override only, normally unset.** The server follows from `FORGE_ENV` (`:7236` dev, `:7243` prod); dev and prod reject any other value (exit 78). Required for `FORGE_ENV=test`, whose server is an ephemeral per-job container | unset |
 | `FORGE_DB_URL` | **Required.** Forge store (local `forge` database). Unset → hard error | `postgresql+psycopg://forge:…@127.0.0.1:5433/forge` |
 | `FORGE_OCR_S3_BUCKET` | S3 bucket for blobs. The **ocr worker fails fast at startup if unset** (T3.6; previously a first-use error); forge needs it for OCR/batch-blob work | bucket name |
 | `FORGE_OCR_S3_PREFIX` | Optional key prefix for blobs | e.g. `ocr/` |

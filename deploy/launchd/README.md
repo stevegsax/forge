@@ -15,7 +15,7 @@ up at login.
 Each worker identity is a *base*: the worker appends the git version of the
 tree it was launched from, so a poller reports `prod-forge-worker-1@bb64d88`
 (`-dirty` when the tree had uncommitted changes at launch). The `prod-` prefix
-names the lane, matching `FORGE_ENV=prod` and the `default` namespace these
+names the lane, matching `FORGE_ENV=prod` and the `forge-prod` namespace these
 agents poll; the tmux staging workers use `dev-<app>-worker`. See
 [WORKERS.md](../../docs/operations/WORKERS.md#which-code-is-a-worker-running).
 
@@ -65,11 +65,13 @@ targets — there is no default, and production is an explicit act:
   never set by the profile or the scripts — only by the plist (or an
   interactive shell), so sourcing a profile can never by itself grant
   production access.
-- Each profile also declares `FORGE_TEMPORAL_NAMESPACE` (prod `default`,
-  dev `forge-dev`) — the [staging-lane isolation](../../docs/operations/WORKERS.md#staging-lane-dev-namespace).
-  A coherence check refuses to connect unless it matches `FORGE_ENV`
-  (`prod`→`default`; `dev`/`test`→anything but `default`), so a dev
-  worker can never poll production's queues in the shared Temporal server.
+- Neither profile declares a Temporal namespace or address — both are derived
+  from `FORGE_ENV` before every connect (`forge-prod` on `:7243`, `forge-dev` on
+  `:7236`), the [staging-lane isolation](../../docs/operations/WORKERS.md#staging-lane-dev-namespace).
+  `FORGE_TEMPORAL_NAMESPACE` is retired; `FORGE_TEMPORAL_ADDRESS` survives as an
+  override that dev and prod refuse unless it restates their own server, so a dev
+  worker can never poll production's queues — it is not even on production's
+  server (`sax-temporal/docs/namespaces.md`).
 
 To run a worker or `make backup-app-dbs` **interactively**, declare the
 environment yourself, and use `set -a` so the profile's values (including

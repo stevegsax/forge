@@ -2867,17 +2867,22 @@ class TestEnvProfileFlag:
 
 
 class TestNamespaceCoherence:
-    """A ``--env dev`` profile carries its Temporal namespace into every connect."""
+    """A ``--env dev`` profile derives its Temporal target on every connect."""
 
-    def test_dev_profile_namespace_reaches_connect(
-        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    def test_dev_profile_derives_the_dev_target(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_environ: None,
     ) -> None:
         from unittest.mock import AsyncMock
 
+        # The profile declares only the environment: namespace and server are
+        # both derived from FORGE_ENV_TAG=dev.
+        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
         profile = tmp_path / "dev.env"
-        profile.write_text(
-            "FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///x.db\nFORGE_TEMPORAL_NAMESPACE=forge-dev\n"
-        )
+        profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///x.db\n")
 
         mock_handle = AsyncMock()
         mock_handle.id = "forge-task-test-task"
@@ -2909,17 +2914,17 @@ class TestNamespaceCoherence:
         assert result.exit_code == 0, result.output
         mock_connect.assert_awaited_once()
         assert mock_connect.await_args.kwargs["namespace"] == "forge-dev"
+        assert mock_connect.await_args.args[0] == "127.0.0.1:7236"
 
-    def test_dev_env_without_namespace_refuses_to_connect(
+    def test_dev_pointed_at_the_prod_server_refuses_to_connect(
         self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, restore_environ: None
     ) -> None:
         from unittest.mock import AsyncMock
 
-        # Dev without a declared namespace defaults to "default" — production's —
-        # so a Temporal-touching command exits 78 with the coherence message and
-        # never opens a connection.
+        # The environment is coherent; the *server* is production's. The old
+        # namespace-name check never read the address and could not see this.
         monkeypatch.setenv("FORGE_ENV", "dev")
-        monkeypatch.delenv("FORGE_TEMPORAL_NAMESPACE", raising=False)
+        monkeypatch.setenv("FORGE_TEMPORAL_ADDRESS", "127.0.0.1:7243")
 
         with (
             patch("forge.cli.discover_repo_root", return_value="/repo"),
@@ -2940,7 +2945,7 @@ class TestNamespaceCoherence:
             )
 
         assert result.exit_code == EXIT_CONFIG_ERROR
-        assert "must not use the 'default'" in result.stderr
+        assert "FORGE_TEMPORAL_ADDRESS" in result.stderr
         mock_connect.assert_not_awaited()
 
     def test_direct_store_command_unaffected_by_namespace(

@@ -37,8 +37,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
-
 if TYPE_CHECKING:
     from temporalio.client import Client
     from temporalio.service import TLSConfig
@@ -133,16 +131,20 @@ def build_tls_config(settings: TemporalSettings) -> TLSConfig | bool:
 async def connect_temporal(
     address: str,
     *,
+    namespace: str,
     identity: str | None = None,
-    namespace: str = TEMPORAL_NAMESPACE,
     settings: TemporalSettings | None = None,
 ) -> Client:
     """Connect to Temporal with the shared data converter, namespace, and TLS.
 
     The one place ``Client.connect`` is called from across repos, so the data
     converter, namespace, and TLS / mTLS are configured identically everywhere.
-    ``namespace`` defaults to the shared :data:`TEMPORAL_NAMESPACE` (``"default"``,
-    the same namespace used implicitly before the split).
+
+    ``namespace`` is required and has no default: it comes from
+    :func:`~sax_platform.config.resolve_temporal_target`, derived from the
+    declared environment. A default here would be a way to reach a namespace
+    without declaring an environment, which is exactly what the derivation
+    exists to prevent.
 
     ``settings`` is passed through to :func:`build_tls_config`. Workers hand in
     their already-built ``settings.temporal``; when a caller passes ``None`` (a

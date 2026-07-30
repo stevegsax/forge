@@ -172,7 +172,7 @@ def _require_store_engine() -> Engine:
     return get_store_engine(settings.url)
 
 
-async def _connect_temporal_checked(temporal_address: str) -> Client:
+async def _connect_temporal_checked(temporal_address: str | None) -> Client:
     """Connect to Temporal after enforcing env/namespace coherence.
 
     The group callback already ran ``_require_forge_env`` (so FORGE_ENV is
@@ -189,17 +189,20 @@ async def _connect_temporal_checked(temporal_address: str) -> Client:
     from sax_platform.config import (
         ForgeEnvError,
         TemporalSettings,
-        require_namespace_coherence,
         resolve_forge_env,
+        resolve_temporal_target,
     )
 
     settings = TemporalSettings()
     try:
-        require_namespace_coherence(resolve_forge_env(os.environ), settings.namespace)
+        target = resolve_temporal_target(
+            resolve_forge_env(os.environ),
+            address_override=temporal_address or settings.address,
+        )
     except ForgeEnvError as exc:
         click.echo(str(exc), err=True)
         sys.exit(EXIT_CONFIG_ERROR)
-    return await connect_temporal(temporal_address, namespace=settings.namespace, settings=settings)
+    return await connect_temporal(target.address, namespace=target.namespace, settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -475,18 +478,18 @@ def load_workflow_input(
 
 @overload
 async def _submit(
-    task_input: ForgeTaskInput, temporal_address: str, *, wait: Literal[True]
+    task_input: ForgeTaskInput, temporal_address: str | None, *, wait: Literal[True]
 ) -> TaskResult: ...
 
 
 @overload
 async def _submit(
-    task_input: ForgeTaskInput, temporal_address: str, *, wait: Literal[False]
+    task_input: ForgeTaskInput, temporal_address: str | None, *, wait: Literal[False]
 ) -> str: ...
 
 
 async def _submit(
-    task_input: ForgeTaskInput, temporal_address: str, *, wait: bool
+    task_input: ForgeTaskInput, temporal_address: str | None, *, wait: bool
 ) -> TaskResult | str:
     """Submit ``ForgeTaskWorkflow`` to Temporal.
 
@@ -530,8 +533,6 @@ async def _submit(
 # ---------------------------------------------------------------------------
 # Click commands
 # ---------------------------------------------------------------------------
-
-DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
 
 def configure_logging(verbosity: int, *, log_name: str = "forge") -> None:
@@ -865,9 +866,9 @@ def _validate_model_provider(
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 def run(
     task_id: str | None,
@@ -906,7 +907,7 @@ def run(
     log_messages: bool,
     batch_poll_interval: int,
     domain: str,
-    temporal_address: str,
+    temporal_address: str | None,
 ) -> None:
     """Submit a task and wait for the result."""
     # --- Mutual exclusion: task-file vs inline ---
@@ -1040,9 +1041,9 @@ def run(
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 @click.option(
     "--worker-identity",
@@ -1054,7 +1055,7 @@ def run(
     ),
 )
 def worker(
-    temporal_address: str,
+    temporal_address: str | None,
     worker_identity: str | None,
 ) -> None:
     """Start the Temporal worker."""
@@ -1195,7 +1196,7 @@ def format_ingest_result(result: dict[str, Any]) -> str:
 
 
 async def _submit_ingestion(
-    temporal_address: str,
+    temporal_address: str | None,
     session_dicts: list[dict[str, str]],
 ) -> dict[str, Any]:
     """Submit BatchIngestionWorkflow to Temporal and wait for completion."""
@@ -1254,9 +1255,9 @@ async def _submit_ingestion(
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 def ingest(
     transcript_path: Path | None,
@@ -1266,7 +1267,7 @@ def ingest(
     dry_run: bool,
     force: bool,
     output_json: bool,
-    temporal_address: str,
+    temporal_address: str | None,
 ) -> None:
     """Ingest Claude Code conversation transcripts into pbook.
 
@@ -1459,7 +1460,7 @@ def playbooks(
 
 
 async def _submit_manual_playbook(
-    temporal_address: str,
+    temporal_address: str | None,
     raw_json: str,
 ) -> ManualPlaybookResult:
     """Submit manual playbook workflow to Temporal and wait for completion."""
@@ -1499,11 +1500,11 @@ async def _submit_manual_playbook(
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
-def playbooks_add(file_path: Path | None, show_schema: bool, temporal_address: str) -> None:
+def playbooks_add(file_path: Path | None, show_schema: bool, temporal_address: str | None) -> None:
     """Add a playbook entry with LLM review."""
     import json as json_mod
 
@@ -1542,7 +1543,7 @@ def playbooks_add(file_path: Path | None, show_schema: bool, temporal_address: s
 
 
 async def _submit_export_playbooks(
-    temporal_address: str,
+    temporal_address: str | None,
     *,
     tags: list[str],
     source_task_id: str,
@@ -1582,16 +1583,16 @@ async def _submit_export_playbooks(
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 def playbooks_export(
     tag: tuple[str, ...],
     source_task_id: str,
     limit: int,
     output_path: Path | None,
-    temporal_address: str,
+    temporal_address: str | None,
 ) -> None:
     """Export playbook entries as PlaybookEntry-compatible JSON."""
     import json as json_mod
@@ -1843,7 +1844,7 @@ async def _start_workflow(
     *,
     workflow_id: str,
     task_queue: str,
-    temporal_address: str,
+    temporal_address: str | None,
     timeout_hours: float,
 ) -> str:
     """Start a Temporal workflow by string name and return its ID."""
@@ -1866,7 +1867,7 @@ async def _start_workflow_and_wait(
     *,
     workflow_id: str,
     task_queue: str,
-    temporal_address: str,
+    temporal_address: str | None,
     timeout_hours: float,
 ) -> object:
     """Start a Temporal workflow by string name and wait for its result."""
@@ -1920,9 +1921,9 @@ async def _start_workflow_and_wait(
 @click.option(
     "--temporal-address",
     envvar="FORGE_TEMPORAL_ADDRESS",
-    default=DEFAULT_TEMPORAL_ADDRESS,
-    show_default=True,
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 def start(
     workflow: str,
@@ -1932,7 +1933,7 @@ def start(
     task_queue: str,
     wait_for_result: bool,
     timeout_hours: float,
-    temporal_address: str,
+    temporal_address: str | None,
 ) -> None:
     """Start an arbitrary Temporal workflow by name.
 

@@ -64,12 +64,12 @@ def _fake_settings(
     *,
     bucket: str | None = "b",
     mistral_key: str | None = "mk",
-    namespace: str = "forge-test",
+    address: str | None = "settings-host:7233",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         db=SimpleNamespace(url="sqlite:///settings.db"),
         tracing=SimpleNamespace(exporter="console"),
-        temporal=SimpleNamespace(address="settings-host:7233", namespace=namespace),
+        temporal=SimpleNamespace(address=address),
         blob=SimpleNamespace(bucket=bucket, prefix="pre/"),
         llm=SimpleNamespace(mistral_api_key=mistral_key),
         log=SimpleNamespace(),
@@ -85,9 +85,9 @@ class _Composition:
         *,
         bucket: str | None = "b",
         mistral_key: str | None = "mk",
-        namespace: str = "forge-test",
+        address: str | None = "settings-host:7233",
     ) -> None:
-        self.settings = _fake_settings(bucket=bucket, mistral_key=mistral_key, namespace=namespace)
+        self.settings = _fake_settings(bucket=bucket, mistral_key=mistral_key, address=address)
         self.client = MagicMock(name="temporal_client")
         self.sdk_client = MagicMock(name="sdk_client")
         self.llm = MagicMock(name="anthropic_llm")
@@ -318,22 +318,26 @@ class TestEnvGuard:
 
 
 class TestNamespaceCoherence:
-    """The worker refuses an env/namespace pairing that crosses the prod/staging line."""
+    """The worker derives its Temporal target and refuses what it cannot derive."""
 
     @pytest.mark.asyncio
-    async def test_incoherent_namespace_fails_before_store_setup(self) -> None:
-        """FORGE_ENV=test + the ``default`` namespace fails fast, before migrations.
+    async def test_unresolvable_target_fails_before_store_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A target that cannot be derived fails fast, before store setup.
 
-        The coherence check runs after settings are built but before ``_init_store``
-        or the client is constructed, so a mis-namespaced worker never touches a
-        database or the Temporal frontend.
+        Derivation runs after settings are built but before ``_init_store`` or the
+        client is constructed, so such a worker never touches a database or the
+        Temporal frontend. ``test`` has no canonical server (its server is an
+        ephemeral per-job container), so an absent address is the unresolvable case.
         """
         from sax_platform.config import ForgeEnvError
 
-        # env=test comes from the autouse forge_env fixture; the default namespace
-        # is incoherent with it.
-        comp = _Composition(namespace="default")
-        with comp.apply(), pytest.raises(ForgeEnvError, match="must not use the 'default'"):
+        # env=test comes from the autouse forge_env fixture; drop the address it
+        # exports and give the settings none either.
+        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
+        comp = _Composition(address=None)
+        with comp.apply(), pytest.raises(ForgeEnvError, match="requires FORGE_TEMPORAL_ADDRESS"):
             await worker_mod.run_worker()
 
         comp.init_store.assert_not_called()

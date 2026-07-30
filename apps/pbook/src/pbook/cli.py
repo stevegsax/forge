@@ -46,7 +46,6 @@ from pbook.tags import validate_tags
 logger = logging.getLogger(__name__)
 
 
-_TEMPORAL_ADDRESS = "localhost:7233"
 _PBOOK_TASK_QUEUE = "pbook-task-queue"
 
 # EX_CONFIG (sysexits.h, 78): the environment guard refused to run because
@@ -127,7 +126,7 @@ def _apply_env_profile(env_value: str) -> None:
         os.environ["FORGE_ENV"] = env_value
 
 
-async def _connect_checked(temporal_address: str) -> Client:
+async def _connect_checked(temporal_address: str | None) -> Client:
     """Connect to Temporal after enforcing env/namespace coherence.
 
     The single connect chokepoint for the pbook CLI. It routes through the shared
@@ -145,17 +144,20 @@ async def _connect_checked(temporal_address: str) -> Client:
     from sax_platform.config import (
         ForgeEnvError,
         TemporalSettings,
-        require_namespace_coherence,
         resolve_forge_env,
+        resolve_temporal_target,
     )
 
     settings = TemporalSettings()
     try:
-        require_namespace_coherence(resolve_forge_env(os.environ), settings.namespace)
+        target = resolve_temporal_target(
+            resolve_forge_env(os.environ),
+            address_override=temporal_address or settings.address,
+        )
     except ForgeEnvError as exc:
         click.echo(str(exc), err=True)
         sys.exit(EXIT_CONFIG_ERROR)
-    return await connect_temporal(temporal_address, namespace=settings.namespace, settings=settings)
+    return await connect_temporal(target.address, namespace=target.namespace, settings=settings)
 
 
 def _execute_workflow[ParamType, ReturnType](
@@ -163,7 +165,7 @@ def _execute_workflow[ParamType, ReturnType](
     arg: ParamType,
     *,
     id_prefix: str = "pbook",
-    temporal_address: str = _TEMPORAL_ADDRESS,
+    temporal_address: str | None = None,
 ) -> ReturnType:
     """Submit a pbook workflow and wait for the result.
 
@@ -374,8 +376,9 @@ def main(ctx: click.Context, verbose: bool, env_profile: str | None) -> None:
 @main.command()
 @click.option(
     "--temporal-address",
-    default="localhost:7233",
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 @click.option(
     "--worker-identity",
@@ -386,7 +389,7 @@ def main(ctx: click.Context, verbose: bool, env_profile: str | None) -> None:
         "the launch-time git version is appended when known."
     ),
 )
-def worker(temporal_address: str, worker_identity: str | None) -> None:
+def worker(temporal_address: str | None, worker_identity: str | None) -> None:
     """Start the pbook Temporal worker."""
     import asyncio
 
@@ -690,10 +693,11 @@ def check_duplicate_cmd(title: str, tag: tuple[str, ...]) -> None:
 )
 @click.option(
     "--temporal-address",
-    default="localhost:7233",
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
-def push(file_path: Path, temporal_address: str) -> None:
+def push(file_path: Path, temporal_address: str | None) -> None:
     """Push experience data for LLM extraction."""
     import asyncio
 
@@ -771,8 +775,9 @@ def push(file_path: Path, temporal_address: str) -> None:
 )
 @click.option(
     "--temporal-address",
-    default="localhost:7233",
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 @click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output.")
 def search(
@@ -784,7 +789,7 @@ def search(
     token_budget: int,
     include_rejected: bool,
     include_unapproved: bool,
-    temporal_address: str,
+    temporal_address: str | None,
     output_json: bool,
 ) -> None:
     """Search the playbook by tag and/or free-text query.
@@ -1228,8 +1233,9 @@ def prune(
 @click.option("--force", is_flag=True, help="Reprocess already-ingested sessions.")
 @click.option(
     "--temporal-address",
-    default="localhost:7233",
-    help="Temporal server address.",
+    default=None,
+    help="Temporal server address. Derived from FORGE_ENV when unset; an "
+    "override that is not that environment's server is refused.",
 )
 def ingest(
     transcript_path: Path | None,
@@ -1238,7 +1244,7 @@ def ingest(
     min_size: int,
     dry_run: bool,
     force: bool,
-    temporal_address: str,
+    temporal_address: str | None,
 ) -> None:
     """Ingest Claude Code conversation transcripts.
 

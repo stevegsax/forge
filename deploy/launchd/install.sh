@@ -57,8 +57,9 @@ program_args() {  # program_args <name> -> <string> elements, \n-escaped for awk
   # launch-time git version (prod-forge-worker-1@<sha>). The base names the lane,
   # not the machine: "desktop-" dated from the D99 EC2 retirement and stopped
   # distinguishing anything once the desktop was the only host, whereas "prod-"
-  # agrees with FORGE_ENV=prod (set below) and the `default` namespace these
-  # agents poll — the dev lane's tmux workers use dev-<app>-worker.
+  # agrees with FORGE_ENV=prod (set below) and the `forge-prod` namespace these
+  # agents poll — derived from FORGE_ENV, see sax-temporal/docs/namespaces.md.
+  # The dev lane's tmux workers use dev-<app>-worker.
   local w="$SCRIPT_DIR/run-worker.sh"
   case "$1" in
     forge-stack)    printf '        <string>%s</string>\\n' "$SCRIPT_DIR/start-stack.sh" ;;

@@ -15,8 +15,8 @@ from datetime import timedelta
 from openai import AsyncOpenAI
 from sax_platform.config import (
     TemporalSettings,
-    require_namespace_coherence,
     resolve_forge_env,
+    resolve_temporal_target,
 )
 from sax_platform.embeddings import OpenAIEmbeddings
 from sax_platform.llm import AnthropicLLM, make_client
@@ -104,7 +104,7 @@ def _migrate_if_configured(db: PbookDbSettings) -> None:
     logger.info("Database migrations applied (head)")
 
 
-async def run_worker(address: str = "localhost:7233", *, identity: str | None = None) -> None:
+async def run_worker(address: str | None = None, *, identity: str | None = None) -> None:
     """Connect to Temporal and run the pbook worker (composition root).
 
     The environment guard runs FIRST, before settings/store setup: an unset or
@@ -125,10 +125,11 @@ async def run_worker(address: str = "localhost:7233", *, identity: str | None = 
     settings = PbookSettings()
     temporal_settings = TemporalSettings()
 
-    # Enforce env/namespace coherence BEFORE store setup: a dev/test worker must
-    # never poll production's namespace (or vice versa). An incoherent pairing
-    # raises ForgeEnvError here so the worker fails fast, before it touches a DB.
-    require_namespace_coherence(env, temporal_settings.namespace)
+    # Derive the Temporal target BEFORE store setup: address and namespace both
+    # come from the declared environment, so a dev/test worker cannot be assembled
+    # to poll production's namespace (or vice versa). A bad address override raises
+    # ForgeEnvError here so the worker fails fast, before it touches a DB.
+    target = resolve_temporal_target(env, address_override=address or temporal_settings.address)
 
     setup_logging("pbook", log_path=settings.log_path, console=True)
     logger.info("pbook worker starting: env=%s", env)
@@ -161,16 +162,16 @@ async def run_worker(address: str = "localhost:7233", *, identity: str | None = 
         get_session_text_activity,
     ]
 
-    logger.info("Connecting to Temporal at %s", address)
+    logger.info("Connecting to Temporal at %s (namespace %s)", target.address, target.namespace)
     # Stamp the launch-time git version onto the identity (see
     # sax_platform.temporal.identity): the worker binds its code at import while the
     # tree it was exec'd from moves on, so `temporal task-queue describe
     # --task-queue pbook-task-queue` is where "which code is this worker running?"
     # gets answered. An undiscoverable version leaves the identity unchanged.
     client = await connect_temporal(
-        address,
+        target.address,
         identity=stamped_worker_identity(identity),
-        namespace=temporal_settings.namespace,
+        namespace=target.namespace,
         settings=temporal_settings,
     )
 

@@ -33,13 +33,17 @@ class TestOcrSettings:
         monkeypatch.setenv("FORGE_DB_URL", "sqlite:///x.db")
         monkeypatch.delenv("FORGE_OCR_S3_BUCKET", raising=False)
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        # The conftest exports an address for FORGE_ENV=test; this test is about
+        # what the group does with nothing set.
+        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
 
         settings = OcrSettings()
 
         assert settings.blob.bucket is None
         assert settings.blob.prefix == ""
         assert settings.llm.mistral_api_key is None
-        assert settings.temporal.address == "localhost:7233"
+        # None = "no override"; the endpoint comes from resolve_temporal_target.
+        assert settings.temporal.address is None
 
     def test_is_frozen(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("FORGE_DB_URL", "sqlite:///x.db")

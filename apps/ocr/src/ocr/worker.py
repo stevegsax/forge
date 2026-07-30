@@ -21,7 +21,7 @@ import os
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final
 
-from sax_platform.config import require_namespace_coherence, resolve_forge_env
+from sax_platform.config import resolve_forge_env, resolve_temporal_target
 from sax_platform.contracts.constants import OCR_TASK_QUEUE
 from sax_platform.contracts.s3_blobs import S3Blobs
 from sax_platform.db import get_store_engine
@@ -217,11 +217,11 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
 
     settings = OcrSettings()
 
-    # Enforce env/namespace coherence BEFORE store/Mistral setup: a dev/test ocr
-    # worker (and the ocr-batch-tracker Schedule it installs) must live in its own
-    # namespace, never production's. An incoherent pairing raises ForgeEnvError
-    # here so the worker fails fast, before it touches a database.
-    require_namespace_coherence(env, settings.temporal.namespace)
+    # Derive the Temporal target BEFORE store/Mistral setup: a dev/test ocr worker
+    # (and the ocr-batch-tracker Schedule it installs) lands in its environment's
+    # own namespace by construction, never production's. A bad address override
+    # raises ForgeEnvError here so the worker fails fast, before it touches a DB.
+    target = resolve_temporal_target(env, address_override=address or settings.temporal.address)
 
     _init_store(settings.db.url)
 
@@ -251,9 +251,9 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     identity = stamped_worker_identity(identity)
 
     client = await connect_temporal(
-        address or settings.temporal.address,
+        target.address,
         identity=identity,
-        namespace=settings.temporal.namespace,
+        namespace=target.namespace,
         settings=settings.temporal,
     )
 

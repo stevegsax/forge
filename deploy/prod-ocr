@@ -63,7 +63,9 @@ commit="$(git -C "$PROD_ROOT" rev-parse --short HEAD)"
 
 # stderr, so piping or redirecting the command's output stays clean while the
 # operator still always sees which environment and which code answered.
-print -u2 "prod-ocr: PRODUCTION (namespace ${FORGE_TEMPORAL_NAMESPACE:-default}) — checkout $commit — ocr $*"
+# The namespace is derived from FORGE_ENV (so, forge-prod), never read from the
+# environment — FORGE_TEMPORAL_NAMESPACE is retired.
+print -u2 "prod-ocr: PRODUCTION (namespace forge-prod) — checkout $commit — ocr $*"
 
 cd "$PROD_ROOT"
 # --package is required: ocr is a workspace member but not a forge dependency, so

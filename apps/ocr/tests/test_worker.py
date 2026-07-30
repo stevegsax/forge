@@ -32,15 +32,16 @@ def _fake_settings(
     bucket: str = "bkt",
     prefix: str = "pre/",
     mistral_key: str | None = "k",
-    namespace: str = "forge-test",
+    address: str | None = "settings-temporal:7233",
 ):
     settings = MagicMock(name="OcrSettings")
     settings.db.url = "sqlite:///x.db"
     settings.blob.bucket = bucket
     settings.blob.prefix = prefix
     settings.llm.mistral_api_key = mistral_key
-    settings.temporal.address = "settings-temporal:7233"
-    settings.temporal.namespace = namespace
+    # FORGE_ENV=test accepts any address (its server is ephemeral); the
+    # namespace is derived, so there is no namespace attribute to fake.
+    settings.temporal.address = address
     return settings
 
 
@@ -269,16 +270,20 @@ class TestNamespaceCoherence:
     """The worker refuses an env/namespace pairing that crosses the prod/staging line."""
 
     @pytest.mark.asyncio
-    async def test_incoherent_namespace_fails_before_store_setup(self) -> None:
-        """FORGE_ENV=test + the ``default`` namespace fails fast, before migrations.
+    async def test_unresolvable_target_fails_before_store_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A target that cannot be derived fails fast, before store setup.
 
-        The coherence check runs after settings are built but before ``_init_store``,
-        the Mistral capability, or the client, so a mis-namespaced worker never
-        touches a database or the Temporal frontend.
+        Derivation runs after settings are built but before ``_init_store``, the
+        Mistral capability, or the client, so such a worker never touches a
+        database or the Temporal frontend. ``test`` has no canonical server, so
+        an absent address is the unresolvable case.
         """
         from sax_platform.config import ForgeEnvError
 
-        settings = _fake_settings(namespace="default")
+        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
+        settings = _fake_settings(address=None)
         mock_init_store = MagicMock()
         mock_connect = AsyncMock()
         with (  # noqa: SIM117
@@ -289,7 +294,7 @@ class TestNamespaceCoherence:
             patch.object(worker_mod, "connect_temporal", mock_connect),
             patch.object(worker_mod, "_run_worker", AsyncMock()),
         ):
-            with pytest.raises(ForgeEnvError, match="must not use the 'default'"):
+            with pytest.raises(ForgeEnvError, match="requires FORGE_TEMPORAL_ADDRESS"):
                 await worker_mod.run_worker()
 
         mock_init_store.assert_not_called()

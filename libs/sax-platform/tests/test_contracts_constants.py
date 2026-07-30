@@ -10,12 +10,25 @@ from __future__ import annotations
 from sax_platform.contracts.constants import (
     FORGE_TASK_QUEUE,
     OCR_TASK_QUEUE,
-    TEMPORAL_NAMESPACE,
+    PRODUCT_SLUG,
 )
 
 
-def test_namespace_is_default() -> None:
-    assert TEMPORAL_NAMESPACE == "default"
+def test_product_slug() -> None:
+    # forge, ocr and pbook all share this slug's namespace today: ocr is not its
+    # own slug (D102) and pbook's split waits on T6.4.
+    assert PRODUCT_SLUG == "forge"
+
+
+def test_no_namespace_constant() -> None:
+    """The namespace is `<slug>-<env>`, so it cannot be a wire constant.
+
+    A `Final` namespace here is what let every environment share one name; the
+    value is derived per environment in sax_platform.config instead.
+    """
+    import sax_platform.contracts.constants as constants
+
+    assert not hasattr(constants, "TEMPORAL_NAMESPACE")
 
 
 def test_task_queue_names() -> None:

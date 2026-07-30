@@ -95,7 +95,9 @@ async def test_connect_temporal_threads_tls_and_converter(monkeypatch):
     monkeypatch.setattr(temporalio.client.Client, "connect", staticmethod(fake_connect))
     monkeypatch.setenv("FORGE_TEMPORAL_TLS", "0")
 
-    result = await connect_temporal("temporal.example.com:7233", identity="worker-1")
+    result = await connect_temporal(
+        "temporal.example.com:7233", namespace="forge-test", identity="worker-1"
+    )
 
     assert result == "FAKE_CLIENT"
     assert captured["address"] == "temporal.example.com:7233"

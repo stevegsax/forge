@@ -39,19 +39,28 @@ target environment, refusing to fall back to any default so that reaching the
 production store is always an explicit act, never the result of an unset
 variable. It reads nothing itself — callers pass an explicit mapping (the
 shell hands it ``os.environ``).
+
+It also owns the Temporal *target* derivation (``TemporalTarget``,
+``temporal_namespace_for``, ``resolve_temporal_target``): the address and
+namespace a process connects to are computed from that validated environment
+rather than read from the environment as separate variables, so a mismatched
+pair is unconstructible. This replaced ``require_namespace_coherence``, which
+validated a pairing an operator assembled by hand.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, assert_never
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
+from sax_platform.contracts.constants import PRODUCT_SLUG
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -64,10 +73,12 @@ __all__ = [
     "LlmSettings",
     "LogSettings",
     "TemporalSettings",
+    "TemporalTarget",
     "parse_env_profile",
-    "require_namespace_coherence",
     "resolve_env_profile_path",
     "resolve_forge_env",
+    "resolve_temporal_target",
+    "temporal_namespace_for",
 ]
 
 
@@ -80,14 +91,17 @@ class TemporalSettings(BaseSettings):
 
     model_config = SettingsConfigDict(frozen=True, extra="ignore", populate_by_name=True)
 
-    address: str = Field(default="localhost:7233", validation_alias="FORGE_TEMPORAL_ADDRESS")
-    # The Temporal namespace this process connects to. Defaults to the shared
-    # ``TEMPORAL_NAMESPACE`` ("default") so production — which sets nothing here —
-    # keeps its historical behavior with zero config. A dev/test process declares
-    # its own (e.g. ``forge-dev``) to isolate its queues/schedules/workflow ids
-    # inside the shared local Temporal server; ``require_namespace_coherence``
-    # enforces the pairing against ``FORGE_ENV``.
-    namespace: str = Field(default=TEMPORAL_NAMESPACE, validation_alias="FORGE_TEMPORAL_NAMESPACE")
+    # An *override* for the frontend address, not the address itself. ``None``
+    # means "no override": :func:`resolve_temporal_target` then supplies the
+    # canonical endpoint for the declared environment. Only ``test`` — whose
+    # server is an ephemeral per-job container on an arbitrary port — is
+    # required to set it; for dev and prod an override that disagrees with the
+    # environment's endpoint is refused rather than honoured.
+    address: str | None = Field(default=None, validation_alias="FORGE_TEMPORAL_ADDRESS")
+    # There is deliberately no ``namespace`` field, and no
+    # ``FORGE_TEMPORAL_NAMESPACE``. The namespace is ``<slug>-<env>``, derived
+    # from the declared environment by :func:`resolve_temporal_target` — a value
+    # an operator cannot set, and therefore cannot set wrong.
     tls: bool = Field(default=False, validation_alias="FORGE_TEMPORAL_TLS")
     tls_server_ca: str | None = Field(default=None, validation_alias="FORGE_TEMPORAL_TLS_SERVER_CA")
     tls_client_cert: str | None = Field(
@@ -221,47 +235,102 @@ def resolve_forge_env(environ: Mapping[str, str]) -> ForgeEnv:
     return env
 
 
-def require_namespace_coherence(env: ForgeEnv, namespace: str) -> None:
-    """Refuse an env/namespace pairing that crosses the prod/staging line.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TemporalTarget:
+    """Where a process connects: one server address, one namespace.
 
-    A single Temporal server is shared across environments; a namespace isolates
-    everything queue-scoped inside it — task queues, schedules, and workflow ids.
-    A process's namespace must therefore match its declared environment, or it
-    would poll the wrong environment's work. Pure over its two inputs: the shell
-    resolves the env (:func:`resolve_forge_env`) and reads the namespace from
+    Both fields are derived together from the declared environment, so they can
+    never disagree — the pairing that the old coherence check existed to police
+    is no longer constructible.
+    """
+
+    address: str
+    namespace: str
+
+
+# The canonical frontend per environment. ``test`` is absent on purpose: its
+# server is an ephemeral per-job container on an arbitrary port, so there is no
+# canonical endpoint to name and the caller must supply one.
+#
+# These are org endpoints owned by sax-temporal (docs/namespaces.md). Dev is on
+# the interim :7236 until forge's legacy server retires and frees :7233;
+# changing that is a one-line edit here rather than an edit to every deployed
+# profile.
+_TEMPORAL_ADDRESSES: Final[Mapping[ForgeEnv, str]] = MappingProxyType(
+    {
+        ForgeEnv.PROD: "127.0.0.1:7243",
+        ForgeEnv.DEV: "127.0.0.1:7236",
+    }
+)
+
+
+def temporal_namespace_for(env: ForgeEnv, *, slug: str = PRODUCT_SLUG) -> str:
+    """Derive the Temporal namespace for an environment: ``<slug>-<env>``.
+
+    The org convention (sax-temporal/docs/namespaces.md). The bare slug and
+    ``"default"`` are namespaces on no server, so a name that loses its suffix
+    fails with "namespace not found" everywhere instead of reaching production.
+    """
+    return f"{slug}-{env.value}"
+
+
+def resolve_temporal_target(
+    env: ForgeEnv,
+    *,
+    address_override: str | None = None,
+    slug: str = PRODUCT_SLUG,
+) -> TemporalTarget:
+    """Derive the address and namespace a process must connect to.
+
+    Replaces the old ``require_namespace_coherence``. That function validated a
+    pairing an operator had assembled by hand; this one constructs the pairing,
+    so the incoherent combinations it used to reject can no longer be expressed.
+    Pure over its inputs — the shell resolves the environment
+    (:func:`resolve_forge_env`) and reads any override from
     :class:`TemporalSettings` before calling this, immediately before connecting.
 
-    Rules:
+    Environments are separated by *server*, and the per-environment namespace
+    name is the backstop: point a dev-configured process at the prod server and
+    ``forge-dev`` does not exist there, so it fails loudly instead of quietly
+    polling production's queues.
 
-    - :attr:`ForgeEnv.PROD` MUST use the shared ``"default"`` namespace
-      (:data:`TEMPORAL_NAMESPACE`) — production *is* the default namespace, so
-      any other value means a mis-assembled prod environment.
-    - :attr:`ForgeEnv.DEV` / :attr:`ForgeEnv.TEST` MUST NOT use ``"default"``
-      (that is production's namespace); a staging process must declare its own.
+    Args:
+        env: the declared target environment.
+        address_override: ``FORGE_TEMPORAL_ADDRESS``, or ``None`` when unset.
+            Required for ``test``; for ``dev``/``prod`` it may only restate the
+            environment's canonical endpoint.
+        slug: the product slug owning the namespace. Defaults to
+            :data:`~sax_platform.contracts.constants.PRODUCT_SLUG`; pbook passes
+            its own once T6.4 removes forge's cross-queue dispatch.
 
     Raises:
-        ForgeEnvError: when the pairing is incoherent. The message names the fix
-            because it surfaces verbatim to an operator at process start.
+        ForgeEnvError: when ``test`` supplies no address, or when ``dev``/``prod``
+            supply one that is not that environment's server. The message names
+            the fix because it surfaces verbatim to an operator at process start.
     """
+    namespace = temporal_namespace_for(env, slug=slug)
     match env:
-        case ForgeEnv.PROD:
-            if namespace != TEMPORAL_NAMESPACE:
+        case ForgeEnv.PROD | ForgeEnv.DEV:
+            canonical = _TEMPORAL_ADDRESSES[env]
+            if address_override is not None and address_override != canonical:
                 raise ForgeEnvError(
-                    f"FORGE_ENV=prod requires the {TEMPORAL_NAMESPACE!r} Temporal "
-                    f"namespace, but FORGE_TEMPORAL_NAMESPACE={namespace!r}. Production "
-                    "runs in the default namespace — unset FORGE_TEMPORAL_NAMESPACE "
-                    "(or set it to 'default') in the prod profile."
+                    f"FORGE_ENV={env.value} connects to {canonical} (the {env.value} "
+                    f"Temporal server), but FORGE_TEMPORAL_ADDRESS={address_override!r}. "
+                    "The address is derived from the environment, not configured — "
+                    "unset FORGE_TEMPORAL_ADDRESS in the profile. If the server itself "
+                    "moved, change it once in sax_platform.config._TEMPORAL_ADDRESSES "
+                    "rather than per profile."
                 )
-        case ForgeEnv.DEV | ForgeEnv.TEST:
-            if namespace == TEMPORAL_NAMESPACE:
+            return TemporalTarget(address=canonical, namespace=namespace)
+        case ForgeEnv.TEST:
+            if address_override is None:
                 raise ForgeEnvError(
-                    f"FORGE_ENV={env.value} must not use the {TEMPORAL_NAMESPACE!r} "
-                    "Temporal namespace — that is production's, and a dev/test process "
-                    "there would poll production's queues and schedules. Set "
-                    "FORGE_TEMPORAL_NAMESPACE=forge-dev in the dev profile (create the "
-                    "namespace once with "
-                    "`temporal operator namespace create --retention 72h -n forge-dev`)."
+                    "FORGE_ENV=test requires FORGE_TEMPORAL_ADDRESS: the test server is "
+                    "an ephemeral per-job container on an arbitrary port, so there is no "
+                    "canonical address to fall back to. Point it at the container the "
+                    "suite started (the temporal_env fixture supplies this)."
                 )
+            return TemporalTarget(address=address_override, namespace=namespace)
         case _ as unreachable:  # pragma: no cover - exhaustiveness guard
             assert_never(unreachable)
 

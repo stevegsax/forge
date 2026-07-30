@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from sax_platform.config import TemporalSettings
-from sax_platform.contracts.constants import TEMPORAL_NAMESPACE
 from sax_platform.temporal.client import (
     TemporalTLSConfigError,
     build_tls_config,
@@ -112,11 +111,12 @@ class TestBuildTlsConfigFromSettings:
 
 class TestConnectTemporal:
     @pytest.mark.asyncio
-    async def test_threads_tls_converter_and_namespace_default(
+    async def test_threads_tls_converter_and_namespace(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """connect_temporal must pass the data converter, resolved tls value,
-        and default to the shared TEMPORAL_NAMESPACE."""
+        """connect_temporal threads the data converter, resolved tls, and the
+        caller-supplied namespace. There is no namespace default to fall back
+        on — the caller derives it from its declared environment."""
         import temporalio.client
         from temporalio.contrib.pydantic import pydantic_data_converter
 
@@ -130,14 +130,16 @@ class TestConnectTemporal:
         monkeypatch.setattr(temporalio.client.Client, "connect", staticmethod(fake_connect))
         monkeypatch.setenv("FORGE_TEMPORAL_TLS", "0")
 
-        result = await connect_temporal("temporal.example.com:7233", identity="worker-1")
+        result = await connect_temporal(
+            "temporal.example.com:7233", namespace="forge-test", identity="worker-1"
+        )
 
         assert result == "FAKE_CLIENT"
         assert captured["address"] == "temporal.example.com:7233"
         assert captured["kwargs"]["tls"] is False
         assert captured["kwargs"]["data_converter"] is pydantic_data_converter
         assert captured["kwargs"]["identity"] == "worker-1"
-        assert captured["kwargs"]["namespace"] == TEMPORAL_NAMESPACE
+        assert captured["kwargs"]["namespace"] == "forge-test"
 
     @pytest.mark.asyncio
     async def test_namespace_override_is_threaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -171,6 +173,8 @@ class TestConnectTemporal:
         monkeypatch.setattr(temporalio.client.Client, "connect", staticmethod(fake_connect))
         monkeypatch.setenv("FORGE_TEMPORAL_TLS", "0")
 
-        await connect_temporal("temporal.example.com:7233", settings=TemporalSettings(tls=True))
+        await connect_temporal(
+            "temporal.example.com:7233", namespace="forge-test", settings=TemporalSettings(tls=True)
+        )
 
         assert captured["kwargs"]["tls"] is True

@@ -11,10 +11,19 @@ from __future__ import annotations
 
 from typing import Final
 
-# Temporal namespace the platform and consumer apps connect to. No explicit
-# namespace was set historically (implicit "default"); the split makes it
-# explicit so cross-queue activity and child workflows share one namespace.
-TEMPORAL_NAMESPACE: Final = "default"
+# The registration slug that owns the Temporal namespace for every process in
+# this monorepo. The namespace itself is ``<slug>-<env>`` — it varies by
+# environment, so it is *derived*
+# (:func:`sax_platform.config.temporal_namespace_for`) rather than pinned here.
+# The bare slug and ``"default"`` are namespaces on no server, so a process that
+# fails to derive one cannot land anywhere.
+#
+# forge, ocr and pbook all resolve to this single slug today: ocr is
+# deliberately not its own slug (D102), and pbook shares forge's namespace until
+# T6.4 deletes forge's cross-queue dispatch into ``pbook-task-queue`` (child
+# workflows and cross-queue activities are namespace-bound). See
+# sax-temporal/docs/namespaces.md.
+PRODUCT_SLUG: Final = "forge"
 
 # Task queues. Each worker owns one queue; an activity/workflow runs on the
 # worker registered for the queue it is scheduled on.

@@ -203,7 +203,9 @@ class TestWorkerCommand:
             mock_run.side_effect = _async_result(None)
             result = cli_runner.invoke(main, ["worker"])
             assert result.exit_code == 0
-            mock_run.assert_called_once_with("localhost:7233", identity=None)
+            # No address default: the conftest's FORGE_TEMPORAL_ADDRESS reaches
+            # the option through its envvar.
+            mock_run.assert_called_once_with("127.0.0.1:7233", identity=None)
 
     def test_runs_worker_with_custom_address(
         self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
@@ -222,7 +224,7 @@ class TestWorkerCommand:
             mock_run.side_effect = _async_result(None)
             result = cli_runner.invoke(main, ["worker", "--worker-identity", "prod-ocr-worker"])
             assert result.exit_code == 0
-            mock_run.assert_called_once_with("localhost:7233", identity="prod-ocr-worker")
+            mock_run.assert_called_once_with("127.0.0.1:7233", identity="prod-ocr-worker")
 
     def test_worker_identity_env_var_reaches_run_worker(
         self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
@@ -234,7 +236,7 @@ class TestWorkerCommand:
             mock_run.side_effect = _async_result(None)
             result = cli_runner.invoke(main, ["worker"])
             assert result.exit_code == 0
-            mock_run.assert_called_once_with("localhost:7233", identity="dev-ocr-worker")
+            mock_run.assert_called_once_with("127.0.0.1:7233", identity="dev-ocr-worker")
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +260,8 @@ class TestSubmitCommand:
         assert wf_input.model_name == "mistral:mistral-ocr-latest"
         assert wf_input.skip_duplicate_detection is False
         assert call_kwargs["workflow_id"].startswith("ocr-submit-")
-        assert call_kwargs["address"] == "localhost:7233"
+        # No address default: the value is the conftest's FORGE_TEMPORAL_ADDRESS.
+        assert call_kwargs["address"] == "127.0.0.1:7233"
 
     def test_custom_model_and_skip_duplicate_flag(self, cli_runner: CliRunner) -> None:
         with patch("ocr.cli._start_submit") as mock_start:
@@ -988,15 +991,18 @@ class TestEnvProfileFlag:
 class TestNamespaceCoherence:
     """A ``--env dev`` profile carries its Temporal namespace into every connect."""
 
-    def test_dev_profile_namespace_reaches_connect(
-        self, cli_runner: CliRunner, tmp_path: Path, restore_environ: None
+    def test_dev_profile_derives_the_dev_namespace(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_environ: None,
     ) -> None:
-        # A dev profile that declares forge-dev: a connecting command (list) must
-        # hand that namespace to the shared connect chokepoint.
+        # The profile declares only the environment: a connecting command (list)
+        # must derive forge-dev and the dev server from it.
+        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
         profile = tmp_path / "dev.env"
-        profile.write_text(
-            "FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///x.db\nFORGE_TEMPORAL_NAMESPACE=forge-dev\n"
-        )
+        profile.write_text("FORGE_ENV_TAG=dev\nFORGE_DB_URL=sqlite:///x.db\n")
 
         mock_handle = AsyncMock()
         mock_handle.result.return_value = {"jobs": []}
@@ -1011,21 +1017,21 @@ class TestNamespaceCoherence:
         assert result.exit_code == 0
         mock_connect.assert_awaited_once()
         assert mock_connect.await_args.kwargs["namespace"] == "forge-dev"
+        assert mock_connect.await_args.args[0] == "127.0.0.1:7236"
 
-    def test_dev_env_without_namespace_refuses_to_connect(
+    def test_dev_pointed_at_the_prod_server_refuses_to_connect(
         self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, restore_environ: None
     ) -> None:
-        # Dev without a declared namespace defaults to "default" — production's —
-        # so a Temporal-touching command exits 78 with the coherence message and
-        # never opens a connection.
+        # The environment is coherent; the *server* is production's. The old
+        # namespace-name check never read the address and could not see this.
         monkeypatch.setenv("FORGE_ENV", "dev")
-        monkeypatch.delenv("FORGE_TEMPORAL_NAMESPACE", raising=False)
+        monkeypatch.setenv("FORGE_TEMPORAL_ADDRESS", "127.0.0.1:7243")
 
         with patch("ocr.cli.connect_temporal", new=AsyncMock()) as mock_connect:
             result = cli_runner.invoke(main, ["list"])
 
         assert result.exit_code == EXIT_CONFIG_ERROR
-        assert "must not use the 'default'" in result.stderr
+        assert "FORGE_TEMPORAL_ADDRESS" in result.stderr
         mock_connect.assert_not_awaited()
 
     def test_direct_db_commands_unaffected_by_namespace(

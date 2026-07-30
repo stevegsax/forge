@@ -213,20 +213,21 @@ class TestNamespaceCoherence:
     """The worker refuses an env/namespace pairing that crosses the prod/staging line."""
 
     @pytest.mark.asyncio
-    async def test_incoherent_namespace_fails_before_store_setup(
+    async def test_unresolvable_target_fails_before_store_setup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """FORGE_ENV=test + the ``default`` namespace fails fast, before migrations.
+        """FORGE_ENV=test with no address fails fast, before migrations.
 
-        The coherence check runs after settings are built but before ``build_engine``,
-        migrations, or the client, so a mis-namespaced worker never touches a DB or
-        the Temporal frontend.
+        Target derivation runs after settings are built but before ``build_engine``,
+        migrations, or the client, so a worker that cannot resolve where to connect
+        never touches a DB or the Temporal frontend. ``test`` has no canonical
+        server (its server is an ephemeral per-job container), so an address is
+        required and its absence is the unresolvable case.
         """
         from sax_platform.config import ForgeEnvError
 
-        # env=test comes from the autouse _forge_env fixture; the default namespace
-        # is incoherent with it.
-        monkeypatch.setenv("FORGE_TEMPORAL_NAMESPACE", "default")
+        # env=test comes from the autouse fixture; drop the address it exports.
+        monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
         p_log, p_mig, p_eng, p_conn, p_run = _base_patches()
         with (
             p_log,
@@ -234,7 +235,7 @@ class TestNamespaceCoherence:
             p_eng,
             p_conn as conn,
             p_run,
-            pytest.raises(ForgeEnvError, match="must not use the 'default'"),
+            pytest.raises(ForgeEnvError, match="requires FORGE_TEMPORAL_ADDRESS"),
         ):
             await worker_mod.run_worker()
 

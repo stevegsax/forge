@@ -18,4 +18,7 @@ notes: >-
   registration's rationale. Uses pgvector (already in the canonical
   image). Replaces pbook's tenancy in forge's databases; the dev lane
   previously shared forge_dev, so pbook_dev gives dev prod-parity
-  topology for the first time.
+  topology for the first time. First-class here means storage only —
+  Temporal namespace policy is not set in this file; see
+  sax-temporal/docs/namespaces.md, "Deviations" (pbook shares forge's
+  namespace, isolated by task queue, until forge T6.4).
