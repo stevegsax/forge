@@ -8,7 +8,7 @@ Git and worktrees serve as the general-purpose data store and isolation mechanis
 
 ## Prerequisites
 
-- The local stack running: `make stack-up` brings up [Temporal](https://temporal.io/), Postgres, and MinIO under podman (see [deploy/local-stack/](deploy/local-stack/)). Any Temporal server reachable at `FORGE_TEMPORAL_ADDRESS` works; the default is `localhost:7233`.
+- [Temporal](https://temporal.io/) and Postgres reachable: both come from shared stacks that forge does not own or start (`~/repos-sax/sax-temporal`, `~/repos-sax/sax-datastores`). Which server and namespace a command uses is derived from `FORGE_ENV`, not configured per command — dev `127.0.0.1:7236` / `forge-dev`, prod `127.0.0.1:7243` / `forge-prod`.
 - The workspace synced: `uv sync --all-packages` from the repo root. The root is a uv workspace (`apps/pbook`, `apps/ocr`, `libs/sax-platform`) and is self-contained — a bare clone resolves with no sibling checkouts.
 - **A declared environment.** Every command is fronted by the environment guard: `FORGE_ENV` must be one of `prod` / `dev` / `test` and has **no default**, so a command run in a bare shell exits **78** instead of guessing which database to touch. Declare it either way:
 

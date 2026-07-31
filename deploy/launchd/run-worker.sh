@@ -11,8 +11,8 @@
 #
 # The profile is parsed line-by-line and NEVER shell-evaluated (G35, T0.7):
 # values containing `&`, `;`, `$(...)` etc. are inert. This file stays bash
-# (matching install.sh / start-stack.sh) to minimize churn; the shared
-# load-env.sh is written to be sourced by both bash and zsh (the backup job).
+# (matching install.sh) to minimize churn; the shared load-env.sh avoids
+# bashisms, a habit left from when the retired backup job (zsh) sourced it too.
 set -euo pipefail
 
 # launchd starts agents with a minimal PATH; uv and podman live in the usual

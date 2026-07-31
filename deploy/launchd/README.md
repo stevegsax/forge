@@ -1,16 +1,23 @@
-# launchd agents (worker + stack supervision)
+# launchd agents (worker supervision)
 
 The macOS analog of the retired EC2 systemd units (D99): launchd keeps
-the workers running on the always-on desktop and brings the podman stack
-up at login.
+the workers running on the always-on desktop. Every agent here is a
+worker — since D104 forge starts no infrastructure, because Postgres
+(`~/repos-sax/sax-datastores`) and Temporal (`~/repos-sax/sax-temporal`)
+are shared stacks that boot themselves.
 
 | Agent | Behavior |
 | --- | --- |
-| `com.saxcapital.forge-stack` | RunAtLoad one-shot: `podman machine start` if needed, then `make stack-up` |
 | `com.saxcapital.forge-worker-1` / `-2` | KeepAlive: `uv run forge worker` (identities `prod-forge-worker-1/2`) |
 | `com.saxcapital.pbook-worker` | KeepAlive: `uv run pbook worker` (identity `prod-pbook-worker`; opt-in, `--with-pbook`) |
 | `com.saxcapital.ocr-worker` | KeepAlive: `uv run --package ocr ocr worker` (identity `prod-ocr-worker`; opt-in, `--with-ocr`) |
-| `com.saxcapital.db-backup` | Daily 03:30: `pg_dump` forge + pbook → S3 (opt-in, `--with-backup`) |
+
+Two agents were retired by D104 and no longer exist: `com.saxcapital.forge-stack`
+(RunAtLoad: brought forge's own podman stack up at login) and
+`com.saxcapital.db-backup` (nightly `pg_dump` of the forge + pbook databases
+to S3 — now sax-datastores' nightly, which dumps every database on the
+instance). `install.sh --uninstall` does not know those labels any more, so
+a host that still has their plists needs them booted out by hand.
 
 Each worker identity is a *base*: the worker appends the git version of the
 tree it was launched from, so a poller reports `prod-forge-worker-1@bb64d88`
@@ -29,17 +36,22 @@ copy you run decides which checkout all of these agents execute.
 cp deploy/launchd/envs/prod.env.example ~/.config/forge/envs/prod.env
 chmod 600 ~/.config/forge/envs/prod.env   # then fill in the CHANGEMEs
 make prod-deploy REF=main                 # creates/pins ~/repos-sax/forge-prod
-~/repos-sax/forge-prod/deploy/launchd/install.sh --with-backup   # + --with-pbook / --with-ocr
+~/repos-sax/forge-prod/deploy/launchd/install.sh --with-pbook --with-ocr
 ```
 
-`install.sh` renders `com.saxcapital.forge.plist.in` (workers) and
-`com.saxcapital.db-backup.plist.in` (backup) per agent into
+`install.sh` renders `com.saxcapital.forge.plist.in` per agent into
 `~/Library/LaunchAgents/` and `launchctl bootstrap`s them; re-running is
-idempotent, `--uninstall` removes everything (all agents, whether or not
-they were installed). Logs land under `$XDG_STATE_HOME/forge/logs/` (one
-file per agent). The opt-in flags are `--with-pbook`, `--with-ocr`, and
-`--with-backup` (all default off — enable `--with-backup` on the
-production host so the databases have offsite durability).
+idempotent, `--uninstall` removes everything (all three worker kinds,
+whether or not they were installed). Logs land under
+`$XDG_STATE_HOME/forge/logs/` (one file per agent). The opt-in flags are
+`--with-pbook` and `--with-ocr` (both default off).
+
+> A `launchctl bootstrap` that fails with a bare
+> `Bootstrap failed: 5: Input/output error` on a valid plist usually means the
+> label was **disabled** by an earlier teardown — a per-user override stored
+> outside the plists that no error message names. `launchctl print-disabled
+> gui/$UID` reveals it; `launchctl enable gui/$UID/<label>` clears it (observed
+> 2026-07-31).
 
 After this one-time install, code deploys are `make prod-deploy REF=<ref>`
 alone: it re-pins the checkout and restarts the workers. Re-run the
@@ -48,13 +60,13 @@ installer only to change a job definition (identities, environment,
 
 ## Environment guard (T0.9)
 
-Every worker (and the backup job) must declare which environment it
-targets — there is no default, and production is an explicit act:
+Every worker must declare which environment it targets — there is no
+default, and production is an explicit act:
 
-- The **launchd plist** sets `FORGE_ENV=prod` in `EnvironmentVariables`,
-  and for the workers/backup also `FORGE_PROD_ACK=yes` (the production
-  acknowledgement — deliberately never in a profile file).
-- `run-worker.sh` (and `backup-app-dbs.sh`) source the shared
+- The **launchd plist** sets `FORGE_ENV=prod` and `FORGE_PROD_ACK=yes` in
+  `EnvironmentVariables` (the production acknowledgement — deliberately
+  never in a profile file).
+- `run-worker.sh` sources the shared
   `load-env.sh`, which loads the matching profile
   `~/.config/forge/envs/$FORGE_ENV.env`, parsing `KEY=VALUE` lines
   **without shell-evaluating them** (the T0.7/G35 property — a `&` in a
@@ -73,7 +85,7 @@ targets — there is no default, and production is an explicit act:
   worker can never poll production's queues — it is not even on production's
   server (`sax-temporal/docs/namespaces.md`).
 
-To run a worker or `make backup-app-dbs` **interactively**, declare the
+To run a worker **interactively**, declare the
 environment yourself, and use `set -a` so the profile's values (including
 `FORGE_ENV_TAG`) export — a plain `source` does not export, and the guard
 rejects an unexported tag by design:
@@ -83,11 +95,12 @@ set -a; source ~/.config/forge/envs/prod.env; set +a
 export FORGE_ENV=prod FORGE_PROD_ACK=yes
 ```
 
-Example profiles: `deploy/launchd/envs/prod.env.example` (local
-`forge` + `pbook` databases, real S3, `FORGE_BACKUP_S3_BUCKET`) and
-`envs/dev.env.example` (`forge_dev`, local MinIO, no prod ack). After a
-fresh boot the workers crash-loop politely (ThrottleInterval 10s) until
-the stack agent has Temporal listening.
+Example profiles: `deploy/launchd/envs/prod.env.example`
+(`forge_prod`/`pbook_prod` on the shared prod Postgres `:5442`, real S3) and
+`envs/dev.env.example` (`forge_dev`/`pbook_dev` on `:5432`, the shared dev
+MinIO, no prod ack). Neither carries a backup bucket — offsite durability is
+sax-datastores' nightly now (D104). After a fresh boot the workers crash-loop
+politely (ThrottleInterval 10s) until the shared Temporal stack is listening.
 
 ## Operate
 
@@ -164,7 +177,7 @@ sequence that adopts the lane-based identities (each agent's second
 `ProgramArguments` entry, e.g. `prod-forge-worker-1`) is:
 
 ```bash
-deploy/launchd/install.sh --with-backup   # repeat the SAME opt-in flags used originally
+deploy/launchd/install.sh --with-pbook --with-ocr   # repeat the SAME opt-in flags used originally
 make workers-status                       # agents loaded
 temporal task-queue describe --task-queue forge-task-queue   # new identity + version stamp
 ```
@@ -185,18 +198,14 @@ kills the tmux session and rebuilds the command line — including
 `FORGE_WORKER_IDENTITY=dev-<worker>-worker` — from the current Makefile, so a
 changed base takes effect at that restart.
 
-## Nightly backups (`--with-backup`)
+## Nightly backups (not forge's job — D104)
 
-The `com.saxcapital.db-backup` agent runs
-`deploy/local-stack/backup-app-dbs.sh` daily at 03:30: `pg_dump -Fc` of
-the `forge` and `pbook` databases out of the `forge-postgres` container,
-uploaded to `s3://$FORGE_BACKUP_S3_BUCKET/db-backups/` with a UTC
-timestamp (offsite durability now that the app store is local — T0.9).
-It loads the prod profile the same way the workers do (its plist sets
-`FORGE_ENV=prod` + `FORGE_PROD_ACK=yes`; `FORGE_BACKUP_S3_BUCKET` and the
-AWS creds come from the profile). Run it by hand with `make
-backup-app-dbs` (needs `FORGE_ENV` set in the shell). Logs:
-`~/.local/state/forge/logs/db-backup.log`.
+Forge no longer runs a backup agent. sax-datastores dumps every database on
+each instance nightly and verifies the dumps restore, so `forge_prod` and
+`pbook_prod` are covered without forge configuring anything — including the
+Temporal databases, which forge's own leg never touched. `FORGE_BACKUP_S3_BUCKET`
+is retired; setting it does nothing. See `~/repos-sax/sax-datastores` for the
+schedule and the restore check.
 
 ## Always-on
 

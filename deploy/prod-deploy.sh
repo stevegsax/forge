@@ -42,9 +42,8 @@ PROD_ROOT="${PROD_ROOT:-$HOME/repos-sax/forge-prod}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-STACK_ENV_REL="deploy/local-stack/.env"
 WORKER_PLIST="$HOME/Library/LaunchAgents/com.saxcapital.forge-worker-1.plist"
-INSTALLER_FLAGS="--with-pbook --with-ocr --with-backup"
+INSTALLER_FLAGS="--with-pbook --with-ocr"
 
 die() { echo "prod-deploy: $*" >&2; exit 1; }
 step() { echo "==> $*"; }
@@ -86,26 +85,16 @@ else
   git -C "$SOURCE_ROOT" worktree add --detach "$PROD_ROOT" "$COMMIT"
 fi
 
-# --- 3. Untracked state the checkout needs -----------------------------------
-# The local stack's port override (FORGE_PG_PORT=5434 on this machine) is
-# deliberately gitignored, so a fresh worktree has no copy and would fall back to
-# the default port.
-if [[ -f "$SOURCE_ROOT/$STACK_ENV_REL" ]]; then
-  mkdir -p "$(dirname "$PROD_ROOT/$STACK_ENV_REL")"
-  cp "$SOURCE_ROOT/$STACK_ENV_REL" "$PROD_ROOT/$STACK_ENV_REL"
-  step "copied $STACK_ENV_REL into the prod checkout"
-else
-  echo "prod-deploy: WARNING — $SOURCE_ROOT/$STACK_ENV_REL not found, so the prod
-    checkout has no local-stack overrides. If this machine runs Postgres on a
-    non-default port, a stack brought up from $PROD_ROOT would target the
-    default port instead." >&2
-fi
-
-# --- 4. Sync the environment the workers will exec ---------------------------
+# --- 3. Sync the environment the workers will exec ---------------------------
+# No untracked state is copied in: since T10.1/D104 the checkout carries no
+# infrastructure config at all. Postgres comes from the shared sax-datastores
+# stacks and Temporal from sax-temporal, and the workers reach both through the
+# per-environment profile (~/.config/forge/envs/prod.env), which lives outside
+# every checkout.
 step "uv sync --all-packages in $PROD_ROOT"
 (cd "$PROD_ROOT" && uv sync --all-packages)
 
-# --- 5. Verify the plists point at this checkout BEFORE restarting -----------
+# --- 4. Verify the plists point at this checkout BEFORE restarting -----------
 # A code-only deploy is safe to restart; a plist still pointing at another tree
 # means launchd would relaunch the wrong checkout, and no restart can fix that.
 installed_program=""
@@ -127,7 +116,7 @@ else
   echo "  Workers were NOT restarted — a restart would relaunch that other checkout."
   echo
   echo "  Run the ONE-TIME re-install from the prod checkout (it renders every plist"
-  echo "  path from its own location, workers and the forge-stack agent alike):"
+  echo "  path from its own location, so all the worker agents move together):"
   echo
   echo "    $PROD_ROOT/deploy/launchd/install.sh $INSTALLER_FLAGS"
   echo

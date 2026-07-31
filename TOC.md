@@ -30,7 +30,7 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 ## Architecture & Decisions
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — how Forge works: universal workflow step, execution modes, context assembly, batch-vs-sync, key data models, module map, and subsystems beyond the core loop.
-- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D103, with supersession/stale markers.
+- [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D104, with supersession/stale markers.
 
 ## Requirements
 
@@ -46,11 +46,10 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 
 - [operations/USAGE.md](docs/operations/USAGE.md) — submitting code and research tasks to Forge.
 - [operations/WORKERS.md](docs/operations/WORKERS.md) — worker overview, identity, and scaling.
-- [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — local-first deployment: podman stack (Temporal + local `forge`/`pbook` Postgres + MinIO), launchd workers, the `FORGE_ENV` guard, nightly S3 backups (D99, D102).
+- [operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) — local-first deployment: launchd workers out of a commit-pinned checkout, the shared sax-datastores/sax-temporal stacks, the `FORGE_ENV` guard (D99, D102, D103, D104). Partly pre-D104 — banner at the top.
 - [deploy/README.md](deploy/README.md) — deployment quick start and directory map; points into the guides below (D99).
-- [deploy/local-stack/README.md](deploy/local-stack/README.md) — the podman stack: Temporal (production) plus dev-only Postgres/MinIO counterparts.
-- [deploy/launchd/README.md](deploy/launchd/README.md) — launchd agents: install, operate, restart, logs.
-- [deploy/s3/README.md](deploy/s3/README.md) — S3 bucket lifecycle policy: what it does and deliberately does not expire.
+- [deploy/launchd/README.md](deploy/launchd/README.md) — launchd worker agents: install, operate, restart, logs.
+- [deploy/s3/README.md](deploy/s3/README.md) — S3 blob-bucket lifecycle policy: what it does and deliberately does not expire.
 - [operations/DEBUGGING.md](docs/operations/DEBUGGING.md) — logging, observability store, API message logs, OTel tracing, env vars.
 - [operations/ADDING_A_DOMAIN.md](docs/operations/ADDING_A_DOMAIN.md) — parameterizing LLM behavior through task domains.
 - [operations/test-strategy.md](docs/operations/test-strategy.md) — testing pyramid and signal quality.

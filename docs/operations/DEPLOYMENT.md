@@ -1,19 +1,32 @@
 # Deployment: Local-First Forge on an Always-On Desktop
 
-Forge deploys to a single always-on macOS desktop (D99, D102, D103). Temporal
-is **self-hosted in the local podman stack** with persistence in that stack's
-Postgres; the forge and pbook **workers run as launchd-supervised host
-processes** out of a **commit-pinned checkout** (`~/repos-sax/forge-prod`,
-deployed only by `deploy/prod-deploy.sh` — D103); Forge's and pbook's application state
-lives in **local Postgres** — the `forge` and `pbook` databases in that same
-podman stack, beside Temporal's (D102, rehomed off Supabase 2026-07-22);
-OCR/batch blobs live in **S3** with only references in the database. The
-desktop holds every database of record plus disposable work products
-(worktrees, cloned repos, logs); offsite durability comes from a nightly
-`pg_dump` → S3 and from versioned S3 blobs.
+> **Partly pre-D104 (banner added 2026-07-31).** Forge's own podman stack was
+> deleted when the data and workflow layers moved to the shared
+> `~/repos-sax/sax-datastores` and `~/repos-sax/sax-temporal` stacks. Every
+> statement below that named `deploy/local-stack`, `make stack-up`, the
+> `forge-stack`/`db-backup` launchd agents, port 5433/5434, or forge's own
+> nightly `pg_dump` has been corrected in place, but this file has **not** had
+> the full post-migration rewrite it is owed (T10.1) — read the shape here as
+> current and the surrounding narrative as written for the older topology. The
+> "Supabase (retired/frozen)" and "History" sections are deliberately historical
+> and describe the world as it was.
+
+Forge deploys to a single always-on macOS desktop (D99, D102, D103, D104). It
+runs **no infrastructure of its own**: Temporal comes from the shared
+`sax-temporal` stacks (dev `:7236`, prod `:7243`) and Postgres from the shared
+`sax-datastores` stacks (dev `:5432`, prod `:5442`). The forge, pbook, and ocr
+**workers run as launchd-supervised host processes** out of a **commit-pinned
+checkout** (`~/repos-sax/forge-prod`, deployed only by `deploy/prod-deploy.sh`
+— D103); Forge's and pbook's application state lives in the shared prod
+Postgres instance as the separately-owned `forge_prod` and `pbook_prod`
+databases (D104; D102 rehomed them off Supabase first); OCR/batch blobs live in
+**S3** with only references in the database. The desktop holds every database
+of record plus disposable work products (worktrees, cloned repos, logs);
+offsite durability comes from sax-datastores' nightly dump-and-restore-check
+and from versioned S3 blobs.
 
 > Scope: single-operator, low-volume, one machine. There is **no remote
-> access**: Temporal binds to loopback only. The EC2/mTLS deployment this
+> access**: every service binds to loopback only. The EC2/mTLS deployment this
 > replaces was removed by D99 (its Terraform, SSM bootstrap, gateway, and
 > cert tooling live in git history; remote access may return later).
 > High availability is explicitly out of scope — see
@@ -24,16 +37,17 @@ desktop holds every database of record plus disposable work products
 ```text
 ┌────────────────────── always-on macOS desktop ───────────────────────┐
 │                                                                       │
-│  podman (deploy/local-stack)          launchd (deploy/launchd)        │
+│  shared stacks (other repos)          launchd (deploy/launchd)        │
 │  ┌──────────────────────────┐   ┌───────────────────────────────────┐ │
-│  │ temporal :7233 (loopback)│◄──┤ forge-worker-1 / -2 → forge worker │ │
-│  │   persistence ─┐         │   │   FORGE_TEMPORAL_ADDRESS=          │ │
-│  │ temporal-ui :8233        │   │     127.0.0.1:7233                 │ │
-│  │ postgres :5433 ◄┘        │   │ pbook-worker → pbook worker (opt)  │ │
-│  │   forge + pbook +        │   │ ocr-worker → ocr worker (opt)      │ │
-│  │   forge_dev + temporal + │   │   env: envs/$FORGE_ENV.env         │ │
-│  │   temporal_visibility    │   └───────────────┬───────────────────┘ │
-│  │ minio :9002/:9003 (dev)  │                   │                     │
+│  │ sax-temporal             │◄──┤ forge-worker-1 / -2 → forge worker │ │
+│  │   prod :7243  forge-prod │   │ pbook-worker → pbook worker (opt)  │ │
+│  │   dev  :7236  forge-dev  │   │ ocr-worker → ocr worker (opt)      │ │
+│  │                          │   │   server + namespace derived from  │ │
+│  │ sax-datastores           │◄──┤     FORGE_ENV                      │ │
+│  │   prod :5442  forge_prod │   │   env: envs/$FORGE_ENV.env         │ │
+│  │               pbook_prod │   └───────────────┬───────────────────┘ │
+│  │   dev  :5432  *_dev      │                   │                     │
+│  │   dev MinIO :9000        │                   │                     │
 │  └──────────────────────────┘                   │                     │
 │  worktrees, cloned repos, logs (disposable)     │ outbound HTTPS      │
 └─────────────────────────────────────────────────┼─────────────────────┘
@@ -45,24 +59,27 @@ desktop holds every database of record plus disposable work products
 that existed to host Temporal and the workers was pure overhead (D99).
 Temporal persists locally because with the engine local, remote
 persistence would put the internet inside every workflow tick; the
-application databases sit in that same local Postgres (D102) — their
-low-rate business writes don't carry the per-tick latency cost, and a
-nightly `pg_dump` → S3 supplies the offsite durability that keeping them
-managed used to buy. Blobs stay on S3, which is already offsite.
+application databases sit on the same box for the same reason it costs
+nothing — their low-rate business writes don't carry the per-tick latency
+cost (D102). What changed at D104 is **whose** box: both layers are now
+fleet-shared stacks with per-environment instances and per-project roles,
+so an environment mistake fails at authentication rather than reading the
+wrong database, and their nightly backup covers forge without forge
+configuring anything. Blobs stay on S3, which is already offsite.
 
 ### What runs where
 
 | Component | Where | Lifetime | Notes |
 | --- | --- | --- | --- |
-| Temporal server + UI | podman (`deploy/local-stack`) | Always up | Persistence → the stack's Postgres (`temporal`, `temporal_visibility`) |
-| Stack Postgres | podman, host port 5433 | Always up | Temporal (`temporal`, `temporal_visibility`) + the `forge`/`pbook` app databases (D102) + the `forge_dev` dev database |
-| MinIO | podman, host ports 9002/9003 | Dev only | Local S3 surface for dev; production blobs go to real S3 |
+| Temporal server + UI | `~/repos-sax/sax-temporal` (not forge's) | Always up | Per-environment servers: prod `:7243`, dev `:7236`; forge's namespaces are `forge-prod` / `forge-dev` |
+| Postgres | `~/repos-sax/sax-datastores` (not forge's) | Always up | Per-environment instances: prod `:5442`, dev `:5432`. Each project is a role owning its same-named database, PUBLIC connect revoked |
+| MinIO | `sax-datastores` dev stack, `:9000` | Dev only | Local S3 surface for dev; production blobs go to real S3 |
 | `forge worker` (×2) | launchd host processes, from `~/repos-sax/forge-prod` | Always up | Poll `forge-task-queue`; need git/uv/ruff and repos on disk |
 | `pbook worker` | launchd host process, from `~/repos-sax/forge-prod` | Optional | Only if transcript ingestion is used; polls `pbook-task-queue` |
 | `ocr worker` | launchd host process, from `~/repos-sax/forge-prod` | Optional | Only if OCR is used (`install.sh --with-ocr`); polls `ocr-task-queue` |
-| `forge` / `pbook` CLIs | Host shell | On demand | Connect to `127.0.0.1:7233` |
-| Forge store | local Postgres (`forge` database) | Always up | interactions, runs, playbooks, batch_jobs, OCR records; forge + ocr Alembic chains in `public` |
-| pbook store | local Postgres (`pbook` database) | Optional | `PBOOK_DATABASE_URL` (set in the prod profile since D102); Postgres-only |
+| `forge` / `pbook` CLIs | Host shell | On demand | Server and namespace derived from `FORGE_ENV` |
+| Forge store | shared Postgres (`forge_prod`) | Always up | interactions, runs, playbooks, batch_jobs, OCR records; forge + ocr Alembic chains in `public` |
+| pbook store | shared Postgres (`pbook_prod`) | Optional | `PBOOK_DATABASE_URL`; its own role and credential since D104 |
 | Blobs | S3 | Always up | Image/file bytes; DB holds the S3 key; lifecycle policy in `deploy/s3/` |
 
 The workers run on the **host** (not in a container) because the forge
@@ -75,7 +92,8 @@ increment 2, but the build-agent rationale keeps them on the host.)
 
 | Dependency | Purpose | Requirement |
 | --- | --- | --- |
-| S3 bucket | OCR/batch blobs + nightly DB backups | Creds via `~/.aws` or the env file; lifecycle policy: [deploy/s3/](../../deploy/s3/) |
+| S3 bucket | OCR/batch blobs | Creds via `~/.aws` or the env file; lifecycle policy: [deploy/s3/](../../deploy/s3/) |
+| Shared stacks | Postgres + Temporal | `~/repos-sax/sax-datastores`, `~/repos-sax/sax-temporal` — both boot themselves; forge's roles/databases/namespaces must be provisioned there before a worker starts |
 | Anthropic API | All Forge LLM calls; pbook extraction/review | `ANTHROPIC_API_KEY` |
 | Mistral API | OCR (ocr app only) | `MISTRAL_API_KEY` — **required by the ocr worker** (fail-fast at startup, T4.2); the forge worker never reads it |
 | OpenAI API | pbook embeddings | `OPENAI_API_KEY` (only if pbook used) |
@@ -150,7 +168,7 @@ after T5.6 made the hazard concrete):
 
 ```bash
 temporal workflow list --query 'ExecutionStatus="Running"' \
-  --address 127.0.0.1:7243 --namespace forge-prod   # deployed pre-cutover: --address 127.0.0.1:7233 --namespace default
+  --address 127.0.0.1:7243 --namespace forge-prod
 ```
 
 Why. A worker restart makes every running workflow **replay its recorded
@@ -184,25 +202,24 @@ make prod-deploy REF=main        # or: deploy/prod-deploy.sh <ref>
 
 which resolves the ref to a commit, refuses a prod checkout with local
 modifications (nothing is touched — inspect it yourself), checks the
-commit out, copies the gitignored `deploy/local-stack/.env` port override
-in, runs `uv sync --all-packages` there, verifies the installed plists
-point at `forge-prod`, and only then restarts the workers. If the plists
-point elsewhere it prints the one-time installer command and exits 3
-**without** restarting — see [the launchd
+commit out, runs `uv sync --all-packages` there, verifies the installed
+plists point at `forge-prod`, and only then restarts the workers. It
+copies no untracked state in: since D104 the checkout carries no
+infrastructure config at all — the workers reach Postgres and Temporal
+through `~/.config/forge/envs/$FORGE_ENV.env`, which lives outside every
+checkout. If the plists point elsewhere it prints the one-time installer
+command and exits 3 **without** restarting — see [the launchd
 README](../../deploy/launchd/README.md#changing-a-plist-worker-identities-environment-keepalive)
 for why a restart cannot adopt a new checkout.
 
 Binding production to the checkout is one act, done once:
 
 ```bash
-~/repos-sax/forge-prod/deploy/launchd/install.sh --with-pbook --with-ocr --with-backup
+~/repos-sax/forge-prod/deploy/launchd/install.sh --with-pbook --with-ocr
 ```
 
-Every path in every plist — workers, the `forge-stack` agent, the
-`db-backup` agent — is rendered from the installer's own location, so
-running `forge-prod`'s copy moves all of them together. The stack agent
-moving is safe: the stack's data lives outside any checkout
-(`FORGE_PG_DATA` / `FORGE_MINIO_DATA` under `~/.local/share/forge/`).
+Every plist path is rendered from the installer's own location, so running
+`forge-prod`'s copy moves all the worker agents together.
 
 The workers enforce the pin. On `FORGE_ENV=prod`, each worker checks its
 checkout's git version at startup and exits **78** when it is `-dirty` or
@@ -211,16 +228,14 @@ run code a commit fully describes. Dev and test are unaffected.
 
 ## Deployment process
 
-### 1. Bring up the stack
+### 1. Confirm the shared stacks are up and provisioned
 
-```bash
-podman machine start          # first time: podman machine init
-make stack-up                 # Postgres + Temporal + UI + MinIO
-```
-
-Temporal's auto-setup creates its databases in the stack's Postgres on
-first boot. UI: `http://localhost:8233`. Details, ports, and overrides:
-[deploy/local-stack/README.md](../../deploy/local-stack/README.md).
+Forge starts nothing here (D104). Both stacks boot themselves; what forge
+needs is that its own role, database, and namespace already exist in them —
+`forge_prod` (and `pbook_prod`) on the prod Postgres instance, `forge-prod`
+on the prod Temporal server. Provisioning is a registration the
+sax-datastores admin applies, not something this repo does. Details:
+`~/repos-sax/sax-datastores` and `~/repos-sax/sax-temporal`.
 
 ### 2. Configure the worker environment
 
@@ -233,10 +248,10 @@ cp deploy/launchd/envs/prod.env.example ~/.config/forge/envs/prod.env
 chmod 600 ~/.config/forge/envs/prod.env   # then fill in the CHANGEMEs
 ```
 
-The profile replaces the EC2-era SSM plumbing: `FORGE_DB_URL` (the local
-`forge` database), `PBOOK_DATABASE_URL` (the local `pbook` database),
-`ANTHROPIC_API_KEY`, `FORGE_OCR_S3_BUCKET`, `FORGE_BACKUP_S3_BUCKET`, and
-friends, plus its own `FORGE_ENV_TAG=prod`. The launchd wrapper parses it
+The profile replaces the EC2-era SSM plumbing: `FORGE_DB_URL` (the
+`forge_prod` database), `PBOOK_DATABASE_URL` (the `pbook_prod` database),
+`ANTHROPIC_API_KEY`, `FORGE_OCR_S3_BUCKET`, and friends, plus its own
+`FORGE_ENV_TAG=prod`. The launchd wrapper parses it
 without shell evaluation (so URLs with `&` are safe) and refuses to start
 if the tag disagrees with `FORGE_ENV` or the file is not chmod 600.
 Production additionally requires `FORGE_PROD_ACK=yes` — set only by the
@@ -260,25 +275,23 @@ migrate without starting the worker.
 
 ```bash
 make prod-deploy REF=main             # creates ~/repos-sax/forge-prod at that commit
-~/repos-sax/forge-prod/deploy/launchd/install.sh --with-pbook --with-ocr --with-backup
+~/repos-sax/forge-prod/deploy/launchd/install.sh --with-pbook --with-ocr
 ```
 
 The first command creates and syncs the pinned checkout (D103) and then
 stops short of restarting, because the agents do not exist yet or still
-point elsewhere; the second installs the stack agent (RunAtLoad: podman
-machine + `stack-up` at login) and the KeepAlive worker agents, with every
-path rooted at `forge-prod`. Afterwards `make prod-deploy REF=<ref>` is the
-whole deploy. Operation, logs, and restart commands:
+point elsewhere; the second installs the KeepAlive worker agents, with
+every path rooted at `forge-prod`. Afterwards `make prod-deploy REF=<ref>`
+is the whole deploy. Operation, logs, and restart commands:
 [deploy/launchd/README.md](../../deploy/launchd/README.md).
 
 ### 5. Verify
 
 ```bash
-podman ps                                            # 4 containers healthy
 tail -f ~/.local/state/forge/logs/forge-worker-1.log # "worker started", polling
 uv run forge status --limit 3                        # CLI → Temporal + store
-open http://localhost:8233                           # workers visible under Workers
-temporal task-queue describe --task-queue forge-task-queue  # identities: prod-forge-worker-N@<sha>
+temporal task-queue describe --task-queue forge-task-queue \
+  --address 127.0.0.1:7243 --namespace forge-prod    # identities: prod-forge-worker-N@<sha>
 ```
 
 The last command is the deploy check: each poller's identity ends in the
@@ -308,7 +321,7 @@ Worker/CLI environment (the launchd agents read these from
 | `FORGE_PROD_ACK` | **Required for `prod`.** The explicit production acknowledgement; set by the plist (or interactive shell), never by a profile | `yes` |
 | `FORGE_ENV_TAG` | Declared **inside** each profile; the loader aborts if it disagrees with `FORGE_ENV` | `prod` |
 | `FORGE_TEMPORAL_ADDRESS` | **Override only, normally unset.** The server follows from `FORGE_ENV` (`:7236` dev, `:7243` prod); dev and prod reject any other value (exit 78). Required for `FORGE_ENV=test`, whose server is an ephemeral per-job container | unset |
-| `FORGE_DB_URL` | **Required.** Forge store (local `forge` database). Unset → hard error | `postgresql+psycopg://forge:…@127.0.0.1:5433/forge` |
+| `FORGE_DB_URL` | **Required.** Forge store (the `forge_prod` database on the shared prod instance). Unset → hard error | `postgresql+psycopg2://forge_prod:…@localhost:5442/forge_prod` |
 | `FORGE_OCR_S3_BUCKET` | S3 bucket for blobs. The **ocr worker fails fast at startup if unset** (T3.6; previously a first-use error); forge needs it for OCR/batch-blob work | bucket name |
 | `FORGE_OCR_S3_PREFIX` | Optional key prefix for blobs | e.g. `ocr/` |
 | `FORGE_LOG_DIR` | App log directory (empty = no file logging) | `$XDG_STATE_HOME/forge/logs` |
@@ -318,17 +331,18 @@ Worker/CLI environment (the launchd agents read these from
 | `ANTHROPIC_API_KEY` | Anthropic SDK auth | key |
 | `MISTRAL_API_KEY` | OCR (ocr app). **Required by the ocr worker** — it submits and polls its own Mistral batches and fails fast at startup without it (T4.2). The forge worker never reads it (anthropic-only transport) | key |
 | `OPENAI_API_KEY` | pbook embeddings | key (if pbook used) |
-| `PBOOK_DATABASE_URL` | pbook Postgres store (local `pbook` database); set in the prod profile since D102 | `postgresql+psycopg://forge:…@127.0.0.1:5433/pbook` |
-| `FORGE_BACKUP_S3_BUCKET` | S3 bucket for the nightly `pg_dump` (D102) | bucket name (currently the blobs bucket) |
+| `PBOOK_DATABASE_URL` | pbook Postgres store (the `pbook_prod` database, its own role and credential since D104) | `postgresql+psycopg://pbook_prod:…@localhost:5442/pbook_prod` |
 | `AWS_*` | S3 auth if not using `~/.aws` | keys/region |
 
-The pbook worker takes no Temporal env var — it connects to its `localhost:7233`
-default (the same loopback frontend), so there is nothing to set for it here.
+`FORGE_BACKUP_S3_BUCKET` is **retired** (D104): forge runs no backup job, and
+setting the variable does nothing. sax-datastores dumps every database on the
+instance nightly and verifies the dumps restore.
 
-For the **dev** stack surfaces (local `forge_dev` Postgres, MinIO), see
-[deploy/local-stack/.env.example](../../deploy/local-stack/.env.example)
-— and note its footgun warning: the dev `AWS_*`/`FORGE_DB_URL` exports
-override production values in the same shell.
+For the **dev** surfaces (`forge_dev`/`pbook_dev` on `:5432`, the shared dev
+MinIO on `:9000`), see
+[deploy/launchd/envs/dev.env.example](../../deploy/launchd/envs/dev.env.example)
+— and note the same footgun: its `AWS_*`/`FORGE_DB_URL` values override
+production ones in the same shell.
 
 ## Supabase (retired/frozen)
 
@@ -358,19 +372,23 @@ affect the screen and (on this NVMe hardware) latency, not uptime.
 Residual exposure is reboots, unplugging, and hardware — nothing here
 protects against those.
 
-After a reboot: log in once — the launchd agents bring up the podman
-machine, the stack, and the workers without manual steps.
+After a reboot: the shared stacks come up on their own (they own their boot
+wiring) and launchd relaunches the workers; forge starts nothing.
 
 ## Backup
 
-- **App databases** (`forge`/`pbook`, state of record): the nightly
-  `com.saxcapital.db-backup` launchd agent (03:30) `pg_dump`s both to
-  `s3://$FORGE_BACKUP_S3_BUCKET/db-backups/` (D102), replacing Supabase's
-  managed backups. Run on demand with `make backup-app-dbs`.
-- **Stack Postgres** (Temporal workflow histories, plus the app databases'
-  data directory): rides the machine's backup discipline (Time Machine
-  covers `$XDG_DATA_HOME/forge/postgres`); losing it loses in-flight
-  workflow state, not records of completed work.
+Since D104 none of this is forge's machinery — it is recorded here so the
+coverage is legible from forge's side.
+
+- **App databases** (`forge_prod`/`pbook_prod`, state of record) and
+  **Temporal's** (`temporal_prod`/`temporal_visibility_prod` — the sax-temporal
+  servers persist to the same shared instance): sax-datastores dumps every
+  database on the instance nightly and runs a scheduled restore check that
+  fails loudly when the newest dumps go stale. Databases are enumerated from
+  the live instance, so a new forge database is covered without anyone
+  updating a manifest — and workflow histories are covered for the first time.
+  Forge's own leg (`com.saxcapital.db-backup`, `backup-app-dbs.sh`,
+  `FORGE_BACKUP_S3_BUCKET`) is deleted.
 - **S3**: versioned; noncurrent versions expire per the lifecycle policy.
 
 ## History

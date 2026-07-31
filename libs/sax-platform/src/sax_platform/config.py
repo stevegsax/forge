@@ -13,8 +13,8 @@ that changed after construction would be a bug, not a feature) and maps its
 fields to their env vars via ``validation_alias`` so the Python field name is
 free to differ from the historical env var name while the env var name itself
 is preserved byte-for-byte — other code and deployment env files
-(``~/.config/forge/forge.env``, ``deploy/local-stack/.env``, launchd plists)
-depend on those exact names.
+(``~/.config/forge/envs/<env>.env``, launchd plists) depend on those exact
+names.
 
 ``extra="ignore"``: a settings group only declares the env vars it cares
 about; the process environment carries many others (``PATH``, unrelated

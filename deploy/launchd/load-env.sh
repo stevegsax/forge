@@ -1,11 +1,13 @@
-# load-env.sh — SOURCED (not executed) by run-worker.sh (bash) and
-# deploy/local-stack/backup-app-dbs.sh (zsh). It must stay portable across both
-# shells: no bashisms beyond what zsh also accepts. No shebang, no exec bit.
+# load-env.sh — SOURCED (not executed) by run-worker.sh (bash). No shebang, no
+# exec bit. It avoids bashisms zsh would reject, which was load-bearing while
+# the nightly backup job (zsh) sourced it too; that job retired with forge's
+# local stack (T10.1/D104), so the portability is now free insurance, not a
+# requirement.
 #
 # Contract (T0.9 explicit-environment guard):
-#   1. FORGE_ENV must already be set in the process environment. Workers and the
-#      backup job receive it from their launchd plist; an interactive shell must
-#      export it. There is no default — an unset FORGE_ENV aborts loudly.
+#   1. FORGE_ENV must already be set in the process environment. Workers receive
+#      it from their launchd plist; an interactive shell must export it. There
+#      is no default — an unset FORGE_ENV aborts loudly.
 #   2. The profile $XDG_CONFIG_HOME/forge/envs/$FORGE_ENV.env is loaded
 #      line-by-line as KEY=VALUE and NEVER shell-evaluated (T0.7/G35): a value
 #      containing `&`, `;`, `$(...)` is inert.
@@ -16,7 +18,7 @@
 
 if [ -z "${FORGE_ENV:-}" ]; then
   echo "load-env.sh: FORGE_ENV is unset — there is no default environment." >&2
-  echo "  Workers/backup receive FORGE_ENV from their launchd plist's" >&2
+  echo "  Workers receive FORGE_ENV from their launchd plist's" >&2
   echo "  EnvironmentVariables; an interactive shell must export it (prod/dev/test)." >&2
   exit 78  # EX_CONFIG
 fi
