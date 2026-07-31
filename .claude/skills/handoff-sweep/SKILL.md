@@ -22,6 +22,23 @@ derivation does not go in.
 **Never commit.** The owner commits on their explicit word only. The sweep
 ends with a report and a suggested commit message.
 
+**Re-run rather than repair** (added 2026-07-31). Because the sweep does
+not commit, its output sits in the tree until the owner acts — and work
+landing in that gap (a deploy, a task executing, another session's
+change-set) can falsify it before it is ever committed. When that
+happens, **re-run the sweep**; do not hand-correct the files. Two
+mechanisms make repair the worse option: a repair is written from what
+the repairer happens to remember rather than from Step 1's commands,
+which is exactly how an underived claim enters the record; and an
+uncommitted handoff is not history, so nothing is preserved by patching
+it — a re-run on a later date replaces it (delete the stale file rather
+than committing both) and a re-run on the same date overwrites it. The
+one exception is a handoff another session has already read as its
+starting point: keep it, and record the supersession in the new one.
+Precedent: the 2026-07-30 sweep was overtaken by the 2026-07-31 rebuild
+and was hand-corrected at commit time — this rule exists so the next
+one is re-run instead.
+
 ## Inputs
 
 From the dispatcher (or ask if missing — do not guess):
