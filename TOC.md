@@ -31,6 +31,7 @@ This repo is the monorepo root (D98). Workspace members: [apps/pbook/](apps/pboo
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — how Forge works: universal workflow step, execution modes, context assembly, batch-vs-sync, key data models, module map, and subsystems beyond the core loop.
 - [DECISIONS.md](docs/DECISIONS.md) — design decisions D1–D104, with supersession/stale markers.
+- [proposals/db-change-request-process.md](docs/proposals/db-change-request-process.md) — DRAFT for the sax-datastores operator: how forge submits schema change requests under the consumer/operator model (offline-SQL artifacts, verify-only startup, expand/contract contract; assumptions stated for approval).
 
 ## Requirements
 
