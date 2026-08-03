@@ -87,6 +87,21 @@ def forge_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def forge_log_dir_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable file logging (``FORGE_LOG_DIR=""``) for every test.
+
+    Tests that invoke the CLI run ``cli.configure_logging``, whose file handler
+    otherwise resolves to the real ``$XDG_STATE_HOME/forge/`` — so suite runs
+    were appending pytest noise (sqlite tmp-dir URLs) to the operator's live
+    ``forge.log``/``worker.log``. The empty string is the documented
+    disable-file-logging value (see ``logging_config.get_log_dir``); console
+    output still exists at verbosity 0 precisely because file logging is off.
+    Tests exercising the file handler itself set their own ``FORGE_LOG_DIR``.
+    """
+    monkeypatch.setenv("FORGE_LOG_DIR", "")
+
+
+@pytest.fixture(autouse=True)
 def forge_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Point every test at an isolated SQLite store via ``FORGE_DB_URL``.
 
