@@ -1,0 +1,23 @@
+# Canonical Squawk configuration for schema-change artifacts.
+# Copy into YOUR repo root as `.squawk.toml` and lint the generated
+# change-<n>.sql files with it; "clean lint" in a request
+# (docs/schema-changes.md) means clean against THESE exclusions, so a
+# consumer-local edit to this file makes your lint claims meaningless.
+# Adopted via issue #2 (post-maiden refinement, 2026-08-03).
+#
+# require-lock-timeout and require-statement-timeout are excluded
+# because they demand `SET` statements inside the artifact, and the
+# process forbids exactly that: apply-change.sh injects lock_timeout
+# and a per-phase statement_timeout at apply time, so in-artifact
+# timeouts are forbidden, not missing. Left enabled, the pair fires on
+# every conforming artifact forever, and a gate that always needs a
+# waiver isn't a gate.
+#
+# LOAD-BEARING CAVEAT: this exclusion is safe only while the apply
+# runbook (`make apply-change`) is the only path an artifact reaches a
+# database. If that invariant ever weakens — any apply path that does
+# not inject session timeouts — these two rules come back.
+excluded_rules = [
+    "require-lock-timeout",
+    "require-statement-timeout",
+]
