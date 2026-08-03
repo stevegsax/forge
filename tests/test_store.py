@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 import forge.store as _store
 from forge.models import (
     TaskResult,
@@ -24,6 +26,7 @@ from forge.store import (
     save_playbooks,
     save_run,
     tags_overlap,
+    verify_schema,
 )
 
 if TYPE_CHECKING:
@@ -205,6 +208,34 @@ class TestRunMigrations:
         url = f"sqlite:///{tmp_path / 'fresh.db'}"
         run_migrations(url)
         run_migrations(url)  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# verify_schema reads the real forge chain (the worker's startup check)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifySchema:
+    def test_migrated_store_verifies_at_the_chain_head(self, tmp_path: Path) -> None:
+        """End to end over forge's real Alembic chain: apply, then verify.
+
+        This is also the guard against a two-headed forge chain — an unmerged
+        branch makes ``verify_schema`` raise here long before a worker refuses
+        to start in production.
+        """
+        url = f"sqlite:///{tmp_path / 'verify.db'}"
+        run_migrations(url)
+
+        assert verify_schema(url)
+
+    def test_unmigrated_store_refuses(self, tmp_path: Path) -> None:
+        from sax_platform.db import SchemaVersionError
+
+        url = f"sqlite:///{tmp_path / 'empty.db'}"
+        _store.sa.create_engine(url).connect().close()
+
+        with pytest.raises(SchemaVersionError, match="Schema not initialized"):
+            verify_schema(url)
 
 
 # ---------------------------------------------------------------------------

@@ -58,20 +58,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _init_store(url: str) -> None:
-    """Run database migrations against the configured store *url* on startup.
+def _verify_store_schema(url: str) -> None:
+    """Verify the deployed schema against this code's chain head, or refuse to start.
+
+    Startup applies no DDL (the 2026-08-02 schema-change agreement with the
+    sax-datastores operator): the application credential cannot, and a migration
+    running as a side effect of a process start crash-loops the fleet when it
+    fails. A database behind this code's head raises
+    :class:`~sax_platform.db.SchemaVersionError` — its message names the chain,
+    both revisions, the masked database, and the fix — and the worker exits. A
+    database *ahead* of this code is allowed and logs a warning: under
+    expand/contract the schema change lands before the code that uses it.
 
     The URL comes from ``ForgeSettings().db.url`` (fail-fast: an unset
     ``FORGE_DB_URL`` raises when the settings are built, before this is reached).
-    An unreachable database raises here, and the worker refuses to start.
+    An unreachable database raises here too, and the worker refuses to start.
     """
     from sqlalchemy.engine import make_url
 
-    from forge.store import run_migrations
+    from forge.store import verify_schema
 
-    run_migrations(url)
+    revision = verify_schema(url)
     logger.info(
-        "Database migrations complete: %s",
+        "Schema verified at %s: %s",
+        revision,
         make_url(url).render_as_string(hide_password=True),
     )
 
@@ -121,7 +131,7 @@ async def run_worker(
     # worker fails fast, before it touches a database.
     target = resolve_temporal_target(env, address_override=address or settings.temporal.address)
 
-    _init_store(settings.db.url)
+    _verify_store_schema(settings.db.url)
     init_tracing(settings.tracing.exporter)
     silence_noisy_loggers()
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pbook.models import EntryType, PlaybookEntry
 from pbook.settings import PbookDbSettings
 from pbook.store import (
@@ -31,6 +33,7 @@ from pbook.store import (
     reparent_entry_sources,
     save_entries,
     update_entry,
+    verify_schema,
 )
 from tests.conftest import make_embedding, setup_db
 
@@ -45,6 +48,43 @@ class TestNormalizeUrl:
         assert normalize_url("postgresql://u@h/db") == "postgresql+psycopg://u@h/db"
         # Already-qualified URLs pass through untouched.
         assert normalize_url("postgresql+psycopg://u@h/db") == "postgresql+psycopg://u@h/db"
+
+
+# ---------------------------------------------------------------------------
+# verify_schema (the worker's startup check — it applies no DDL)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifySchema:
+    def test_migrated_store_verifies_at_the_chain_head(self, _pg_url: str) -> None:
+        """End to end over pbook's real, schema-qualified chain.
+
+        The session fixture already applied it, so this reads
+        ``pbook.pbk_alembic_version`` for real — and fails if pbook's chain ever
+        grows a second head.
+        """
+        assert verify_schema(_pg_url)
+
+    def test_unstamped_database_refuses(
+        self, _pg_url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail closed, naming pbook's own apply command.
+
+        Redirects the lookup to a schema that does not exist rather than to
+        another database, so the check runs on the real session connection (and
+        creates nothing) while presenting the "chain never applied here" state.
+        """
+        from sax_platform.db import SchemaVersionError
+
+        import pbook.store as store_mod
+
+        monkeypatch.setattr(store_mod, "SCHEMA", "pbook_absent")
+
+        with pytest.raises(SchemaVersionError, match="Schema not initialized") as excinfo:
+            store_mod.verify_schema(_pg_url)
+
+        assert "pbook migrate" in str(excinfo.value)
+        assert "pbk_alembic_version" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

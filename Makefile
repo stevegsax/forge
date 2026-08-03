@@ -67,15 +67,21 @@ help:
 	@echo "  make workers-status    list running worker processes"
 	@echo "  make dev-worker        start a staging-lane worker (forge-dev namespace) in detached tmux [WORKER=ocr|forge|pbook]"
 
-# No `forge migrate` CLI exists and alembic.ini hardcodes a sqlite URL that
-# run_migrations() overrides at runtime, so drive migrations through the same
-# entry point the worker uses (forge.store.run_migrations against FORGE_DB_URL).
-# The workers also run this chain at startup; this target is for migrating
-# without starting one. Whichever database FORGE_DB_URL names is what it
-# touches — since T10.1/D104 that is a sax-datastores instance, so declare the
-# environment (FORGE_ENV / a sourced profile) before running it.
+# Thin wrapper over `forge migrate` (the CLI command; it applies the forge
+# chain to FORGE_DB_URL and prints a credential-free target line). The old
+# `python -c` form called forge.store.get_store_url, which T3.6 deleted with the
+# module-global seams, so this target had been broken since then.
+#
+# Workers do NOT migrate: since the 2026-08-02 schema-change agreement they
+# verify their chain at startup and refuse to start when the database is behind.
+# This target is the dev self-service apply path. Whichever database
+# FORGE_DB_URL names is what it touches — since T10.1/D104 that is a
+# sax-datastores instance — so declare the environment (FORGE_ENV / a sourced
+# profile, or `forge migrate --env dev`) before running it. Production schema
+# changes never come through here: they go through the sax-datastores
+# change-request process and the administrator applies them.
 db-migrate:
-	uv run python -c "from forge.store import run_migrations, get_store_url; run_migrations(get_store_url())"
+	uv run forge migrate
 
 # Deploy production from a pinned commit (D103): checks REF out into the
 # forge-prod worktree, syncs it, and restarts the launchd workers — the only

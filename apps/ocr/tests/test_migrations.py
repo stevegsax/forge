@@ -46,6 +46,33 @@ def test_chain_creates_ocr_tables_with_own_version_table(forge_db_url: str) -> N
     assert "alembic_version" not in names  # not the default table name
 
 
+def test_verify_schema_passes_on_a_migrated_store(forge_db_url: str) -> None:
+    """The startup check over OCR's real chain: apply, then verify.
+
+    Also the guard against a two-headed OCR chain — an unmerged branch fails
+    here rather than at a production worker boot.
+    """
+    from ocr.store import verify_schema
+
+    run_migrations(forge_db_url)
+
+    assert verify_schema(forge_db_url)
+
+
+def test_verify_schema_refuses_an_unmigrated_store(forge_db_url: str) -> None:
+    """Fail closed: the worker never applies the chain itself (2026-08-02 agreement)."""
+    from sax_platform.db import SchemaVersionError
+
+    from ocr.store import verify_schema
+
+    sa.create_engine(forge_db_url).connect().close()
+
+    with pytest.raises(SchemaVersionError, match="Schema not initialized") as excinfo:
+        verify_schema(forge_db_url)
+
+    assert "ocr migrate" in str(excinfo.value)
+
+
 def test_coexists_with_platform_batch_jobs(forge_db_url: str) -> None:
     """The OCR chain coexists with a pre-existing platform batch_jobs + version table."""
     from sax_platform.contracts.batch_jobs import metadata as bj_metadata

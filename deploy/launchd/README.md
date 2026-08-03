@@ -121,11 +121,15 @@ pinned there* — the right tool after an environment-profile change, not a
 way to ship a commit; the `launchctl kickstart` line is a per-agent
 troubleshooting fallback (it kills without the graceful drain).
 
-Both the forge and pbook workers run their own migrations at startup
-(verified from the pbook worker's startup log, 2026-07-24: "Database
-migrations applied (head)" — the earlier "never auto-migrates" claim
-predated the T3.4 worker scaffold). `uv run pbook migrate` remains
-available for migrating without starting a worker.
+No worker migrates. Since the 2026-08-02 schema-change agreement with the
+sax-datastores operator, each worker verifies its own Alembic chain at
+startup and refuses to start (named `SchemaVersionError`) when the database
+is behind the head its code expects; a database *ahead* of the deployed code
+is allowed and logs a warning (the expand/contract window). Applying a chain
+is explicit and separate: `uv run forge migrate` / `uv run ocr migrate` /
+`uv run pbook migrate` on dev, and the sax-datastores change-request process
+(`sax-datastores/docs/schema-changes.md`) in production, where the
+administrator applies it.
 
 ## Restarting workers
 

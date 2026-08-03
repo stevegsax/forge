@@ -4,8 +4,9 @@ Persists full LLM interaction data and run results to a local SQLite database.
 
 Design follows Function Core / Imperative Shell:
 - Pure functions: build_playbook_dict
-- Imperative shell: get_store_engine, run_migrations, insert_or_ignore,
-  save_interaction, save_run, get_interactions, get_run, list_recent_runs
+- Imperative shell: get_store_engine, run_migrations, verify_schema,
+  insert_or_ignore, save_interaction, save_run, get_interactions, get_run,
+  list_recent_runs
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from sax_platform.db import (
 )
 from sax_platform.db import (
     insert_or_ignore,
+    verify_schema_version,
 )
 from sax_platform.db import (
     run_migrations as _run_migrations,
@@ -226,17 +228,49 @@ def build_playbook_dict(
 # ---------------------------------------------------------------------------
 
 
+#: forge's Alembic chain: the version table that identifies it and the directory
+#: holding its ``env.py``/``versions/``. Both the apply path (``forge migrate``,
+#: tests) and the verify path (worker startup) key off these, so they can never
+#: read different chains.
+_VERSION_TABLE = "alembic_version_forge"
+
+
+def _script_location() -> str:
+    return str(Path(__file__).parent / "alembic")
+
+
 def run_migrations(url: str) -> None:
     """Run Alembic migrations against the store URL (SQLite or Postgres).
 
     Delegates to the shared platform runner, which serializes concurrent
     Postgres migrators with a ``pg_advisory_lock`` keyed on the version table
-    (no-op on SQLite), so simultaneous worker boots don't race the DDL.
+    (no-op on SQLite), so simultaneous migrators don't race the DDL.
+
+    This is the dev/test self-service apply path (``forge migrate``, the test
+    suites) only. The worker does NOT call it: since the 2026-08-02
+    schema-change agreement, startup verifies (:func:`verify_schema`) and never
+    applies DDL.
     """
     _run_migrations(
         url,
-        version_table="alembic_version_forge",
-        script_location=str(Path(__file__).parent / "alembic"),
+        version_table=_VERSION_TABLE,
+        script_location=_script_location(),
+    )
+
+
+def verify_schema(url: str) -> str:
+    """Verify the deployed forge schema and return the stamped revision.
+
+    Raises :class:`~sax_platform.db.SchemaVersionError` when the database is
+    behind this code's chain head, uninitialized, or ambiguously stamped; a
+    database *ahead* of this code is allowed (the expand/contract window) and
+    logs a warning. See :mod:`sax_platform.db.verify` for the full contract.
+    """
+    return verify_schema_version(
+        url,
+        version_table=_VERSION_TABLE,
+        script_location=_script_location(),
+        migrate_command="forge migrate",
     )
 
 

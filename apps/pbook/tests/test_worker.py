@@ -21,30 +21,51 @@ def _fake_stamp(base: str | None = None) -> str:
 
 
 def _base_patches():
-    """Patch the I/O boundary of run_worker (logging, migrations, engine,
+    """Patch the I/O boundary of run_worker (logging, the schema check, engine,
     Temporal connect, and the platform worker scaffold) so composition can be
     exercised without a DB, a network, or a running worker."""
     return (
         patch.object(worker_mod, "setup_logging", MagicMock()),
-        patch.object(worker_mod, "_migrate_if_configured", MagicMock()),
+        patch.object(worker_mod, "_verify_schema_if_configured", MagicMock()),
         patch.object(worker_mod, "build_engine", MagicMock(return_value=None)),
         patch.object(worker_mod, "connect_temporal", AsyncMock(return_value=MagicMock())),
         patch.object(worker_mod, "run_platform_worker", AsyncMock()),
     )
 
 
-class TestMigrateIfConfigured:
-    def test_runs_migrations_when_url_set(self) -> None:
+class TestVerifySchemaIfConfigured:
+    """Startup verifies the schema; it never applies DDL (2026-08-02 agreement)."""
+
+    def test_verifies_when_url_set(self) -> None:
         db = MagicMock(url="postgresql://u@h/db")
-        with patch.object(worker_mod, "run_migrations") as mock_run:
-            worker_mod._migrate_if_configured(db)
-        mock_run.assert_called_once_with("postgresql://u@h/db")
+        with patch.object(worker_mod, "verify_schema", return_value="abc123") as mock_verify:
+            worker_mod._verify_schema_if_configured(db)
+        mock_verify.assert_called_once_with("postgresql://u@h/db")
 
     def test_skips_when_url_unset(self) -> None:
+        """An unset PBOOK_DATABASE_URL disables the store — nothing to verify."""
         db = MagicMock(url=None)
-        with patch.object(worker_mod, "run_migrations") as mock_run:
-            worker_mod._migrate_if_configured(db)
-        mock_run.assert_not_called()
+        with patch.object(worker_mod, "verify_schema") as mock_verify:
+            worker_mod._verify_schema_if_configured(db)
+        mock_verify.assert_not_called()
+
+    def test_schema_behind_stops_the_worker(self) -> None:
+        """Fail closed: the named error propagates out of startup unchanged."""
+        from sax_platform.db import SchemaVersionError
+
+        db = MagicMock(url="postgresql://u@h/db")
+        with (
+            patch.object(
+                worker_mod,
+                "verify_schema",
+                side_effect=SchemaVersionError("Schema behind: ..."),
+            ),
+            pytest.raises(SchemaVersionError, match="Schema behind"),
+        ):
+            worker_mod._verify_schema_if_configured(db)
+
+    def test_worker_module_no_longer_imports_the_migration_runner(self) -> None:
+        assert not hasattr(worker_mod, "run_migrations")
 
 
 class TestRunWorkerComposition:
@@ -216,10 +237,10 @@ class TestNamespaceCoherence:
     async def test_unresolvable_target_fails_before_store_setup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """FORGE_ENV=test with no address fails fast, before migrations.
+        """FORGE_ENV=test with no address fails fast, before the schema check.
 
         Target derivation runs after settings are built but before ``build_engine``,
-        migrations, or the client, so a worker that cannot resolve where to connect
+        the schema check, or the client, so a worker that cannot resolve where to connect
         never touches a DB or the Temporal frontend. ``test`` has no canonical
         server (its server is an ephemeral per-job container), so an address is
         required and its absence is the unresolvable case.

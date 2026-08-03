@@ -73,15 +73,27 @@ _TRACKER_INTERVAL: Final = timedelta(seconds=120)
 _TRACKER_EXECUTION_TIMEOUT: Final = timedelta(minutes=5)
 
 
-def _init_store(url: str) -> None:
-    """Run the OCR Alembic chain against *url* on startup."""
+def _verify_store_schema(url: str) -> None:
+    """Verify the OCR chain against this code's head, or refuse to start.
+
+    Startup applies no DDL (the 2026-08-02 schema-change agreement with the
+    sax-datastores operator): the application credential cannot, and a migration
+    running as a side effect of a process start crash-loops the fleet when it
+    fails. A database behind this code's head raises
+    :class:`~sax_platform.db.SchemaVersionError` — its message names the chain,
+    both revisions, the masked database, and the fix (``ocr migrate`` on dev,
+    the change-request process on prod) — and the worker exits. A database
+    *ahead* of this code is allowed and logs a warning: under expand/contract
+    the schema change lands before the code that uses it.
+    """
     from sqlalchemy.engine import make_url
 
-    from ocr.store import run_migrations
+    from ocr.store import verify_schema
 
-    run_migrations(url)
+    revision = verify_schema(url)
     logger.info(
-        "OCR migrations complete: %s",
+        "OCR schema verified at %s: %s",
+        revision,
         make_url(url).render_as_string(hide_password=True),
     )
 
@@ -97,7 +109,7 @@ def _build_mistral_ocr(api_key: str | None) -> MistralOcr | None:
 
     Local import: ``sax_platform.ocr``'s runtime touch points pull in ``mistralai``
     lazily, but the client construction here does, so it is kept out of worker.py's
-    top-level import graph (mirroring ``_init_store``'s local import).
+    top-level import graph (mirroring ``_verify_store_schema``'s local import).
     """
     if not api_key:
         return None
@@ -223,7 +235,7 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     # raises ForgeEnvError here so the worker fails fast, before it touches a DB.
     target = resolve_temporal_target(env, address_override=address or settings.temporal.address)
 
-    _init_store(settings.db.url)
+    _verify_store_schema(settings.db.url)
 
     setup_logging("ocr", console=True)
     silence_noisy_loggers()

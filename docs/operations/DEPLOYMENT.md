@@ -261,15 +261,32 @@ exit **78** if `FORGE_ENV` is unset. See
 [WORKERS.md](WORKERS.md#environment-guard) for the interactive sourcing
 pattern.
 
-### 3. Migrations
+### 3. Schema (verify at startup, never migrate)
 
-The forge worker runs its own Alembic migrations at startup (advisory-locked
-against the shared database); the ocr worker likewise applies its own `ocr_*`
-chain at startup. The pbook worker applies its own chain (custom
-`pbk_alembic_version` table) to head at startup too — but only when
-`PBOOK_DATABASE_URL` is set (unset → store disabled, migration skipped; the
-prod profile sets it since D102). Run `uv run pbook migrate` manually only to
-migrate without starting the worker.
+**No worker applies DDL.** Since the 2026-08-02 schema-change agreement with
+the sax-datastores operator
+(`sax-datastores/docs/schema-changes.md`), each worker only *verifies* its own
+chain at startup: it reads the chain's version table, compares it with the
+expected head in the deployed code, and refuses to start with a named
+`SchemaVersionError` when the database is behind. The message names the chain,
+both revisions, the masked database URL, and the fix. A database *ahead* of the
+deployed code is allowed and logs a warning — under the binding expand/contract
+contract a schema change is applied before the code that uses it deploys, so a
+worker restart in that window must not brick the lane.
+
+The three chains: forge (`alembic_version_forge`), ocr (`alembic_version_ocr`),
+and pbook (`pbook.pbk_alembic_version`, checked only when
+`PBOOK_DATABASE_URL` is set — unset means the store is disabled and there is
+nothing to verify; the prod profile sets it since D102).
+
+Applying a chain is a separate, deliberate act:
+
+- **dev/test** is self-service — `uv run forge migrate`, `uv run ocr migrate`,
+  `uv run pbook migrate` (each honors `--env`).
+- **production** goes through the sax-datastores change request process: forge
+  commits the revision plus its offline SQL under `datastore-changes/`, opens
+  an issue on sax-datastores, and the administrator applies it. Never run a
+  `migrate` command against production.
 
 ### 4. Create the production checkout and install the launchd agents
 

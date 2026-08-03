@@ -9,7 +9,7 @@ cosine-distance operator rather than scored row-by-row in Python.
 Design follows Function Core / Imperative Shell:
 
 - Pure functions: normalize_url, build_entry_dict
-- Imperative shell: build_engine, run_migrations, and every
+- Imperative shell: build_engine, run_migrations, verify_schema, and every
   query/mutation helper below.
 """
 
@@ -341,20 +341,33 @@ def build_engine(settings: PbookDbSettings) -> Engine | None:
     return get_store_engine(normalize_url(settings.url), pooler_override=settings.pooler)
 
 
+def _script_location() -> str:
+    """Directory holding pbook's Alembic ``env.py``, ``alembic.ini``, ``versions/``.
+
+    Shared by the apply path (``pbook migrate``) and the verify path (worker
+    startup) so the two can never read different chains.
+    """
+    from pathlib import Path
+
+    return str(Path(__file__).parent / "alembic")
+
+
 def run_migrations(url: str) -> None:
     """Run Alembic migrations to head against ``url``.
 
-    Idempotent and intended to run ONCE per process (worker startup or an
-    explicit ``pbook migrate``), never per activity call.
+    Idempotent and intended to run ONCE per process, from ``pbook migrate`` or
+    the test suites — never per activity call, and no longer at worker startup:
+    since the 2026-08-02 schema-change agreement the worker verifies
+    (:func:`verify_schema`) and applies no DDL.
     """
     from pathlib import Path
 
     from alembic import command
     from alembic.config import Config
 
-    alembic_dir = Path(__file__).parent / "alembic"
-    cfg = Config(str(alembic_dir / "alembic.ini"))
-    cfg.set_main_option("script_location", str(alembic_dir))
+    alembic_dir = _script_location()
+    cfg = Config(str(Path(alembic_dir) / "alembic.ini"))
+    cfg.set_main_option("script_location", alembic_dir)
     # Pass the URL through Alembic's ``cfg.attributes`` rather than
     # ``set_main_option("sqlalchemy.url", ...)`` — the latter runs the value
     # through ConfigParser's %-interpolation, which chokes on a
@@ -364,6 +377,28 @@ def run_migrations(url: str) -> None:
     cfg.attributes["pbook_url"] = normalize_url(url)
     logger.info("Running migrations to head")
     command.upgrade(cfg, "head")
+
+
+def verify_schema(url: str) -> str:
+    """Verify the deployed pbook schema and return the stamped revision.
+
+    pbook's chain is schema-qualified — ``pbook.pbk_alembic_version`` — so the
+    verify call names both the table and its schema; everything else matches
+    forge's and ocr's chains. Raises
+    :class:`~sax_platform.db.SchemaVersionError` when the database is behind
+    this code's chain head, uninitialized, or ambiguously stamped; a database
+    *ahead* of this code is allowed (the expand/contract window) and logs a
+    warning. See :mod:`sax_platform.db.verify` for the full contract.
+    """
+    from sax_platform.db import verify_schema_version
+
+    return verify_schema_version(
+        normalize_url(url),
+        version_table=VERSION_TABLE,
+        version_table_schema=SCHEMA,
+        script_location=_script_location(),
+        migrate_command="pbook migrate",
+    )
 
 
 # ---------------------------------------------------------------------------

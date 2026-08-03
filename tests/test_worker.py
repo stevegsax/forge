@@ -17,17 +17,68 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-class TestInitStore:
-    def test_runs_migrations_against_given_url(
+class TestVerifyStoreSchema:
+    """Startup verifies the schema; it never applies DDL (2026-08-02 agreement)."""
+
+    def test_verifies_the_given_url_and_applies_no_migrations(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         url = f"sqlite:///{tmp_path / 'forge.db'}"
+        mock_verify = MagicMock(return_value="0007")
         mock_run_migrations = MagicMock()
+        monkeypatch.setattr("forge.store.verify_schema", mock_verify)
         monkeypatch.setattr("forge.store.run_migrations", mock_run_migrations)
 
-        worker_mod._init_store(url)
+        worker_mod._verify_store_schema(url)
 
-        mock_run_migrations.assert_called_once_with(url)
+        mock_verify.assert_called_once_with(url)
+        mock_run_migrations.assert_not_called()
+
+    def test_a_schema_behind_the_code_stops_the_worker(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Fail closed: the named error propagates out of startup unchanged."""
+        from sax_platform.db import SchemaVersionError
+
+        monkeypatch.setattr(
+            "forge.store.verify_schema",
+            MagicMock(side_effect=SchemaVersionError("Schema behind: ...")),
+        )
+
+        with pytest.raises(SchemaVersionError, match="Schema behind"):
+            worker_mod._verify_store_schema(f"sqlite:///{tmp_path / 'forge.db'}")
+
+
+class TestForgeStoreVerifySchema:
+    """The forge wrapper points the shared checker at forge's own chain."""
+
+    def test_passes_forge_chain_and_migrate_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pathlib import Path as _Path
+
+        import forge.store as store_mod
+
+        recorded: dict[str, object] = {}
+
+        def fake_verify(url: str, **kwargs: object) -> str:
+            recorded["url"] = url
+            recorded.update(kwargs)
+            return "0007"
+
+        monkeypatch.setattr(store_mod, "verify_schema_version", fake_verify)
+
+        assert store_mod.verify_schema("sqlite:///x.db") == "0007"
+        assert recorded["version_table"] == "alembic_version_forge"
+        assert recorded["migrate_command"] == "forge migrate"
+        assert _Path(str(recorded["script_location"])).name == "alembic"
+
+    def test_verify_reads_the_same_chain_run_migrations_applies(self) -> None:
+        """One chain, two paths: apply (CLI/tests) and verify (startup)."""
+        from pathlib import Path as _Path
+
+        import forge.store as store_mod
+
+        assert store_mod._VERSION_TABLE == "alembic_version_forge"
+        assert (_Path(store_mod._script_location()) / "versions").is_dir()
 
 
 class TestForgeSettingsFailFast:
@@ -95,7 +146,7 @@ class _Composition:
         self.blobs = MagicMock(name="s3_blobs")
         self.mistral = MagicMock(name="mistral_ocr")
 
-        self.init_store = MagicMock(name="_init_store")
+        self.verify_schema = MagicMock(name="_verify_store_schema")
         self.run_platform_worker = AsyncMock(name="run_platform_worker")
         self.make_client = MagicMock(return_value=self.sdk_client)
         self.get_store_engine = MagicMock(return_value=self.engine)
@@ -111,7 +162,7 @@ class _Composition:
     def apply(self) -> Iterator[None]:
         patches = [
             patch("forge.settings.ForgeSettings", return_value=self.settings),
-            patch.object(worker_mod, "_init_store", self.init_store),
+            patch.object(worker_mod, "_verify_store_schema", self.verify_schema),
             patch.object(worker_mod, "connect_temporal", self.connect),
             patch.object(worker_mod, "stamped_worker_identity", _fake_stamp),
             patch.object(worker_mod, "require_clean_prod_code", self.clean_prod_guard),
@@ -148,7 +199,7 @@ class TestRunWorkerComposition:
         with comp.apply():
             await worker_mod.run_worker(identity="worker-1")
 
-        comp.init_store.assert_called_once_with(comp.settings.db.url)
+        comp.verify_schema.assert_called_once_with(comp.settings.db.url)
         comp.init_tracing.assert_called_once_with(comp.settings.tracing.exporter)
         # The identity reaching Temporal is the caller's, stamped with the
         # launch-time code version (real discovery lives in sax_platform).
@@ -326,7 +377,7 @@ class TestNamespaceCoherence:
     ) -> None:
         """A target that cannot be derived fails fast, before store setup.
 
-        Derivation runs after settings are built but before ``_init_store`` or the
+        Derivation runs after settings are built but before ``_verify_store_schema`` or the
         client is constructed, so such a worker never touches a database or the
         Temporal frontend. ``test`` has no canonical server (its server is an
         ephemeral per-job container), so an absent address is the unresolvable case.
@@ -340,5 +391,5 @@ class TestNamespaceCoherence:
         with comp.apply(), pytest.raises(ForgeEnvError, match="requires FORGE_TEMPORAL_ADDRESS"):
             await worker_mod.run_worker()
 
-        comp.init_store.assert_not_called()
+        comp.verify_schema.assert_not_called()
         comp.connect.assert_not_awaited()

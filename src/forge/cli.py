@@ -1,6 +1,6 @@
 """CLI entry point for Forge.
 
-Provides ``forge run``, ``forge worker``, ``forge status``,
+Provides ``forge run``, ``forge worker``, ``forge migrate``, ``forge status``,
 ``forge eval-planner``, ``forge playbooks``,
 and ``forge start`` subcommands.
 
@@ -8,10 +8,11 @@ Follows Function Core / Imperative Shell:
 - Pure functions: format_task_result, format_validation_results,
   build_task_definition, load_task_definition, format_eval_result,
   format_deterministic_result, format_playbook_entry,
-  load_workflow_input
+  format_migration_target, load_workflow_input
 - Async shell: _submit, _run_eval, _start_workflow,
   _start_workflow_and_wait
-- Click commands: main, run, worker, status, eval_planner, playbooks, start
+- Click commands: main, run, worker, migrate, status, eval_planner, playbooks,
+  start
 """
 
 from __future__ import annotations
@@ -1072,6 +1073,70 @@ def worker(
             identity=worker_identity,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Migrate command (the dev self-service apply path)
+# ---------------------------------------------------------------------------
+
+#: Config fail-fast message for ``forge migrate`` when ``FORGE_DB_URL`` is unset.
+#: Guard-style (stderr + exit 78), matching ``ocr migrate``: this is a
+#: "you have not declared where to run" failure, not a command verdict.
+_FORGE_DB_URL_MIGRATE_UNSET_MESSAGE = (
+    "FORGE_DB_URL is not set — forge migrate applies the forge Alembic chain "
+    "(alembic_version_forge) to the forge database; source an env profile "
+    "(e.g. `forge migrate --env dev`) or export FORGE_DB_URL."
+)
+
+
+def format_migration_target(url: str) -> str:
+    """Render a credential-free ``chain -> host/database`` summary line (pure).
+
+    Parses *url* with SQLAlchemy and reconstructs only the host/port/database (or,
+    for SQLite, the file path), deliberately dropping the username and password so
+    a connection string with embedded credentials is never echoed to the terminal.
+    """
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    if parsed.host:
+        host = parsed.host if parsed.port is None else f"{parsed.host}:{parsed.port}"
+        target = f"{host}/{parsed.database or ''}"
+    else:  # SQLite and other host-less URLs: the database is the file path.
+        target = parsed.database or "(in-memory)"
+    return f"alembic_version_forge -> {target}"
+
+
+@main.command("migrate")
+def migrate_cmd() -> None:
+    """Apply the forge Alembic chain (``alembic_version_forge``) to ``FORGE_DB_URL``.
+
+    The dev/test self-service apply path, and the only place forge applies its
+    own DDL: since the 2026-08-02 schema-change agreement with the sax-datastores
+    operator, the worker verifies the schema at startup and never migrates, so a
+    dev database is brought to head with this command. Production schema changes
+    do NOT go through it — they are committed as a change request under
+    ``datastore-changes/`` and applied by the administrator
+    (``sax-datastores/docs/schema-changes.md``).
+
+    Prints a single credential-free ``chain -> host/database`` line on success.
+    An unset ``FORGE_DB_URL`` is a config error — stderr + exit 78.
+    """
+    from pydantic import ValidationError
+    from sax_platform.config import DbSettings
+
+    from forge.store import run_migrations
+
+    try:
+        # DbSettings reads FORGE_DB_URL from the env (its ``url`` field's alias);
+        # the pydantic mypy plugin can't see that, so it flags the required arg.
+        db_url = DbSettings().url  # type: ignore[call-arg]
+    except ValidationError:
+        click.echo(_FORGE_DB_URL_MIGRATE_UNSET_MESSAGE, err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+
+    run_migrations(db_url)
+    click.echo(format_migration_target(db_url))
 
 
 # ---------------------------------------------------------------------------

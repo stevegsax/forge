@@ -23,14 +23,26 @@ from sax_platform.db.ops import (
     ensure_sqlite_parent,
     insert_or_ignore,
 )
+from sax_platform.db.verify import (
+    SchemaVerdict,
+    SchemaVersionError,
+    classify_schema_version,
+    describe_verdict,
+    verify_schema_version,
+)
 
 __all__ = [
+    "SchemaVerdict",
+    "SchemaVersionError",
     "StoreConfigError",
     "advisory_lock_key",
+    "classify_schema_version",
     "configure_migration_context",
+    "describe_verdict",
     "ensure_sqlite_parent",
     "get_store_engine",
     "insert_or_ignore",
     "is_pooler_url",
     "run_migrations",
+    "verify_schema_version",
 ]

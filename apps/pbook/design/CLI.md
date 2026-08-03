@@ -29,7 +29,9 @@ Temporal commands additionally need a reachable Temporal server (`--temporal-add
 pbook worker [--temporal-address localhost:7233]
 ```
 
-Start the pbook Temporal worker on `pbook-task-queue`. Runs migrations once at startup,
+Start the pbook Temporal worker on `pbook-task-queue`. Verifies the schema once at
+startup (verify-only — it applies no DDL; a database behind `pbk_alembic_version`'s
+expected head refuses to start),
 registers the two workflows — `IngestWorkflow` and `CurationWorkflow` (see
 [WORKFLOWS.md](WORKFLOWS.md)) — with their activities (bound methods on frozen activity
 classes built at the composition root), and idempotently creates the weekly
@@ -53,8 +55,10 @@ pbook migrate
 
 Apply Alembic migrations (version table `pbk_alembic_version`). The migration preflights
 pgvector ≥ 0.7 (halfvec) and ≥ 0.8 (iterative scans) and refuses to run otherwise. Emits
-`db_disabled` when `PBOOK_DATABASE_URL` is unset. The worker runs migrations at startup;
-no other command migrates implicitly.
+`db_disabled` when `PBOOK_DATABASE_URL` is unset. This is the only command that
+migrates: the worker verifies at startup and never applies DDL, and production schema
+changes go through the sax-datastores change-request process
+(`sax-datastores/docs/schema-changes.md`), not this command.
 
 ## Entry management
 

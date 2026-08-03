@@ -32,7 +32,7 @@ from pbook.activities.cli_ops import get_session_text_activity
 from pbook.activities.review import validate_entry
 from pbook.roots import EmbeddingActivities, LlmActivities, StoreActivities
 from pbook.settings import PbookDbSettings, PbookSettings
-from pbook.store import build_engine, run_migrations
+from pbook.store import build_engine, verify_schema
 
 # Import workflows
 from pbook.workflows.cli_ops import (
@@ -90,18 +90,27 @@ _WORKFLOWS: list[type] = [
 ]
 
 
-def _migrate_if_configured(db: PbookDbSettings) -> None:
-    """Run Alembic migrations to head once at startup, if a store is configured.
+def _verify_schema_if_configured(db: PbookDbSettings) -> None:
+    """Verify the deployed schema once at startup, if a store is configured.
 
-    This is the worker's single migration point — activities no longer
-    migrate per call. If ``PBOOK_DATABASE_URL`` is unset the store is
-    disabled and migration is skipped.
+    Startup applies no DDL (the 2026-08-02 schema-change agreement with the
+    sax-datastores operator): the application credential cannot, and a migration
+    running as a side effect of a process start crash-loops the fleet when it
+    fails. A database behind this code's chain head raises
+    :class:`~sax_platform.db.SchemaVersionError` — its message names the chain,
+    both revisions, the masked database, and the fix (``pbook migrate`` on dev,
+    the change-request process on prod) — and the worker exits. A database
+    *ahead* of this code is allowed and logs a warning: under expand/contract
+    the schema change lands before the code that uses it.
+
+    If ``PBOOK_DATABASE_URL`` is unset the store is disabled entirely, so there
+    is no schema to verify and the check is skipped (unchanged behavior).
     """
     if not db.url:
-        logger.warning("PBOOK_DATABASE_URL not set — skipping migrations (store disabled)")
+        logger.warning("PBOOK_DATABASE_URL not set — skipping schema check (store disabled)")
         return
-    run_migrations(db.url)
-    logger.info("Database migrations applied (head)")
+    revision = verify_schema(db.url)
+    logger.info("Schema verified at %s (head)", revision)
 
 
 async def run_worker(address: str | None = None, *, identity: str | None = None) -> None:
@@ -135,7 +144,7 @@ async def run_worker(address: str | None = None, *, identity: str | None = None)
     logger.info("pbook worker starting: env=%s", env)
 
     engine = build_engine(settings.db)
-    _migrate_if_configured(settings.db)
+    _verify_schema_if_configured(settings.db)
 
     # Build the injected dependencies ONCE. ``make_client`` reads
     # ANTHROPIC_API_KEY lazily, so no key is required at construction; the

@@ -653,6 +653,18 @@ def get_tracker_heartbeat(engine: Engine) -> dict[str, Any] | None:
 # Migrations (OCR's own Alembic chain, isolated by version_table)
 # ---------------------------------------------------------------------------
 
+#: OCR's Alembic chain: the version table that isolates it from the other chains
+#: sharing this database, and the directory holding its ``env.py``/``versions/``.
+#: The apply path (``ocr migrate``, tests) and the verify path (worker startup)
+#: both key off these, so they can never read different chains.
+VERSION_TABLE = "alembic_version_ocr"
+
+
+def _script_location() -> str:
+    from pathlib import Path
+
+    return str(Path(__file__).parent / "alembic")
+
 
 def run_migrations(url: str) -> None:
     """Run the OCR Alembic chain against the shared store URL (SQLite or Postgres).
@@ -662,10 +674,30 @@ def run_migrations(url: str) -> None:
     same database without either dropping the other's tables. Delegates to the
     shared runner (``sax_platform.db.run_migrations``), which adds a per-chain
     Postgres advisory lock this chain previously ran without.
-    """
-    from pathlib import Path
 
+    This is the dev/test self-service apply path (``ocr migrate``, the test
+    suites) only. The worker does NOT call it: since the 2026-08-02
+    schema-change agreement, startup verifies (:func:`verify_schema`) and never
+    applies DDL.
+    """
     from sax_platform.db import run_migrations as _run_migrations
 
-    alembic_dir = Path(__file__).parent / "alembic"
-    _run_migrations(url, version_table="alembic_version_ocr", script_location=str(alembic_dir))
+    _run_migrations(url, version_table=VERSION_TABLE, script_location=_script_location())
+
+
+def verify_schema(url: str) -> str:
+    """Verify the deployed OCR schema and return the stamped revision.
+
+    Raises :class:`~sax_platform.db.SchemaVersionError` when the database is
+    behind this code's chain head, uninitialized, or ambiguously stamped; a
+    database *ahead* of this code is allowed (the expand/contract window) and
+    logs a warning. See :mod:`sax_platform.db.verify` for the full contract.
+    """
+    from sax_platform.db import verify_schema_version
+
+    return verify_schema_version(
+        url,
+        version_table=VERSION_TABLE,
+        script_location=_script_location(),
+        migrate_command="ocr migrate",
+    )

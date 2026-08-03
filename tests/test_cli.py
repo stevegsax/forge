@@ -21,6 +21,7 @@ from forge.cli import (
     format_deterministic_result,
     format_eval_result,
     format_llm_stats,
+    format_migration_target,
     format_step_result,
     format_sub_task_result,
     format_task_result,
@@ -591,6 +592,94 @@ class TestWorkerCommand:
         result = cli_runner.invoke(main, ["worker"])
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# migrate — pure target-line formatter (functional core)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatMigrationTarget:
+    def test_postgres_url_hides_credentials(self) -> None:
+        line = format_migration_target("postgresql+psycopg2://u:secretpw@db.host:5442/forge_prod")
+        assert "secretpw" not in line
+        assert "u:" not in line
+        assert "db.host:5442/forge_prod" in line
+        assert line.startswith("alembic_version_forge -> ")
+
+    def test_sqlite_url_shows_file_path(self) -> None:
+        assert format_migration_target("sqlite:////var/data/forge.db") == (
+            "alembic_version_forge -> /var/data/forge.db"
+        )
+
+    def test_postgres_without_port(self) -> None:
+        assert format_migration_target("postgresql://u:p@host/forge") == (
+            "alembic_version_forge -> host/forge"
+        )
+
+
+# ---------------------------------------------------------------------------
+# migrate — CLI shell (the dev self-service apply path)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrateCommand:
+    """``forge migrate`` is the only place forge applies its own DDL.
+
+    Worker startup verifies and never migrates (the 2026-08-02 schema-change
+    agreement), so a dev database is brought to head from here.
+    """
+
+    def test_creates_tables_on_sqlite(self, cli_runner: CliRunner, forge_db_url: str) -> None:
+        import sqlalchemy as sa
+
+        result = cli_runner.invoke(main, ["migrate"])
+
+        assert result.exit_code == 0
+        engine = sa.create_engine(forge_db_url)
+        try:
+            table_names = sa.inspect(engine).get_table_names()
+        finally:
+            engine.dispose()
+        assert "interactions" in table_names
+        assert "alembic_version_forge" in table_names
+
+    def test_prints_credential_free_target_line(
+        self, cli_runner: CliRunner, forge_db_url: str
+    ) -> None:
+        result = cli_runner.invoke(main, ["migrate"])
+
+        assert result.exit_code == 0
+        last_line = result.output.strip().splitlines()[-1]
+        assert last_line.startswith("alembic_version_forge -> ")
+        # The autouse forge_db_url is a sqlite file URL — no credentials to leak,
+        # but assert no user:pass fragment could appear.
+        assert "://" not in last_line
+
+    def test_migrated_store_then_verifies(self, cli_runner: CliRunner, forge_db_url: str) -> None:
+        """The apply path leaves the store at the head the worker checks for."""
+        from forge.store import verify_schema
+
+        assert cli_runner.invoke(main, ["migrate"]).exit_code == 0
+        assert verify_schema(forge_db_url)
+
+    def test_missing_forge_db_url_exits_78(
+        self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORGE_DB_URL", raising=False)
+
+        result = cli_runner.invoke(main, ["migrate"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "FORGE_DB_URL is not set" in result.stderr
+
+    def test_help_points_production_at_the_change_request_process(
+        self, cli_runner: CliRunner
+    ) -> None:
+        result = cli_runner.invoke(main, ["migrate", "--help"])
+
+        assert result.exit_code == 0
+        assert "schema-changes.md" in result.output
 
 
 class TestMainGroup:

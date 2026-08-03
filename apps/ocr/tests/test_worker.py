@@ -3,7 +3,7 @@
 The ``Worker`` construction plus the signal-handled graceful-drain loop live in
 ``sax_platform.temporal.worker.run_worker`` (T3.4) — shared and out of scope
 here. What remains ocr's to test: the composition order and wiring — settings
-read once (fail-fast), migrations, logging configured, the store engine built
+read once (fail-fast), the verify-only schema check, logging configured, the store engine built
 ONCE and injected into ``OcrStoreActivities`` alongside the blob client, and the
 right task queue / workflows / activities / shutdown timeout forwarded to the
 shared runner.
@@ -80,7 +80,7 @@ class TestRunWorker:
 
         with (
             patch.object(worker_mod, "OcrSettings", return_value=settings),
-            patch.object(worker_mod, "_init_store") as mock_init_store,
+            patch.object(worker_mod, "_verify_store_schema") as mock_verify_schema,
             patch.object(worker_mod, "setup_logging") as mock_setup_logging,
             patch.object(worker_mod, "silence_noisy_loggers") as mock_silence,
             patch.object(
@@ -108,8 +108,8 @@ class TestRunWorker:
 
         mock_clean_prod.assert_called_once_with(ForgeEnv.TEST)
 
-        # Settings drive migrations, logging, and the store engine.
-        mock_init_store.assert_called_once_with("sqlite:///x.db")
+        # Settings drive the schema check, logging, and the store engine.
+        mock_verify_schema.assert_called_once_with("sqlite:///x.db")
         mock_setup_logging.assert_called_once_with("ocr", console=True)
         mock_silence.assert_called_once_with()
 
@@ -155,7 +155,7 @@ class TestRunWorker:
 
         with (
             patch.object(worker_mod, "OcrSettings", return_value=settings),
-            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "_verify_store_schema"),
             patch.object(worker_mod, "setup_logging"),
             patch.object(worker_mod, "silence_noisy_loggers"),
             patch.object(worker_mod, "get_store_engine", return_value=object()),
@@ -187,7 +187,7 @@ class TestRunWorker:
 
         with (  # noqa: SIM117
             patch.object(worker_mod, "OcrSettings", return_value=settings),
-            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "_verify_store_schema"),
             patch.object(worker_mod, "setup_logging"),
             patch.object(worker_mod, "silence_noisy_loggers"),
             patch.object(worker_mod, "get_store_engine", return_value="eng"),
@@ -212,7 +212,7 @@ class TestRunWorker:
 
         with (  # noqa: SIM117
             patch.object(worker_mod, "OcrSettings", return_value=settings),
-            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "_verify_store_schema"),
             patch.object(worker_mod, "setup_logging"),
             patch.object(worker_mod, "silence_noisy_loggers"),
             patch.object(worker_mod, "get_store_engine", return_value="eng"),
@@ -248,7 +248,7 @@ class TestEnvGuard:
         settings = _fake_settings()
         with (
             patch.object(worker_mod, "OcrSettings", return_value=settings),
-            patch.object(worker_mod, "_init_store"),
+            patch.object(worker_mod, "_verify_store_schema"),
             patch.object(worker_mod, "setup_logging"),
             patch.object(worker_mod, "silence_noisy_loggers"),
             patch.object(worker_mod, "get_store_engine", return_value=object()),
@@ -275,7 +275,7 @@ class TestNamespaceCoherence:
     ) -> None:
         """A target that cannot be derived fails fast, before store setup.
 
-        Derivation runs after settings are built but before ``_init_store``, the
+        Derivation runs after settings are built but before ``_verify_store_schema``, the
         Mistral capability, or the client, so such a worker never touches a
         database or the Temporal frontend. ``test`` has no canonical server, so
         an absent address is the unresolvable case.
@@ -284,11 +284,11 @@ class TestNamespaceCoherence:
 
         monkeypatch.delenv("FORGE_TEMPORAL_ADDRESS", raising=False)
         settings = _fake_settings(address=None)
-        mock_init_store = MagicMock()
+        mock_verify_schema = MagicMock()
         mock_connect = AsyncMock()
         with (  # noqa: SIM117
             patch.object(worker_mod, "OcrSettings", return_value=settings),
-            patch.object(worker_mod, "_init_store", mock_init_store),
+            patch.object(worker_mod, "_verify_store_schema", mock_verify_schema),
             patch.object(worker_mod, "setup_logging"),
             patch.object(worker_mod, "silence_noisy_loggers"),
             patch.object(worker_mod, "connect_temporal", mock_connect),
@@ -297,5 +297,5 @@ class TestNamespaceCoherence:
             with pytest.raises(ForgeEnvError, match="requires FORGE_TEMPORAL_ADDRESS"):
                 await worker_mod.run_worker()
 
-        mock_init_store.assert_not_called()
+        mock_verify_schema.assert_not_called()
         mock_connect.assert_not_awaited()
