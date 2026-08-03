@@ -728,8 +728,8 @@ class TestTrackerStatusCommand:
         assert out_lines[0].startswith("checked_at_gmt: ")
         assert "status: error" in out_lines
         assert "FORGE_DB_URL is not set" in result.stderr
-        assert "forge.env" in result.stderr
-        assert "5434" in result.stderr
+        assert "envs/<env>.env" in result.stderr
+        assert "5434" not in result.stderr
 
     def test_rejects_non_positive_stale_after(
         self, cli_runner: CliRunner, store_engine: sa.Engine

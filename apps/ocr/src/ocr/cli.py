@@ -429,8 +429,8 @@ def worker_cmd(temporal_address: str | None, worker_identity: str | None) -> Non
 _FORGE_DB_URL_MIGRATE_UNSET_MESSAGE = (
     "FORGE_DB_URL is not set — ocr migrate applies the ocr Alembic chain "
     "(alembic_version_ocr) to the shared forge database; source an env profile "
-    "(e.g. `ocr migrate --env dev`) or export FORGE_DB_URL; for the local stack "
-    "use the port-5434 override."
+    "(e.g. `ocr migrate --env dev`, reading ~/.config/forge/envs/dev.env) "
+    "or export FORGE_DB_URL."
 )
 
 
@@ -707,8 +707,8 @@ def unmark_cmd(document_id: str, temporal_address: str | None) -> None:
 #: worker's MISTRAL_API_KEY message: what is required, and how to supply it.
 _FORGE_DB_URL_UNSET_MESSAGE = (
     "FORGE_DB_URL is not set — the probe reads the shared forge database; "
-    "source ~/.config/forge/forge.env (the worker env file) or export FORGE_DB_URL; "
-    "for the local stack use the port-5434 override."
+    "source an env profile (~/.config/forge/envs/<env>.env, with FORGE_ENV "
+    "exported to match) or export FORGE_DB_URL."
 )
 
 

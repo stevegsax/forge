@@ -1,47 +1,61 @@
 # Debugging
 
-Forge provides several layers of logging and inspection for diagnosing issues.
+Forge provides several layers of logging and inspection for diagnosing issues. Every command and every worker first passes the explicit-environment guard, so nothing here reaches a database or a Temporal server without a declared `FORGE_ENV` — see [WORKERS.md](WORKERS.md#environment-guard).
 
-## Console Verbosity
-
-Control console log level with `-v` flags on any command:
+## Console verbosity
 
 ```bash
-forge -v run ...      # INFO
-forge -vv run ...     # DEBUG
+uv run forge -v run ...      # INFO
+uv run forge -vv run ...     # DEBUG
 ```
 
-Default (no flag) is `WARNING`. Log format: `HH:MM:SS LEVEL    logger — message`.
+With **no `-v` flag there is no console handler at all** when file logging is available: the worker stays silent on stdout and everything goes to the log file at DEBUG. The console handler is added only when you ask for verbosity, or as a fallback when file logging could not be configured — in which case its level is `WARNING`. Console format: `HH:MM:SS LEVEL    logger — message`.
 
-## Log Files
+## Log files
 
-Application logs are written to `$XDG_STATE_HOME/forge/` (default `~/.local/state/forge/`). Console output is ephemeral; the filesystem logs persist for post-hoc debugging.
+`forge.logging_config` attaches a `RotatingFileHandler` at **DEBUG level regardless of console verbosity**, 10 MB per file with 5 backups (`worker.log`, `worker.log.1`, … `worker.log.5`). Console output is ephemeral; these persist for post-hoc debugging.
 
-- `forge.log` — logs from CLI commands (`forge run`, `forge status`, etc.)
-- `worker.log` — logs from the Temporal worker (`forge worker`)
+The directory resolves in this order, from values the composition root read once via `LogSettings`:
 
-Both files use `RotatingFileHandler` with 10 MB max size and 5 backups (e.g. `worker.log`, `worker.log.1`, ... `worker.log.5`). The file handler always logs at DEBUG level regardless of the console verbosity setting. Override the log directory with `FORGE_LOG_DIR`; set it to an empty string to disable file logging.
+1. `FORGE_LOG_DIR`, if set. An **empty string disables file logging**.
+2. `$XDG_STATE_HOME/forge/`
+3. `~/.local/state/forge/`
 
-## Observability Store
+The file name is the log name the entry point passes: `forge.log` for CLI commands, `worker.log` for `forge worker`.
 
-Full LLM interaction data (prompts, tokens, latency, context stats) is persisted to the store configured by `FORGE_DB_URL`.
+The supervised workers set `FORGE_LOG_DIR` in their env profile, so their application logs land together in one directory. Separately, the supervisors capture each process's stdout/stderr:
 
-The store is **mandatory** and selected by `FORGE_DB_URL`: a `sqlite:///<path>` URL for local dev/tests (e.g. `sqlite:///$HOME/.local/state/forge/forge.db`) or a `postgresql+psycopg2://...` URL for production. If `FORGE_DB_URL` is unset, the worker refuses to start and CLI store commands exit with an error. There is no disable-store mode and no runtime failover.
+```text
+$XDG_STATE_HOME/forge/logs/
+├── forge-worker-1.log        launchd StandardOut/StandardError (prod)
+├── forge-worker-2.log
+├── ocr-worker.log
+├── pbook-worker.log
+└── dev-<worker>-worker.log   tmux pane, tee'd by `make dev-worker`
+```
+
+A production worker that refuses to start — guard failure, dirty checkout, `SchemaVersionError` — writes the reason to **stderr before logging is configured**, so the launchd `<agent>.log` file is where that message lands, not `worker.log`.
+
+## Observability store
+
+Full LLM interaction data (prompts, tokens, latency, context stats) is persisted to the store named by `FORGE_DB_URL`. The store is **mandatory**: if `FORGE_DB_URL` is unset, `ForgeSettings()` raises and the worker refuses to start; CLI store commands exit with an error. There is no disable-store mode and no runtime failover.
+
+Both lanes point at Postgres on the shared sax-datastores stacks — `forge_dev` on `:5432`, `forge_prod` on `:5442`. The engine factory still accepts a `sqlite:///<path>` URL, which is what the test suite uses; nothing deployed runs on it.
 
 ### Inspecting runs
 
 ```bash
-forge status                              # List recent runs (default: 20)
-forge status --limit 5                    # Limit to 5 runs
-forge status --workflow-id <id>           # Details for a specific workflow
-forge status --workflow-id <id> --verbose  # Full interaction history (prompts, tokens, latency per step)
-forge status --json                       # Machine-readable JSON output
+uv run forge status --env dev                              # recent runs (default limit 20)
+uv run forge status --env dev --limit 5
+uv run forge status --env dev --workflow-id <id>           # details for one workflow
+uv run forge status --env dev --workflow-id <id> --verbose # full interaction history
+uv run forge status --env dev --json                       # machine-readable
 ```
 
 ### Verbose run output
 
 ```bash
-forge run --verbose ...
+uv run forge run --verbose ...
 ```
 
 Adds to the default output:
@@ -53,86 +67,130 @@ Adds to the default output:
 ### JSON output
 
 ```bash
-forge run --json ...
+uv run forge run --json ...
 ```
 
 Emits the full `TaskResult` as JSON for programmatic consumption.
 
-## API Message Logs
+## API message logs
 
 Save the raw Anthropic API request and response JSON to the worktree:
 
 ```bash
-forge run --log-messages ...
+uv run forge run --log-messages ...
 ```
 
 Files are written to `<worktree>/messages/`:
 
-- `request-YYYY-MM-DD-HH-MM-SS.json` — Full API call parameters
-- `response-YYYY-MM-DD-HH-MM-SS.json` — Full API response including usage and tool calls
+- `request-YYYY-MM-DD-HH-MM-SS.json` — full API call parameters
+- `response-YYYY-MM-DD-HH-MM-SS.json` — full API response including usage
 
-The `messages/` directory is automatically git-ignored. Logging is best-effort and never disrupts the workflow.
+Timestamps are UTC. `forge.message_log` creates the directory and drops a `messages/.gitignore` containing `*`, so the payloads never reach a commit. Logging is best-effort — every failure is swallowed and never disrupts the workflow.
 
-## OpenTelemetry Tracing
+## OpenTelemetry tracing
 
-Distributed tracing across Temporal activities is available via OpenTelemetry. Configure with environment variables:
+Distributed tracing across Temporal activities is available via OpenTelemetry, and is **opt-in — the default is off** (T0.1). `forge.tracing.init_tracing` receives the exporter name from `TracingSettings` and resolves an unset value to the `none` exporter, so a bare worker run emits no spans.
 
 | Variable | Values | Default |
-| ---------- | -------- | --------- |
-| `FORGE_OTEL_EXPORTER` | `console`, `otlp_grpc`, `otlp_http`, `none` | `console` |
+| --- | --- | --- |
+| `FORGE_OTEL_EXPORTER` | `console`, `otlp_grpc`, `otlp_http`, `none` | unset ⇒ `none` (off) |
+| `FORGE_OTEL_ENDPOINT` | OTLP collector endpoint, e.g. `http://localhost:4317` | unset ⇒ the exporter's own default |
 
-## Knowledge Base
+An unrecognized `FORGE_OTEL_EXPORTER` value raises at startup with the valid options listed. `FORGE_OTEL_ENDPOINT` is read only when the exporter is `otlp_grpc` or `otlp_http`.
 
-Inspect extracted playbooks from completed runs:
+## Knowledge base
+
+Inspect extracted playbooks from completed runs (forge's own `playbooks` table — separate from pbook's store):
 
 ```bash
-forge playbooks                    # List all playbooks
-forge playbooks --tag <tag>        # Filter by tag
-forge playbooks --task-id <id>     # Filter by source task
-forge playbooks --json             # JSON output
+uv run forge playbooks --env dev                 # list (default limit 20)
+uv run forge playbooks --env dev --tag <tag>     # filter by tag (repeatable)
+uv run forge playbooks --env dev --task-id <id>  # filter by source task
+uv run forge playbooks --env dev --json
 ```
+
+Subcommands: `add` (with LLM review) and `export`.
 
 ## Temporal CLI
 
-The `temporal` CLI can inspect workflow execution history directly from the Temporal server, including error messages and stack traces that may not appear in worker logs.
+The `temporal` CLI reads workflow execution history straight from the server, including failure messages and stack traces that never reach worker logs.
+
+**Every invocation needs an explicit `--address` and `--namespace`.** The CLI defaults to `127.0.0.1:7233` in namespace `default`; neither exists here, so a bare command connects to nothing or asks the wrong server. The examples below use the **dev** pair; for production substitute `--address 127.0.0.1:7243 --namespace forge-prod`.
 
 ### List recent workflows
 
 ```bash
-temporal workflow list --limit 10
+temporal workflow list --address 127.0.0.1:7236 --namespace forge-dev --limit 10
 ```
 
 ### Show workflow event history
 
 ```bash
-temporal workflow show --workflow-id <workflow-id>
+temporal workflow show --address 127.0.0.1:7236 --namespace forge-dev --workflow-id <workflow-id>
 ```
 
-If you have the run ID (useful when a workflow has been retried):
+With a run ID, when a workflow has been retried:
 
 ```bash
-temporal workflow show --workflow-id <workflow-id> --run-id <run-id>
+temporal workflow show --address 127.0.0.1:7236 --namespace forge-dev \
+  --workflow-id <workflow-id> --run-id <run-id>
 ```
 
 ### Full event detail as JSON
 
-The JSON output includes complete failure messages, stack traces, and input payloads:
+Includes complete failure messages, stack traces, and input payloads:
 
 ```bash
-temporal workflow show --workflow-id <workflow-id> -o json
+temporal workflow show --address 127.0.0.1:7236 --namespace forge-dev \
+  --workflow-id <workflow-id> -o json
 ```
 
 ### Describe workflow status
 
 ```bash
-temporal workflow describe --workflow-id <workflow-id>
+temporal workflow describe --address 127.0.0.1:7236 --namespace forge-dev --workflow-id <workflow-id>
 ```
 
-## Environment Variables
+### Who is polling, and what is queued
+
+```bash
+temporal task-queue describe --address 127.0.0.1:7236 --namespace forge-dev --task-queue forge-task-queue
+```
+
+Poller identities carry the launch-time commit (`prod-forge-worker-1@104c14b`), and the statistics rows show the backlog. A queue with a growing backlog and an empty `Pollers` list means no worker is serving it — see [WORKERS.md](WORKERS.md#checking-whether-workers-are-running).
+
+### Schedules
+
+```bash
+temporal schedule list --address 127.0.0.1:7236 --namespace forge-dev
+```
+
+`ocr-batch-tracker` should be present and unpaused wherever an ocr worker runs. Its runs keep firing on the server even when no worker is polling `ocr-task-queue` — they simply time out, which is the signature of a lane whose ocr worker is down.
+
+The dev stack also has a Web UI at `http://localhost:8236`. The prod stack ships none.
+
+## Environment variables
+
+Secrets (`ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `OPENAI_API_KEY`, database passwords, S3 credentials) live only in the chmod-600 profiles under `$XDG_CONFIG_HOME/forge/envs/` and are never recorded here or in the repo.
 
 | Variable | Purpose | Default |
-| ---------- | --------- | --------- |
-| `FORGE_DB_URL` | **Required.** Store URL: `sqlite:///<path>` (dev/tests) or `postgresql+psycopg2://...` (prod). Unset → hard error | _unset_ |
-| `FORGE_LOG_DIR` | Override log file directory (empty string disables file logging) | `~/.local/state/forge/` |
-| `FORGE_OTEL_EXPORTER` | OTel trace exporter type | `console` |
-| `XDG_STATE_HOME` | Base directory for logs and database | `~/.local/state` |
+| --- | --- | --- |
+| `FORGE_ENV` | **Required, no default.** `prod` / `dev` / `test`. Derives the Temporal address and namespace and selects the profile. Unset or invalid ⇒ exit 78 | _unset_ |
+| `FORGE_PROD_ACK` | Must be `yes` for `FORGE_ENV=prod`. Set by the launchd plists or an interactive shell — **never** by a profile file | _unset_ |
+| `FORGE_ENV_TAG` | Declared _inside_ a profile; must equal `FORGE_ENV` or the loader exits 78 | _unset_ |
+| `FORGE_DB_URL` | **Required.** Store URL — `postgresql+psycopg2://…` on both lanes; `sqlite:///<path>` for tests. Unset ⇒ hard error at startup | _unset_ |
+| `FORGE_TEMPORAL_ADDRESS` | Override only. `dev`/`prod` reject any value that is not their own server; `test` **requires** one (ephemeral container) | derived from `FORGE_ENV` |
+| `FORGE_TEMPORAL_NAMESPACE` | **Retired.** No longer a setting; a line for it is silently ignored. The namespace is `<slug>-<env>`, derived | — |
+| `FORGE_TEMPORAL_TLS` | Enable TLS for the Temporal connection (plus `FORGE_TEMPORAL_TLS_SERVER_CA`, `_CLIENT_CERT`, `_CLIENT_KEY`, `_SERVER_NAME`) | `false` |
+| `FORGE_WORKER_IDENTITY` | Base worker identity; the launch-time git version is appended. Also settable as `--worker-identity` | SDK `{pid}@{hostname}` |
+| `FORGE_OCR_S3_BUCKET` | Blob bucket. Required by the ocr worker; when unset, forge builds no blob client | _unset_ |
+| `FORGE_OCR_S3_PREFIX` | Key prefix within the bucket | `""` |
+| `FORGE_LOG_DIR` | Override the log directory; empty string disables file logging | `$XDG_STATE_HOME/forge/` |
+| `FORGE_OTEL_EXPORTER` | OTel trace exporter: `console`, `otlp_grpc`, `otlp_http`, `none` | unset ⇒ off |
+| `FORGE_OTEL_ENDPOINT` | OTLP collector endpoint; read only for the `otlp_*` exporters | exporter default |
+| `XDG_STATE_HOME` | Base directory for logs | `~/.local/state` |
+| `XDG_CONFIG_HOME` | Base directory for env profiles (`forge/envs/<env>.env`) | `~/.config` |
+| `PBOOK_DATABASE_URL` | pbook's store. Unset ⇒ the pbook worker disables its store and skips schema verification | _unset_ |
+| `ANTHROPIC_API_KEY` | Read by the Anthropic SDK; required by the forge and pbook workers | _unset_ |
+| `MISTRAL_API_KEY` | **Required by the ocr worker** (fail-fast at startup). The forge worker never reads it | _unset_ |
+| `OPENAI_API_KEY` | pbook embeddings; unset ⇒ embedding activities fail fast rather than hang | _unset_ |
