@@ -59,7 +59,11 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        # The sax-datastores operator's canonical image (PG17 + rum +
+        # pgvector), the same one the dev and prod stacks run. Kept equal to
+        # sax_platform.testing.CANONICAL_POSTGRES_IMAGE by a drift test
+        # (tests/test_ci_postgres_image.py) — YAML cannot read the constant.
+        image: ghcr.io/stevegsax/sax-postgres-rum:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: pbook

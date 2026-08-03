@@ -16,7 +16,11 @@ from unittest import mock
 
 import pytest
 
-from sax_platform.db.migrations import advisory_lock_key, run_migrations
+from sax_platform.db.migrations import (
+    _LOCK_POLL_INTERVAL_SECONDS,
+    advisory_lock_key,
+    run_migrations,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -134,6 +138,65 @@ class TestRunMigrationsPostgresPath:
         assert executed_keys == [expected_key, expected_key]
         lock_engine.dispose.assert_called_once()
 
+    def test_lock_connection_is_autocommit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The lock connection must not sit in an open transaction during the upgrade.
+
+        An open transaction on the lock connection is a snapshot a concurrent
+        ``CREATE INDEX CONCURRENTLY`` would wait on — the same hazard as a
+        server-side wait.
+        """
+        monkeypatch.setattr("alembic.command.upgrade", lambda cfg, rev: None)
+
+        lock_engine = mock.MagicMock()
+
+        with mock.patch(
+            "sax_platform.db.migrations.sa.create_engine", return_value=lock_engine
+        ) as create_engine:
+            run_migrations(
+                "postgresql+psycopg2://user:pw@localhost:5432/forge_test",
+                version_table="alembic_version_test",
+                script_location="/nonexistent/alembic/dir",
+            )
+
+        assert create_engine.call_args.kwargs["isolation_level"] == "AUTOCOMMIT"
+
+    def test_polls_try_lock_and_sleeps_client_side_until_acquired(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A contended lock is waited for by polling, with the sleep in the client.
+
+        A server-side wait (blocking ``pg_advisory_lock``/``pg_sleep``) holds a
+        snapshot for its whole duration and deadlocks against a concurrent
+        index build, so the mechanism itself is pinned here: every statement is
+        a ``pg_try_advisory_lock``, and the waiting happens in ``time.sleep``.
+        """
+        monkeypatch.setattr("alembic.command.upgrade", lambda cfg, rev: None)
+
+        sleeps: list[float] = []
+        monkeypatch.setattr("sax_platform.db.migrations.time.sleep", sleeps.append)
+
+        # Two refusals, then the lock is granted; the unlock's result is unused.
+        results = [False, False, True, None]
+        conn = mock.MagicMock()
+        conn.execute.side_effect = [mock.MagicMock(**{"scalar.return_value": r}) for r in results]
+        lock_engine = mock.MagicMock()
+        lock_engine.connect.return_value.__enter__.return_value = conn
+
+        with mock.patch("sax_platform.db.migrations.sa.create_engine", return_value=lock_engine):
+            run_migrations(
+                "postgresql+psycopg2://user:pw@localhost:5432/forge_test",
+                version_table="alembic_version_test",
+                script_location="/nonexistent/alembic/dir",
+            )
+
+        statements = [str(call.args[0]) for call in conn.execute.call_args_list]
+        assert statements[:3] == ["SELECT pg_try_advisory_lock(:key)"] * 3
+        assert statements[3] == "SELECT pg_advisory_unlock(:key)"
+        # One client-side sleep per refusal, and none after the grant.
+        assert sleeps == [_LOCK_POLL_INTERVAL_SECONDS] * 2
+        assert all("pg_advisory_lock(" not in stmt for stmt in statements[:3])
+        assert all("pg_sleep" not in stmt for stmt in statements)
+
     def test_unlocks_even_when_upgrade_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def boom(cfg: object, rev: str) -> None:
             raise RuntimeError("migration failed")
@@ -154,6 +217,6 @@ class TestRunMigrationsPostgresPath:
                 script_location="/nonexistent/alembic/dir",
             )
 
-        # pg_advisory_lock and pg_advisory_unlock both still ran.
+        # pg_try_advisory_lock and pg_advisory_unlock both still ran.
         assert conn.execute.call_count == 2
         lock_engine.dispose.assert_called_once()

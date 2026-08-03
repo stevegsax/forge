@@ -5,8 +5,10 @@ Postgres. Resolution order for the test database:
 
 1. ``PBOOK_TEST_DATABASE_URL`` — an external Postgres (must have the
    ``vector`` extension available); nothing is torn down.
-2. Otherwise an ephemeral ``pgvector/pgvector:pg17`` container is started
-   via podman for the session and removed at the end.
+2. Otherwise an ephemeral container of the sax-datastores operator's
+   canonical image (``sax_platform.testing.CANONICAL_POSTGRES_IMAGE`` —
+   PG17 + rum + pgvector, the same image the dev and prod stacks run) is
+   started via podman for the session and removed at the end.
 
 Per-test isolation is by TRUNCATE (RESTART IDENTITY) of the pbk_ tables
 between tests, so ids restart at 1 the way the SQLite-era tests expected.
@@ -27,7 +29,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import sqlalchemy as sa
-from sax_platform.testing import temporal_env
+from sax_platform.testing import CANONICAL_POSTGRES_IMAGE, temporal_env
 
 from pbook.settings import PbookDbSettings
 from pbook.store import EMBEDDING_DIM, SCHEMA, build_engine, run_migrations
@@ -64,7 +66,7 @@ def encode_test_embedding(*coords: float) -> str:
     return encode_embedding(make_embedding(*coords))
 
 
-_CONTAINER_IMAGE = "docker.io/pgvector/pgvector:pg17"
+_CONTAINER_IMAGE = CANONICAL_POSTGRES_IMAGE
 _PBK_TABLES = (
     "pbk_entry_tags",
     "pbk_entry_sources",
@@ -107,7 +109,7 @@ def _wait_until_ready(url: str, *, timeout: float = 60.0) -> None:
 
 
 def _start_container() -> tuple[str, str]:
-    """Start a pgvector container; return (container_name, database_url)."""
+    """Start a canonical-image container; return (container_name, database_url)."""
     port = _free_port()
     name = f"pbook-test-{os.getpid()}"
     # Remove any stale container from a previous crashed run.

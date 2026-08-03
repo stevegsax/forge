@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from sax_platform.testing import CANONICAL_POSTGRES_IMAGE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -41,7 +42,7 @@ def postgres_url() -> Iterator[str]:
     from testcontainers.postgres import PostgresContainer
 
     try:
-        container = PostgresContainer("postgres:16-alpine", driver="psycopg2")
+        container = PostgresContainer(CANONICAL_POSTGRES_IMAGE, driver="psycopg2")
         container.start()
     except Exception as exc:
         pytest.skip(f"Postgres testcontainer unavailable: {exc}")
@@ -102,7 +103,16 @@ def test_concurrent_migrations_serialize_on_postgres(postgres_url: str) -> None:
     Reproduces the launchd first-boot failure: both workers migrate at
     startup, both saw the schema behind head, and the loser died on
     ``DuplicateColumn``. ``run_migrations`` now takes a session-level
-    ``pg_advisory_lock``, so the second caller blocks, then no-ops.
+    advisory lock, so the second caller waits, then no-ops.
+
+    Since revision 004 the chain also builds an index ``CONCURRENTLY``, which
+    makes this test the regression pin for the deadlock that produced: a
+    migrator waiting *inside* Postgres (the blocking ``pg_advisory_lock``)
+    holds a snapshot the winner's concurrent index build waits on, and the
+    pair hangs forever with no deadlock detection. The lock is therefore
+    acquired by polling ``pg_try_advisory_lock`` with a client-side sleep
+    (``sax_platform.db.migrations._acquire_advisory_lock``) — if that ever
+    reverts, this test hangs rather than fails.
 
     Runs against a fresh database inside the module's container — the shared
     ``postgres_url`` database is already at head by the time this test runs,

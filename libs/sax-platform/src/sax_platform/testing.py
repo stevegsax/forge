@@ -44,7 +44,7 @@ server starts once per requested name.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 import pytest_asyncio
 from pydantic import BaseModel
@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from sax_platform.llm import CacheSpec, ThinkingPolicy
 
 __all__ = [
+    "CANONICAL_POSTGRES_IMAGE",
     "FakeLLM",
     "FakeMistralOcr",
     "RecordedCall",
@@ -74,6 +75,23 @@ __all__ = [
 # Mirrors sax_platform.ocr's module-private default; restated here so this
 # module stays self-contained rather than importing a private name.
 _OCR_ENDPOINT = "/v1/ocr"
+
+# ---------------------------------------------------------------------------
+# Canonical Postgres image
+# ---------------------------------------------------------------------------
+
+#: The sax-datastores operator's canonical Postgres image — PG17 with the
+#: ``rum`` and ``pgvector`` extensions, built from
+#: ``sax-datastores/containers/postgres/Containerfile`` and published weekly.
+#:
+#: The dev stack, the prod stack, and every product's CI run THIS image so the
+#: extension surface is identical everywhere; a dev/prod extension mismatch is
+#: the failure class it exists to prevent. Forge is a *consumer* of that image:
+#: every test that provisions its own Postgres (testcontainers here, a raw
+#: podman container in pbook) points at this constant and never at an image
+#: string of its own. New extensions are added to the operator's Containerfile,
+#: never to a per-project image.
+CANONICAL_POSTGRES_IMAGE: Final = "ghcr.io/stevegsax/sax-postgres-rum:17"
 
 
 class RecordedCall(NamedTuple):

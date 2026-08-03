@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import sqlalchemy as sa
+from sax_platform.testing import CANONICAL_POSTGRES_IMAGE
 
 from ocr.store import Base, run_migrations
 
@@ -101,7 +102,7 @@ def postgres_url() -> Iterator[str]:
     from testcontainers.postgres import PostgresContainer
 
     try:
-        container = PostgresContainer("postgres:16-alpine", driver="psycopg2")
+        container = PostgresContainer(CANONICAL_POSTGRES_IMAGE, driver="psycopg2")
         container.start()
     except Exception as exc:
         pytest.skip(f"Postgres testcontainer unavailable: {exc}")
