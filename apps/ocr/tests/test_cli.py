@@ -1107,3 +1107,91 @@ class TestMigrateCommand:
         result = cli_runner.invoke(main, ["migrate"])
         assert result.exit_code == EXIT_CONFIG_ERROR
         assert "FORGE_DB_URL is not set" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# db-change — the production apply path's front door
+# ---------------------------------------------------------------------------
+
+
+class TestDbChangeCommand:
+    """``ocr db-change`` generates a sax-datastores request for the ocr chain.
+
+    The generator is tested in ``libs/sax-platform``; these cover the wiring
+    that is specific to ocr — the chain it reads, the product it files under
+    (``forge``: ocr is not a registered product and its tables live in forge's
+    database), and that it is outside the ``FORGE_ENV`` guard.
+    """
+
+    def test_generates_a_request_for_the_ocr_chain(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "001",
+                "--to",
+                "002",
+                "--title",
+                "tracker-heartbeat",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        directory = tmp_path / "0001-tracker-heartbeat"
+        assert "CREATE TABLE ocr_tracker_heartbeat" in (directory / "change-1.sql").read_text()
+        request = (directory / "request.md").read_text()
+        # ocr files under forge's product and database; only the version table
+        # distinguishes the chain.
+        assert "| Product | `forge` |" in request
+        assert "| Database | `forge_prod` (prod) |" in request
+        assert "| Version table | `alembic_version_ocr` |" in request
+
+    def test_an_unusable_range_exits_1_and_writes_nothing(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "nope",
+                "--title",
+                "doomed",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "Cannot walk nope" in result.stderr
+        assert list(tmp_path.iterdir()) == []
+
+    def test_runs_without_a_declared_environment(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It opens no database, so the FORGE_ENV guard does not apply to it."""
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+
+        result = cli_runner.invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "001",
+                "--title",
+                "no-env-needed",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "0001-no-env-needed" / "change-1.sql").exists()

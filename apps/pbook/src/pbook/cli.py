@@ -1120,6 +1120,85 @@ def migrate(settings: PbookSettings) -> None:
     click.echo("Migrations complete.")
 
 
+@main.command("db-change", cls=click.Command)
+@click.option(
+    "--from",
+    "from_revision",
+    required=True,
+    help="Revision the production database is already stamped with.",
+)
+@click.option(
+    "--to",
+    "to_revision",
+    default=None,
+    help="Last revision of the request (default: the chain head).",
+)
+@click.option("--title", required=True, help="Kebab-case slug naming the request directory.")
+@click.option(
+    "--output-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Where request directories live (default: <repo>/apps/pbook/datastore-changes).",
+)
+@click.option(
+    "--no-lint",
+    is_flag=True,
+    help="Skip Squawk; the request is stamped NOT LINTED (run `make lint-sql` before committing).",
+)
+def db_change_cmd(
+    from_revision: str,
+    to_revision: str | None,
+    title: str,
+    output_root: Path | None,
+    no_lint: bool,
+) -> None:
+    """Generate a sax-datastores change request for the pbook chain.
+
+    pbook is a registered product in its own right, so its requests carry their
+    own id sequence and live beside its code (``apps/pbook/datastore-changes/``)
+    rather than in the repo-root directory forge and ocr share.
+
+    Deliberately outside the ``FORGE_ENV`` guard (hence ``cls=click.Command``,
+    which also drops the ``--env`` option): it opens no database and no
+    Temporal connection — it reads the Alembic chain on disk and writes files
+    into the repo.
+    """
+    from sax_platform.db.change_request import (
+        ChainSpec,
+        ChangeRequestError,
+        describe_generated_request,
+        find_repo_root,
+        generate_change_request,
+        squawk_linter,
+    )
+
+    chain = ChainSpec(
+        product="pbook",
+        database="pbook_prod",
+        schema="pbook",
+        version_table="pbk_alembic_version",
+        script_location=Path(__file__).resolve().parent / "alembic",
+    )
+
+    try:
+        repo_root = find_repo_root(Path(__file__).resolve())
+        result = generate_change_request(
+            chain=chain,
+            output_root=output_root or repo_root / "apps" / "pbook" / "datastore-changes",
+            from_revision=from_revision,
+            to_revision=to_revision,
+            title=title,
+            linter=None if no_lint else squawk_linter(repo_root / ".squawk.toml"),
+        )
+    except ChangeRequestError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    for warning in result.warnings:
+        click.echo(f"warning: {warning}", err=True)
+    click.echo(describe_generated_request(result))
+
+
 @main.command()
 @click.argument("entry_id", type=int)
 @click.option(

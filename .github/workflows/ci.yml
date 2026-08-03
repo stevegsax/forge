@@ -36,6 +36,11 @@ jobs:
         working-directory: libs/sax-platform
         run: uv run mypy
       - run: uv run lint-imports
+      # Squawk over every committed datastore-changes artifact, with the
+      # version pinned in sax_platform.db.change_request (the Makefile reads it
+      # from there). npx is preinstalled on the runner image.
+      - name: Lint schema-change SQL (squawk)
+        run: make lint-sql
 
   test-forge:
     runs-on: ubuntu-latest

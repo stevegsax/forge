@@ -682,6 +682,114 @@ class TestMigrateCommand:
         assert "schema-changes.md" in result.output
 
 
+# ---------------------------------------------------------------------------
+# db-change — the production apply path's front door
+# ---------------------------------------------------------------------------
+
+
+class TestDbChangeCommand:
+    """``forge db-change`` generates a committable sax-datastores request.
+
+    The generator itself is tested in ``libs/sax-platform`` (pure core) and in
+    ``tests/test_change_request_golden.py`` (it reproduces the committed maiden
+    request byte for byte); these tests cover the CLI wiring only — the chain it
+    points at, where it writes, how it reports, and that it is deliberately
+    outside the ``FORGE_ENV`` guard.
+    """
+
+    def test_generates_a_request_for_the_forge_chain(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "003",
+                "--to",
+                "004",
+                "--title",
+                "cli-generated-index",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        directory = tmp_path / "0001-cli-generated-index"
+        assert (directory / "change-1.sql").exists()
+        request = (directory / "request.md").read_text()
+        assert "| Product | `forge` |" in request
+        assert "| Version table | `alembic_version_forge` |" in request
+        assert "| Database | `forge_prod` (prod) |" in request
+
+    def test_no_lint_is_reported_rather_than_reading_as_clean(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "003",
+                "--title",
+                "unlinted",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "skipped (--no-lint)" in result.output
+        assert "NOT LINTED" in (tmp_path / "0001-unlinted" / "request.md").read_text()
+
+    def test_an_unusable_range_exits_1_and_writes_nothing(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "nope",
+                "--title",
+                "doomed",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "Cannot walk nope" in result.stderr
+        assert list(tmp_path.iterdir()) == []
+
+    def test_runs_without_a_declared_environment(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It opens no database, so the FORGE_ENV guard does not apply to it."""
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+
+        result = cli_runner.invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "003",
+                "--title",
+                "no-env-needed",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "0001-no-env-needed" / "change-1.sql").exists()
+
+
 class TestMainGroup:
     """Tests for the main CLI group."""
 

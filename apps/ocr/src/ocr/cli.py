@@ -1,5 +1,6 @@
 """CLI for the OCR app: ``ocr worker``, ``ocr submit``, ``ocr list``, ``ocr export``,
-``ocr mark``, ``ocr unmark``, ``ocr tracker-status``.
+``ocr mark``, ``ocr unmark``, ``ocr tracker-status``, ``ocr migrate``,
+``ocr db-change``.
 
 Workflows are started on ``ocr-task-queue`` (the OCR worker's queue) so they hit the
 OCR-side activities, which now own the Mistral submit + self-polling; the platform
@@ -16,6 +17,7 @@ import sys
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import click
@@ -456,6 +458,89 @@ def migrate_cmd() -> None:
 
     run_migrations(db_url)
     click.echo(format_migration_target(db_url))
+
+
+@main.command("db-change", cls=click.Command)
+@click.option(
+    "--from",
+    "from_revision",
+    required=True,
+    help="Revision the production database is already stamped with.",
+)
+@click.option(
+    "--to",
+    "to_revision",
+    default=None,
+    help="Last revision of the request (default: the chain head).",
+)
+@click.option("--title", required=True, help="Kebab-case slug naming the request directory.")
+@click.option(
+    "--output-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Where request directories live (default: <repo>/datastore-changes).",
+)
+@click.option(
+    "--no-lint",
+    is_flag=True,
+    help="Skip Squawk; the request is stamped NOT LINTED (run `make lint-sql` before committing).",
+)
+def db_change_cmd(
+    from_revision: str,
+    to_revision: str | None,
+    title: str,
+    output_root: Path | None,
+    no_lint: bool,
+) -> None:
+    """Generate a sax-datastores change request for the OCR chain.
+
+    OCR's tables live in forge's database and OCR is not a registered
+    sax-datastores product of its own, so a request from this chain is filed as
+    product ``forge`` against ``forge_prod`` and takes the next id from the
+    same repo-root ``datastore-changes/`` sequence forge uses — one id sequence
+    per product, and this chain's product is forge. Only the version table
+    (``alembic_version_ocr``) distinguishes it.
+
+    Deliberately outside the ``FORGE_ENV`` guard (hence ``cls=click.Command``):
+    it opens no database and no Temporal connection — it reads the Alembic
+    chain on disk and writes files into the repo.
+    """
+    # Imported here, not at module scope: sax_platform.db pulls in SQLAlchemy,
+    # and every other ocr command would pay for it at startup.
+    from sax_platform.db.change_request import (
+        ChainSpec,
+        ChangeRequestError,
+        describe_generated_request,
+        find_repo_root,
+        generate_change_request,
+        squawk_linter,
+    )
+
+    chain = ChainSpec(
+        product="forge",
+        database="forge_prod",
+        schema="public",
+        version_table="alembic_version_ocr",
+        script_location=Path(__file__).resolve().parent / "alembic",
+    )
+
+    try:
+        repo_root = find_repo_root(Path(__file__).resolve())
+        result = generate_change_request(
+            chain=chain,
+            output_root=output_root or repo_root / "datastore-changes",
+            from_revision=from_revision,
+            to_revision=to_revision,
+            title=title,
+            linter=None if no_lint else squawk_linter(repo_root / ".squawk.toml"),
+        )
+    except ChangeRequestError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    for warning in result.warnings:
+        click.echo(f"warning: {warning}", err=True)
+    click.echo(describe_generated_request(result))
 
 
 @main.command("submit")

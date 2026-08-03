@@ -1475,3 +1475,87 @@ class TestCLIOpsWireFormat:
         json.dumps(result, default=str)
         for row in result["rows"]:
             assert "source_context_embedding" not in row
+
+
+# ---------------------------------------------------------------------------
+# db-change — the production apply path's front door
+# ---------------------------------------------------------------------------
+
+
+class TestDbChangeCommand:
+    """``pbook db-change`` generates a sax-datastores request for the pbook chain.
+
+    The generator is tested in ``libs/sax-platform``; these cover the wiring
+    specific to pbook — its own product identity, schema, and id sequence
+    (requests live under ``apps/pbook/datastore-changes/``, not the repo-root
+    directory forge and ocr share) — and that it is outside the ``FORGE_ENV``
+    guard.
+    """
+
+    def test_generates_a_request_for_the_pbook_chain(self, tmp_path: Path) -> None:
+        result = CliRunner().invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "0001",
+                "--to",
+                "0002",
+                "--title",
+                "enable-rls",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        directory = tmp_path / "0001-enable-rls"
+        assert "ROW LEVEL SECURITY" in (directory / "change-1.sql").read_text()
+        request = (directory / "request.md").read_text()
+        assert "| Product | `pbook` |" in request
+        assert "| Database | `pbook_prod` (prod) |" in request
+        assert "| Schema | `pbook` |" in request
+        assert "| Version table | `pbk_alembic_version` |" in request
+
+    def test_an_unusable_range_exits_1_and_writes_nothing(self, tmp_path: Path) -> None:
+        result = CliRunner().invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "nope",
+                "--title",
+                "doomed",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "Cannot walk nope" in result.stderr
+        assert list(tmp_path.iterdir()) == []
+
+    def test_runs_without_a_declared_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It opens no database, so the FORGE_ENV guard does not apply to it."""
+        monkeypatch.delenv("FORGE_ENV", raising=False)
+
+        result = CliRunner().invoke(
+            main,
+            [
+                "db-change",
+                "--from",
+                "0001",
+                "--title",
+                "no-env-needed",
+                "--output-root",
+                str(tmp_path),
+                "--no-lint",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "0001-no-env-needed" / "change-1.sql").exists()

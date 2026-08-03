@@ -12,8 +12,8 @@
 # Per-package suites run from each package's own directory so its own config
 # applies (workspace command discipline — see CLAUDE.md).
 
-.PHONY: help lint typecheck lint-imports test gates replay-histories \
-	db-migrate workers-restart workers-status dev-worker dev-worker-restart \
+.PHONY: help lint typecheck lint-imports lint-sql test gates replay-histories \
+	db-migrate db-change workers-restart workers-status dev-worker dev-worker-restart \
 	prod-deploy
 
 # Bare `make` prints the target list instead of running the first target.
@@ -34,13 +34,39 @@ typecheck:
 lint-imports:
 	uv run lint-imports
 
+# Lint every committed schema-change artifact with the pinned Squawk and the
+# vendored .squawk.toml (a byte-copy of the operator's canonical config, so a
+# "clean lint" claim in a request means clean against the rules the operator
+# reviews with). Part of `gates`, so an artifact can never be committed
+# unlinted.
+#
+# The version pin lives in ONE place — SQUAWK_VERSION in
+# sax_platform.db.change_request, which `make db-change` also uses — and is
+# read out of Python here rather than copied, because a request records the
+# Squawk version it was linted with and two drifting pins would make that
+# record a lie.
+#
+# Squawk itself exits 1 on "no files matched a pattern", so the file list is
+# built here and an empty list short-circuits: a repo with no artifacts yet
+# passes rather than failing on the linter's own argument handling.
+SQL_ARTIFACT_GLOBS = datastore-changes/*/change-*.sql apps/pbook/datastore-changes/*/change-*.sql
+lint-sql:
+	@files=$$(ls -1 $(SQL_ARTIFACT_GLOBS) 2>/dev/null); \
+	if [ -z "$$files" ]; then \
+		echo "lint-sql: no datastore-changes artifacts — nothing to lint"; exit 0; \
+	fi; \
+	ver=$$(uv run python -c 'from sax_platform.db.change_request import SQUAWK_VERSION; print(SQUAWK_VERSION)') \
+		|| { echo "lint-sql: could not read SQUAWK_VERSION from sax_platform.db.change_request"; exit 1; }; \
+	echo "lint-sql: squawk-cli@$$ver over"; printf '  %s\n' $$files; \
+	npx --yes squawk-cli@$$ver --config .squawk.toml $$files
+
 test:
 	uv run pytest
 	cd apps/pbook && uv run pytest
 	cd apps/ocr && uv run pytest
 	cd libs/sax-platform && uv run pytest
 
-gates: lint typecheck lint-imports test
+gates: lint typecheck lint-imports lint-sql test
 
 # Regenerate the committed workflow histories tests/test_replay.py replays
 # (T4.1 ST4). Runs on the time-skipping test server with mocked activities — no
@@ -51,15 +77,18 @@ replay-histories:
 
 help:
 	@echo "Gates (T2.2): what CI runs"
-	@echo "  make gates        lint + typecheck + lint-imports + test"
+	@echo "  make gates        lint + typecheck + lint-imports + lint-sql + test"
 	@echo "  make lint         ruff check + format --check (workspace-wide)"
 	@echo "  make typecheck    mypy strict across all four packages"
 	@echo "  make lint-imports import-linter DAG contracts (root pyproject)"
+	@echo "  make lint-sql     squawk over datastore-changes/**/change-*.sql (pinned version)"
 	@echo "  make test         all four package suites, each from its own directory"
 	@echo "  make replay-histories  regenerate tests/replay/histories/*.json (workflow replay fixtures)"
 	@echo ""
 	@echo "Store (shared sax-datastores Postgres; forge starts no stack of its own)"
 	@echo "  make db-migrate   apply Forge's Alembic migrations (needs FORGE_DB_URL)"
+	@echo "  make db-change CHAIN=forge|ocr|pbook FROM=<rev> [TO=<rev>] TITLE=<kebab-title>"
+	@echo "                    generate a sax-datastores change request (offline SQL + request.md)"
 	@echo ""
 	@echo "Workers (launchd-supervised; SIGTERM drains gracefully, KeepAlive restarts)"
 	@echo "  make prod-deploy REF=<ref>  pin the prod worktree to a commit and restart (D103)"
@@ -82,6 +111,29 @@ help:
 # change-request process and the administrator applies them.
 db-migrate:
 	uv run forge migrate
+
+# Generate a sax-datastores change request from one of the three Alembic
+# chains: offline SQL per phase (transaction wrappers stripped, each phase's
+# version-table stamp kept) plus a prefilled request.md, under
+# datastore-changes/ (forge and ocr, one shared id sequence — both are product
+# `forge`) or apps/pbook/datastore-changes/ (pbook, its own sequence).
+#
+# It touches no database and needs no FORGE_ENV: it reads the chain off disk
+# and writes files. Production DDL is never applied from here — the generated
+# artifacts are committed (the commit is the request) and the sax-datastores
+# administrator applies them (sax-datastores/docs/schema-changes.md).
+DB_CHANGE_TO = $(if $(TO),--to $(TO),)
+DB_CHANGE_USAGE = usage: make db-change CHAIN=forge|ocr|pbook FROM=<rev> [TO=<rev>] TITLE=<kebab-title>
+db-change:
+	@test -n "$(CHAIN)" && test -n "$(FROM)" && test -n "$(TITLE)" \
+		|| { echo "$(DB_CHANGE_USAGE)"; exit 64; }
+	@case "$(CHAIN)" in \
+		forge) cmd="uv run forge db-change";; \
+		ocr)   cmd="uv run --package ocr ocr db-change";; \
+		pbook) cmd="uv run --package pbook pbook db-change";; \
+		*) echo "unknown CHAIN=$(CHAIN)"; echo "$(DB_CHANGE_USAGE)"; exit 64;; \
+	esac; \
+	$$cmd --from "$(FROM)" $(DB_CHANGE_TO) --title "$(TITLE)"
 
 # Deploy production from a pinned commit (D103): checks REF out into the
 # forge-prod worktree, syncs it, and restarts the launchd workers — the only
