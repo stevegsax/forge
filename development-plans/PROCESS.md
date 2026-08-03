@@ -9,7 +9,11 @@ Actors (defined in [SDLC.md](SDLC.md)): the planning session works the
 task file end to end — Plan, Sub-tasks, Development Notes, close-out
 records; implementation is dispatched to the `implementation-driver`
 agent with hard-bounded scopes, and its reports feed Development Notes;
-the owner gates every commit.
+the owner gates every commit. External operators (sax-datastores for
+Postgres, sax-temporal for Temporal) run the infrastructure forge
+consumes — a task needing schema or infrastructure changes enters
+request-and-wait against them (see
+[Schema Changes](#schema-changes-operator-requests) below).
 
 ## Creating a Task File
 
@@ -106,10 +110,68 @@ matches weight (substantial tasks 3–6 paragraphs, small mechanical ones
    decision — the owner commits on explicit word only
    ([SDLC.md](SDLC.md#task-flow))
 
+## Schema Changes (Operator Requests)
+
+No change-set applies DDL to a shared database — workers verify the
+schema at startup and refuse when behind (verify-only, 2026-08-03),
+and the application credential cannot run DDL at all. When a task
+needs a schema change, the forge-side duties are:
+
+1. **Author** the change as Alembic revisions on the owning chain —
+   one revision per phase; a `CREATE INDEX CONCURRENTLY` is a phase
+   containing nothing else, built `IF NOT EXISTS` (a non-transactional
+   phase must be resumable).
+2. **Generate** the request:
+   `make db-change CHAIN=forge|ocr|pbook FROM=<rev> [TO=<rev>]
+   TITLE=<kebab>` writes `datastore-changes/<id>-<title>/`
+   (pbook: `apps/pbook/datastore-changes/`) — per-phase offline SQL
+   with `BEGIN`/`COMMIT` stripped and the per-phase stamp kept, plus a
+   prefilled `request.md` with the Squawk output and version embedded.
+3. **Fill the prose sections with evidence, not intentions** — per
+   affected table the current row count and size, per statement the
+   expected lock level; the compatibility argument (why
+   currently-deployed code keeps working); the rollback stance.
+   `make lint-sql` (inside `make gates`) must be clean, and every kept
+   finding justified in the request.
+4. **Commit — the commit is the request** (owner's word, like any
+   commit). Then open an issue on sax-datastores titled
+   `change: <product> <id> <title>` pinning the full commit SHA. A new
+   commit voids any prior approval, so a submitted request directory
+   is never modified — a change is a new request.
+5. **Wait.** The task blocks on the operator's intake → review →
+   apply (request-and-wait,
+   [SDLC.md](SDLC.md#operator-requests-request-and-wait)); record the
+   issue link in Development Notes. Dev/test are self-service in the
+   meantime: apply with `forge migrate` / `ocr migrate` /
+   `pbook migrate`.
+6. **Deploy order.** Code carrying the new revision deploys to prod
+   only after the operator applies the change — verify-only startup
+   fails closed ("schema behind") on the wrong order.
+
+**Expand/contract is binding**: every request leaves
+currently-deployed code working against the post-change schema. A
+breaking change is three requests — expand (additive), migrate
+(consumer-side backfill under the app credential), contract (drop) —
+each independently safe. This binds change-set *planning*: a schema
+change and the code that depends on it are separate deployables.
+
+**Emergency lane**: operator-executed even in an emergency; forge's
+duty is reconciliation — a matching revision `alembic stamp`ed, never
+executed — before the emergency ticket closes.
+
+Tiers, the auto-reject list, the apply runbook, and the record format
+are the operator's side: `sax-datastores/docs/schema-changes.md` is
+canonical. The maiden request
+(`datastore-changes/0001-interactions-created-at-index/`) is the
+worked example.
+
 ## Specification Changes
 
-There is no change-request form; there are three artifacts, chosen by what the
-change touches. The owner adjudicates all three.
+There is no change-request form for specification changes (schema
+changes against the shared databases have their own — see
+[Schema Changes](#schema-changes-operator-requests) above); there are
+three artifacts, chosen by what the change touches. The owner
+adjudicates all three.
 
 1. **A change that contradicts a recorded decision** requires a new entry in
    [../docs/DECISIONS.md](../docs/DECISIONS.md) *and* a supersession or
