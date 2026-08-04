@@ -2,8 +2,9 @@
 # worker lanes. Forge owns no infrastructure (T10.1/D104): Postgres comes from
 # the shared sax-datastores stacks (dev :5432, prod :5442) and Temporal from
 # sax-temporal (dev :7236, prod :7243), both of which boot themselves. The
-# default test suites need neither, except pbook's (its conftest needs a podman
-# machine or PBOOK_TEST_DATABASE_URL).
+# default test suites need neither, except pbook's — its conftest connects to
+# pbook_test on the dev stack (pg_hba trust, no credential) and fails by name if
+# that stack is down; PBOOK_TEST_DATABASE_URL overrides it.
 #
 # Typical first run:
 #   make db-migrate   # apply Forge's Alembic migrations (needs FORGE_DB_URL set)

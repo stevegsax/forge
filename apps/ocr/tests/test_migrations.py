@@ -9,16 +9,18 @@ real Postgres under the opt-in ``postgres`` marker.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
 
 import pytest
 import sqlalchemy as sa
-from sax_platform.testing import CANONICAL_POSTGRES_IMAGE
+from sax_platform.testing import (
+    FORGE_TEST_DB_URL_ENV,
+    FORGE_TRUST_TEST_DB_URL,
+    reset_public_schema,
+    resolve_test_database_url,
+)
 
 from ocr.store import Base, run_migrations
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 _OCR_TABLES = {
     "ocr_results",
@@ -97,19 +99,22 @@ def test_coexists_with_platform_batch_jobs(forge_db_url: str) -> None:
 
 
 @pytest.fixture
-def postgres_url() -> Iterator[str]:
-    pytest.importorskip("testcontainers.postgres")
-    from testcontainers.postgres import PostgresContainer
+def postgres_url() -> str:
+    """The shared test database, emptied for this test.
 
-    try:
-        container = PostgresContainer(CANONICAL_POSTGRES_IMAGE, driver="psycopg2")
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"Postgres testcontainer unavailable: {exc}")
-    try:
-        yield container.get_connection_url()
-    finally:
-        container.stop()
+    ocr shares forge's database in production, so it shares ``forge_test`` here —
+    the credential-free trust role on the running sax-datastores dev stack
+    (rationale §22: an agent session provisions no containers). CI overrides it
+    with ``FORGE_TEST_DATABASE_URL`` pointing at its own service container.
+    Unreachable is an error, never a skip.
+    """
+    url = resolve_test_database_url(
+        os.environ,
+        env_var=FORGE_TEST_DB_URL_ENV,
+        default=FORGE_TRUST_TEST_DB_URL,
+    )
+    reset_public_schema(url, env_var=FORGE_TEST_DB_URL_ENV)
+    return url
 
 
 @pytest.mark.postgres

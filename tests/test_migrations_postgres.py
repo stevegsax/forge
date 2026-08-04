@@ -1,25 +1,41 @@
-"""Validate Alembic migrations against a real Postgres via testcontainers.
+"""Validate Alembic migrations against a real Postgres.
 
 SQLite tests can't catch Postgres-specific DDL/SQL issues (e.g. the
 ``batch_alter_table`` migrations 008/014/015, or the ``ON CONFLICT DO NOTHING``
-path used by ``insert_or_ignore``). These tests spin up a throwaway Postgres in
-Docker and exercise both.
+path used by ``insert_or_ignore``). These tests run the real chain against a
+real server and exercise both.
 
-Opt-in: marked ``postgres`` (excluded from the default run via ``addopts``) and
-requires Docker. Run with::
+Where that server comes from (sax-datastores rationale §22, issue #2): an agent
+session may not self-provision a container, so this suite connects to the
+already-running shared **dev** stack as the credential-free ``forge_test`` trust
+role — ``sax_platform.testing.FORGE_TRUST_TEST_DB_URL``. CI is not an agent
+session and has no shared stack, so it provisions a service container in
+``ci.yml`` and passes ``FORGE_TEST_DATABASE_URL``; both lanes then run the same
+code. An unreachable database raises ``UnreachableTestDatabaseError`` — it is
+never skipped, because a silent skip is indistinguishable from a pass.
 
-    uv run pytest -m postgres
+Isolation is a public-schema reset, not a fresh database: the trust role can
+create a database but cannot connect to one (its pg_hba row matches exactly the
+``forge_test``/``forge_test`` pair). Every test therefore runs
+``run_migrations`` itself and is order-independent.
+
+Opt-in: marked ``postgres`` (excluded from the default run via ``addopts``).
+Run with::
+
+    uv run pytest -m postgres --no-cov
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
 
 import pytest
-from sax_platform.testing import CANONICAL_POSTGRES_IMAGE
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
+from sax_platform.testing import (
+    FORGE_TEST_DB_URL_ENV,
+    FORGE_TRUST_TEST_DB_URL,
+    reset_public_schema,
+    resolve_test_database_url,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -31,26 +47,27 @@ _EXPECTED_TABLES = {
 }
 
 
+def _test_database_url() -> str:
+    return resolve_test_database_url(
+        os.environ,
+        env_var=FORGE_TEST_DB_URL_ENV,
+        default=FORGE_TRUST_TEST_DB_URL,
+    )
+
+
 @pytest.fixture(scope="module")
-def postgres_url() -> Iterator[str]:
-    """A migrated-able Postgres URL backed by a throwaway container.
+def postgres_url() -> str:
+    """The test database, emptied once for the module."""
+    url = _test_database_url()
+    reset_public_schema(url, env_var=FORGE_TEST_DB_URL_ENV)
+    return url
 
-    Skips (rather than fails) when Docker or the image is unavailable, so the
-    opt-in suite degrades gracefully on machines without Docker.
-    """
-    pytest.importorskip("testcontainers.postgres")
-    from testcontainers.postgres import PostgresContainer
 
-    try:
-        container = PostgresContainer(CANONICAL_POSTGRES_IMAGE, driver="psycopg2")
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"Postgres testcontainer unavailable: {exc}")
-
-    try:
-        yield container.get_connection_url()
-    finally:
-        container.stop()
+@pytest.fixture
+def unmigrated_postgres_url(postgres_url: str) -> str:
+    """The same database, re-emptied for a test that must start below head."""
+    reset_public_schema(postgres_url, env_var=FORGE_TEST_DB_URL_ENV)
+    return postgres_url
 
 
 def test_migrations_apply_cleanly_on_postgres(postgres_url: str) -> None:
@@ -97,7 +114,7 @@ def test_migrations_rerun_is_noop_on_postgres(postgres_url: str) -> None:
     run_migrations(postgres_url)
 
 
-def test_concurrent_migrations_serialize_on_postgres(postgres_url: str) -> None:
+def test_concurrent_migrations_serialize_on_postgres(unmigrated_postgres_url: str) -> None:
     """Simultaneous migrators must serialize, not race Alembic's DDL.
 
     Reproduces the launchd first-boot failure: both workers migrate at
@@ -114,9 +131,10 @@ def test_concurrent_migrations_serialize_on_postgres(postgres_url: str) -> None:
     (``sax_platform.db.migrations._acquire_advisory_lock``) — if that ever
     reverts, this test hangs rather than fails.
 
-    Runs against a fresh database inside the module's container — the shared
-    ``postgres_url`` database is already at head by the time this test runs,
-    which would mask the race.
+    Takes ``unmigrated_postgres_url`` — the module database re-emptied — because
+    a database already at head would mask the race entirely. It cannot use a
+    second database: the trust role's pg_hba row names one database, so a
+    ``CREATE DATABASE`` here would succeed and then be unreachable.
     """
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -125,18 +143,7 @@ def test_concurrent_migrations_serialize_on_postgres(postgres_url: str) -> None:
 
     from forge.store import run_migrations
 
-    admin = sa.create_engine(postgres_url, isolation_level="AUTOCOMMIT")
-    try:
-        with admin.connect() as conn:
-            conn.execute(sa.text("CREATE DATABASE concurrent_migrations"))
-    finally:
-        admin.dispose()
-    fresh_url = (
-        sa.engine.make_url(postgres_url)
-        .set(database="concurrent_migrations")
-        .render_as_string(hide_password=False)
-    )
-
+    fresh_url = unmigrated_postgres_url
     barrier = threading.Barrier(2)
 
     def migrate() -> None:

@@ -116,6 +116,30 @@ jobs:
 
   test-postgres-migrations:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Same canonical operator image as test-pbook, and the same drift test
+        # (tests/test_ci_postgres_image.py) keeps BOTH copies equal to
+        # sax_platform.testing.CANONICAL_POSTGRES_IMAGE.
+        #
+        # A runner has no shared sax-datastores stack, and CI is not an agent
+        # session, so a service container is the sanctioned provisioning here
+        # (rationale §22 binds agent sessions, not infrastructure). The suites
+        # get the URL below instead of the pg_hba trust default.
+        image: ghcr.io/stevegsax/sax-postgres-rum:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: forge
+          POSTGRES_DB: forge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      FORGE_TEST_DATABASE_URL: postgresql+psycopg2://postgres:forge@localhost:5432/forge_test
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.3.2
@@ -124,3 +148,11 @@ jobs:
       - run: uv python install
       - run: uv sync --locked --all-packages
       - run: uv run pytest -m postgres --no-cov
+      # ocr's postgres-marker test ran nowhere before this job picked it up:
+      # apps/ocr's addopts exclude the marker, so `test-ocr` never ran it and
+      # the root run above cannot reach it (testpaths = tests). It shares this
+      # service container, and each test empties the public schema first, so
+      # running it after the forge suite is safe.
+      - name: Run ocr postgres-marker tests
+        working-directory: apps/ocr
+        run: uv run pytest -m postgres --no-cov

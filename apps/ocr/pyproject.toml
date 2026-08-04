@@ -44,7 +44,7 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 addopts = "--cov=ocr --cov-report=term-missing --cov-fail-under=85 -m 'not postgres and not e2e'"
 markers = [
-    "postgres: requires a real Postgres (testcontainers); excluded by default",
+    "postgres: requires a real Postgres (the sax-datastores dev stack's forge_test\n     trust role, or FORGE_TEST_DATABASE_URL); excluded by default",
     "e2e: end-to-end tests requiring real services (Mistral, S3, Temporal + a running forge platform worker); excluded by default",
 ]
 
@@ -55,7 +55,6 @@ dev = [
     "pytest-cov>=6.0.0",
     "moto[s3]>=5.0",
     "ruff>=0.8.0",
-    "testcontainers>=4.0",
 ]
 
 [tool.mypy]

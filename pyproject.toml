@@ -86,7 +86,7 @@ asyncio_default_test_loop_scope = "session"
 addopts = "--cov=forge --cov-report=term-missing --cov-fail-under=85 -m 'not e2e and not postgres'"
 markers = [
     "e2e: end-to-end tests requiring external services (Mistral API, Temporal)",
-    "postgres: tests that run Alembic migrations against a real Postgres via testcontainers (requires Docker)",
+    "postgres: tests that run Alembic migrations against a real Postgres (the\n     sax-datastores dev stack's forge_test trust role, or FORGE_TEST_DATABASE_URL)",
 ]
 filterwarnings = [
     "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
@@ -106,7 +106,6 @@ dev = [
     "mypy>=1.13.0",
     "boto3>=1.34",
     "moto[s3]>=5.0",
-    "testcontainers[postgres]>=4.0",
     "hypothesis>=6.100",
     "import-linter>=2.0",
 ]

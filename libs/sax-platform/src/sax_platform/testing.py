@@ -22,6 +22,11 @@ What it replaces:
 - ``FakeMistralOcr`` — an async recording fake mirroring
   ``sax_platform.ocr.MistralOcr``'s public surface, replacing bare
   ``MagicMock``/``AsyncMock`` OCR stubs.
+- the Postgres test-database helpers (``FORGE_TRUST_TEST_DB_URL``,
+  ``resolve_test_database_url``, ``require_reachable_test_database``,
+  ``reset_public_schema``) — replacing the podman and testcontainers
+  provisioning each app's suite used to do for itself, which the
+  sax-datastores §22 ruling forbids agent sessions outright.
 
 The fakes are real classes: they record every call on ``self.calls`` so tests
 assert against captured kwargs directly, with no ``MagicMock`` in sight.
@@ -44,32 +49,44 @@ server starts once per requested name.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 import pytest_asyncio
+import sqlalchemy as sa
 from pydantic import BaseModel
 
 from sax_platform.llm import Completion
 from sax_platform.ocr import BatchPollStatus, BatchResultEntry, ExtractedImage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Sequence
+    from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
     from datetime import datetime
     from typing import Protocol
 
     from anthropic.types import MessageParam
     from mistralai.models import DocumentTypedDict
+    from sqlalchemy import Connection
     from temporalio.testing import WorkflowEnvironment
 
     from sax_platform.llm import CacheSpec, ThinkingPolicy
 
 __all__ = [
     "CANONICAL_POSTGRES_IMAGE",
+    "FORGE_TEST_DB_URL_ENV",
+    "FORGE_TRUST_TEST_DB_URL",
+    "PBOOK_TEST_DB_URL_ENV",
+    "PBOOK_TRUST_TEST_DB_URL",
     "FakeLLM",
     "FakeMistralOcr",
     "RecordedCall",
+    "UnreachableTestDatabaseError",
     "env",
+    "require_reachable_test_database",
+    "reset_public_schema",
+    "resolve_test_database_url",
     "temporal_env",
+    "unreachable_test_database_message",
 ]
 
 # Mirrors sax_platform.ocr's module-private default; restated here so this
@@ -87,11 +104,156 @@ _OCR_ENDPOINT = "/v1/ocr"
 #: The dev stack, the prod stack, and every product's CI run THIS image so the
 #: extension surface is identical everywhere; a dev/prod extension mismatch is
 #: the failure class it exists to prevent. Forge is a *consumer* of that image:
-#: every test that provisions its own Postgres (testcontainers here, a raw
-#: podman container in pbook) points at this constant and never at an image
-#: string of its own. New extensions are added to the operator's Containerfile,
-#: never to a per-project image.
+#: it never names an image string of its own. Since the trust-path repoint the
+#: only site that provisions a container from it is ``ci.yml``'s ``services:``
+#: blocks (CI has no shared stack, and a GitHub runner is not an agent session);
+#: agent-run suites connect to the already-running stack instead — see
+#: :data:`FORGE_TRUST_TEST_DB_URL`. New extensions are added to the operator's
+#: Containerfile, never to a per-project image.
 CANONICAL_POSTGRES_IMAGE: Final = "ghcr.io/stevegsax/sax-postgres-rum:17"
+
+
+# ---------------------------------------------------------------------------
+# The sanctioned test databases (sax-datastores rationale §22, issue #2)
+# ---------------------------------------------------------------------------
+
+#: Forge's (and ocr's) test database on the shared sax-datastores **dev** stack.
+#:
+#: §22 is categorical: an agent session may not self-provision a container, and
+#: may not hold database credentials. The sanctioned path is therefore a role
+#: for which *no credential exists* — the dev stack's ``pg_hba.conf`` carries a
+#: ``trust`` row matching exactly the pair ``(forge_test, forge_test)`` from
+#: loopback. That scoping is the reason this module offers no scratch-database
+#: helper: the role can CREATE a database but cannot CONNECT to one, because a
+#: database other than ``forge_test`` falls through to the ``scram-sha-256``
+#: catch-all. Isolation is therefore :func:`reset_public_schema`, not a fresh
+#: database per run.
+FORGE_TRUST_TEST_DB_URL: Final = "postgresql+psycopg2://forge_test@127.0.0.1:5432/forge_test"
+
+#: pbook's test database on the same stack, same trust scoping. pbook's store is
+#: psycopg v3 (``postgresql+psycopg``); forge's and ocr's is psycopg2.
+PBOOK_TRUST_TEST_DB_URL: Final = "postgresql+psycopg://pbook_test@127.0.0.1:5432/pbook_test"
+
+#: Env var that overrides :data:`FORGE_TRUST_TEST_DB_URL`. CI sets it, because a
+#: GitHub runner has no shared stack and provisions a service container instead.
+FORGE_TEST_DB_URL_ENV: Final = "FORGE_TEST_DATABASE_URL"
+
+#: Env var that overrides :data:`PBOOK_TRUST_TEST_DB_URL`.
+PBOOK_TEST_DB_URL_ENV: Final = "PBOOK_TEST_DATABASE_URL"
+
+#: How long a test-database connect may block before it is called unreachable.
+#: Both psycopg2 and psycopg v3 accept ``connect_timeout`` (seconds).
+_CONNECT_TIMEOUT_SECONDS: Final = 5
+
+#: Tables in ``public`` that are NOT owned by an installed extension.
+#:
+#: The distinction is load-bearing rather than tidy: ``rum``, ``pgvector``,
+#: ``pgcrypto`` and ``pg_trgm`` live in ``public`` on the shared stack and are
+#: **not** trusted extensions, so a ``DROP SCHEMA public CASCADE`` would destroy
+#: objects the trust role has no privilege to recreate — a one-way break of the
+#: sanctioned path. Dropping only the non-extension tables leaves the extension
+#: surface intact.
+_DROPPABLE_TABLES_SQL: Final = """
+SELECT c.relname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relkind IN ('r', 'p')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'e'
+  )
+ORDER BY c.relname
+"""
+
+
+class UnreachableTestDatabaseError(RuntimeError):
+    """A configured test database refused, or timed out on, a connection.
+
+    Raised — never ``pytest.skip``-ed. A silent skip is what let the migration
+    suite report success on a machine where it had run nothing at all; §22's
+    ruling is that an unreachable test database is a named error.
+    """
+
+
+def resolve_test_database_url(env: Mapping[str, str], *, env_var: str, default: str) -> str:
+    """Return the explicit override from ``env``, else the trust-path default.
+
+    Pure: ``env`` is passed in (``os.environ`` at the caller) rather than read.
+    An override set to the empty string is treated as unset.
+    """
+    return env.get(env_var) or default
+
+
+def unreachable_test_database_message(url: str, *, env_var: str, cause: object) -> str:
+    """Build the named error's text: what failed, why, and the two fixes.
+
+    The URL is rendered with its password hidden — CI's override carries one.
+    """
+    safe_url = sa.engine.make_url(url).render_as_string(hide_password=True)
+    return (
+        f"Test database unreachable: {safe_url}\n"
+        "The sanctioned agent test path is the shared sax-datastores DEV stack on "
+        "127.0.0.1:5432, reached through its pg_hba `trust` rows for the "
+        "forge_test/pbook_test roles (no credential exists, by design). This "
+        "error means that stack is not running, or its trust rows are missing.\n"
+        "Fix either way: start the stack "
+        "(`cd ~/repos-sax/sax-datastores && make dev-up`), or point "
+        f"{env_var} at an explicit test-database URL.\n"
+        f"Underlying error: {cause}"
+    )
+
+
+@contextmanager
+def _autocommit_connection(url: str, *, env_var: str) -> Iterator[Connection]:
+    """Yield an AUTOCOMMIT connection, or raise :class:`UnreachableTestDatabaseError`.
+
+    Only the *connect* is wrapped: an error raised by the body is the caller's
+    own failure and must not be relabelled as an unreachable database.
+    """
+    engine = sa.create_engine(
+        url,
+        isolation_level="AUTOCOMMIT",
+        connect_args={"connect_timeout": _CONNECT_TIMEOUT_SECONDS},
+    )
+    try:
+        connection = engine.connect()
+    except sa.exc.OperationalError as exc:
+        engine.dispose()
+        raise UnreachableTestDatabaseError(
+            unreachable_test_database_message(url, env_var=env_var, cause=exc)
+        ) from exc
+    except Exception:
+        engine.dispose()
+        raise
+    try:
+        yield connection
+    finally:
+        connection.close()
+        engine.dispose()
+
+
+def require_reachable_test_database(url: str, *, env_var: str) -> None:
+    """Fail loudly and by name if ``url`` does not accept a connection."""
+    with _autocommit_connection(url, env_var=env_var) as connection:
+        connection.execute(sa.text("SELECT 1"))
+
+
+def reset_public_schema(url: str, *, env_var: str) -> None:
+    """Drop every non-extension table in ``public``, leaving a migratable database.
+
+    This is the isolation primitive for the trust path, which cannot create a
+    scratch database (see :data:`FORGE_TRUST_TEST_DB_URL`). It is equally correct
+    against CI's throwaway service container, so both lanes run one code path.
+    """
+    with _autocommit_connection(url, env_var=env_var) as connection:
+        names = [row[0] for row in connection.execute(sa.text(_DROPPABLE_TABLES_SQL))]
+        for name in names:
+            quoted = '"' + name.replace('"', '""') + '"'
+            connection.execute(sa.text(f"DROP TABLE IF EXISTS public.{quoted} CASCADE"))
 
 
 class RecordedCall(NamedTuple):

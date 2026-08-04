@@ -1,8 +1,10 @@
 """Tests for the shared test-support module ``sax_platform.testing``.
 
 Covers the two recording fakes (``FakeLLM``, ``FakeMistralOcr``), the
-``RecordedCall`` record, and the ``temporal_env`` session fixture plus its
-``env`` alias (the app-conftest re-export idiom).
+``RecordedCall`` record, the ``temporal_env`` session fixture plus its
+``env`` alias (the app-conftest re-export idiom), and the Postgres
+test-database helpers — including the property that matters most about them:
+an unreachable database is a named error, never a skip.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel
+from sqlalchemy.engine import make_url
 
 from sax_platform.llm import Completion, LLMRefused, Telemetry
 from sax_platform.ocr import (
@@ -19,7 +22,21 @@ from sax_platform.ocr import (
     BatchResultEntry,
     ExtractedImage,
 )
-from sax_platform.testing import FakeLLM, FakeMistralOcr, RecordedCall, temporal_env
+from sax_platform.testing import (
+    FORGE_TEST_DB_URL_ENV,
+    FORGE_TRUST_TEST_DB_URL,
+    PBOOK_TEST_DB_URL_ENV,
+    PBOOK_TRUST_TEST_DB_URL,
+    FakeLLM,
+    FakeMistralOcr,
+    RecordedCall,
+    UnreachableTestDatabaseError,
+    require_reachable_test_database,
+    reset_public_schema,
+    resolve_test_database_url,
+    temporal_env,
+    unreachable_test_database_message,
+)
 
 # Exercise the exact app-conftest re-export idiom documented in
 # ``sax_platform.testing``: aliasing the session fixture under the name ``env``.
@@ -324,3 +341,90 @@ class TestFakeMistralOcr:
         ):
             assert inspect.iscoroutinefunction(getattr(ocr, name))
         assert not inspect.iscoroutinefunction(ocr.parse_batch_result)
+
+
+class TestResolveTestDatabaseUrl:
+    """The override wins; empty is unset; otherwise the trust default."""
+
+    def test_returns_the_override_when_set(self) -> None:
+        url = resolve_test_database_url(
+            {"FORGE_TEST_DATABASE_URL": "postgresql+psycopg2://ci@localhost/x"},
+            env_var=FORGE_TEST_DB_URL_ENV,
+            default=FORGE_TRUST_TEST_DB_URL,
+        )
+        assert url == "postgresql+psycopg2://ci@localhost/x"
+
+    def test_falls_back_to_the_trust_url_when_unset(self) -> None:
+        url = resolve_test_database_url(
+            {},
+            env_var=FORGE_TEST_DB_URL_ENV,
+            default=FORGE_TRUST_TEST_DB_URL,
+        )
+        assert url == FORGE_TRUST_TEST_DB_URL
+
+    def test_treats_an_empty_override_as_unset(self) -> None:
+        url = resolve_test_database_url(
+            {PBOOK_TEST_DB_URL_ENV: ""},
+            env_var=PBOOK_TEST_DB_URL_ENV,
+            default=PBOOK_TRUST_TEST_DB_URL,
+        )
+        assert url == PBOOK_TRUST_TEST_DB_URL
+
+
+class TestTrustUrls:
+    def test_carry_no_credential(self) -> None:
+        """The whole point of the trust path: no password exists to leak."""
+        for url in (FORGE_TRUST_TEST_DB_URL, PBOOK_TRUST_TEST_DB_URL):
+            assert make_url(url).password is None
+
+    def test_name_the_dev_stack_and_their_own_database(self) -> None:
+        """pg_hba matches one (user, database) pair per row — so they must agree."""
+        for url in (FORGE_TRUST_TEST_DB_URL, PBOOK_TRUST_TEST_DB_URL):
+            parsed = make_url(url)
+            assert (parsed.host, parsed.port) == ("127.0.0.1", 5432)
+            assert parsed.username == parsed.database
+            assert parsed.database is not None
+            assert parsed.database.endswith("_test")
+
+
+class TestUnreachableTestDatabaseMessage:
+    def test_names_the_mechanism_and_both_fixes(self) -> None:
+        message = unreachable_test_database_message(
+            FORGE_TRUST_TEST_DB_URL,
+            env_var=FORGE_TEST_DB_URL_ENV,
+            cause=OSError("connection refused"),
+        )
+        assert "unreachable" in message.lower()
+        assert "sax-datastores" in message
+        assert "make dev-up" in message
+        assert FORGE_TEST_DB_URL_ENV in message
+        assert "connection refused" in message
+
+    def test_hides_a_password(self) -> None:
+        """CI's override carries one; an error text must not print it."""
+        message = unreachable_test_database_message(
+            "postgresql+psycopg2://postgres:hunter2@localhost:5432/forge_test",
+            env_var=FORGE_TEST_DB_URL_ENV,
+            cause="boom",
+        )
+        assert "hunter2" not in message
+        assert "***" in message
+
+
+class TestUnreachableIsAnErrorNotASkip:
+    """A dead port must raise by name — the silent-skip trap this replaces."""
+
+    DEAD_URL = "postgresql+psycopg2://forge_test@127.0.0.1:1/forge_test"
+
+    def test_require_reachable_raises(self) -> None:
+        with pytest.raises(UnreachableTestDatabaseError, match="Test database unreachable"):
+            require_reachable_test_database(self.DEAD_URL, env_var=FORGE_TEST_DB_URL_ENV)
+
+    def test_reset_public_schema_raises(self) -> None:
+        with pytest.raises(UnreachableTestDatabaseError, match=FORGE_TEST_DB_URL_ENV):
+            reset_public_schema(self.DEAD_URL, env_var=FORGE_TEST_DB_URL_ENV)
+
+    def test_the_error_is_not_a_skip_exception(self) -> None:
+        # pytest.skip raises Skipped (a BaseException); this must be a plain
+        # RuntimeError so a suite fails rather than reports green.
+        assert issubclass(UnreachableTestDatabaseError, RuntimeError)

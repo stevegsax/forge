@@ -4,11 +4,18 @@ The store targets PostgreSQL + pgvector, so the suite runs against a real
 Postgres. Resolution order for the test database:
 
 1. ``PBOOK_TEST_DATABASE_URL`` — an external Postgres (must have the
-   ``vector`` extension available); nothing is torn down.
-2. Otherwise an ephemeral container of the sax-datastores operator's
-   canonical image (``sax_platform.testing.CANONICAL_POSTGRES_IMAGE`` —
-   PG17 + rum + pgvector, the same image the dev and prod stacks run) is
-   started via podman for the session and removed at the end.
+   ``vector`` extension available). CI sets it, because a GitHub runner
+   has no shared stack and provisions a service container instead.
+2. Otherwise ``sax_platform.testing.PBOOK_TRUST_TEST_DB_URL`` — the
+   ``pbook_test`` database on the shared sax-datastores **dev** stack,
+   reached as the credential-free ``pbook_test`` role through that
+   stack's pg_hba ``trust`` row. Nothing is provisioned and nothing is
+   torn down: the sax-datastores rationale §22 forbids an agent session
+   self-provisioning a container, which is what this suite used to do.
+
+The suite needs Postgres unconditionally, so a stack that is not running
+fails it loudly with ``UnreachableTestDatabaseError`` naming both fixes.
+That is deliberate — the alternative, skipping, reads as a pass.
 
 Per-test isolation is by TRUNCATE (RESTART IDENTITY) of the pbk_ tables
 between tests, so ids restart at 1 the way the SQLite-era tests expected.
@@ -22,14 +29,17 @@ production (the worker connects with it too).
 from __future__ import annotations
 
 import os
-import socket
-import subprocess
-import time
 from typing import TYPE_CHECKING
 
 import pytest
 import sqlalchemy as sa
-from sax_platform.testing import CANONICAL_POSTGRES_IMAGE, temporal_env
+from sax_platform.testing import (
+    PBOOK_TEST_DB_URL_ENV,
+    PBOOK_TRUST_TEST_DB_URL,
+    require_reachable_test_database,
+    resolve_test_database_url,
+    temporal_env,
+)
 
 from pbook.settings import PbookDbSettings
 from pbook.store import EMBEDDING_DIM, SCHEMA, build_engine, run_migrations
@@ -66,7 +76,6 @@ def encode_test_embedding(*coords: float) -> str:
     return encode_embedding(make_embedding(*coords))
 
 
-_CONTAINER_IMAGE = CANONICAL_POSTGRES_IMAGE
 _PBK_TABLES = (
     "pbk_entry_tags",
     "pbk_entry_sources",
@@ -81,80 +90,23 @@ _PBK_TABLES = (
 _SESSION_ENGINE: Engine | None = None
 
 
-def _free_port() -> int:
-    """Pick an unused localhost TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _wait_until_ready(url: str, *, timeout: float = 60.0) -> None:
-    """Block until the database accepts connections (or time out)."""
-    import psycopg
-
-    # psycopg wants a libpq URL, not the SQLAlchemy ``+psycopg`` form.
-    libpq_url = url.replace("postgresql+psycopg://", "postgresql://")
-    deadline = time.monotonic() + timeout
-    last_err: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            with psycopg.connect(libpq_url, connect_timeout=3) as conn:
-                conn.execute("SELECT 1")
-            return
-        except Exception as exc:  # poll until ready
-            last_err = exc
-            time.sleep(0.5)
-    msg = f"Postgres did not become ready within {timeout}s: {last_err}"
-    raise RuntimeError(msg)
-
-
-def _start_container() -> tuple[str, str]:
-    """Start a canonical-image container; return (container_name, database_url)."""
-    port = _free_port()
-    name = f"pbook-test-{os.getpid()}"
-    # Remove any stale container from a previous crashed run.
-    subprocess.run(["podman", "rm", "-f", name], capture_output=True, check=False)
-    subprocess.run(
-        [
-            "podman",
-            "run",
-            "-d",
-            "--name",
-            name,
-            "-p",
-            f"{port}:5432",
-            "-e",
-            "POSTGRES_PASSWORD=pbook",
-            "-e",
-            "POSTGRES_USER=postgres",
-            "-e",
-            "POSTGRES_DB=pbook",
-            _CONTAINER_IMAGE,
-        ],
-        capture_output=True,
-        check=True,
-    )
-    url = f"postgresql+psycopg://postgres:pbook@127.0.0.1:{port}/pbook"
-    return name, url
-
-
 @pytest.fixture(scope="session")
-def _pg_url() -> Iterator[str]:
-    """Provide a migrated Postgres URL for the whole test session."""
-    external = os.environ.get("PBOOK_TEST_DATABASE_URL")
-    container: str | None = None
-    if external:
-        url = external
-    else:
-        container, url = _start_container()
-        _wait_until_ready(url)
+def _pg_url() -> str:
+    """Provide a migrated Postgres URL for the whole test session.
 
+    Nothing is provisioned and nothing is torn down — the database already
+    exists (CI's service container, or the shared dev stack's ``pbook_test``).
+    The reachability check runs first so a down stack fails here, by name,
+    rather than as an opaque Alembic connection error.
+    """
+    url = resolve_test_database_url(
+        os.environ,
+        env_var=PBOOK_TEST_DB_URL_ENV,
+        default=PBOOK_TRUST_TEST_DB_URL,
+    )
+    require_reachable_test_database(url, env_var=PBOOK_TEST_DB_URL_ENV)
     run_migrations(url)
-    try:
-        yield url
-    finally:
-        if container is not None:
-            subprocess.run(["podman", "rm", "-f", container], capture_output=True, check=False)
+    return url
 
 
 @pytest.fixture(scope="session")
