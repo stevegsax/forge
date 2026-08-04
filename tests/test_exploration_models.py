@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from forge.models import (
+    ContextParam,
     ContextProviderSpec,
     ContextRequest,
     ContextResult,
@@ -46,18 +47,18 @@ class TestContextRequest:
     def test_basic_creation(self) -> None:
         req = ContextRequest(
             provider="read_file",
-            params={"path": "foo.py"},
+            params=[ContextParam(name="path", value="foo.py")],
             reasoning="Need to see the implementation.",
         )
         assert req.provider == "read_file"
-        assert req.params["path"] == "foo.py"
+        assert req.params == [ContextParam(name="path", value="foo.py")]
 
     def test_default_empty_params(self) -> None:
         req = ContextRequest(
             provider="repo_map",
             reasoning="Need overview.",
         )
-        assert req.params == {}
+        assert req.params == []
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ class TestExplorationResponse:
             requests=[
                 ContextRequest(
                     provider="read_file",
-                    params={"path": "a.py"},
+                    params=[ContextParam(name="path", value="a.py")],
                     reasoning="Need it.",
                 ),
             ]
@@ -87,7 +88,7 @@ class TestExplorationResponse:
             requests=[
                 ContextRequest(
                     provider="search_code",
-                    params={"pattern": "def test_"},
+                    params=[ContextParam(name="pattern", value="def test_")],
                     reasoning="Find tests.",
                 ),
             ]
@@ -124,7 +125,7 @@ class TestFulfillContextInput:
             requests=[
                 ContextRequest(
                     provider="read_file",
-                    params={"path": "x.py"},
+                    params=[ContextParam(name="path", value="x.py")],
                     reasoning="Need it.",
                 ),
             ],

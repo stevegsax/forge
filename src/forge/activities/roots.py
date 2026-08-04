@@ -46,7 +46,11 @@ from forge.activities.context import (
     _assemble_step_context_inner,
     _assemble_sub_task_context_inner,
 )
-from forge.activities.exploration import execute_exploration_call, fulfill_requests
+from forge.activities.exploration import (
+    execute_exploration_call,
+    fulfill_requests,
+    requests_to_dicts,
+)
 from forge.activities.extraction import (
     build_extraction_system_prompt,
     build_extraction_user_prompt,
@@ -256,9 +260,7 @@ class ContextActivities:
         tracer = get_tracer()
         with tracer.start_as_current_span("forge.fulfill_context_requests") as span:
             logger.info("Fulfilling %d context requests", len(input.requests))
-            requests_as_dicts: list[dict[str, object]] = [
-                {"provider": r.provider, "params": r.params} for r in input.requests
-            ]
+            requests_as_dicts = requests_to_dicts(input.requests)
 
             # Provider handlers run subprocesses (git, ruff, rg) and
             # repo-proportional grimp/file scans; offload the whole dispatch off

@@ -11,6 +11,7 @@ from sax_platform.llm import (
     LLMTruncated,
     Telemetry,
 )
+from sax_platform.llm.schema import to_json_schema
 from sax_platform.testing import FakeLLM
 from temporalio.exceptions import ApplicationError
 
@@ -69,6 +70,18 @@ class TestOutputTypeMapping:
             "ReviewResult",
             "ConsolidationResult",
         }
+
+    @pytest.mark.parametrize("name", sorted(OUTPUT_TYPES))
+    def test_every_registered_type_is_representable(self, name):
+        """Every wire model must survive structured-output schema derivation.
+
+        forge issue #47: a ``dict``-typed field renders an object-valued
+        ``additionalProperties``, which the API rejects at submit time.
+        ``to_json_schema`` raises on that shape, so this sweep turns the whole
+        mapping into a build-time guard rather than a production failure.
+        """
+        schema = to_json_schema(OUTPUT_TYPES[name])
+        assert schema["additionalProperties"] is False
 
     def test_unknown_name_raises_keyerror_with_actionable_message(self):
         with pytest.raises(KeyError) as excinfo:

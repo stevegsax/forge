@@ -34,7 +34,11 @@ from sax_platform.llm.models import (
     outcome_from_error,
     telemetry_from_message,
 )
-from sax_platform.llm.schema import to_json_schema, to_output_format
+from sax_platform.llm.schema import (
+    UnrepresentableSchemaError,
+    to_json_schema,
+    to_output_format,
+)
 from sax_platform.llm.tiers import (
     CapabilityTier,
     Effort,
@@ -103,6 +107,7 @@ __all__ = [
     "Telemetry",
     "ThinkingPolicy",
     "TruncatedOutcome",
+    "UnrepresentableSchemaError",
     "apply_cache_control",
     "build_batch_request",
     "classify_message",

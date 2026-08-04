@@ -80,6 +80,7 @@ from forge.models import (
     ConflictResolutionCallResult,
     ConflictResolutionInput,
     ConflictResolutionResponse,
+    ContextParam,
     ContextRequest,
     ContextResult,
     CreateWorktreeInput,
@@ -174,7 +175,16 @@ DEFAULT_SANITY_CHECK = SanityCheckCallResult(
 )
 
 DEFAULT_EXPLORATION_RESPONSE = ExplorationResponse(
-    requests=[ContextRequest(provider="file_content", reasoning="need a peek")]
+    requests=[
+        ContextRequest(
+            provider="file_content",
+            # Non-empty on purpose: the pair-list params shape (issue #47) crosses
+            # the activity boundary here, so the committed exploration history
+            # pins it rather than an empty list that any shape would satisfy.
+            params=[ContextParam(name="path", value="hello.py")],
+            reasoning="need a peek",
+        )
+    ]
 )
 
 

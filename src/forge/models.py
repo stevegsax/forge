@@ -541,11 +541,29 @@ class ContextProviderSpec(BaseModel):
     parameters: dict[str, str] = Field(description="param_name -> description")
 
 
+class ContextParam(BaseModel):
+    """One name/value parameter of a :class:`ContextRequest`.
+
+    Parameters travel as a pair list rather than a dict because Anthropic
+    structured outputs cannot express an open-keyed object: pydantic renders
+    ``dict[str, str]`` with an object-valued ``additionalProperties``, which
+    the API rejects (``UnrepresentableSchemaError`` now catches that shape at
+    build time). The list is collapsed back to a dict at the provider
+    dispatch seam, so context providers see a plain ``dict[str, str]``.
+    """
+
+    name: str = Field(description="Parameter name, as listed for the provider.")
+    value: str = Field(description="Parameter value.")
+
+
 class ContextRequest(BaseModel):
     """A request for specific context from a provider."""
 
     provider: str
-    params: dict[str, str] = Field(default_factory=dict)
+    params: list[ContextParam] = Field(
+        default_factory=list,
+        description="Provider parameters, one name/value pair each.",
+    )
     reasoning: str = Field(description="Why this context is needed.")
 
 

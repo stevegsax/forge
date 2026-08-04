@@ -15,8 +15,10 @@ from forge.activities.exploration import (
     build_exploration_prompt,
     execute_exploration_call,
     fulfill_requests,
+    requests_to_dicts,
 )
 from forge.models import (
+    ContextParam,
     ContextProviderSpec,
     ContextRequest,
     ContextResult,
@@ -209,7 +211,7 @@ class TestExecuteExplorationCall:
             requests=[
                 ContextRequest(
                     provider="read_file",
-                    params={"path": "foo.py"},
+                    params=[ContextParam(name="path", value="foo.py")],
                     reasoning="Need to see the file.",
                 ),
             ]
@@ -292,6 +294,67 @@ class TestExecuteExplorationCall:
 
         with pytest.raises(LLMTruncated):
             await execute_exploration_call(self._make_input(), llm)
+
+
+# ---------------------------------------------------------------------------
+# requests_to_dicts
+# ---------------------------------------------------------------------------
+
+
+class TestRequestsToDicts:
+    """The one seam between the wire pair-list and the provider-facing dict."""
+
+    def test_pairs_collapse_to_a_dict(self) -> None:
+        requests = [
+            ContextRequest(
+                provider="read_file",
+                params=[
+                    ContextParam(name="path", value="foo.py"),
+                    ContextParam(name="mode", value="full"),
+                ],
+                reasoning="Need it.",
+            ),
+        ]
+
+        assert requests_to_dicts(requests) == (
+            {"provider": "read_file", "params": {"path": "foo.py", "mode": "full"}},
+        )
+
+    def test_empty_params_become_an_empty_dict(self) -> None:
+        requests = [ContextRequest(provider="repo_map", reasoning="Overview.")]
+
+        assert requests_to_dicts(requests) == ({"provider": "repo_map", "params": {}},)
+
+    def test_duplicate_name_keeps_the_last_value(self) -> None:
+        requests = [
+            ContextRequest(
+                provider="read_file",
+                params=[
+                    ContextParam(name="path", value="first.py"),
+                    ContextParam(name="path", value="second.py"),
+                ],
+                reasoning="Need it.",
+            ),
+        ]
+
+        assert requests_to_dicts(requests) == (
+            {"provider": "read_file", "params": {"path": "second.py"}},
+        )
+
+    def test_output_feeds_fulfill_requests(self, tmp_path: Path) -> None:
+        """The collapsed shape is exactly what the provider dispatcher consumes."""
+        (tmp_path / "test.py").write_text("hello world")
+        requests = [
+            ContextRequest(
+                provider="read_file",
+                params=[ContextParam(name="path", value="test.py")],
+                reasoning="Need it.",
+            ),
+        ]
+
+        results = fulfill_requests(requests_to_dicts(requests), str(tmp_path), str(tmp_path))
+
+        assert [r.content for r in results] == ["hello world"]
 
 
 # ---------------------------------------------------------------------------

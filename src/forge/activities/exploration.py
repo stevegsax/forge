@@ -23,6 +23,7 @@ from forge.message_log import write_message_log
 from forge.models import (
     AssembledContext,
     CapabilityTier,
+    ContextRequest,
     ContextResult,
     ExplorationCallResult,
     ExplorationInput,
@@ -32,6 +33,8 @@ from forge.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from sax_platform.llm import AnthropicLLM
     from sqlalchemy import Engine
 
@@ -90,6 +93,10 @@ def build_exploration_prompt(
 
     parts.append("")
     parts.append("## Available Providers")
+    parts.append("")
+    parts.append("Each request names one provider and supplies that provider's")
+    parts.append('parameters as name/value pairs: a "path" parameter is sent as')
+    parts.append('{"name": "path", "value": "src/foo.py"}.')
     for spec in input.available_providers:
         parts.append("")
         parts.append(f"### {spec.name}")
@@ -122,8 +129,22 @@ def build_exploration_prompt(
     return system_prompt, user_prompt
 
 
+def requests_to_dicts(requests: Sequence[ContextRequest]) -> tuple[dict[str, object], ...]:
+    """Collapse wire requests into the provider-facing ``{provider, params}`` dicts.
+
+    The wire model carries ``params`` as a list of name/value pairs because
+    Anthropic structured outputs cannot express an open-keyed object (see
+    :class:`forge.models.ContextParam`). Providers take a plain ``dict``, so
+    the pair list collapses here — the single seam between the two shapes.
+    A duplicated name keeps its last value, matching dict semantics.
+    """
+    return tuple(
+        {"provider": r.provider, "params": {p.name: p.value for p in r.params}} for r in requests
+    )
+
+
 def fulfill_requests(
-    requests: list[dict[str, object]],
+    requests: Sequence[Mapping[str, object]],
     repo_root: str,
     worktree_path: str,
     engine: Engine | None = None,
@@ -131,7 +152,8 @@ def fulfill_requests(
     """Dispatch context requests to the provider registry.
 
     Args:
-        requests: List of dicts with 'provider' and 'params' keys.
+        requests: Mappings with 'provider' and 'params' keys (see
+            :func:`requests_to_dicts`).
         repo_root: Path to the repository root.
         worktree_path: Path to the worktree.
         engine: Store engine threaded to the store-backed providers
